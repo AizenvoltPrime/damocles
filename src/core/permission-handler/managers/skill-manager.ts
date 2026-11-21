@@ -1,6 +1,5 @@
-import { loadSkillDescription } from '../../skills/utils';
 import { registerAbortablePrompt, unaskedCheck, postApprovedUnasked, type PermissionState } from '../state';
-import type { CanUseToolContext, PermissionResult, SkillApprovalResult, PostMessageFn } from '../types';
+import type { CanUseToolContext, PermissionResult, SkillApprovalResult, PostMessageFn, SkillDescriber } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { PromptApprover } from '../../../shared/types/permissions';
 import { buildUserDenyResult, buildUnaskedDenyResult, buildAllowResult } from '../utils';
@@ -10,6 +9,7 @@ const ABORTED_BEFORE_ANSWER = 'The session was aborted before this skill approva
 export class SkillManager {
   private state: PermissionState;
   private getPostMessage: () => PostMessageFn | null;
+  private readonly describeSkill: SkillDescriber;
 
   // the host policy's YOLO check (PermissionHandler), re-read at each decision
   private readonly bypassAllowed: () => boolean;
@@ -17,10 +17,12 @@ export class SkillManager {
   constructor(
     state: PermissionState,
     getPostMessage: () => PostMessageFn | null,
+    describeSkill: SkillDescriber,
     bypassAllowed: () => boolean = () => true,
   ) {
     this.state = state;
     this.getPostMessage = getPostMessage;
+    this.describeSkill = describeSkill;
     this.bypassAllowed = bypassAllowed;
   }
 
@@ -42,7 +44,7 @@ export class SkillManager {
       return buildAllowResult(input);
     }
 
-    const skillDescription = await loadSkillDescription(skillName, this.state.workspacePath);
+    const skillDescription = await this.describeSkill(skillName);
     const result = await this.requestSkillApprovalFromWebview(skillName, skillDescription, context);
 
     if (!result.approved) {

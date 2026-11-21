@@ -89,7 +89,7 @@ describe('a session file write', () => {
   });
 
   it('answers only an outcome main acts on', () => {
-    for (const answer of [{ kind: 'written', mtimeMs: 1.5 }, { kind: 'changed' }, { kind: 'outside' }, { kind: 'refused', reason: 'held' }, { kind: 'refused', reason: 'otherProcess' }]) {
+    for (const answer of [{ kind: 'written', mtimeMs: 1.5 }, { kind: 'changed' }, { kind: 'outside' }, { kind: 'notOwned' }, { kind: 'refused', reason: 'held' }, { kind: 'refused', reason: 'otherProcess' }]) {
       expect(write.result(answer)).toEqual(answer);
     }
     expect(write.result({ kind: 'written', mtimeMs: Number.NaN })).toBe(INVALID);
@@ -108,6 +108,72 @@ describe('a session file write', () => {
       expect(result({ ...read, sessionFile: false }), method).toBe(INVALID);
       expect(result({ kind: 'missing', sessionFile: 'yes' }), method).toBe(INVALID);
     }
+  });
+});
+
+describe('a Files listing', () => {
+  const { result } = CLIENT_TO_WORKSPACE.requests['tree.list'];
+  const via = { link: 'out', realRoot: '/srv/shared' };
+
+  it('carries a link\'s own target and broken flag, and the link root the folder was reached through', () => {
+    const entries = [{ name: 'out', kind: 'dir', link: { target: '/srv/shared' } }, { name: 'gone', kind: 'file', link: { target: '../gone', broken: true } }, { name: 'a.ts', kind: 'file' }];
+    expect(result({ ok: true, entries, via })).toEqual({ ok: true, entries, via });
+    expect(result({ ok: true, entries })).toEqual({ ok: true, entries });
+  });
+
+  it('refuses a link target holding a control character or longer than a path, a broken flag other than true and a via that is not a project path', () => {
+    const entry = (link: unknown) => ({ ok: true, entries: [{ name: 'out', kind: 'file', link }] });
+    expect(result(entry({ target: 'a\u001b[2Jb' }))).toBe(INVALID);
+    expect(result(entry({ target: 'x'.repeat(32_768) }))).toBe(INVALID);
+    expect(result(entry({ target: '/a', broken: false }))).toBe(INVALID);
+    expect(result(entry({}))).toBe(INVALID);
+    expect(result({ ok: true, entries: [], via: { link: '../up', realRoot: '/srv' } })).toBe(INVALID);
+    expect(result({ ok: true, entries: [], via: { link: 'out', realRoot: '' } })).toBe(INVALID);
+  });
+
+  it('reads an older host\'s entries, which carry no link, as entries with no badge', () => {
+    expect(result({ ok: true, entries: [{ name: 'out', kind: 'dir' }] })).toEqual({ ok: true, entries: [{ name: 'out', kind: 'dir' }] });
+  });
+});
+
+describe('a project path\'s confinement and Files answers', () => {
+  const via = { link: 'out', realRoot: '/srv/shared' };
+  const drive = { message: 'The drive {0} did not answer within a second.', args: ['Q:\\'] };
+
+  it('carries a confine\'s via, refuses one that is no project path, and refuses oldDaemon, which only a client answers', () => {
+    for (const method of ['files.confineExisting', 'files.confineMissing'] as const) {
+      const { result } = CLIENT_TO_WORKSPACE.requests[method];
+      expect(result({ ok: true, path: '/srv/shared/a.ts', via }), method).toEqual({ ok: true, path: '/srv/shared/a.ts', via });
+      expect(result({ ok: true, path: '/srv/shared/a.ts', via: { link: '../up', realRoot: '/srv' } }), method).toBe(INVALID);
+      expect(result({ ok: true, path: '/srv/shared/a.ts', via: { link: 'out' } }), method).toBe(INVALID);
+      expect(result({ ok: false, reason: 'outside', refusal: 'share' }), method).toEqual({ ok: false, reason: 'outside', refusal: 'share' });
+      expect(result({ ok: false, reason: 'outside', refusal: 'oldDaemon' }), method).toBe(INVALID);
+    }
+  });
+
+  it('carries a failure\'s own words on every refusal that may fail, and refuses words that are no LocalizedText', () => {
+    const failed = { ok: false, reason: 'failed', error: drive };
+    for (const method of ['files.confineExisting', 'files.confineMissing', 'files.entry', 'tree.list', 'files.createEntry', 'files.renameEntry', 'files.deleteEntry', 'files.clashes', 'files.readFile', 'files.copy', 'files.move', 'files.removeFolder'] as const) {
+      const { result } = CLIENT_TO_WORKSPACE.requests[method];
+      expect(result(failed), method).toEqual(failed);
+      expect(result({ ok: false, reason: 'failed', error: 'The drive Q:\\ did not answer.' }), method).toBe(INVALID);
+      expect(result({ ok: false, reason: 'outside', refusal: 'oldDaemon' }), method).toBe(INVALID);
+    }
+  });
+
+  it('carries sessionFile as an entry\'s and a transfer\'s reason', () => {
+    for (const method of ['files.createEntry', 'files.renameEntry', 'files.deleteEntry', 'files.receiveFile', 'files.copy', 'files.move', 'files.makeFolder', 'files.makeLink', 'files.verifyLink', 'files.removeFolder'] as const) {
+      expect(CLIENT_TO_WORKSPACE.requests[method].result({ ok: false, reason: 'sessionFile' }), method).toEqual({ ok: false, reason: 'sessionFile' });
+    }
+    expect(CLIENT_TO_WORKSPACE.requests['files.confineExisting'].result({ ok: false, reason: 'sessionFile' })).toBe(INVALID);
+  });
+
+  it('carries an entry\'s session store flag as true or nothing', () => {
+    const { result } = CLIENT_TO_WORKSPACE.requests['files.entry'];
+    const entry = { ok: true, path: '/srv/app/a', folder: true, identity: { dev: '1', ino: '2', birthtimeNs: '3' } };
+    expect(result({ ...entry, sessionStore: true })).toEqual({ ...entry, sessionStore: true });
+    expect(result(entry)).toEqual(entry);
+    expect(result({ ...entry, sessionStore: false })).toBe(INVALID);
   });
 });
 

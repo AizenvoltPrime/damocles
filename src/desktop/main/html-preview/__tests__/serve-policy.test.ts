@@ -1,4 +1,6 @@
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -12,6 +14,9 @@ import { NotConnectedError } from '../../workspace/workspaces';
 import { answerPreview, exactBytes, type PreviewAnswer, type PreviewFileReads } from '../../../../core/served-pages/preview-reader';
 import { declaresCharset, isServablePreviewPath, previewContentType, previewCsp, previewHeaders, previewRequestPath, previewUrlPath, requestedRange } from '../../../../core/served-pages/serve-policy';
 import { syntheticFile } from './synthetic-file';
+
+// a session store these reads never reach
+const NO_HOME = path.join(os.tmpdir(), 'damocles-preview-no-home');
 
 describe('previewRequestPath', () => {
   it.each([
@@ -262,7 +267,7 @@ describe('answerPreview byte ranges, read through the workspace\'s own ranged re
     fs.writeFileSync(path.join(root, 'empty.mp4'), '');
     fs.writeFileSync(path.join(root, '.env'), 'SECRET=1');
     const project: Project = { key: root, fsPath: root, name: 'site' };
-    const ops = createTransferOps({ platform: process.platform, log: () => undefined });
+    const ops = createTransferOps({ platform: process.platform, log: () => undefined, damoclesHome: NO_HOME });
     calls = [];
     reads = {
       range: (relativePath, offset, length) => {
@@ -389,7 +394,7 @@ describe('answerPreview of an HTML file\'s charset and real path, read through t
     fs.mkdirSync(path.join(root, 'docs'));
     fs.symlinkSync(path.join(root, '.git'), path.join(root, 'docs', 'x'), 'junction');
     const project: Project = { key: root, fsPath: root, name: 'site' };
-    const ops = createTransferOps({ platform: process.platform, log: () => undefined });
+    const ops = createTransferOps({ platform: process.platform, log: () => undefined, damoclesHome: NO_HOME });
     calls = [];
     reads = {
       range: (relativePath, offset, length) => {
@@ -438,6 +443,122 @@ describe('answerPreview of an HTML file\'s charset and real path, read through t
 
   it('refuses a file a folder link leads into a dot folder by, docs/x -> .git', async () => {
     expect(await ask('/docs/x/config')).toEqual({ status: 404, headers: previewHeaders(false, 'view') });
+  });
+});
+
+describe('answerPreview of a page behind a link, by the project\'s trust (HTML preview\'s option of the workspace\'s ranged read)', () => {
+  let base: string;
+  let project: Project;
+  const ops = createTransferOps({ platform: process.platform, log: () => undefined, damoclesHome: NO_HOME });
+  const PAGE = '<html><head><title>x</title></head><body>page</body></html>';
+  const dirLink = process.platform === 'win32' ? 'junction' : 'dir';
+
+  beforeAll(() => {
+    base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-preview-links-')));
+    const home = path.join(base, 'home');
+    for (const folder of ['.ssh', path.join('.config', 'x'), path.join('shared', 'assets')]) fs.mkdirSync(path.join(home, folder), { recursive: true });
+    fs.writeFileSync(path.join(home, '.ssh', 'known.html'), PAGE);
+    fs.writeFileSync(path.join(home, '.config', 'x', 'page.html'), PAGE);
+    fs.writeFileSync(path.join(home, 'shared', 'assets', 'page.html'), PAGE);
+    fs.writeFileSync(path.join(home, 'shared', 'assets', 'style.css'), 'body {}');
+    fs.writeFileSync(path.join(home, 'shared', 'assets', '.env'), 'SECRET=1');
+    const site = path.join(base, 'proj');
+    fs.mkdirSync(path.join(site, 'inner'), { recursive: true });
+    fs.writeFileSync(path.join(site, 'index.html'), PAGE);
+    fs.writeFileSync(path.join(site, 'inner', 'page.html'), PAGE);
+    fs.symlinkSync(path.join(site, 'inner'), path.join(site, 'inside'), dirLink);
+    fs.symlinkSync(path.join(site, 'inner', 'page.html'), path.join(site, 'page-link.html'), 'file');
+    fs.symlinkSync(path.join(home, 'shared', 'assets'), path.join(site, 'assets'), dirLink);
+    fs.symlinkSync(path.join(home, '.ssh'), path.join(site, 'ssh'), dirLink);
+    fs.symlinkSync(path.join(home, '.config', 'x'), path.join(site, 'config'), dirLink);
+    fs.symlinkSync(path.join(home, 'shared', 'assets'), path.join(site, 'site'), dirLink);
+    const dependency = path.join(home, 'ws', 'node_modules', '.pnpm', 'dep@1.0.0', 'node_modules', 'dep');
+    fs.mkdirSync(dependency, { recursive: true });
+    fs.writeFileSync(path.join(dependency, 'index.js'), 'export {};');
+    fs.mkdirSync(path.join(site, 'node_modules'));
+    fs.symlinkSync(dependency, path.join(site, 'node_modules', 'dep'), dirLink);
+    project = { key: site, fsPath: site, name: 'site' };
+  });
+
+  afterAll(() => {
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+
+  const ask = (pathname: string, trusted: boolean, target: 'view' | 'browser' = 'view') => answerPreview(
+    { method: 'GET', pathname, trusted, target, range: undefined, ifRange: undefined },
+    { range: (relativePath, offset, length) => ops.readFileRange(project, relativePath, offset, length, { trusted }) },
+    () => undefined,
+  );
+  const status = async (pathname: string, trusted: boolean): Promise<number> => {
+    const answer = await ask(pathname, trusted);
+    if (answer.body) await bodyOf(answer);
+    return answer.status;
+  };
+
+  it('serves a trusted project\'s page through a link that leaves it, with its sibling assets', async () => {
+    const page = await ask('/assets/page.html', true);
+    expect(page.status).toBe(200);
+    expect((await bodyOf(page)).toString('utf8')).toBe(PAGE);
+    expect(await status('/assets/style.css', true)).toBe(200);
+    expect(await status('/inside/page.html', true)).toBe(200);
+    expect(await status('/page-link.html', true)).toBe(200);
+  });
+
+  it.each([['/ssh/known.html'], ['/config/page.html'], ['/site/.env'], ['/assets/.env']])('answers a trusted project 404 for %s, whose real path holds a denied segment', async (pathname) => {
+    expect(await status(pathname, true)).toBe(404);
+  });
+
+  it('answers an untrusted project 404 for a link that leaves it, and serves one that stays inside', async () => {
+    expect(await status('/assets/page.html', false)).toBe(404);
+    expect(await status('/assets/style.css', false)).toBe(404);
+    expect(await status('/inside/page.html', false)).toBe(200);
+    expect(await status('/page-link.html', false)).toBe(200);
+    expect(await status('/index.html', false)).toBe(200);
+  });
+
+  it('serves a trusted pnpm workspace member\'s dependency, which links into the workspace\'s node_modules/.pnpm', async () => {
+    expect(await status('/node_modules/dep/index.js', true)).toBe(200);
+    expect(await status('/node_modules/dep/index.js', false)).toBe(404);
+  });
+
+  it('reads the entry itself without the option, as a granted folder\'s served pages do, so a file link or a link that leaves it answers 404', async () => {
+    const plain = (pathname: string) => answerPreview(
+      { method: 'GET', pathname, trusted: true, target: 'browser', range: undefined, ifRange: undefined },
+      { range: (relativePath, offset, length) => ops.readFileRange(project, relativePath, offset, length) },
+      () => undefined,
+    );
+    expect((await plain('/page-link.html')).status).toBe(404);
+    expect((await plain('/assets/page.html')).status).toBe(404);
+    for (const served of ['/index.html', '/inside/page.html']) {
+      const answer = await plain(served);
+      expect(answer.status, served).toBe(200);
+      await bodyOf(answer);
+    }
+  });
+
+  it.runIf(process.platform !== 'win32')('answers 404 for a FIFO in either trust state, without waiting on it', async () => {
+    const fifo = path.join(project.fsPath, 'pipe.html');
+    execFileSync('mkfifo', [fifo]);
+    expect(await status('/pipe.html', true)).toBe(404);
+    expect(await status('/pipe.html', false)).toBe(404);
+  });
+
+  it.runIf(process.platform !== 'win32')('answers 404 for a Unix socket in either trust state', async () => {
+    const socket = path.join(project.fsPath, 'socket.html');
+    const server = net.createServer();
+    await new Promise<void>((resolve) => server.listen(socket, resolve));
+    try {
+      expect(await status('/socket.html', true)).toBe(404);
+      expect(await status('/socket.html', false)).toBe(404);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it.runIf(process.platform !== 'win32')('answers 404 for a link to a device in either trust state', async () => {
+    fs.symlinkSync('/dev/null', path.join(project.fsPath, 'null.html'), 'file');
+    expect(await status('/null.html', true)).toBe(404);
+    expect(await status('/null.html', false)).toBe(404);
   });
 });
 

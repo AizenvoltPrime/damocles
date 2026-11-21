@@ -3,9 +3,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import { fileLinkedOntoDevice, folderOnAdminShare } from '../../../__mocks__/admin-share';
 import { currentPathOf, foldAliases } from '../aliases';
 import { parseJournal, RelocationStore } from '../store';
-import { RELOCATION_STEPS, type RelocationStepName, type RelocationStepState } from '../types';
+import { RELOCATION_STEPS, type RelocationRecord, type RelocationStepName, type RelocationStepState } from '../types';
 
 const FROM = path.resolve('/old/p');
 const TO = path.resolve('/new/p');
@@ -33,6 +34,32 @@ const stepsWith = (done: readonly RelocationStepName[]): Record<RelocationStepNa
   Object.fromEntries(RELOCATION_STEPS.map((name) => [name, { state: done.includes(name) ? 'done' : 'pending' }])) as Record<RelocationStepName, RelocationStepState>;
 
 const entry = (folders: unknown[], state = 'running'): Record<string, unknown> => ({ id: 'r1', seq: 1, requestedBy: 'desktop', mode: 'locate', folders, chats: 0, state, steps: stepsWith([]), startedAt: 1 });
+
+describe.runIf(process.platform === 'win32')('RelocationStore under the network rule (win32)', () => {
+  const record = (seq: number): RelocationRecord => ({ id: 'r1', seq, requestedBy: 'desktop', mode: 'locate', folders: [{ kind: 'project', from: FROM, to: TO }], chats: 0, state: 'running', steps: stepsWith([]), startedAt: 1 });
+
+  it('reads and writes through a store folder linked onto a share, as the user moved it there', async (ctx) => {
+    const real = folderOnAdminShare(ctx, path.join(dir, 'data'));
+    journalFile = path.join(dir, 'data', 'project-relocations.json');
+    try {
+      await openStore().add(record);
+      expect(openStore().records().map((r) => r.id)).toEqual(['r1']);
+      expect(fs.existsSync(path.join(real, 'project-relocations.json'))).toBe(true);
+    } finally {
+      for (const item of opened.splice(0)) item.dispose();
+      fs.rmSync(real, { recursive: true, force: true });
+    }
+  });
+
+  it('neither reads nor writes a journal that links off its folder', async (ctx) => {
+    fileLinkedOntoDevice(ctx, journalFile);
+    const lines: string[] = [];
+    const store = new RelocationStore({ file: journalFile, watcherFactory: createFakePlatform().fileWatchers, log: (line) => lines.push(line) });
+    opened.push(store);
+    expect(lines).toEqual([`[ProjectRelocations] ${journalFile} links to a network share or WSL path, so it is not read`]);
+    await expect(store.add(record)).rejects.toMatchObject({ name: 'ConfigWriteRefused' });
+  });
+});
 
 describe('RelocationStore', () => {
   it('keeps as another version\'s a record whose first folder is not its one project folder', () => {

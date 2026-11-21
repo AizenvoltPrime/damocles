@@ -1,7 +1,8 @@
 import type { Platform } from "../../../../platform/platform";
 import { PROVIDER_SECRET_KEYS } from "../../../pi-session/explore-providers";
 import { PiRuntime } from "../../../pi-session/pi-runtime";
-import { keyProviderOfSecret, providerKeyStored, TYPESAFE_SECRET_KEY } from "../../../pi-session/custom-providers";
+import { providerKeyStored } from "../../../pi-session/custom-providers";
+import { keyProviderOfSecret, TYPESAFE_SECRET_KEY } from "../../../pi-session/provider-defs";
 import { clientKeySaved, clientPrefersApiKey } from "../../../client-snapshots";
 import { readProviderSignIns } from "../../../pi-session/provider-auth";
 import { CLASSIFIER_ENV_KEYS, CLASSIFIER_PROVIDERS, classifierCredential, classifierModelOf, memoryJudgeOf, pickClassifierModel } from "../../../pi-session/classifier-model";

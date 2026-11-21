@@ -3,9 +3,15 @@ import * as path from 'node:path';
 import type { Disposable } from '../../platform/disposable';
 import type { KeyValueState, Memento } from '../../platform/key-value-state';
 import { jsonConfigWritesSettled, writeJsonConfig } from '../../core/config/json-config-write';
+import { checkConfigPathSync } from '../../core/config/local-config-path';
 import { Emitter } from './emitter';
 
 function readValues(filePath: string, log: (line: string) => void): Map<string, unknown> {
+  // eslint-disable-next-line damocles/no-sync -- right before the synchronous read below, judged from the store's own folder
+  if (checkConfigPathSync(path.dirname(filePath), filePath) !== 'ok') {
+    log(`[state] ignoring ${filePath}: it links to a network share or WSL path`);
+    return new Map();
+  }
   let text: string;
   try {
     text = fs.readFileSync(filePath, 'utf8');
@@ -24,7 +30,7 @@ function readValues(filePath: string, log: (line: string) => void): Map<string, 
 }
 
 // Reads are served from memory; each update rewrites the whole file atomically (temp file + rename), and memory
-// changes only once that write has landed.
+// changes only once that write has landed. The file's folder is the network rule's base for its read and its writes.
 class JsonFileMemento implements Memento {
   private readonly filePath: string;
   private values: Map<string, unknown>;
@@ -54,7 +60,7 @@ class JsonFileMemento implements Memento {
       if (value === undefined) next.delete(key);
       else next.set(key, value);
       return `${JSON.stringify(Object.fromEntries(next), null, 2)}\n`;
-    });
+    }, { baseFolder: path.dirname(this.filePath) });
     this.values = next;
     this.listeners.get(key)?.fire();
     this.updates.fire(key);

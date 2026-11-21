@@ -1,8 +1,23 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+
+// Files the link policy refuses, as it does on Windows for one linked onto another share; any other file it judges itself.
+const refused = vi.hoisted(() => new Set<string>());
+vi.mock('../../../config/local-config-path', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../config/local-config-path')>();
+  return {
+    ...actual,
+    configLinkPolicy: (bases: readonly string[]) => {
+      const judged = actual.configLinkPolicy(bases);
+      return (file: string): boolean => !refused.has(file) && judged(file);
+    },
+  };
+});
+
 import { installFakePlatform } from '../../../../__mocks__/fake-platform';
+import { PI_AGENT_DIR } from '../../agent-dir';
 import { resolveEnabledModels, isModelInScope, readEnabledModels } from '../enabled-models';
 
 const registry = {
@@ -61,6 +76,7 @@ describe('resolveEnabledModels / isModelInScope', () => {
 describe('readEnabledModels trust gate', () => {
   const dirs: string[] = [];
   afterEach(() => {
+    refused.clear();
     for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -88,5 +104,19 @@ describe('readEnabledModels trust gate', () => {
     const fake = installFakePlatform({ trusted: false });
     expect(readEnabledModels(cwd) ?? []).not.toContain('probe/project-only-model');
     expect(fake.trust.checkedPaths).toEqual([cwd]);
+  });
+
+  it('reads no settings file pi\'s link policy refuses, as pi loads no allowlist from it, and tells the user once per file', () => {
+    const fake = installFakePlatform();
+    const cwd = projectWith(['probe/project-only-model']);
+    const project = path.join(cwd, '.pi', 'settings.json');
+    const global = path.join(PI_AGENT_DIR, 'settings.json');
+    refused.add(project);
+    refused.add(global);
+    expect(readEnabledModels(cwd)).toBeUndefined();
+    expect(fake.notifications.calls.map((call) => call.text)).toEqual([
+      { message: '{0} links to a network share or WSL path, so Damocles does not read it.', args: [project] },
+      { message: '{0} links to a network share or WSL path, so Damocles does not read it.', args: [global] },
+    ]);
   });
 });

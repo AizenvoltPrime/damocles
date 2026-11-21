@@ -6,6 +6,7 @@ import { fillMessage, renderLocalizedText, type LocalizedText } from '../../shar
 import { Emitter } from './emitter';
 import { LANGUAGE_SETTING, parseDesktopLanguage, type DesktopLanguageSetting } from './desktop-configuration';
 import { parseSettingsText } from '../../core/config/settings-file';
+import { checkConfigPathSync } from '../../core/config/local-config-path';
 import { readFileSync } from '../../core/resource-fs';
 
 export type DesktopLanguage = 'en' | 'el';
@@ -35,6 +36,11 @@ export function normalizeLanguage(locale: string): DesktopLanguage {
 export function readLanguageSetting(userFile: string, log: (line: string) => void): DesktopLanguageSetting {
   let text: string;
   try {
+    // eslint-disable-next-line damocles/no-sync -- read once at launch, before the window exists, as the read below is
+    if (checkConfigPathSync(path.dirname(userFile), userFile) !== 'ok') {
+      log(`[l10n] ${userFile} links to a network share or WSL path, so the language follows the system`);
+      return 'system';
+    }
     text = fs.readFileSync(userFile, 'utf8');
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') log(`[l10n] cannot read ${userFile}, so the language follows the system: ${err instanceof Error ? err.message : String(err)}`);

@@ -6,7 +6,8 @@ import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import type { ModelInfo } from '../../../shared/types/settings';
 import { DEFAULT_MODELS } from '../../../shared/types/constants';
 import type { OpenAIAuthStatus } from '../openai-auth';
-import { flatFeeKeyProviders, providerBillsFlat, syncCustomProviders } from '../custom-providers';
+import { flatFeeKeyProviders, syncCustomProviders } from '../custom-providers';
+import { providerBillsFlat } from '../provider-defs';
 import {
   apiKeySource,
   openaiTokenSource,

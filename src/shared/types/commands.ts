@@ -4,6 +4,32 @@ export interface SlashCommandInfo {
   argumentHint: string;
 }
 
+/**
+ * Why a listed command or skill cannot run; the view renders the reason from the code. detail: the frontmatter parser's
+ * message, target: the link's readlink text, each bounded and free of control characters.
+ */
+export type AssetWithheld =
+  | { reason: "linkOutside" | "share" | "loop" | "unreachable" | "tooLarge" | "missingDescription" | "reservedNamespace" }
+  | { reason: "invalidFrontmatter"; detail: string }
+  | { reason: "broken"; target: string };
+
+/** Why a commands or skills folder itself is not read: its own link, or one above it, is not followed. */
+export type RootWithheld =
+  | { reason: "linkOutside" | "share" | "loop" | "unreachable" }
+  | { reason: "broken"; target: string };
+
+/** A commands or skills folder a link withholds whole: one row for the folder, never invoked; linkOutside asks for trust. */
+export interface WithheldRootInfo {
+  kind: "withheldRoot";
+  assets: "commands" | "skills";
+  /** The source's folder as spelled on disk, such as `.claude`. */
+  folder: string;
+  source: "project" | "user";
+  filePath: string;
+  untrusted?: boolean;
+  withheld: RootWithheld;
+}
+
 export interface CustomSlashCommandInfo {
   name: string;
   description: string;
@@ -13,6 +39,7 @@ export interface CustomSlashCommandInfo {
   /** Found but withheld from the agent because the workspace is untrusted. */
   untrusted?: boolean;
   namespace?: string;
+  withheld?: AssetWithheld;
 }
 
 export interface BuiltinSlashCommandInfo {
@@ -29,12 +56,16 @@ export interface SkillInfo {
   source: "project" | "user";
   /** Found but withheld from the agent because the workspace is untrusted. */
   untrusted?: boolean;
+  withheld?: AssetWithheld;
 }
 
 export type SlashCommandItem =
   | CustomSlashCommandInfo
   | BuiltinSlashCommandInfo
   | SkillInfo;
+
+/** A row of the `/` menu. */
+export type SlashMenuRow = SlashCommandItem | WithheldRootInfo;
 
 export interface AgentConfig {
   id: string;

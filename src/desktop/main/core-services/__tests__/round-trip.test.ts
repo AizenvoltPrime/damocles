@@ -127,6 +127,7 @@ function connect(options: { readonly trusted?: readonly string[]; readonly trust
   const core = createCorePlatform(coreEnd, init, () => ({
     capabilities: () => main.capabilities,
     settings: main.settings,
+    walkSettings: main.walkSettings,
     fileWatchers: main.fileWatchers,
     confinement: main.confinement,
     logSinks: main.logSinks,

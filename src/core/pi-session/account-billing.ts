@@ -1,7 +1,7 @@
 import type { AccountInfo, ModelInfo } from '../../shared/types/settings';
 import { OPENAI_API_PROVIDER, OPENAI_CODEX_PROVIDER, openaiRuntimeKeyWanted, type OpenAIAuthStatus } from './openai-auth';
 import { isDollarBilled, resolvePiModel, type ModelLookup } from './pi-models';
-import { providerBillsFlat } from './custom-providers';
+import { providerBillsFlat } from './provider-defs';
 import type { SubscriptionProvider } from './usage-thresholds';
 
 /**

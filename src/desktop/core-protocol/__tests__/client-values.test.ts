@@ -27,6 +27,14 @@ describe('the clientAuth snapshot', () => {
     expect(parseClientValues.clientUser({ settings: {}, permissionRules: [], pending: true })).toBe(INVALID);
   });
 
+  // A daemon's core blocks every call settings rules decide while a client user file's rules cannot be known.
+  it('carries the client user file whose rules cannot be known, with its localized reason, and refuses one without a file', () => {
+    const unreadable = { file: 'C:\\Users\\me\\.claude\\settings.json', reason: { message: 'error {0}', args: ['EACCES'] } };
+    expect(parseClientValues.clientUser({ settings: {}, permissionRules: [], unreadable })).toEqual({ settings: {}, permissionRules: [], unreadable });
+    expect(parseClientValues.clientUser({ settings: {}, permissionRules: [], unreadable: { reason: unreadable.reason } })).toBe(INVALID);
+    expect(parseClientValues.clientUser({ settings: {}, permissionRules: [], unreadable: { file: unreadable.file, reason: 7 } })).toBe(INVALID);
+  });
+
   // A remote chat's key status counts a key the client saved even while its sign-in outranks it, which hasKey does not say.
   it('carries whether a key provider key is saved, optionally, in both snapshots, and refuses a value that is not a boolean', () => {
     const entry = { type: 'oauth', hasKey: false, flatFee: false };

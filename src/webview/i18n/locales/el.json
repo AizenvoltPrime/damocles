@@ -742,6 +742,7 @@
         "fileNotObject": "Το ~/.damocles/mcp.json πρέπει να περιέχει ένα αντικείμενο JSON. Διορθώστε το αρχείο και δοκιμάστε ξανά.",
         "fileServersNotObject": "Το κλειδί \"mcpServers\" στο ~/.damocles/mcp.json δεν είναι αντικείμενο. Διορθώστε το αρχείο και δοκιμάστε ξανά.",
         "fileUnreadable": "Το ~/.damocles/mcp.json δεν μπόρεσε να διαβαστεί. Ελέγξτε τα δικαιώματά του. Δεν γράφτηκε τίποτα.",
+        "fileLinksToShare": "Το ~/.damocles/mcp.json είναι σύνδεσμος σε κοινόχρηστο φάκελο δικτύου ή σε διαδρομή WSL, οπότε το Damocles δεν το γράφει. Δεν γράφτηκε τίποτα.",
         "writeFailed": "Η αλλαγή δεν μπόρεσε να αποθηκευτεί: {detail}",
         "invalidDefinition": "Ο ορισμός του διακομιστή απορρίφθηκε: {detail}",
         "hostTabOnly": "Οι διακομιστές MCP αυτού του διακομιστή αλλάζουν μόνο στις Ρυθμίσεις, στην καρτέλα του."
@@ -1673,7 +1674,26 @@
     "loading": "Φόρτωση εντολών...",
     "noMatches": "Δεν βρέθηκαν εντολές",
     "createHint": "Δημιουργήστε εντολές στο .damocles/commands/",
-    "untrustedBadge": "μη έμπιστο"
+    "untrustedBadge": "μη έμπιστο",
+    "scope": {
+      "project": "έργο",
+      "user": "χρήστης"
+    },
+    "withheldRoot": {
+      "commands": "Εντολές {folder}, {scope}",
+      "skills": "Δεξιότητες {folder}, {scope}"
+    },
+    "withheld": {
+      "linkOutside": "εμπιστευτείτε αυτό το έργο για να το χρησιμοποιήσετε",
+      "share": "σύνδεσμος σε κοινόχρηστο φάκελο δικτύου ή σε διαδρομή WSL",
+      "broken": "σπασμένος σύνδεσμος προς {target}",
+      "loop": "βρόχος συνδέσμων",
+      "unreachable": "σύνδεσμος σε μονάδα δίσκου που δεν απάντησε",
+      "tooLarge": "πολύ μεγάλο (πάνω από 1 MiB)",
+      "missingDescription": "λείπει η περιγραφή",
+      "invalidFrontmatter": "μη έγκυρο frontmatter: {detail}",
+      "reservedNamespace": "δεσμευμένος χώρος ονομάτων skill"
+    }
   },
   "subagentIndicator": {
     "active": "Ενεργοί agents:",

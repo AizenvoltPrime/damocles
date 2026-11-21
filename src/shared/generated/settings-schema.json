@@ -1435,6 +1435,26 @@
         "default": true,
         "description": "Controls whether to open Replace Preview when selecting or replacing a match."
       },
+      "damocles.desktop.search.followSymlinks": {
+        "type": "boolean",
+        "default": true,
+        "description": "Controls whether to follow symlinks while searching."
+      },
+      "damocles.desktop.search.useIgnoreFiles": {
+        "type": "boolean",
+        "default": true,
+        "description": "Controls whether to use `.gitignore`, `.ignore` and `.rgignore` files when searching for files."
+      },
+      "damocles.desktop.search.useGlobalIgnoreFiles": {
+        "type": "boolean",
+        "default": true,
+        "description": "Controls whether to use your global gitignore file (for example, from `$HOME/.config/git/ignore`) when searching for files. Requires `damocles.desktop.search.useIgnoreFiles` to be enabled."
+      },
+      "damocles.desktop.search.useParentIgnoreFiles": {
+        "type": "boolean",
+        "default": true,
+        "description": "Controls whether to use `.gitignore`, `.ignore` and `.rgignore` files in parent directories when searching for files. Requires `damocles.desktop.search.useIgnoreFiles` to be enabled."
+      },
       "damocles.desktop.search.defaultViewMode": {
         "type": "string",
         "enum": [
@@ -2874,6 +2894,30 @@
         "errorMessage": "damocles.desktop.search.useReplacePreview applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
         "description": "damocles.desktop.search.useReplacePreview applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls whether to open Replace Preview when selecting or replacing a match."
+      },
+      "damocles.desktop.search.followSymlinks": {
+        "not": {},
+        "errorMessage": "damocles.desktop.search.followSymlinks applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.search.followSymlinks applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls whether to follow symlinks while searching."
+      },
+      "damocles.desktop.search.useIgnoreFiles": {
+        "not": {},
+        "errorMessage": "damocles.desktop.search.useIgnoreFiles applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.search.useIgnoreFiles applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls whether to use `.gitignore`, `.ignore` and `.rgignore` files when searching for files."
+      },
+      "damocles.desktop.search.useGlobalIgnoreFiles": {
+        "not": {},
+        "errorMessage": "damocles.desktop.search.useGlobalIgnoreFiles applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.search.useGlobalIgnoreFiles applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls whether to use your global gitignore file (for example, from `$HOME/.config/git/ignore`) when searching for files. Requires `damocles.desktop.search.useIgnoreFiles` to be enabled."
+      },
+      "damocles.desktop.search.useParentIgnoreFiles": {
+        "not": {},
+        "errorMessage": "damocles.desktop.search.useParentIgnoreFiles applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.search.useParentIgnoreFiles applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nControls whether to use `.gitignore`, `.ignore` and `.rgignore` files in parent directories when searching for files. Requires `damocles.desktop.search.useIgnoreFiles` to be enabled."
       },
       "damocles.desktop.search.defaultViewMode": {
         "not": {},

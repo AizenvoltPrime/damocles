@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installFakePlatform, type FakePlatform } from '../../__mocks__/fake-platform';
 import { McpManager } from '../chat-panel/settings-manager/managers/mcp-manager';
 import { folderTarget } from '../chat-panel/settings-manager/managers/__tests__/mcp-folder-fixtures';
@@ -10,7 +10,8 @@ import { PermissionState } from '../permission-handler/state';
 import { HooksConfigService } from '../pi-session/hooks/config';
 import type { ParseFrontmatter } from '../pi-session/subagents/custom-agents';
 import { WorkspaceAgentRegistry } from '../pi-session/subagents/workspace-agent-registry';
-import { loadSkillDescription } from '../skills/utils';
+import { SlashCommandService } from '../chat-panel/slash-command-service';
+import { initPiLoader } from '../pi-session/pi-loader';
 
 // McpManager asks git whether mcp.local.json is ignored, only for a trusted folder.
 const execMock = vi.hoisted(() => vi.fn(async () => ({ stdout: '', stderr: '', code: 0 })));
@@ -34,6 +35,11 @@ function write(file: string, text: string): void {
 let ws: string;
 let fake: FakePlatform;
 const disposables: Array<{ dispose(): void }> = [];
+
+// Loading pi takes seconds on a cold disk; a test that pays it first can pass the per-test timeout.
+beforeAll(async () => {
+  await initPiLoader();
+});
 
 beforeEach(() => {
   ws = mkdtempSync(path.join(os.tmpdir(), 'damocles-trust-gate-'));
@@ -65,31 +71,39 @@ describe('trust gate: an untrusted folder loads no repository-authored input, a 
     expect(hooks.getEntries('tool_call')).toEqual([]);
   });
 
-  it('project subagents', () => {
+  it('project subagents', async () => {
     const home = mkdtempSync(path.join(os.tmpdir(), 'damocles-trust-gate-home-'));
     const agents = new WorkspaceAgentRegistry(ws, parseFrontmatter, fake.trust, fake.fileWatchers, { homeDir: home });
     disposables.push(agents, { dispose: () => rmSync(home, { recursive: true, force: true }) });
+    await agents.whenLoaded();
     expect(agents.getRegistry().getAgentConfig('RepoAgent')).toBeUndefined();
 
     const reloaded = vi.fn();
     agents.onChange(reloaded);
     fake.trust.grantTrust();
+    await agents.whenLoaded();
     expect(reloaded).toHaveBeenCalledOnce();
     expect(agents.getRegistry().getAgentConfig('RepoAgent')?.description).toBe('repo agent');
 
+    // A revoke withdraws the project agents at once, then reloads.
     fake.trust.revokeTrust();
+    expect(agents.getRegistry().getAgentConfig('RepoAgent')).toBeUndefined();
     expect(reloaded).toHaveBeenCalledTimes(2);
+    await agents.whenLoaded();
+    expect(reloaded).toHaveBeenCalledTimes(3);
     expect(agents.getRegistry().getAgentConfig('RepoAgent')).toBeUndefined();
   });
 
   it('project skills', async () => {
-    expect(await loadSkillDescription('repo-skill', ws)).toBeUndefined();
+    const skills = new SlashCommandService(ws, fake);
+    disposables.push(skills);
+    expect(await skills.describeSkill('repo-skill')).toBeUndefined();
 
     fake.trust.grantTrust();
-    expect(await loadSkillDescription('repo-skill', ws)).toBe('repo skill');
+    expect(await skills.describeSkill('repo-skill')).toBe('repo skill');
 
     fake.trust.revokeTrust();
-    expect(await loadSkillDescription('repo-skill', ws)).toBeUndefined();
+    expect(await skills.describeSkill('repo-skill')).toBeUndefined();
   });
 
   it('project permission rules', async () => {

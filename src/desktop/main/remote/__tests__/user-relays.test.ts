@@ -7,7 +7,8 @@ import { MAX_BROKER_ENV_VALUE_CHARS, MAX_BROKER_ENV_VARS, MAX_BROKER_EXPIRES_IN_
 import { fileURLToPath } from 'node:url';
 import { readContributedConfiguration } from '../../../../core/config/read-contributed-configuration';
 import { PREFER_API_KEY_SETTINGS } from '../../../../core/pi-session/provider-auth';
-import { BROKER_ENV_FEATURE, brokerAnswerOf, CLIENT_PENDING_FEATURE, checkProvider, clientAuthOf, clientUserOf, relayedUserSettingKeys, UserRelays, type UserRelaysDeps, type LocalUserScope } from '../user-relays';
+import { BROKER_ENV_FEATURE, brokerAnswerOf, CLIENT_PENDING_FEATURE, checkProvider, clientAuthOf, clientUserOf, relayedUserSettingKeys, RULES_REREAD_MS, UserRelays, type UserRelaysDeps, type LocalUserScope } from '../user-relays';
+import type { LocalizedText } from '../../../../shared/localized-text';
 
 const KNOWN: HeldAuth = { providers: { anthropic: { type: 'oauth', expires: 1, hasKey: false, flatFee: false }, openai: { type: 'api_key', hasKey: true, flatFee: false } } };
 
@@ -166,14 +167,18 @@ describe('UserRelays', () => {
   // a daemon that reads no pending value
   const OLDER = FEATURES.filter((feature) => feature !== CLIENT_PENDING_FEATURE);
 
-  async function relays(overrides: Partial<UserRelaysDeps> = {}): Promise<{ relays: UserRelays; lines: string[] }> {
+  async function relays(overrides: Partial<UserRelaysDeps> = {}): Promise<{ relays: UserRelays; lines: string[]; warnings: LocalizedText[]; home: string }> {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), 'user-relays-'));
     homes.push(home);
     await fs.mkdir(path.join(home, '.claude'));
     await fs.writeFile(path.join(home, '.claude', 'settings.json'), JSON.stringify({ permissions: { deny: ['Bash(rm:*)'] }, env: { TOKEN: 'x' } }));
     const lines: string[] = [];
+    const warnings: LocalizedText[] = [];
     return {
+      home,
+      warnings,
       relays: new UserRelays({
+        notifications: { warn: async (message) => { warnings.push(message); return undefined; } },
         resolveCredential: async () => ({ type: 'oauth', access: 'a', expiresIn: 60_000, refresh: '' }),
         forges: async () => [],
         clientAuth: async () => KNOWN,
@@ -561,5 +566,108 @@ describe('UserRelays', () => {
     expect((await user.attach(() => undefined, 'ssh+h1', false, FEATURES).mirrors).clientAuth).toEqual({ providers: { anthropic: { type: 'oauth', expiresIn: 3_540_000, hasKey: false, flatFee: false } } });
     expect(published).toEqual([{ servers: [] }, { servers: [] }]);
     now.mockRestore();
+  });
+
+  describe('a user rules file that cannot be read', () => {
+    const RULES = [{ allow: [], ask: [], deny: ['Bash(rm:*)'], dir: '.claude' }];
+    // a folder where the file was: it exists, and reading it fails with EISDIR on every platform
+    const breakFile = async (file: string): Promise<void> => {
+      await fs.rm(file, { force: true });
+      await fs.mkdir(file);
+    };
+    const mendFile = async (file: string, deny: string[]): Promise<void> => {
+      await fs.rm(file, { recursive: true, force: true });
+      await fs.writeFile(file, JSON.stringify({ permissions: { deny } }));
+    };
+    const user = (published: Array<[string, unknown]>) => published.filter(([topic]) => topic === 'clientUser').map(([, value]) => value);
+    const messages = (warnings: LocalizedText[]) => warnings.map((warning) => warning.message);
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('keeps sending the rules it last read, with one notice while it fails and another when it fails again', async () => {
+      const { relays: relay, home, warnings } = await relays();
+      const file = path.join(home, '.claude', 'settings.json');
+      await relay.userChanged();
+      const published: Array<[string, unknown]> = [];
+      expect((await relay.attach((topic, value) => published.push([topic, value]), 'ssh+h1', false, FEATURES).mirrors).clientUser).toEqual({ settings: { 'damocles.language': 'en' }, permissionRules: RULES });
+
+      await breakFile(file);
+      await relay.userChanged();
+      await relay.userChanged();
+      expect(user(published)).toEqual([]);
+      expect(warnings).toEqual([{ message: expect.stringContaining('keeps the rules it last read'), args: [file, { message: 'error {0}', args: ['EISDIR'] }] }]);
+
+      await mendFile(file, ['Bash(git push:*)']);
+      await relay.userChanged();
+      expect(user(published)).toEqual([{ settings: { 'damocles.language': 'en' }, permissionRules: [{ ...RULES[0], deny: ['Bash(git push:*)'] }] }]);
+
+      await breakFile(file);
+      await relay.userChanged();
+      expect(user(published)).toHaveLength(1);
+      expect(messages(warnings)).toHaveLength(2);
+      relay.dispose();
+    });
+
+    it('logs a failing file once while it fails for the same reason, and again once it fails after a read', async () => {
+      const { relays: relay, home, lines } = await relays();
+      const file = path.join(home, '.claude', 'settings.json');
+      const failures = (): string[] => lines.filter((line) => line.startsWith(`[remote] ${file} could not be read`));
+      await breakFile(file);
+      await relay.userChanged();
+      await relay.userChanged();
+      await relay.userChanged();
+      expect(failures()).toHaveLength(1);
+
+      await mendFile(file, ['Bash(rm:*)']);
+      await relay.userChanged();
+      await breakFile(file);
+      await relay.userChanged();
+      expect(failures()).toHaveLength(2);
+      relay.dispose();
+    });
+
+    it('marks a file never read as unreadable, naming it and why, and drops the mark once it reads', async () => {
+      const { relays: relay, home, warnings } = await relays();
+      const file = path.join(home, '.claude', 'settings.json');
+      await breakFile(file);
+      await relay.userChanged();
+      const published: Array<[string, unknown]> = [];
+      const unreadable = { file, reason: { message: 'error {0}', args: ['EISDIR'] } };
+      expect((await relay.attach((topic, value) => published.push([topic, value]), 'ssh+h1', false, FEATURES).mirrors).clientUser).toEqual({ settings: { 'damocles.language': 'en' }, permissionRules: [], unreadable });
+      expect(warnings).toEqual([{ message: expect.stringContaining('blocks every tool call'), args: [file, unreadable.reason] }]);
+
+      await mendFile(file, ['Bash(rm:*)']);
+      await relay.userChanged();
+      expect(user(published)).toEqual([{ settings: { 'damocles.language': 'en' }, permissionRules: RULES }]);
+      relay.dispose();
+    });
+
+    it('reads a missing file as no rules, with no mark and no notice', async () => {
+      const { relays: relay, home, warnings } = await relays();
+      await fs.rm(path.join(home, '.claude', 'settings.json'));
+      await relay.userChanged();
+      expect((await relay.attach(() => undefined, 'ssh+h1', false, FEATURES).mirrors).clientUser).toEqual({ settings: { 'damocles.language': 'en' }, permissionRules: [] });
+      expect(warnings).toEqual([]);
+      relay.dispose();
+    });
+
+    it('reads a failing file again on its own, since no watcher reports a drive that answers again', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const { relays: relay, home } = await relays();
+      const file = path.join(home, '.claude', 'settings.json');
+      await breakFile(file);
+      await relay.userChanged();
+      const published: Array<[string, unknown]> = [];
+      await relay.attach((topic, value) => published.push([topic, value]), 'ssh+h1', false, FEATURES).mirrors;
+
+      await mendFile(file, ['Bash(rm:*)']);
+      await vi.advanceTimersByTimeAsync(RULES_REREAD_MS);
+      await vi.waitFor(() => expect(user(published)).toEqual([{ settings: { 'damocles.language': 'en' }, permissionRules: RULES }]));
+      // nothing fails now, so nothing is read again
+      expect(vi.getTimerCount()).toBe(0);
+      relay.dispose();
+    });
   });
 });

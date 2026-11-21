@@ -168,7 +168,7 @@ describe('WorkspaceManager.openFile', () => {
     const confine = vi.spyOn(platform.confinement, 'confineExisting');
     const stat = vi.spyOn(fs.promises, 'stat');
     await manager.openFile('out/b.ts', undefined, folder, 'host-1');
-    expect(confine).toHaveBeenCalledWith(ws, 'out/b.ts');
+    expect(confine).toHaveBeenCalledWith(ws, 'out/b.ts', 'withinProject');
     expect(stat).not.toHaveBeenCalled();
     expect(platform.editor.openedFiles.map((file) => file.path)).toEqual([path.join(ws, 'out', 'b.ts')]);
     stat.mockRestore();
@@ -192,7 +192,7 @@ describe('WorkspaceManager.openFile', () => {
     const confine = vi.spyOn(platform.confinement, 'confineExisting');
     await manager.openFile(path.join(outside, 'c.ts'), undefined, folder, 'host-1');
     const drive = path.parse(outside).root;
-    expect(confine).toHaveBeenCalledWith(drive, path.relative(drive, path.join(outside, 'c.ts')).split(path.sep).join('/'));
+    expect(confine).toHaveBeenCalledWith(drive, path.relative(drive, path.join(outside, 'c.ts')).split(path.sep).join('/'), 'withinProject');
     expect(platform.editor.openedFiles.map((file) => file.path)).toEqual([path.join(outside, 'c.ts')]);
   });
 

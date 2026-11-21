@@ -23,6 +23,7 @@ import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { syncPermissionRulesToSettings } from '../../chat-panel/settings-manager/utils';
 import { EvaluatorManager } from '../managers/evaluator-manager';
+import { PermissionRulesUnreadable } from '../permission-settings';
 import { PermissionState } from '../state';
 import { PermissionHandler } from '../index';
 import { runPinnedTurn } from '../../client-snapshots';
@@ -120,6 +121,18 @@ describe('permission layers on a daemon\'s core', () => {
     expect(await evaluator.matchRule('Bash', { command: 'make' }, ws)).toBeNull();
     targetFile('.damocles', { allow: ['Bash(make)'] });
     expect(await evaluator.matchRule('Bash', { command: 'make' }, ws)).toBeNull();
+  });
+
+  it('decides no call while the client marks a user file it never read, and decides with the client\'s rules once it reads it', async () => {
+    const clientFile = path.join(clientHome, '.claude', 'settings.json');
+    const { host, evaluator } = remoteEvaluator([]);
+    host.set('clientUser', 'client-a', { settings: {}, permissionRules: [lists({ allow: ['Bash(ls)'] })], unreadable: { file: clientFile, reason: { message: 'a link on its path loops' } } });
+    const refused = evaluator.matchRule('Read', { file_path: path.join(ws, 'a.ts') }, ws);
+    await expect(refused).rejects.toBeInstanceOf(PermissionRulesUnreadable);
+    await expect(refused).rejects.toMatchObject({ file: clientFile, text: { args: [clientFile, { message: 'a link on its path loops' }] } });
+
+    host.set('clientUser', 'client-a', { settings: {}, permissionRules: [lists({ dir: '.claude', deny: ['Bash(rm:*)'] })] });
+    expect(await evaluator.matchRule('Bash', { command: 'rm -rf x' }, ws)).toBe('deny');
   });
 
   it('a turn reads the rules of the client it pinned', async () => {

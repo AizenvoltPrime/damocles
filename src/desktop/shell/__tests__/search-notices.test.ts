@@ -42,4 +42,21 @@ describe('Search notices', () => {
     expect(wrapper.text()).toContain('src/invoice-\\u{202E}gpj.ts cannot be previewed: its text changed since the search.');
     expect(wrapper.text()).not.toContain('\u202E');
   });
+
+  it('says links were not searched when the search\'s host walks without them', async () => {
+    const api = fakeShellApi([]);
+    const wrapper = mount(SearchSection, {
+      props: { api, projectKey: 'home', projectName: 'Home', platform: 'win32', collapsed: false, settings: SEARCH_SETTINGS, shortcuts: STATE.shortcuts, saved: DEFAULT_SEARCH_VIEW },
+      global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: createEditorStore(api) } },
+      attachTo: document.body,
+    });
+    mounted.push(wrapper);
+    await flushPromises();
+    await wrapper.find('[data-testid="search-query"]').setValue('invoice');
+    await flushPromises();
+    const searchId = vi.mocked(api.startSearch).mock.calls.at(-1)?.[0]?.searchId as number;
+    api.searchDone({ searchId, resultCount: 0, fileCount: 0, limitHit: false, linksNotSearched: 'Update the Damocles server on box to search through links.' });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="search-links-not-searched"]').text()).toBe('Update the Damocles server on box to search through links.');
+  });
 });

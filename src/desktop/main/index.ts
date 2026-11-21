@@ -7,7 +7,6 @@ import { Worker } from 'node:worker_threads';
 import { app, BrowserWindow, clipboard, dialog, Menu, net, powerMonitor, screen, session, shell as electronShell, webContents, WebContentsView, type WebContents } from 'electron';
 import { installLogSink, log, showLog } from '../../core/logger';
 import { processProfiler, StallMonitor } from '../local-services/stall-monitor';
-import { walkIgnoreOf } from '../../core/search-walk/ignore-settings';
 import type { WalkHost } from '../../core/search-walk/walk-host';
 import { locateSettingsFile, saveSettingsFileText } from '../../core/chat-panel/settings-file-editor';
 import { installPlatform } from '../../core/platform-host';
@@ -16,6 +15,7 @@ import type { ChatActivity } from '../../core/pi-session/session-state';
 import { LANGUAGE_PREFERENCE_KEY } from '../../shared/language-preference';
 import type { CatalogResult } from '../../core/chat-panel/session-catalog';
 import { movePreferApiKeyFlagsToSettings, runLegacySettingsMigrations } from '../../core/config/legacy-settings-migrations';
+import { migrateRenamedSearchSettings } from './search-settings-migration';
 import { deleteRetiredSecrets } from '../../core/config/retired-secrets';
 import { providerKeyStored } from '../../core/pi-session/custom-providers';
 import { PROVIDER_SECRET_KEYS } from '../../core/pi-session/explore-providers';
@@ -176,7 +176,7 @@ import { capTerminalText, MAX_TERMINAL_ATTACHMENT_OMITTED_LINES } from '../prelo
 import { excludeSettingGlobs } from '../workspace/search/rg-args';
 import type { SearchFolder } from '../workspace/search/types';
 import { createLocalWorkspace } from './workspace/local-workspace';
-import { carriesTransfers } from './workspace/remote-workspace';
+import { carriesTransfers, walksWithoutLinks } from './workspace/remote-workspace';
 import { createWorkspaces, NotConnectedError, type Workspaces } from './workspace/workspaces';
 import { RootSpellings } from './workspace/root-spellings';
 import { revealAllowed, walkingBelow, withRenderedMessage } from './reveal-guard';
@@ -230,6 +230,7 @@ import { NO_SCM_MENU_STATE, ScmHost, type ScmWorktreeDeps } from './scm/scm-host
 import type { ScmWorktreeChat } from '../preload/scm-channels';
 import { createLauncherPool, FOLDER_PROCESSES_CLOSE_MS, installProcessLauncher, lockThreadSpawns, processLauncher, runProcess, whenProcessesClosed, type Launcher } from '../../core/process-launcher';
 import { allJsonConfigWritesSettled } from '../../core/config/json-config-write';
+import { userConfigBase } from '../../core/config/local-config-path';
 import { createScmClient, type ScmClient } from './scm/scm-client';
 import { SUBCALL_USAGE_LEDGER_PATH } from '../../core/paths';
 import { TaskbarBadges } from './taskbar-badges';
@@ -1643,7 +1644,6 @@ class DesktopApp {
         if (change.affects('damocles.desktop.terminal')) this.terminals?.settingsChanged();
         if (change.affects(TERMINAL_PROFILES_SETTING)) this.terminalProfiles?.refresh().catch((err: unknown) => log(`[terminal] validating the user's profiles failed: ${errorText(err)}`));
       }),
-      this.platform.settings.onDidChange('search', () => this.quickOpenIndex?.invalidate()),
       this.state.onDidChange('global', LANGUAGE_PREFERENCE_KEY, () => localization.setLanguage(this.preferredLanguage())),
       localization.onDidChangeLanguage(() => {
         this.installMenu();
@@ -1684,6 +1684,7 @@ class DesktopApp {
 
     const secrets = this.platform.secrets;
     await runLegacySettingsMigrations(this.platform.settings, () => providerKeyStored((key) => secrets.get(key), PROVIDER_SECRET_KEYS.stepfun));
+    await migrateRenamedSearchSettings(this.platform.settings, log).catch(this.report('Moving the renamed search settings'));
     const preferMoveNotice = await movePreferApiKeyFlagsToSettings(this.platform.state, this.platform.settings);
     void deleteRetiredSecrets(secrets);
     this.restoreAtLaunch = this.platform.settings.get<boolean>(RESTORE_LAYOUT_SETTING, true);
@@ -3940,7 +3941,7 @@ class DesktopApp {
   private async runFilesAction<T extends FilesMutationResult | FilesDeleteResult | FilesListResult>(action: FilesAction, file: FileRef, run: () => Promise<T>, newName?: string): Promise<T | FilesFailed> {
     const result = await settleFilesAction(run, (line) => log(line), (text) => this.requireLocalization().render(text));
     const name = file.relativePath === '' ? this.roots.resolve(file.projectKey)?.name ?? '' : path.posix.basename(file.relativePath);
-    const message = filesFailureMessage((text, ...args) => this.requireLocalization().t(text, ...args), action, name, result, newName);
+    const message = filesFailureMessage((text, ...args) => this.requireLocalization().t(text, ...args), (text) => this.requireLocalization().render(text), action, name, () => this.hostName(authorityKeyOfProject(file.projectKey)), result, newName);
     if (message !== undefined) void this.notifications.error(message);
     return result;
   }
@@ -4101,6 +4102,14 @@ class DesktopApp {
     return this.authorities?.connection(authority)?.features.includes(RELOCATE_FEATURE) === true;
   }
 
+  // Search's notice for a project whose daemon walks without links; a project not connected fails its search instead.
+  private linksNotSearched(projectKey: string): string | undefined {
+    const authority = authorityKeyOfProject(projectKey);
+    const connection = authority === 'local' ? undefined : this.authorities?.connection(authority);
+    if (connection === undefined || !walksWithoutLinks(connection.features)) return undefined;
+    return this.requireLocalization().t('Update the Damocles server on {0} to search through links.', visibleText(this.hostName(authority)));
+  }
+
   // The project key a path of an authority's core names, as the shell keys it.
   private relocationKey(authority: string, fsPath: string): string {
     if (authority === 'local') return folderKey(fsPath);
@@ -4183,14 +4192,11 @@ class DesktopApp {
   // The moved project's saved file tabs whose file is in the new folder open again there.
   private async reopenRelocatedTabs(files: readonly FileRef[]): Promise<void> {
     const kept = await presentFiles(files, async (file) => {
-      const remote = this.remoteProject(file.projectKey);
-      if (remote) {
-        const remoteFiles = this.remoteWorkspace(remote.authorityKey).files;
-        const confined = await remoteFiles.confineExisting(remote, file.relativePath);
-        return confined.ok && !(await remoteFiles.isDirectory(confined.path));
-      }
-      const folder = this.listedFolder(file.projectKey);
-      return folder !== undefined && (await fs.promises.stat(path.join(folder.fsPath, file.relativePath))).isFile();
+      const project = this.workspaceProjects().find((candidate) => candidate.key === file.projectKey);
+      if (!project) return false;
+      const projectFiles = this.requireWorkspaces().forProject(project.key).files;
+      const confined = await projectFiles.confineExisting(project, file.relativePath, 'throughLinks');
+      return confined.ok && !(await projectFiles.isDirectory(confined.path));
     }, (file, err) => log(`[projects] could not check the moved project's tab ${file.relativePath}: ${errorText(err)}`));
     if (kept.length > 0) await this.requireEditorPane().openInBackground(kept.map((file) => ({ file })));
   }
@@ -4752,6 +4758,7 @@ class DesktopApp {
       editor: {
         state: () => this.requireEditorPane().state(),
         content: (documentId) => this.requireEditorPane().content(documentId),
+        // main reports a refused open; the shell shows nothing of its own
         open: (request) => this.requireEditorPane().openFromUser(request.projectKey, request.relativePath, {
           ...(request.line !== undefined ? { line: request.line } : {}),
           ...(request.as !== undefined ? { as: request.as } : {}),
@@ -4804,6 +4811,7 @@ class DesktopApp {
         list: (projectKey, relativeDir, report) => (report
           ? this.runFilesAction('list', { projectKey, relativePath: relativeDir }, () => this.requireFileTree().list(projectKey, relativeDir))
           : this.requireFileTree().list(projectKey, relativeDir)),
+        collapsed: (folder) => this.fileTree?.collapsed(folder.projectKey, folder.relativePath),
         create: (request) => this.runFilesAction(
           'create',
           { projectKey: request.projectKey, relativePath: request.relativeDir === '' ? request.name : `${request.relativeDir}/${request.name}` },
@@ -4969,7 +4977,7 @@ class DesktopApp {
     const quickOpenIndex = new QuickOpenIndex({
       projects: () => this.quickOpenRoots(),
       workspaces,
-      ignore: () => walkIgnoreOf(platform.settings),
+      walk: platform.walkSettings,
       excludes: () => [...fileTree.excludePatterns(), ...this.searchExcludePatterns()],
       watch: (project) => fileTree.watch(project),
       startWorker: () => new Worker(quickOpenWorkerPath(platform.paths)),
@@ -5044,6 +5052,7 @@ class DesktopApp {
       browser: () => this.pageTabs,
       terminals: () => this.terminals?.tabSource,
       warn: (message) => void this.notifications.warn(message),
+      error: (message) => void this.notifications.error(message),
       hostName: (authority) => this.hostName(authority),
       searchEditorClosed: (documentId) => this.search?.searchEditorClosed(documentId),
       reviewClosed: (reviewId) => this.chatReviews.reviewClosed(reviewId),
@@ -5084,7 +5093,8 @@ class DesktopApp {
       selectedFolder: () => this.searchFolder(),
       workspaces,
       osOf: (projectKey) => this.projectOs(projectKey),
-      ignore: () => walkIgnoreOf(platform.settings),
+      walk: () => platform.walkSettings.read(),
+      linksNotSearched: (projectKey) => this.linksNotSearched(projectKey),
       excludeSettings: () => [...fileTree.excludePatterns(), ...this.searchExcludePatterns()],
       ask: this.ask,
       t,
@@ -5423,7 +5433,7 @@ class DesktopApp {
             const project = this.remoteProject(projectKey);
             if (!project) throw new Error(`${projectKey} is not a remote project`);
             const files = this.remoteWorkspace(project.authorityKey).files;
-            const confined = await files.confineExisting(project, relativePath);
+            const confined = await files.confineExisting(project, relativePath, 'throughLinks');
             if (!confined.ok) throw new Error(`${relativePath} is ${confined.reason}`);
             const read = await files.read(confined.path, 64 * 1024 * 1024);
             if (read.kind !== 'bytes') throw new Error(`${relativePath} reads as ${read.kind}`);
@@ -5433,7 +5443,7 @@ class DesktopApp {
             const project = this.remoteProject(projectKey);
             if (!project) throw new Error(`${projectKey} is not a remote project`);
             const files = this.remoteWorkspace(project.authorityKey).files;
-            const confined = await files.confineMissing(project, relativePath);
+            const confined = await files.confineMissing(project, relativePath, 'throughLinks');
             if (!confined.ok) throw new Error(`${relativePath} is ${confined.reason}`);
             await files.writeInPlace(project, { path: confined.path, projectKey, relativePath }, Buffer.from(base64, 'base64'));
           },
@@ -6321,6 +6331,7 @@ class DesktopApp {
       },
       forges: async () => (await this.core.run('Reading the Git hosting servers for remote hosts', (core) => core.client.forgeServersRead())).servers,
       engineHalted: () => this.core.halted(),
+      notifications: platform.notifications,
       hostPolicy: (authorityKey) => {
         const hostId = this.savedHostIdOf(authorityKey);
         const record = hostId === undefined ? undefined : this.hostStore?.host(hostId);
@@ -6337,7 +6348,13 @@ class DesktopApp {
     const refresh = (): void => {
       relays.userChanged().catch(this.report('Reading the user settings for remote chats'));
     };
-    const watchers = ['.damocles', '.claude'].map((dir) => platform.fileWatchers.watch(path.join(homeDirectory(), dir), '{settings.json,settings.local.json}'));
+    // based at the scope root, so the watcher factory judges a link at the folder by the network rule (D10)
+    const watchers = ['.damocles', '.claude'].map((name) => {
+      const dir = path.join(homeDirectory(), name);
+      const base = userConfigBase(path.join(dir, 'settings.json'), homeDirectory());
+      const folder = path.relative(base, dir).split(path.sep).join('/');
+      return platform.fileWatchers.watch(base, `${folder === '' ? '' : `${folder}/`}{settings.json,settings.local.json}`);
+    });
     for (const watcher of watchers) {
       watcher.onDidCreate(refresh);
       watcher.onDidChange(refresh);
@@ -7250,8 +7267,8 @@ class DesktopApp {
       os: (authorityKey) => this.authorityOs(authorityKey),
       hostName: (authorityKey) => this.hostName(authorityKey),
       isDirectory: (authorityKey, folder) => files(authorityKey).isDirectory(folder),
-      confineExisting: (authorityKey, project, relativePath) => files(authorityKey).confineExisting(project, relativePath),
-      confineMissing: (authorityKey, project, relativePath) => files(authorityKey).confineMissing(project, relativePath),
+      confineExisting: (authorityKey, project, relativePath, rule) => files(authorityKey).confineExisting(project, relativePath, rule),
+      confineMissing: (authorityKey, project, relativePath, rule) => files(authorityKey).confineMissing(project, relativePath, rule),
       read: (authorityKey, file) => files(authorityKey).read(file, EDITOR_CONFIRM_DOCUMENT_BYTES),
       resolveOutside: (authorityKey, target) => files(authorityKey).resolveOutside(target),
       readOutside: (authorityKey, file) => files(authorityKey).readOutside(file),
@@ -9075,11 +9092,10 @@ class DesktopApp {
       else await this.openQuickOpen('files', action.scope);
       return;
     }
-    const opened = await this.requireEditorPane().openFromUser(base.project.key, link.relativePath, {
+    await this.requireEditorPane().openFromUser(base.project.key, link.relativePath, {
       ...(request.line !== null ? { line: request.line } : {}),
       ...(request.column !== null ? { column: request.column } : {}),
     });
-    if (!opened.ok) log(`[terminal] a link did not open: ${opened.reason}`);
   }
 
   // Join Terminals... is enabled for the command target while its group has room and another panel terminal is outside it.
@@ -9357,8 +9373,7 @@ class DesktopApp {
       await this.mentionInSelectedChat({ projectKey: pick.projectKey, relativePath: pick.relativePath });
       return;
     }
-    const opened = await this.requireEditorPane().openFromUser(pick.projectKey, pick.relativePath, position);
-    if (!opened.ok) void this.notifications.warn(this.requireLocalization().t('{0} could not be opened.', pick.relativePath));
+    await this.requireEditorPane().openFromUser(pick.projectKey, pick.relativePath, position);
   }
 
   // Files' and Source Control's Mention in chat, the editor's mention button and Quick Open's @ mention in the selected chat.

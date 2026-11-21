@@ -97,7 +97,8 @@ async function ripgrepSearch(search: SearchQuery): Promise<RecordedSearch> {
       osOf: () => process.platform,
       folder: () => ({ projectKey: project.key, fsPath: root }),
       workspaces: testWorkspaces({ watchers: createFakePlatform().fileWatchers, rgPath: () => resolveRgPath({ resourceRoot: process.cwd(), unpackedRoot: process.cwd() }) }),
-      ignore: () => ALL_IGNORE_FILES,
+      walk: () => ({ ignore: ALL_IGNORE_FILES, followLinks: true }),
+      linksNotSearched: () => undefined,
       excludeSettings: () => [],
       settings: () => ({ smartCase: false, maxResults: 20_000, debounceMs: 0, sortOrder: 'default' }),
       buffers: () => [],
@@ -145,6 +146,20 @@ describe('replace in closed files', () => {
     expect(await replaceInFiles(deps(), search, '$1\\nbaz\\nqux', all(search))).toMatchObject({ replacedFiles: 2, replacedCount: 2, skipped: [] });
     expect(fs.readFileSync(crlf, 'utf8')).toBe('foo\r\nbaz\r\nqux\r\n');
     expect(fs.readFileSync(lf, 'utf8')).toBe('foo\nbaz\nqux\n');
+  });
+
+  it('replaces in a file Search found through a junction out of the project, writing the junction\'s target', async () => {
+    const outside = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dm-replace-outside-')));
+    try {
+      fs.writeFileSync(path.join(outside, 'shared.ts'), 'const shared = 1;\n');
+      fs.symlinkSync(outside, path.join(root, 'linked'), 'junction');
+      const search = await ripgrepSearch(query('shared'));
+      expect([...search.matches.values()].map((match) => match.file)).toEqual([{ kind: 'file', relativePath: 'linked/shared.ts' }]);
+      expect(await replaceInFiles(deps(), search, 'common', all(search))).toMatchObject({ replacedFiles: 1, replacedCount: 1, skipped: [] });
+      expect(fs.readFileSync(path.join(outside, 'shared.ts'), 'utf8')).toBe('const common = 1;\n');
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it('is literal for a text query', async () => {

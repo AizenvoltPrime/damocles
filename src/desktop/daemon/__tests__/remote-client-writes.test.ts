@@ -15,7 +15,7 @@ import type { HandlerContext, HandlerDependencies } from '../../../core/chat-pan
 import type { HostInstance } from '../../../core/chat-panel/types';
 import { parseContributedConfiguration } from '../../../core/config/contributed-configuration';
 import { installPlatform } from '../../../core/platform-host';
-import { customProviderDef } from '../../../core/pi-session/custom-providers';
+import { customProviderDef } from '../../../core/pi-session/provider-defs';
 import { BrokeredCredentialStore } from '../../../core/pi-session/credential-broker';
 import { OPENAI_API_KEY_SECRET } from '../../../core/pi-session/openai-auth';
 import { PiRuntime } from '../../../core/pi-session/pi-runtime';

@@ -30,7 +30,22 @@ describe('the instruction-file walk of a chat worktree', () => {
     const damoclesAncestor = file(path.join(home, '.damocles', 'worktrees', 'AGENTS.md'), 'never');
     const global = file(path.join(home, '.damocles', 'AGENTS.md'), 'global');
     const piWalk = [damoclesAncestor, inWorktree];
-    const files = overrideGlobalContextFile(piWalk, { agentDir, homeDir: home, trusted: true, worktree: { worktreeRoot, repositoryRoot: repository } });
+    const files = overrideGlobalContextFile(piWalk, { agentDir, homeDir: home, trusted: true, worktree: { worktreeRoot, repositoryRoot: repository, linkPolicy: () => true } });
     expect(files.map((f) => f.content)).toEqual([global.content, above.content, inWorktree.content]);
+  });
+
+  it('reads no ancestor the folder\'s link policy refuses, as pi\'s own walk of the folder would not', () => {
+    const home = path.join(base, 'home');
+    const agentDir = path.join(home, '.damocles', 'pi', 'agent');
+    const above = file(path.join(base, 'work', 'AGENTS.md'), 'above the repository');
+    const repository = path.join(base, 'work', 'repo');
+    fs.mkdirSync(repository, { recursive: true });
+    const worktreeRoot = path.join(home, '.damocles', 'worktrees', 'repo-abcdef', 'aaaaaaaa');
+    const asked: string[] = [];
+    // every spelling of the file, as a case-insensitive file system reads AGENTS.MD as AGENTS.md
+    const linkPolicy = (candidate: string): boolean => (asked.push(candidate), candidate.toLowerCase() !== above.path.toLowerCase());
+    const files = overrideGlobalContextFile([], { agentDir, homeDir: home, trusted: true, worktree: { worktreeRoot, repositoryRoot: repository, linkPolicy } });
+    expect(files.map((f) => f.content)).not.toContain(above.content);
+    expect(asked).toContain(above.path);
   });
 });

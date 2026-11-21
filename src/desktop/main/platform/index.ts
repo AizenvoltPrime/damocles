@@ -27,6 +27,7 @@ import type { DesktopKeyValueState } from '../../local-services/key-value-state'
 import type { DesktopLocalizationService } from '../../local-services/localization-service';
 import { createDesktopSecretsStore } from './secrets-store';
 import { DesktopSettingsStore, type ChatFolders } from '../../local-services/settings-store';
+import { createDesktopWalkSettings } from '../../local-services/walk-settings';
 import { createDesktopShellService, type DesktopShellService } from './shell-service';
 import { createDesktopTrustService } from './trust-service';
 import { createWorkerTreeHost } from '../../local-services/watch-worker-host';
@@ -110,6 +111,7 @@ export function createDesktopPlatform(deps: DesktopPlatformDeps): DesktopPlatfor
     // Main answers no handshake; core reads its own capabilities (core-host/local.ts), which e2e.setPlatform replaces.
     capabilities: desktopHostCapabilities(process.platform),
     settings,
+    walkSettings: createDesktopWalkSettings(settings),
     secrets: withVolatileSecretsNotice(secrets, notifications, shell),
     state,
     trust,

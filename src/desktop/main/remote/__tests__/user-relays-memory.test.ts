@@ -13,6 +13,7 @@ const relays = (local: Partial<LocalUserScope>) => new UserRelays({
   hostPolicy: () => ({ allowBypass: false }),
   savedHost: () => true,
   engineHalted: () => false,
+  notifications: { warn: async () => undefined },
   local: local as LocalUserScope,
   log: () => undefined,
 });

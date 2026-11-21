@@ -5,6 +5,7 @@ import type { Platform } from "../../../../platform/platform";
 import type { ChatSession } from "../../../chat-session";
 import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
 import { listWorkspaceFiles } from "../../workspace-files";
+import { isTimedFile, type TimedFiles } from "../../../search-walk";
 import { resolveSessionFilePath } from "../../session-file-path";
 import { findSessionPlanFiles } from "../../../paths";
 import { findAgentFile, subagentsDir } from "../../../pi-session/agent-records";
@@ -25,37 +26,23 @@ function hasPathTraversal(slug: string): boolean {
 
 const PLAN_CANDIDATE_LIMIT = 8;
 
-/** A markdown file under a `plans` folder at any depth, or whose name has "plan" as a word (`PLAN.md`, `rollout-plan.md`, `rolloutPlan.md`). */
+/** Plan files: markdown under a `plans` folder at any depth, or with "plan" as a word of the name (`PLAN.md`, `rollout-plan.md`, `rolloutPlan.md`). */
+export const PLAN_FILES: TimedFiles = { extension: ".md", folder: "plans", word: "plan" };
+
 export function isPlanFileCandidate(relativePath: string): boolean {
-  const segments = relativePath.split("/");
-  const name = segments.pop() ?? "";
-  if (!name.toLowerCase().endsWith(".md")) return false;
-  if (segments.some((segment) => segment.toLowerCase() === "plans")) return true;
-  const words = name.slice(0, -".md".length).split(/[^A-Za-z]+|(?<=[a-z])(?=[A-Z])/);
-  return words.some((word) => word.toLowerCase() === "plan");
+  return isTimedFile(PLAN_FILES, relativePath);
 }
 
-/** The folder's plan files from the `@` autocomplete's listing (same excludes), newest first. */
+/** The folder's plan files from the `@` autocomplete's listing (same excludes), newest first, timed by the walk process. */
 async function planFileCandidates(
-  host: Pick<Platform, "settings">,
+  host: Pick<Platform, "settings" | "walkSettings" | "trust">,
   folderPath: string,
   signal: AbortSignal,
 ): Promise<{ fsPath: string; relativePath: string; modifiedAt: number }[]> {
-  const listed = (await listWorkspaceFiles(host, folderPath, signal)).filter(
-    (file) => !file.isDirectory && isPlanFileCandidate(file.relativePath),
-  );
-  const stated = await Promise.all(listed.map(async ({ relativePath }) => {
-    const fsPath = path.join(folderPath, relativePath);
-    try {
-      return { fsPath, relativePath, modifiedAt: (await fs.stat(fsPath)).mtimeMs };
-    } catch (err) {
-      // Deleted between the listing and the stat.
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw err;
-    }
-  }));
-  return stated
-    .filter((file) => file !== null)
+  const listed = await listWorkspaceFiles(host, folderPath, signal, { timed: PLAN_FILES });
+  // only a file PLAN_FILES names has a time, and not one gone before the walk's stat
+  return listed
+    .flatMap(({ relativePath, modifiedAt }) => (modifiedAt === undefined ? [] : [{ fsPath: path.join(folderPath, relativePath), relativePath, modifiedAt }]))
     .sort((a, b) => b.modifiedAt - a.modifiedAt)
     .slice(0, PLAN_CANDIDATE_LIMIT);
 }
@@ -191,10 +178,25 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       let hasPlan = false;
       let files: Awaited<ReturnType<typeof planFileCandidates>>;
       const instance = deps.getPanels().get(ctx.panelId);
-      const signal = instance ? workspaceManager.listingSignal(instance, ctx.folder) : AbortSignal.abort();
+      const signalOf = (): AbortSignal => (instance ? workspaceManager.listingSignal(instance, ctx.folder) : AbortSignal.abort());
+      let signal = signalOf();
+      // a listing relistWorkspaceFiles stopped lists again under its fresh signal; a closed or moved panel's stays aborted
+      const listPlans = async (): Promise<typeof files> => {
+        for (;;) {
+          try {
+            const found = await planFileCandidates(platform, ctx.folder.fsPath, signal);
+            if (!signal.aborted) return found;
+          } catch (err) {
+            if (!signal.aborted) throw err;
+          }
+          const next = signalOf();
+          if (next.aborted) throw new Error("Operation aborted");
+          signal = next;
+        }
+      };
       try {
         hasPlan = (await ctx.session.getActivePlanFilePath()) !== null;
-        files = await planFileCandidates(platform, ctx.folder.fsPath, signal);
+        files = await listPlans();
       } catch (err) {
         // the panel closed or left the folder: as for a replaced session, nothing is issued
         if (signal.aborted) {
@@ -288,7 +290,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       if (!target) throw new Error("Malformed file drop");
       const instance = deps.getPanels().get(ctx.panelId);
       await mentionInChat(
-        { folders: deps.folderRegistry, confinement: platform.confinement, notifications: platform.notifications, post: (message) => postMessage(ctx.reply, message) },
+        { folders: deps.folderRegistry, confinement: platform.confinement, trust: platform.trust, notifications: platform.notifications, post: (message) => postMessage(ctx.reply, message) },
         target,
         (instance?.folder ?? ctx.folder).fsPath,
       );

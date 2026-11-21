@@ -9,6 +9,7 @@ import type { NotificationService } from '../../../platform/notification-service
 import type { RemoteHost } from '../../../platform/remote-host';
 import type { SettingsStore } from '../../../platform/settings-store';
 import type { TrustService } from '../../../platform/trust-service';
+import type { WalkSettings } from '../../../platform/walk-settings';
 import type { WorkspaceFolders } from '../../../platform/workspace-folders';
 import { DESIGN_PREVIEW_CLIENT_ABSENT } from '../../../shared/design-render';
 import type { HostCapabilities } from '../../../shared/types/messages';
@@ -26,6 +27,7 @@ export interface CoreLocalServices {
   // a function of the OS core runs on, read on every handshake
   readonly capabilities: () => HostCapabilities;
   readonly settings: SettingsStore;
+  readonly walkSettings: WalkSettings;
   readonly fileWatchers: FileWatcherFactory;
   readonly confinement: FileConfinement;
   readonly logSinks: LogSinkFactory;
@@ -94,6 +96,7 @@ export function createCorePlatform(
       return local.capabilities();
     },
     settings: local.settings,
+    walkSettings: local.walkSettings,
     secrets,
     state,
     trust,

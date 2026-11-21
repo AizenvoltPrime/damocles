@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -9,6 +9,14 @@ import { OPEN_READ_NONBLOCKING } from '../../../core/file-bytes';
 import type { Project } from '../../local-services/confine';
 import { createFileSystem, WriteRefusedError, type WorkspaceFileSystem } from '../file-system';
 import { namePrefixMatches } from '../outside-listing';
+import type { StoreHost } from '../../../core/served-pages/data-stores';
+
+// the host the session guard judges names on; undefined: this process's own
+const storeHost = vi.hoisted(() => ({ override: undefined as StoreHost | undefined }));
+vi.mock('../../../core/served-pages/host-data-stores', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../core/served-pages/host-data-stores')>();
+  return { ...actual, hostStoreHostAsync: async (log?: (line: string) => void) => storeHost.override ?? actual.hostStoreHostAsync(log) };
+});
 
 let root: string;
 let project: Project;
@@ -39,7 +47,7 @@ describe('confinement through the workspace files', () => {
     const lstat = vi.spyOn(fs.promises, 'lstat');
     const windowsOnly = process.platform === 'win32' ? ['\\\\server\\share\\a.ts', '//server/share/a.ts', 'src/CON', 'src/nul.txt', 'C:a.ts', 'src/a.ts:stream'] : [];
     for (const relativePath of [...windowsOnly, '../outside.txt', 'src/../../outside.txt', path.join(root, 'outside.txt')]) {
-      expect(await files.confineExisting(project, relativePath), relativePath).toEqual({ ok: false, reason: 'outside' });
+      expect(await files.confineExisting(project, relativePath, 'throughLinks'), relativePath).toEqual({ ok: false, reason: 'outside' });
       expect(await files.entry(project, relativePath), relativePath).toEqual({ ok: false, reason: 'outside' });
     }
     expect(realpath).not.toHaveBeenCalled();
@@ -47,9 +55,11 @@ describe('confinement through the workspace files', () => {
   });
 
   it('confines an existing file to its real path and a missing one under its deepest existing folder', async () => {
-    expect(await files.confineExisting(project, 'src/a.ts')).toEqual({ ok: true, path: path.join(project.fsPath, 'src', 'a.ts') });
-    expect(await files.confineExisting(project, 'src/gone.ts')).toEqual({ ok: false, reason: 'missing' });
-    expect(await files.confineMissing(project, 'src/new/b.ts')).toEqual({ ok: true, path: path.join(project.fsPath, 'src', 'new', 'b.ts') });
+    for (const rule of ['withinProject', 'throughLinks'] as const) {
+      expect(await files.confineExisting(project, 'src/a.ts', rule)).toEqual({ ok: true, path: path.join(project.fsPath, 'src', 'a.ts') });
+      expect(await files.confineExisting(project, 'src/gone.ts', rule)).toEqual({ ok: false, reason: 'missing' });
+      expect(await files.confineMissing(project, 'src/new/b.ts', rule)).toEqual({ ok: true, path: path.join(project.fsPath, 'src', 'new', 'b.ts') });
+    }
   });
 });
 
@@ -92,6 +102,19 @@ describe('the in-place save', () => {
   it('creates a missing file exclusively, with any folder deleted with it', async () => {
     await files.writeInPlace(project, located('gone/deeper/c.ts'), Buffer.from('back'));
     expect(fs.readFileSync(path.join(project.fsPath, 'gone', 'deeper', 'c.ts'), 'utf8')).toBe('back');
+  });
+
+  // the comparison with the opened path comes before any mkdir, so nothing is made where the link now leads
+  it('refuses a new file whose link was re-pointed since it opened, and makes no folder where the link now leads', async () => {
+    fs.mkdirSync(path.join(root, 'first'));
+    fs.mkdirSync(path.join(root, 'second'));
+    const link = path.join(project.fsPath, 'linked');
+    fs.symlinkSync(path.join(root, 'first'), link, 'junction');
+    const opened = { path: path.join(root, 'first', 'sub', 'new.ts'), projectKey: project.key, relativePath: 'linked/sub/new.ts' };
+    fs.unlinkSync(link);
+    fs.symlinkSync(path.join(root, 'second'), link, 'junction');
+    await expect(files.writeInPlace(project, opened, Buffer.from('x'))).rejects.toMatchObject({ refusal: 'outsideProject' });
+    expect([fs.readdirSync(path.join(root, 'first')), fs.readdirSync(path.join(root, 'second'))]).toEqual([[], []]);
   });
 });
 
@@ -725,20 +748,62 @@ describe('the session store\'s files', () => {
     expect([fs.readFileSync(chat, 'utf8'), fs.readFileSync(subagent, 'utf8'), fs.readFileSync(member, 'utf8'), fs.existsSync(missing)]).toEqual(['chat\n', 'agent\n', 'member\n', false]);
   });
 
-  it('reads and writes any other file as an ordinary one: a team log, a file pi does not name, a session file of another home', async () => {
+  it('flags and refuses every other file of the store too: a team log, a file pi does not name', async () => {
     const notes = put(path.join(sessions, 'notes.jsonl'), 'notes\n');
-    const elsewhere = put(path.join(root, 'other', 'pi', 'agent', 'sessions', '--work--', '2026-11-04T10-00-00-000Z_s1.jsonl'), 'other\n');
-    for (const file of [teamLog, notes, elsewhere]) {
-      expect(flagOf(await files.readOutside(file)), file).toBeUndefined();
-      expect(typeof (await files.writeOutside(file, Buffer.from('mine'))), file).toBe('number');
-      expect(fs.readFileSync(file, 'utf8')).toBe('mine');
+    for (const file of [teamLog, notes]) {
+      expect(flagOf(await files.readOutside(file)), file).toBe(true);
+      await expect(files.writeOutside(file, Buffer.from('mine')), file).rejects.toMatchObject({ refusal: 'sessionFile' });
     }
+    expect([fs.readFileSync(teamLog, 'utf8'), fs.readFileSync(notes, 'utf8')]).toEqual(['team\n', 'notes\n']);
+  });
+
+  it('reads and writes a file of a folder named like a store outside any .damocles folder as an ordinary one', async () => {
+    const elsewhere = put(path.join(root, 'other', 'pi', 'agent', 'sessions', '--work--', '2026-11-04T10-00-00-000Z_s1.jsonl'), 'other\n');
+    expect(flagOf(await files.readOutside(elsewhere))).toBeUndefined();
+    expect(typeof (await files.writeOutside(elsewhere, Buffer.from('mine')))).toBe('number');
+    expect(fs.readFileSync(elsewhere, 'utf8')).toBe('mine');
+  });
+
+  it('flags and refuses a session file or lease of another home by the guarded folders\' names, and of this home\'s lease folder by its path', async () => {
+    // a home not named .damocles, so only its exact paths guard it
+    const plainHome = path.join(root, 'dhome');
+    const plain = createFileSystem({ watchers: createFakePlatform().fileWatchers, trash: async () => undefined, damoclesHome: plainHome, log: () => undefined });
+    const otherHome = path.join(root, 'other', process.platform === 'win32' ? '.DAMOCLES' : '.damocles');
+    const foreignChat = put(path.join(otherHome, 'pi', 'agent', 'sessions', '--work--', '2026-11-04T10-00-00-000Z_s1.jsonl'), 'chat\n');
+    const foreignLease = put(path.join(otherHome, 'locks', 'sessions', 's1.lock'), 'lease\n');
+    const ownLease = put(path.join(plainHome, 'locks', 'sessions', 's1.lock'), 'lease\n');
+    for (const file of [foreignChat, foreignLease, ownLease]) {
+      expect(flagOf(await plain.readOutside(file)), file).toBe(true);
+      expect(flagOf(await plain.read(file)), file).toBe(true);
+      await expect(plain.writeOutside(file, Buffer.from('mine')), file).rejects.toMatchObject({ refusal: 'sessionFile' });
+    }
+    const other: Project = { key: folderKey(path.join(root, 'other')), fsPath: path.join(root, 'other'), name: 'other' };
+    const relative = path.relative(other.fsPath, foreignChat).split(path.sep).join('/');
+    await expect(plain.writeInPlace(other, { path: foreignChat, projectKey: other.key, relativePath: relative }, Buffer.from('mine'))).rejects.toMatchObject({ refusal: 'sessionFile' });
+    expect([fs.readFileSync(foreignChat, 'utf8'), fs.readFileSync(foreignLease, 'utf8'), fs.readFileSync(ownLease, 'utf8')]).toEqual(['chat\n', 'lease\n', 'lease\n']);
+    const ordinary = put(path.join(root, 'other', 'notes.txt'), 'notes\n');
+    expect(flagOf(await plain.readOutside(ordinary))).toBeUndefined();
+    expect(typeof (await plain.writeOutside(ordinary, Buffer.from('mine')))).toBe('number');
+  });
+
+  it.skipIf(process.platform === 'win32')('flags and refuses a Windows home\'s session file a WSL drive mount reaches, by its 8.3 alias', async () => {
+    const mount = path.join(root, 'mnt', 'c');
+    const chatThere = put(path.join(mount, 'Users', 'me', 'DAMOCL~1', 'pi', 'agent', 'sessions', '--work--', '2026-11-04T10-00-00-000Z_s1.jsonl'), 'chat\n');
+    expect(flagOf(await files.readOutside(chatThere))).toBeUndefined();
+    storeHost.override = { platform: 'linux', env: {}, home: '/home/u', drives: [{ mountPoint: mount, prefix: [] }] };
+    try {
+      expect(flagOf(await files.readOutside(chatThere))).toBe(true);
+      await expect(files.writeOutside(chatThere, Buffer.from('mine'))).rejects.toMatchObject({ refusal: 'sessionFile' });
+    } finally {
+      storeHost.override = undefined;
+    }
+    expect(fs.readFileSync(chatThere, 'utf8')).toBe('chat\n');
   });
 
   it('flags a project file and refuses its in-place write by its canonical path, in a project of ~/.damocles or one a link leads into the session folder', async () => {
     const home: Project = { key: folderKey(path.join(root, 'home', '.damocles')), fsPath: path.join(root, 'home', '.damocles'), name: '.damocles' };
     const relative = 'pi/agent/sessions/--work--/2026-11-04T10-00-00-000Z_s1.jsonl';
-    const confined = await files.confineExisting(home, relative);
+    const confined = await files.confineExisting(home, relative, 'throughLinks');
     expect(confined).toEqual({ ok: true, path: chat });
     expect(flagOf(await files.read(chat))).toBe(true);
     await expect(files.writeInPlace(home, { path: chat, projectKey: home.key, relativePath: relative }, Buffer.from('mine'))).rejects.toMatchObject({ refusal: 'sessionFile' });
@@ -747,14 +812,16 @@ describe('the session store\'s files', () => {
     const linked = path.join(root, 'linked-sessions');
     fs.symlinkSync(sessions, linked, 'junction');
     const viaLink: Project = { key: folderKey(linked), fsPath: linked, name: 'linked-sessions' };
-    const reached = await files.confineExisting(viaLink, path.basename(chat));
+    const reached = await files.confineExisting(viaLink, path.basename(chat), 'throughLinks');
     expect(reached).toEqual({ ok: true, path: chat });
     expect(flagOf(await files.read(path.join(linked, path.basename(chat))))).toBe(true);
     await expect(files.writeInPlace(viaLink, { path: chat, projectKey: viaLink.key, relativePath: path.basename(chat) }, Buffer.from('mine'))).rejects.toMatchObject({ refusal: 'sessionFile' });
 
-    expect(flagOf(await files.read(teamLog))).toBeUndefined();
-    await files.writeInPlace(home, { path: teamLog, projectKey: home.key, relativePath: 'pi/agent/sessions/--work--/s1/teams/t1.jsonl' }, Buffer.from('mine'));
-    expect([fs.readFileSync(chat, 'utf8'), fs.readFileSync(teamLog, 'utf8')]).toEqual(['chat\n', 'mine']);
+    expect(flagOf(await files.read(teamLog))).toBe(true);
+    await expect(files.writeInPlace(home, { path: teamLog, projectKey: home.key, relativePath: 'pi/agent/sessions/--work--/s1/teams/t1.jsonl' }, Buffer.from('mine'))).rejects.toMatchObject({ refusal: 'sessionFile' });
+    const settings = put(path.join(root, 'home', '.damocles', 'settings.json'), '{}');
+    await files.writeInPlace(home, { path: settings, projectKey: home.key, relativePath: 'settings.json' }, Buffer.from('mine'));
+    expect([fs.readFileSync(chat, 'utf8'), fs.readFileSync(teamLog, 'utf8'), fs.readFileSync(settings, 'utf8')]).toEqual(['chat\n', 'team\n', 'mine']);
   });
 
   it('flags a session file through a link to the home that holds it, the session root being canonical too', async () => {
@@ -766,6 +833,136 @@ describe('the session store\'s files', () => {
     expect(flagOf(await files.readOutside(real))).toBe(true);
     await expect(files.writeOutside(real, Buffer.from('mine'))).rejects.toMatchObject({ refusal: 'sessionFile' });
     expect(fs.readFileSync(real, 'utf8')).toBe('chat\n');
+  });
+
+  it('refuses a session file reached through an inner link of an ordinary project, a new one too, and makes no folder for it', async () => {
+    const store = path.dirname(sessions);
+    fs.symlinkSync(store, path.join(project.fsPath, 'store'), 'junction');
+    const name = path.basename(chat);
+    await expect(files.writeInPlace(project, { path: chat, projectKey: project.key, relativePath: `store/--work--/${name}` }, Buffer.from('mine'))).rejects.toMatchObject({ refusal: 'sessionFile' });
+    const fresh = path.join(store, '--new--', '2026-11-04T12-00-00-000Z_s3.jsonl');
+    await expect(files.writeInPlace(project, { path: fresh, projectKey: project.key, relativePath: `store/--new--/${path.basename(fresh)}` }, Buffer.from('mine'))).rejects.toMatchObject({ refusal: 'sessionFile' });
+    expect([fs.readFileSync(chat, 'utf8'), fs.existsSync(path.join(store, '--new--'))]).toEqual(['chat\n', false]);
+  });
+
+  describe('Files actions', () => {
+    const REFUSED = { ok: false, reason: 'sessionFile' };
+    const MTIME = Date.UTC(2026, 10, 4);
+    let store: string;
+    let trashed: string[];
+    let guarded: WorkspaceFileSystem;
+
+    async function* bytes(text: string): AsyncGenerator<Uint8Array> {
+      yield Buffer.from(text);
+    }
+    const identityOf = async (relativePath: string, of: Project = project) => {
+      const entry = await files.entry(of, relativePath);
+      if (!entry.ok) throw new Error(`${relativePath} did not confine: ${entry.reason}`);
+      return entry;
+    };
+    // every name under the store with its text, so a test sees that nothing changed
+    const snapshot = (): string[] => fs.readdirSync(store, { recursive: true, encoding: 'utf8' }).sort().map((name) => {
+      const at = path.join(store, name);
+      return fs.statSync(at).isFile() ? `${name}: ${fs.readFileSync(at, 'utf8')}` : name;
+    });
+
+    beforeEach(() => {
+      store = path.dirname(sessions);
+      trashed = [];
+      guarded = createFileSystem({ watchers: createFakePlatform().fileWatchers, trash: async (target) => { trashed.push(target); }, damoclesHome: path.join(root, 'home', '.damocles'), log: () => undefined });
+      fs.symlinkSync(store, path.join(project.fsPath, 'store'), 'junction');
+      fs.writeFileSync(path.join(project.fsPath, 'src', 'b.jsonl'), 'evil\n');
+      fs.mkdirSync(path.join(sessions, 'empty'));
+    });
+
+    it('refuses each action on an entry inside the store or a destination there, through an inner link, and changes nothing on disk', async () => {
+      const before = snapshot();
+      const name = path.basename(chat);
+      const inStore = `store/--work--/${name}`;
+      const entry = await identityOf(inStore);
+      expect(await files.deleteEntry(project, inStore, entry.identity)).toEqual(REFUSED);
+      expect(await files.deleteEntry(project, 'store/--work--', (await identityOf('store/--work--')).identity)).toEqual(REFUSED);
+      expect(await files.renameEntry(project, inStore, 'renamed.jsonl')).toEqual(REFUSED);
+      expect(await files.createEntry(project, 'store/--work--', 'new.txt', 'file')).toEqual(REFUSED);
+      expect(await files.createEntry(project, 'store', '--newdir--', 'dir')).toEqual(REFUSED);
+      await expect(guarded.trash(entry.path)).rejects.toMatchObject({ refusal: 'sessionFile' });
+      expect(trashed).toEqual([]);
+      expect(await files.copy(project, 'src/b.jsonl', project, 'store/--work--', name, true)).toEqual(REFUSED);
+      expect(await files.move(project, 'src/b.jsonl', project, 'store/--work--', name, true)).toEqual(REFUSED);
+      expect(await files.move(project, inStore, project, 'src', name, false)).toEqual(REFUSED);
+      expect(await files.receiveFile(project, 'store/--work--', name, bytes('x'), { mode: 0o644, mtimeMs: MTIME, replace: true, size: 1 })).toEqual(REFUSED);
+      expect(await files.receiveFile(project, 'store/--work--', 'other.jsonl', bytes('x'), { mode: 0o644, mtimeMs: MTIME, replace: false, size: 1 })).toEqual(REFUSED);
+      expect(await files.makeFolder(project, 'store/--work--', 'made')).toEqual(REFUSED);
+      expect(await files.removeFolder(project, 'store/--work--/empty', (await identityOf('store/--work--/empty')).identity)).toEqual(REFUSED);
+      expect(snapshot()).toEqual(before);
+      expect(fs.readFileSync(path.join(project.fsPath, 'src', 'b.jsonl'), 'utf8')).toBe('evil\n');
+    });
+
+    it('opens no exclusive create at a dangling link into the store, which Windows would follow into it', async (ctx) => {
+      const ghost = path.join(sessions, '2026-11-04T12-00-00-000Z_s4.jsonl');
+      try {
+        fs.symlinkSync(ghost, path.join(project.fsPath, 'src', 'ghost.jsonl'), 'file');
+      } catch (err) {
+        // a Windows account without the symlink privilege makes no file link
+        if ((err as NodeJS.ErrnoException).code === 'EPERM') ctx.skip();
+        throw err;
+      }
+      const open = vi.spyOn(fs.promises, 'open');
+      expect(await files.createEntry(project, 'src', 'ghost.jsonl', 'file')).toEqual({ ok: false, reason: 'exists' });
+      expect(await files.receiveFile(project, 'src', 'ghost.jsonl', bytes('x'), { mode: 0o644, mtimeMs: MTIME, replace: false, size: 1 })).toEqual({ ok: false, reason: 'exists' });
+      expect(open.mock.calls.filter(([target]) => path.basename(String(target)) === 'ghost.jsonl')).toEqual([]);
+      expect(fs.existsSync(ghost)).toBe(false);
+    });
+
+    it('lets through the link itself, an ordinary file beside it, a copy out of the store and a folder named like the store elsewhere', async () => {
+      const before = snapshot();
+      expect(await files.copy(project, `store/--work--/${path.basename(chat)}`, project, 'src', 'copied.jsonl', false)).toEqual({ ok: true });
+      expect(await files.renameEntry(project, 'src/a.ts', 'c.ts')).toEqual({ ok: true });
+      expect(await files.deleteEntry(project, 'src/c.ts', (await identityOf('src/c.ts')).identity)).toEqual({ ok: true });
+      fs.mkdirSync(path.join(project.fsPath, 'pi', 'agent', 'sessions'), { recursive: true });
+      expect(await files.deleteEntry(project, 'pi', (await identityOf('pi')).identity)).toEqual({ ok: true });
+      expect(await files.renameEntry(project, 'store', 'store-2')).toEqual({ ok: true });
+      await guarded.trash((await identityOf('store-2')).path);
+      expect(trashed).toEqual([path.join(project.fsPath, 'store-2')]);
+      expect(await files.deleteEntry(project, 'store-2', (await identityOf('store-2')).identity)).toEqual({ ok: true });
+      expect(snapshot()).toEqual(before);
+      expect(fs.readFileSync(path.join(project.fsPath, 'src', 'copied.jsonl'), 'utf8')).toBe('chat\n');
+    });
+
+    it('refuses deleting, renaming, trashing or moving a folder that holds the store, through a link to ~/.damocles or to the home above it', async () => {
+      const before = snapshot();
+      fs.symlinkSync(path.join(root, 'home', '.damocles'), path.join(project.fsPath, 'dam'), 'junction');
+      fs.symlinkSync(path.join(root, 'home'), path.join(project.fsPath, 'home'), 'junction');
+      fs.writeFileSync(path.join(root, 'home', '.damocles', 'settings.json'), '{}');
+      for (const holder of ['dam/pi', 'dam/pi/agent', 'home/.damocles']) {
+        const entry = await identityOf(holder);
+        expect(await files.deleteEntry(project, holder, entry.identity), holder).toEqual(REFUSED);
+        expect(await files.renameEntry(project, holder, 'moved'), holder).toEqual(REFUSED);
+        expect(await files.move(project, holder, project, 'src', 'moved', false), holder).toEqual(REFUSED);
+        await expect(guarded.trash(entry.path), holder).rejects.toMatchObject({ refusal: 'sessionFile' });
+      }
+      expect(trashed).toEqual([]);
+      expect(await files.deleteEntry(project, 'dam/settings.json', (await identityOf('dam/settings.json')).identity)).toEqual({ ok: true });
+      expect(snapshot()).toEqual(before);
+    });
+
+    it('refuses removing the link the engine reaches its home through, which would cut its path to the store', async () => {
+      const realHome = path.join(root, 'dotfiles', 'damocles');
+      fs.mkdirSync(path.dirname(realHome), { recursive: true });
+      fs.renameSync(path.join(root, 'home', '.damocles'), realHome);
+      fs.symlinkSync(realHome, path.join(root, 'home', '.damocles'), 'junction');
+      const home: Project = { key: folderKey(path.join(root, 'home')), fsPath: path.join(root, 'home'), name: 'home' };
+      const entry = await identityOf('.damocles', home);
+      expect(await files.deleteEntry(home, '.damocles', entry.identity)).toEqual(REFUSED);
+      expect(await files.renameEntry(home, '.damocles', 'old-damocles')).toEqual(REFUSED);
+      await expect(guarded.trash(entry.path)).rejects.toMatchObject({ refusal: 'sessionFile' });
+      // the link's short (8.3) name is the same link
+      if (process.platform === 'win32') {
+        const short = path.basename(spawnSync('cmd.exe', ['/d', '/s', '/c', `"for %I in ("${path.join(root, 'home', '.damocles')}") do @echo %~sI"`], { encoding: 'utf8', windowsVerbatimArguments: true }).stdout.trim());
+        if (short !== '.damocles') expect(await files.deleteEntry(home, short, (await identityOf(short, home)).identity), short).toEqual(REFUSED);
+      }
+      expect([fs.lstatSync(path.join(root, 'home', '.damocles')).isSymbolicLink(), fs.readFileSync(path.join(realHome, 'pi', 'agent', 'sessions', '--work--', path.basename(chat)), 'utf8')]).toEqual([true, 'chat\n']);
+    });
   });
 
   it.runIf(process.platform === 'win32')('flags and refuses a session file named in another case', async () => {

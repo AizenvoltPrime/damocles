@@ -284,7 +284,11 @@ export class ServedRoots implements Disposable {
     const { root } = entry;
     const serve = root.kind === 'design'
       ? (request: Pick<PreviewRequest, 'method' | 'pathname'>): Promise<PreviewAnswer> => answerDesign(request, (relPath) => this.deps.designRead(entry.authority, root.designId, relPath), this.deps.log)
-      : (request: Pick<PreviewRequest, 'method' | 'pathname' | 'range' | 'ifRange'>): Promise<PreviewAnswer> => answerPreview({ ...request, trusted: this.entryTrusted(root), target: 'browser' }, root.kind === 'project' ? this.reads(root.projectKey) : this.folderReads(root.project), this.deps.log);
+      : (request: Pick<PreviewRequest, 'method' | 'pathname' | 'range' | 'ifRange'>): Promise<PreviewAnswer> => {
+        // one look at trust per request, so the response's CSP and its read's link rule agree
+        const trusted = this.entryTrusted(root);
+        return answerPreview({ ...request, trusted, target: 'browser' }, root.kind === 'project' ? this.reads(root.projectKey, trusted) : this.folderReads(root.project), this.deps.log);
+      };
     entry.server = PreviewHttpServer.start({
       serve,
       // a design server's own refusals are text and run nothing, so they carry the untrusted policy
@@ -295,24 +299,25 @@ export class ServedRoots implements Disposable {
     return entry.server;
   }
 
-  // The root's files, read only through its workspace's confinement.
-  private reads(projectKey: string): PreviewFileReads {
+  // every read of one request takes the trust its CSP was built with (docs/invariants.md "HTML previews")
+  private reads(projectKey: string, trusted: boolean): PreviewFileReads {
     return {
       range: async (relativePath, offset, length) => {
         const project = this.projectOf(projectKey);
         if (!project) return { ok: false, reason: 'missing' };
-        return this.deps.files(projectKey).readFileRange(project, relativePath, offset, length);
+        return this.deps.files(projectKey).readFileRange(project, relativePath, offset, length, { trusted });
       },
     };
   }
 
   // A granted folder's files through its authority's workspace, while the folder's real path is still the one its core granted,
-  // so a folder swapped for a link serves nothing.
+  // so a folder swapped for a link serves nothing; no link out of it is followed, since that would widen the folder the gate
+  // granted.
   private folderReads(project: Project): PreviewFileReads {
     return {
       range: async (relativePath, offset, length) => {
         const files = this.deps.files(project.key);
-        const root = await files.confineExisting(project, '');
+        const root = await files.confineExisting(project, '', 'withinProject');
         if (!root.ok || !samePath(root.path, project.fsPath)) return { ok: false, reason: root.ok ? 'outside' : root.reason };
         return files.readFileRange(project, relativePath, offset, length);
       },

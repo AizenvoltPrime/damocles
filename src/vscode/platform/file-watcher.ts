@@ -1,6 +1,10 @@
 import * as vscode from 'vscode';
 import type { Disposable } from '../../platform/disposable';
 import type { FileRename, FileWatcher, FileWatcherFactory } from '../../platform/file-watcher';
+import { checkConfigPathSync, type ConfigPathVerdict } from '../../core/config/local-config-path';
+import { log } from '../../core/logger';
+import { watchRoot } from '../../core/watch-root';
+import { folderKey } from '../../core/workspace-folders/folder-key';
 
 type Listener = (fsPath: string) => void;
 
@@ -70,9 +74,47 @@ function watchWorkspace(glob: string): FileWatcher {
   };
 }
 
-export function createVsCodeFileWatcherFactory(): FileWatcherFactory {
+const INERT: FileWatcher = {
+  ready: Promise.resolve(),
+  onDidCreate: () => ({ dispose: () => undefined }),
+  onDidChange: () => ({ dispose: () => undefined }),
+  onDidDelete: () => ({ dispose: () => undefined }),
+  dispose: () => undefined,
+};
+
+export interface VsCodeFileWatcherOptions {
+  // the network rule's verdict on root, judged from base; throws when the check cannot finish (a link loop)
+  readonly checkRoot?: (base: string, root: string) => ConfigPathVerdict;
+  readonly log?: (line: string) => void;
+}
+
+/**
+ * watch(base, glob) judges the watched root from base by the network rule (D10) when the watch starts: a root a link below base
+ * carries off base's share, or one the check cannot follow, gets a watcher that fires nothing, logged once per base and root.
+ */
+export function createVsCodeFileWatcherFactory(options: VsCodeFileWatcherOptions = {}): FileWatcherFactory {
+  const checkRoot = options.checkRoot ?? checkConfigPathSync;
+  const logLine = options.log ?? ((line: string) => log('%s', line));
+  const refused = new Set<string>();
+  const refuse = (base: string, root: string, why: string): FileWatcher => {
+    const key = `${folderKey(base)}\0${folderKey(root)}`;
+    if (!refused.has(key)) logLine(`[watcher] ${root} is not watched: ${why}`);
+    refused.add(key);
+    return INERT;
+  };
   return {
-    watch: (base, glob) => wrap(vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(base), glob))),
+    watch: (base, glob) => {
+      // VS Code watches a pattern holding `/` or `**` recursively from its base, so the base is the glob's static prefix
+      const narrowed = watchRoot(base, glob);
+      let verdict: ConfigPathVerdict;
+      try {
+        verdict = checkRoot(base, narrowed.root);
+      } catch (err) {
+        return refuse(base, narrowed.root, `the network rule's check of the links below ${base} failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (verdict !== 'ok') return refuse(base, narrowed.root, `a link below ${base} leads onto a network share, WSL or device path off its share`);
+      return wrap(vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(narrowed.root), narrowed.glob)));
+    },
     watchWorkspace,
     onDidRenameFiles: (cb): Disposable => vscode.workspace.onDidRenameFiles((e) => {
       const renames: FileRename[] = e.files

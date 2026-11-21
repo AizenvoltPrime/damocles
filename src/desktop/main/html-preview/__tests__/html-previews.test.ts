@@ -257,9 +257,32 @@ describe('the damocles-preview handler', () => {
     const past = await h.previews.handle(new Request(url, { headers: { Range: 'bytes=21-' } }));
     expect(past.status).toBe(416);
     expect(past.headers.get('content-range')).toBe('bytes */21');
-    expect(h.files.readFileRange).toHaveBeenCalledWith(LOCAL, 'media/clip.mp4', 3, 5);
+    expect(h.files.readFileRange).toHaveBeenCalledWith(LOCAL, 'media/clip.mp4', 3, 5, { trusted: false });
     expect((await h.previews.handle(new Request(`damocles-preview://${tokenOf(view)}/.env`, { headers: { Range: 'bytes=0-' } }))).status).toBe(404);
     expect(h.reads).toEqual(['media/clip.mp4', 'media/clip.mp4']);
+  });
+
+  it('reads a trusted root with links followed, and a request after a trust flip with the new trust', async () => {
+    h.trusted.add(LOCAL.key);
+    const view = await shown(h, [{ tabId: 't1', file: site('index.html') }], 't1');
+    expect((await h.previews.handle(new Request(`damocles-preview://${tokenOf(view)}/a.css`))).status).toBe(200);
+    expect(h.files.readFileRange).toHaveBeenLastCalledWith(LOCAL, 'a.css', 0, expect.any(Number), { trusted: true });
+    h.trusted.delete(LOCAL.key);
+    h.previews.trustChanged();
+    expect((await h.previews.handle(new Request(`damocles-preview://${tokenOf(view)}/a.css`))).status).toBe(200);
+    expect(h.files.readFileRange).toHaveBeenLastCalledWith(LOCAL, 'a.css', 0, expect.any(Number), { trusted: false });
+  });
+
+  it('reads an HTML range\'s start with the trust of the request, though trust flips between its two reads', async () => {
+    const view = await shown(h, [{ tabId: 't1', file: site('index.html') }], 't1');
+    const read = h.files.readFileRange.getMockImplementation()!;
+    h.files.readFileRange.mockImplementationOnce(async (...args: unknown[]) => {
+      h.trusted.add(LOCAL.key);
+      h.previews.trustChanged();
+      return read(...args);
+    });
+    expect((await h.previews.handle(new Request(`damocles-preview://${tokenOf(view)}/page.html`, { headers: { Range: 'bytes=3-' } }))).status).toBe(206);
+    expect(h.files.readFileRange.mock.calls).toEqual([[LOCAL, 'page.html', 3, expect.any(Number), { trusted: false }], [LOCAL, 'page.html', 0, expect.any(Number), { trusted: false }]]);
   });
 
   it('serves nothing from a host whose daemon reads no range with a resolved path, so no file escapes the deny list there', async () => {

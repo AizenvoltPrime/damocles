@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import type { ToolCallEvent, ToolCallEventResult, AgentBeforeSettleEvent, SessionBoundaryDraft } from '@earendil-works/pi-coding-agent';
 import type { PermissionHandler, CanUseToolContext } from '../permission-handler';
 import type { McpToolIdentity } from '../permission-handler/types';
+import { PermissionRulesUnreadable } from '../permission-handler/permission-settings';
 import type { PermissionBehavior, PermissionDetail, PermissionFact, PermissionUpdate } from '../../shared/types/permissions';
 import type { MemoryService } from '../memory';
 import type { CompassService } from '../compass';
@@ -42,6 +43,7 @@ import { describeStoppedBeforeRun } from './tools/cancellable-shell';
 import type { ToolCallHookOutcome } from './hooks/dispatch';
 import { recordTerminatedCall, type TerminateCause } from './terminated-calls';
 import type { DesignPromptInputs } from './agent-start';
+import type { AgentTypesNow } from './agent-change-note';
 
 /** A non-aborting signal for gate calls when pi hands us no AbortSignal (`ctx.signal` is optional). */
 const NEVER_ABORT: AbortSignal = new AbortController().signal;
@@ -157,6 +159,8 @@ export interface PanelGateContext {
   forgeTools?: ForgeToolsPort;
   /** The design sections' inputs (a design chat's folder and rule set, a parent's own link), read per turn. */
   designPrompt?: () => DesignPromptInputs;
+  /** The subagent types the session's Agent tool was described with and the ones it can spawn now, read per prompt. Absent: no note. */
+  agentTypes?: () => AgentTypesNow;
   /**
    * The machine the chat's tools run on, which proving a shell command read-only and placing a file tool's path read. Absent:
    * no network host is the chat's and no PowerShell program lookup can pass, so only the fail-closed answers remain.
@@ -588,6 +592,8 @@ export async function runPermissionGate(
     return result;
   } catch (err) {
     if (stopSignal) panel.shellCancel.releaseAdmitted(event.toolCallId);
+    // Settings rules that cannot be known decide nothing, so a call whose verdict reads them is blocked, whatever the tool.
+    if (err instanceof PermissionRulesUnreadable) return { block: true, reason: formatPolicyBlockReason(englishText(err.text)) };
     throw err;
   }
 }

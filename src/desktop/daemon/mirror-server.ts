@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto';
 import { promises as fs, type Dirent } from 'node:fs';
 import * as path from 'node:path';
+import { checkConfigPath } from '../../core/config/local-config-path';
 import { piSessionDir } from '../../core/pi-session/session-store/session-dir';
 import { folderKey } from '../../core/workspace-folders/folder-key';
 import { parseRegistry, recordsListedUnder, REGISTRY_FILE, type WorktreeRecord } from '../../core/worktrees/registry';
@@ -127,7 +128,8 @@ export interface ProjectSessionFolders {
   readonly own: string;
   // no two the same folder, and none the project's own
   readonly worktrees: ReadonlyArray<{ readonly id: string; readonly kind: MirrorWorktreeKind; readonly folder: string }>;
-  // registry.json does not parse, so which worktree folders the project lists is unknown and worktrees is empty
+  // registry.json does not parse or links off its folder's share, so which worktree folders the project lists is unknown and
+  // worktrees is empty
   readonly unreadable: boolean;
 }
 
@@ -138,9 +140,12 @@ export interface ProjectSessionFolders {
  */
 export async function projectSessionFolders(agentDir: string, worktreesRoot: string, projectKey: string): Promise<ProjectSessionFolders> {
   const own = await sessionFolder(agentDir, projectKey);
+  const file = path.join(worktreesRoot, REGISTRY_FILE);
+  // judged from the registry's own folder, as core's registry reads it
+  if ((await checkConfigPath(worktreesRoot, file)) !== 'ok') return { own, worktrees: [], unreadable: true };
   let text: string;
   try {
-    text = await fs.readFile(path.join(worktreesRoot, REGISTRY_FILE), 'utf8');
+    text = await fs.readFile(file, 'utf8');
   } catch (err) {
     if (missing(err)) return { own, worktrees: [], unreadable: false };
     throw err;

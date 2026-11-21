@@ -6,7 +6,7 @@ import type { Project } from '../../local-services/confine';
 import { isValidFileName } from '../../preload/file-names';
 import type { FilesChanged, FilesMutationResult, FilesTransferProgress, FilesTransferStartResult } from '../../preload/shell-channels';
 import { FILES_TRANSFER_PROGRESS_MS } from '../../preload/shell-channels';
-import type { WorkspaceFileSystem } from '../../workspace/file-system';
+import type { DeleteResult, WorkspaceFileSystem } from '../../workspace/file-system';
 import type { Clash, ClashesResult, MoveResult, TransferEntry, TransferKind, TransferResult } from '../../workspace/transfer-ops';
 import type { AskCheckedMessage } from '../message-dialog';
 import { TransfersUnsupportedError } from '../workspace/remote-workspace';
@@ -32,8 +32,9 @@ export interface TransferRequest {
   readonly keepBothWithItself?: boolean;
 }
 
-// why an item did not arrive, as the summary's details list it; unreadable and notListed carry their value as the message
-export type SkipReason = 'name' | 'linkWindows' | 'linkOutside' | 'special' | 'permission' | 'exists' | 'chosen' | 'changed' | 'invalid' | 'missing' | 'outside' | 'noSpace' | 'unreadable' | 'notListed' | 'failed';
+// why an item did not arrive, as the summary's details list it; unreadable and notListed carry their value as the message;
+// share and oldDaemon: a link's refusal (LinkRefusal)
+export type SkipReason = 'name' | 'linkWindows' | 'linkOutside' | 'special' | 'permission' | 'exists' | 'chosen' | 'changed' | 'invalid' | 'missing' | 'outside' | 'noSpace' | 'unreadable' | 'notListed' | 'failed' | 'sessionFile' | 'share' | 'oldDaemon';
 
 export interface SkippedItem {
   readonly path: string;
@@ -200,14 +201,17 @@ export function linkStaysInside(relativePath: string, rawTarget: string, sourceO
   return true;
 }
 
-// A host's refusal as the summary lists it: its errno code first, else its reason; only 'failed' keeps the host's own text.
+// A host's refusal as the summary lists it: its errno code first, else a link's refusal, else its reason; only 'failed' keeps
+// the host's own text.
 function skipReasonOf(result: Exclude<TransferResult, { readonly ok: true }>): SkipReason {
   switch (result.code) {
     case 'EACCES': case 'EPERM': return 'permission';
     case 'ENOSPC': return 'noSpace';
     case 'EINVAL': return 'invalid';
   }
+  if (result.refusal !== undefined) return result.refusal;
   switch (result.reason) {
+    case 'sessionFile': return 'sessionFile';
     case 'exists': return 'exists';
     case 'invalidName': return 'name';
     case 'unsupported': return 'linkWindows';
@@ -216,6 +220,11 @@ function skipReasonOf(result: Exclude<TransferResult, { readonly ok: true }>): S
     case 'outside': return 'outside';
     default: return 'failed';
   }
+}
+
+// A source's refused delete in a move between hosts, as the summary lists it.
+function deleteSkipReason(deleted: Exclude<DeleteResult, { readonly ok: true }>): SkipReason {
+  return deleted.reason === 'changed' || deleted.reason === 'missing' || deleted.reason === 'sessionFile' ? deleted.reason : 'failed';
 }
 
 interface Running {
@@ -746,7 +755,7 @@ export class FileTransferService {
         const { side, srcRel, identity } = link.source;
         const deleted = await side.files.deleteEntry(side.project, srcRel, identity);
         if (deleted.ok) touch(side, parentRel(srcRel));
-        else failed(deleted.reason === 'changed' ? 'changed' : deleted.reason === 'missing' ? 'missing' : 'failed', deleted.message);
+        else failed(deleteSkipReason(deleted), deleted.message);
       } catch (err) {
         this.deps.log(`[files] the link ${link.label} could not be settled: ${errorText(err)}`);
         failed('failed', errorText(err));
@@ -818,7 +827,7 @@ export class FileTransferService {
     // the links were settled
     if (request.op === 'move' && !sameHost && step.kind !== 'link') {
       const deleted = await source.files.deleteEntry(source.project, step.srcRel, entry.identity);
-      if (!deleted.ok) return { ok: false, reason: deleted.reason === 'changed' ? 'changed' : deleted.reason === 'missing' ? 'missing' : 'failed', ...(deleted.message !== undefined ? { message: deleted.message } : {}) };
+      if (!deleted.ok) return { ok: false, reason: deleteSkipReason(deleted), ...(deleted.message !== undefined ? { message: deleted.message } : {}) };
     }
     return { ok: true, left: [] };
   }
@@ -841,6 +850,9 @@ export class FileTransferService {
       case 'unreadable': return message !== undefined ? t('it could not be read ({0})', visibleText(message)) : t('it could not be copied');
       case 'notListed': return t('more items stayed where they were and are not listed: {0}', message ?? '');
       case 'failed': return message !== undefined ? visibleText(message) : t('it could not be copied');
+      case 'sessionFile': return t('chat session files are kept there, and only Damocles changes them');
+      case 'share': return t('a link on its path leads to a network share or WSL path');
+      case 'oldDaemon': return t('a link on its path leads outside the project, which only an updated Damocles server follows');
     }
   }
 

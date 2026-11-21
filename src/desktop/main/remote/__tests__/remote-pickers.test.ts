@@ -219,17 +219,27 @@ describe('a remote core\'s pickers in the host\'s folder browser', () => {
     expect(await hosts.pick('ssh+h1', 'folder', {})).toBeUndefined();
   });
 
-  it('refuses every path outside the projects: listing above a root, a link out of it, and an answer naming one', async () => {
-    const answers = [path.join(outside, 'keys.md'), path.join(app.fsPath, 'escape', 'keys.md'), path.join(app.fsPath, 'docs'), path.join(app.fsPath, 'docs', 'notes.txt')];
+  it('refuses every path outside the projects: listing above a root, and an answer naming one', async () => {
+    const answers = [path.join(outside, 'keys.md'), path.join(app.fsPath, 'docs'), path.join(app.fsPath, 'docs', 'notes.txt'), path.join(app.fsPath, 'escape', '..', '..', '..', 'secret', 'keys.md')];
     const { hosts, logged } = await setup(async (_request, browse) => {
       expect(await browse(base)).toEqual({ ok: false, error: 'outside' });
       expect(await browse(outside)).toEqual({ ok: false, error: 'outside' });
-      expect(await browse(path.join(app.fsPath, 'escape'))).toEqual({ ok: false, error: 'outside' });
       return { kind: 'connect', path: answers.shift()! };
     });
-    // outside every root, through a link out of the project, a folder for a file, a file the extensions leave out
+    // outside every root, a folder for a file, a file the extensions leave out, a climb past the root
     for (let index = 0; index < 4; index++) expect(await hosts.pick('ssh+h1', 'file', { extensions: ['md'] })).toBeUndefined();
     expect(logged.filter((line) => line.startsWith('[remote] refused the picked path'))).toHaveLength(4);
+  });
+
+  it('browses through a link out of the project as Files does and answers the path through the link, and words a link refusal', async () => {
+    const throughLink = path.join(app.fsPath, 'escape', 'keys.md');
+    const { hosts } = await setup(async (_request, browse) => {
+      expect(listed(await browse(path.join(app.fsPath, 'escape')))).toMatchObject({ path: path.join(app.fsPath, 'escape'), parent: app.fsPath, root: app.fsPath, files: ['keys.md'] });
+      vi.spyOn(workspace.tree, 'list').mockResolvedValueOnce({ ok: false, reason: 'outside', refusal: 'share' });
+      expect(await browse(path.join(app.fsPath, 'escape'))).toEqual({ ok: false, error: 'outside', refusal: 'share' });
+      return { kind: 'connect', path: throughLink };
+    });
+    expect(await hosts.pick('ssh+h1', 'file', { extensions: ['md'] })).toBe(throughLink);
   });
 
   // the listing filters by name: a dotfile has no extension there, so an answer naming one is refused the same way

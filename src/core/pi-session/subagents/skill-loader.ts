@@ -14,16 +14,20 @@
  * The two project roots load only when `includeProjectScope` is true, since their contents go straight
  * into a subagent's system prompt.
  *
- * Layout per root: `<root>/<name>.md` (flat) or `<root>/.../<name>/SKILL.md` (directory skill).
- * Recursion skips dotfile entries and node_modules; symlinks are rejected for security.
+ * Layout per root: `<root>/<name>.md` (flat) or `<root>/.../<name>/SKILL.md` (directory skill), and nothing inside a
+ * folder holding a SKILL.md is read. Recursion skips dotfile entries and node_modules, and follows links under
+ * docs/invariants.md "Asset discovery and links".
  */
 
-import type { Dirent } from 'node:fs';
-import { existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { boundedLog, compareInNameOrder, readAssetPath, SKILL_FILE, walkAssetTree, type AssetEntry } from '../../assets';
+import { userConfigBase } from '../../config/local-config-path';
+import { log } from '../../logger';
 import { PI_AGENT_DIR } from '../agent-dir';
-import { isSymlink, isUnsafeName, safeReadFile } from './fs-safety';
+import { isUnsafeName } from './fs-safety';
+
+const SKILL_MAX_DEPTH = 16;
 
 export interface PreloadedSkill {
   name: string;
@@ -35,32 +39,53 @@ export interface PreloadSkillsOptions {
   includeProjectScope: boolean;
 }
 
-export function preloadSkills(
+interface SkillRoot {
+  // the folder links below root are judged from (docs/invariants.md "Asset discovery and links")
+  readonly scopeRoot: string;
+  readonly root: string;
+}
+
+export async function preloadSkills(
   skillNames: string[],
   cwd: string,
   options: PreloadSkillsOptions,
-): PreloadedSkill[] {
-  return skillNames.map((name) => ({
-    name,
-    content: loadSkillContent(name, cwd, options.includeProjectScope),
-  }));
+): Promise<PreloadedSkill[]> {
+  const projectRoots: SkillRoot[] = options.includeProjectScope
+    ? [{ scopeRoot: cwd, root: join(cwd, '.pi', 'skills') }, { scopeRoot: cwd, root: join(cwd, '.agents', 'skills') }]
+    : [];
+  const userRoot = (root: string): SkillRoot => ({ scopeRoot: userConfigBase(root, homedir()), root });
+  const roots: SkillRoot[] = [
+    ...projectRoots,
+    userRoot(join(PI_AGENT_DIR, 'skills')),
+    userRoot(join(homedir(), '.agents', 'skills')),
+    userRoot(join(homedir(), '.pi', 'skills')),
+  ];
+  const skillTrees = new Map<string, Promise<AssetEntry[]>>();
+  const loaded: PreloadedSkill[] = [];
+  for (const name of skillNames) {
+    loaded.push({ name, content: await loadSkillContent(name, roots, skillTrees, options.includeProjectScope) });
+  }
+  return loaded;
 }
 
-function loadSkillContent(name: string, cwd: string, includeProjectScope: boolean): string {
+async function loadSkillContent(
+  name: string,
+  roots: readonly SkillRoot[],
+  skillTrees: Map<string, Promise<AssetEntry[]>>,
+  includeProjectScope: boolean,
+): Promise<string> {
   if (isUnsafeName(name)) {
     return `(Skill "${name}" skipped: name contains path traversal characters)`;
   }
-  const projectRoots = includeProjectScope
-    ? [join(cwd, '.pi', 'skills'), join(cwd, '.agents', 'skills')]
-    : [];
-  const roots = [
-    ...projectRoots,
-    join(PI_AGENT_DIR, 'skills'),
-    join(homedir(), '.agents', 'skills'),
-    join(homedir(), '.pi', 'skills'),
-  ];
   for (const root of roots) {
-    const content = findInRoot(root, name);
+    const flat = await findFlatSkill(root, name);
+    if (flat !== undefined) return flat;
+    let tree = skillTrees.get(root.root);
+    if (tree === undefined) {
+      tree = walkSkills(root);
+      skillTrees.set(root.root, tree);
+    }
+    const content = findSkillDirectory(await tree, name);
     if (content !== undefined) return content;
   }
   return includeProjectScope
@@ -68,50 +93,34 @@ function loadSkillContent(name: string, cwd: string, includeProjectScope: boolea
     : `(Skill "${name}" not found in global skill locations)`;
 }
 
-function findInRoot(root: string, name: string): string | undefined {
-  if (isSymlink(root)) return undefined;
-  const flat = safeReadFile(join(root, `${name}.md`))?.trim();
-  if (flat !== undefined) return flat;
-  return findSkillDirectory(root, name);
+const skillLog = boundedLog((line) => log('%s', line));
+
+// Every skill folder's SKILL.md under root; the walk reads nothing else inside a skill folder, as skills don't nest.
+async function walkSkills(root: SkillRoot): Promise<AssetEntry[]> {
+  const walk = await walkAssetTree({
+    scopeRoot: root.scopeRoot,
+    root: root.root,
+    policy: { kind: 'follow' },
+    maxDepth: SKILL_MAX_DEPTH,
+    dirGlob: SKILL_FILE,
+    leafFile: SKILL_FILE,
+    repeatFolders: 'skip',
+    skipHidden: true,
+    log: skillLog,
+  });
+  return walk.entries;
 }
 
-/** BFS under `root` for a directory named `name` containing `SKILL.md`. */
-function findSkillDirectory(root: string, name: string): string | undefined {
-  if (!existsSync(root)) return undefined;
-  const queue: string[] = [root];
+// `<root>/<name>.md`, found by the file system's own name rules; isUnsafeName admits only [A-Za-z0-9._-] in name.
+async function findFlatSkill(root: SkillRoot, name: string): Promise<string | undefined> {
+  const flat = await readAssetPath({ scopeRoot: root.scopeRoot, root: root.root, segments: [`${name}.md`], policy: { kind: 'follow' }, log: skillLog });
+  return flat?.kind === 'file' ? flat.text.trim() : undefined;
+}
 
-  while (queue.length > 0) {
-    const current = queue.shift();
-    if (current === undefined) continue;
-
-    let entries: Dirent[];
-    try {
-      entries = readdirSync(current, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-
-    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-
-    for (const entry of entries) {
-      if (entry.isSymbolicLink()) continue; // never follow a dir symlink out of the skills tree
-      if (!entry.isDirectory()) continue;
-      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
-
-      const path = join(current, entry.name);
-      const skillMd = join(path, 'SKILL.md');
-      const isSkillDir = existsSync(skillMd);
-
-      if (isSkillDir) {
-        if (entry.name === name) {
-          const content = safeReadFile(skillMd)?.trim();
-          if (content !== undefined) return content;
-        }
-        continue; // skills don't nest — don't descend into a skill dir
-      }
-
-      queue.push(path);
-    }
-  }
-  return undefined;
+/** The SKILL.md of the shallowest skill folder named `name`, in name order within a level. */
+function findSkillDirectory(entries: readonly AssetEntry[], name: string): string | undefined {
+  const found = entries
+    .filter((entry) => entry.kind === 'file' && entry.segments.length >= 2 && entry.segments.at(-1) === SKILL_FILE && entry.segments.at(-2) === name)
+    .sort((a, b) => a.segments.length - b.segments.length || compareInNameOrder(a.segments, b.segments))[0];
+  return found?.kind === 'file' ? found.text.trim() : undefined;
 }

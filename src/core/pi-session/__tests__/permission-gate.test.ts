@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, afterAll, onTestFinished, type Mock } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach, onTestFinished, type Mock } from 'vitest';
 import { execFileSync } from 'child_process';
 import type { ToolCallEvent } from '@earendil-works/pi-coding-agent';
 import * as fs from 'fs';
@@ -23,6 +23,19 @@ vi.mock('../../dos-devices', async (importOriginal) => {
     },
   };
 });
+// A settings file's injected network-rule check failure, which the permission reader takes as the file being unreadable.
+const checkFailures = vi.hoisted(() => new Map<string, Error>());
+vi.mock('../../config/local-config-path', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../config/local-config-path')>();
+  return {
+    ...actual,
+    checkConfigPath: async (baseFolder: string, file: string) => {
+      const failure = checkFailures.get(file);
+      if (failure !== undefined) throw failure;
+      return actual.checkConfigPath(baseFolder, file);
+    },
+  };
+});
 import type { McpToolDescriptor } from '../mcp/types';
 import type { McpClientManager } from '../mcp/mcp-client-manager';
 import { getPiCodingAgent, initPiLoader, type PiCodingAgentModule } from '../pi-loader';
@@ -33,6 +46,7 @@ import { PermissionHandler, type CanUseToolContext, type PermissionResult } from
 import { buildUserFileEditDenyResult, buildUnaskedDenyResult } from '../../permission-handler/utils';
 import { DiffManager } from '../../permission-handler/diff-manager';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { englishText } from '../../../shared/localized-text';
 import type { ToolCallHookResult } from '../hooks/dispatch';
@@ -2673,4 +2687,130 @@ describe.runIf(process.platform !== 'win32')('a Write to a FIFO (POSIX)', () => 
       }
     });
   }
+});
+
+describe('a settings rules file the gate cannot read', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'dam-gate-unreadable-'));
+  const otherFolder = fs.mkdtempSync(path.join(os.tmpdir(), 'dam-gate-readable-'));
+  const projectFile = path.join(workspace, '.damocles', 'settings.json');
+  const timeout = Object.assign(new Error('ETIMEDOUT'), { code: 'ETIMEDOUT' });
+  fs.mkdirSync(path.dirname(projectFile), { recursive: true });
+  fs.writeFileSync(projectFile, JSON.stringify({ permissions: { deny: ['Read(secret.txt)'] } }));
+
+  afterEach(() => {
+    checkFailures.clear();
+    vi.useRealTimers();
+  });
+  afterAll(() => {
+    fs.rmSync(workspace, { recursive: true, force: true });
+    fs.rmSync(otherFolder, { recursive: true, force: true });
+  });
+
+  function realPanel(options: { trusted?: boolean; yolo?: boolean } = {}): { panel: PanelGateContext; handler: PermissionHandler; platform: ReturnType<typeof createFakePlatform> } {
+    const platform = createFakePlatform({ trusted: options.trusted ?? true });
+    const handler = new PermissionHandler(platform, getPiCodingAgent);
+    handler.setWorkspacePath(workspace);
+    handler.setCwd(workspace);
+    if (options.yolo) handler.setDangerouslySkipPermissions(true);
+    handler.setPostMessage(() => undefined);
+    const { panel } = makePanel({});
+    panel.permissionHandler = handler;
+    return { panel, handler, platform };
+  }
+
+  function expectUnreadableBlock(result: Awaited<ReturnType<typeof runPermissionGate>>): void {
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
+    expect(result?.reason).not.toContain(FEEDBACK_MARKER);
+    expect(result).not.toHaveProperty('terminate');
+    expect(result?.reason).toContain(projectFile);
+    expect(result?.reason).toContain('did not answer');
+    expect(result?.reason).toContain('blocks every tool call');
+  }
+
+  it('blocks a Read and a Bash call with the file and the reason, again inside the cache window, and Grep\'s filter fails', async () => {
+    checkFailures.set(projectFile, timeout);
+    const { panel, handler, platform } = realPanel();
+
+    expectUnreadableBlock(await runPermissionGate(ev('read', 'r1', { path: 'a.ts' }), panel, undefined));
+    expectUnreadableBlock(await runPermissionGate(ev('bash', 'b1', { command: 'ls' }), panel, undefined));
+    expectUnreadableBlock(await runPermissionGate(ev('read', 'r2', { path: 'b.ts' }), panel, undefined));
+    await expect(handler.readRuleFilter()).rejects.toThrow(projectFile);
+    expect(platform.notifications.calls).toHaveLength(1);
+  });
+
+  it('lets AskUserQuestion run, since no settings rule decides it', async () => {
+    checkFailures.set(projectFile, timeout);
+    const { panel } = realPanel();
+
+    expect(await runPermissionGate(ev('AskUserQuestion', 'q1', { questions: [] }), panel, undefined)).toBeUndefined();
+  });
+
+  it('runs calls again once the file reads, at the first evaluation past the cache window', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    checkFailures.set(projectFile, timeout);
+    const { panel } = realPanel();
+    expectUnreadableBlock(await runPermissionGate(ev('read', 'r1', { path: 'a.ts' }), panel, undefined));
+
+    checkFailures.delete(projectFile);
+    vi.setSystemTime(Date.now() + 6_000);
+
+    expect(await runPermissionGate(ev('read', 'r2', { path: 'a.ts' }), panel, undefined)).toBeUndefined();
+    expect((await runPermissionGate(ev('read', 'r3', { path: 'secret.txt' }), panel, undefined))?.reason).toContain('Permission denied by a rule');
+  });
+
+  it('blocks nothing once the chat moves to another folder, or in a folder that is not trusted', async () => {
+    checkFailures.set(projectFile, timeout);
+    const { panel, handler } = realPanel();
+    expectUnreadableBlock(await runPermissionGate(ev('read', 'r1', { path: 'a.ts' }), panel, undefined));
+    handler.setWorkspacePath(otherFolder);
+    expect(await runPermissionGate(ev('read', 'r2', { path: 'a.ts' }), panel, undefined)).toBeUndefined();
+
+    const untrusted = realPanel({ trusted: false });
+    expect(await runPermissionGate(ev('read', 'r3', { path: 'a.ts' }), untrusted.panel, undefined)).toBeUndefined();
+    expect(untrusted.platform.notifications.calls).toEqual([]);
+  });
+
+  it('under YOLO runs a Read and a Bash call, since YOLO skips every settings rule', async () => {
+    checkFailures.set(projectFile, timeout);
+    const { panel } = realPanel({ yolo: true });
+
+    expect(await runPermissionGate(ev('read', 'r1', { path: 'a.ts' }), panel, undefined)).toBeUndefined();
+    expect(await runPermissionGate(ev('bash', 'b1', { command: 'ls' }), panel, undefined)).toBeUndefined();
+  });
+
+  it('on a daemon\'s core blocks a Read while the client marks a user rules file it never read, and runs it once the client reads it', async () => {
+    const host = createFakeRemoteHost();
+    const clientFile = 'C:\\Users\\me\\.claude\\settings.json';
+    host.set('clientUser', 'client-a', { settings: {}, permissionRules: [], unreadable: { file: clientFile, reason: { message: 'its drive did not answer' } } });
+    host.set('clientPolicy', 'client-a', { voice: false, allowBypass: false });
+    const platform = { ...createFakePlatform({ trusted: true }), remote: host.remote };
+    const handler = new PermissionHandler(platform, getPiCodingAgent);
+    handler.setWorkspacePath(otherFolder);
+    handler.setCwd(otherFolder);
+    handler.setPostMessage(() => undefined);
+    const { panel } = makePanel({});
+    panel.permissionHandler = handler;
+
+    const blocked = await runPermissionGate(ev('read', 'r1', { path: 'a.ts' }), panel, undefined);
+    expect(blocked?.block).toBe(true);
+    expect(blocked?.reason).toContain(POLICY_BLOCK_MARKER);
+    expect(blocked).not.toHaveProperty('terminate');
+    expect(blocked?.reason).toContain(clientFile);
+    expect(blocked?.reason).toContain('did not answer');
+    expect(blocked?.reason).toContain('blocks every tool call');
+
+    host.set('clientUser', 'client-a', { settings: {}, permissionRules: [] });
+    expect(await runPermissionGate(ev('read', 'r2', { path: 'a.ts' }), panel, undefined)).toBeUndefined();
+  });
+
+  it('under YOLO still blocks a design chat\'s MCP call that is not read-only, whose rules YOLO does not skip', async () => {
+    checkFailures.set(projectFile, timeout);
+    const { panel } = realPanel({ yolo: true });
+    panel.designScope = () => ({ folder: path.join(workspace, 'design'), cwd: workspace });
+    panel.isMcpReadOnly = () => false;
+    panel.mcpToolIdentity = () => ({ server: 'srv', tool: 'write' });
+
+    expectUnreadableBlock(await runPermissionGate(ev('mcp__srv__write', 'm1', {}), panel, undefined));
+  });
 });

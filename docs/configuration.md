@@ -67,6 +67,19 @@ Most `damocles.*` settings apply to the whole window; the ones a chat reads for 
 | `damocles.memory.dedup.threshold` | Similarity above which a new memory is merged as a near-duplicate at consolidation | `0.8` |
 | `damocles.pinnedHeaderHidden` | Hide the pinned user-message sticky header; a floating chip restores it (global scope, persists across workspaces) | `false` |
 
+### Search settings each host reads
+
+The chat's @ file list, and in the desktop app Quick Open and Search, list a project with these search switches, which each host reads from its own settings and nowhere else (the @ list reads the follow switch only in a trusted project):
+
+| Switch | VS Code extension | Desktop app | Default |
+| --- | --- | --- | --- |
+| Use `.gitignore`, `.ignore` and `.rgignore` files | `search.useIgnoreFiles` | `damocles.desktop.search.useIgnoreFiles` | `true` |
+| Use your global gitignore file | `search.useGlobalIgnoreFiles` | `damocles.desktop.search.useGlobalIgnoreFiles` | `true` |
+| Use ignore files in the folders above the project | `search.useParentIgnoreFiles` | `damocles.desktop.search.useParentIgnoreFiles` | `true` |
+| Follow symbolic links and junctions | `search.followSymlinks` | `damocles.desktop.search.followSymlinks` | `true` |
+
+The extension reads VS Code's own settings, as VS Code's search does. The desktop app reads its `damocles.desktop.search.*` keys, shown under Settings › Files and search › Search. A `search.useIgnoreFiles`, `search.useGlobalIgnoreFiles` or `search.useParentIgnoreFiles` in the desktop user settings file moves to its `damocles.desktop.search.` key at the app's next start, unless that key is already set, and is then removed; such a key in a project's settings file does nothing. On desktop, Quick Open and Search follow links only while `damocles.desktop.search.followSymlinks` is on, and the @ list on either host only while the follow switch is on and the project is trusted; none of them follows a link onto a network share or WSL path on Windows, and the agent's Grep and Glob never follow links.
+
 Settings mentioned elsewhere in these docs that this table does not list include `damocles.compass.enabled`, `damocles.browser.enabled`, `damocles.browser.devToolsPort`, `damocles.design.enabled`, `damocles.showCacheMissNotices`, `damocles.tools.disabled`, `damocles.mcp.disabledServers`, `damocles.mcp.disabledProjectServers`, `damocles.openai.preferApiKey`, `damocles.<provider>.preferApiKey`, `damocles.maxBudgetUsd` and the desktop app's `damocles.desktop.*` settings; each is described on the page that mentions it.
 
 ## Localization

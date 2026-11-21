@@ -1,16 +1,15 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { stripBom } from '../config/bom';
+import { agentConfigBases, configLinkPolicy, noticeRefusedConfigRead } from '../config/local-config-path';
+import { installedPlatform } from '../platform-host';
 import { PI_AGENT_DIR } from './agent-dir';
 import { logAuthReadFailure, readAuthFile } from './auth-file';
 import subscriptionPin from './subscription-pin.json' with { type: 'json' };
+import { SUBSCRIPTION_SOURCE } from './subscription-source';
 
 // The plugin wraps pi-ai's Anthropic transport and adds Claude Code's billing block, which bills the
 // subscription's included allowance; the same OAuth token without it meters as extra usage.
-
-// `@<sha>`, not `#<sha>`: pi's parseGitUrl keeps a `#` fragment on the clone URL, which breaks `git clone`.
-// Before bumping, run the plugin's tests with its @earendil-works/pi-* devDependencies set to Damocles' versions; nothing in this repo's CI clones it.
-export const SUBSCRIPTION_SOURCE: string = `${subscriptionPin.repo}@${subscriptionPin.commit}`;
 
 // pi keys git packages by repo identity, so a replaced plugin's entry is invisible to checks on the current repo.
 export const LEGACY_SUBSCRIPTION_REPOS: readonly string[] = [
@@ -77,10 +76,15 @@ export function readClaudeAuthFromDisk(agentDir: string = PI_AGENT_DIR): ClaudeA
   return { mode: 'none' };
 }
 
-// A legacy-only entry reads as allowance: that is what it bills until migrated.
+// A legacy-only entry reads as allowance: that is what it bills until migrated. A file pi's link policy refuses lists none, as pi loads none from it.
 function isPluginListedOnDisk(agentDir: string): boolean {
+  const file = path.join(agentDir, 'settings.json');
+  if (!configLinkPolicy(agentConfigBases(agentDir))(file)) {
+    noticeRefusedConfigRead(file, installedPlatform()?.notifications);
+    return false;
+  }
   try {
-    const parsed = JSON.parse(stripBom(fs.readFileSync(path.join(agentDir, 'settings.json'), 'utf8'))) as { packages?: unknown };
+    const parsed = JSON.parse(stripBom(fs.readFileSync(file, 'utf8'))) as { packages?: unknown };
     if (!Array.isArray(parsed.packages)) return false;
     const packages = parsed.packages.filter(
       (p): p is string | { source: string } =>

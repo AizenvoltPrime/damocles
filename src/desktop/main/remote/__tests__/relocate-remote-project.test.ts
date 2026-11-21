@@ -6,7 +6,8 @@ import type { RelocationView } from '../../../../core/project-relocation/types';
 import { RelocatedProjects } from '../../relocate-project-state';
 import { HostStore } from '../host-store';
 import { remoteRelocation } from '../relocate-remote-project';
-import { projectMirrorFolder, SessionMirror } from '../session-mirror';
+import { projectMirrorFolder } from '../../../../shared/remote-mirror';
+import { SessionMirror } from '../session-mirror';
 
 const AUTHORITY = 'ssh+prod';
 const key = (folder: string): string => `${AUTHORITY}|${folder}`;

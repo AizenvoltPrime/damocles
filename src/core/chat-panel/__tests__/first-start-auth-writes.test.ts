@@ -34,7 +34,7 @@ import { PiRuntime } from "../../pi-session/pi-runtime";
 import { ACCOUNT_PROVIDER_IDS } from "../../../shared/settings-sections";
 import { folderKey } from "../../workspace-folders/folder-key";
 import { PI_AGENT_DIR } from "../../pi-session/agent-dir";
-import { PROVIDER_KEY_SWEEP_MARKER_PATH } from "../../paths";
+import { DAMOCLES_HOME_DIR, PROVIDER_KEY_SWEEP_MARKER_PATH } from "../../paths";
 import { initPiLoader } from "../../pi-session/pi-loader";
 import type { Disposable } from "../../../platform/disposable";
 import type { ExtensionToWebviewMessage } from "../../../shared/types/messages";
@@ -80,7 +80,7 @@ function watchAuthFileWrites(): () => number {
   const watcher = fs.watch(PI_AGENT_DIR, (_event, name) => {
     if (name !== "auth.json") return;
     reported++;
-    platform.fileWatchers.watcher(PI_AGENT_DIR, "auth.json").fireChange(authPath);
+    platform.fileWatchers.watcher(DAMOCLES_HOME_DIR, "pi/agent/auth.json").fireChange(authPath);
   });
   subscriptions.push({ dispose: () => watcher.close() });
   return () => reported;

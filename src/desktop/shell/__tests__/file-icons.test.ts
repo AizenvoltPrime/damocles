@@ -98,4 +98,12 @@ describe('FileIcon', () => {
     code.unmount();
     folder.unmount();
   });
+
+  // A link badge must hide the icon's corner in the row's own colour, whether the row is plain, hovered or selected.
+  it('paints the link badge in the row\'s --row-bg over the panel the row sits on', () => {
+    const link = mount(FileIcon, { props: { path: 'src', directory: true, link: true } });
+    const badge = link.get('[data-testid="file-icon-link"] > span');
+    expect(badge.classes()).toEqual(expect.arrayContaining(['bg-(--d-panel)', 'bg-[linear-gradient(var(--row-bg),var(--row-bg))]']));
+    link.unmount();
+  });
 });

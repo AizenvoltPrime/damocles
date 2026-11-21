@@ -26,7 +26,7 @@ const post = (reply: WatchReply): void => {
 const host = createInProcessTreeHost((line) => post({ kind: 'log', line }));
 const watches = new Map<number, Disposable>();
 
-const watch = (id: number, dir: string, report: boolean): void => {
+const watch = (id: number, dir: string, base: string, report: boolean): void => {
   const emit = (type: WatchEvent[0], fsPath: string): void => {
     let events = outbox.get(id);
     if (!events) outbox.set(id, (events = []));
@@ -40,7 +40,7 @@ const watch = (id: number, dir: string, report: boolean): void => {
     post({ kind: 'lost', id });
   };
   try {
-    const started = host.start(dir, report, emit, lost);
+    const started = host.start(dir, report, emit, lost, base);
     watches.set(id, started);
     void started.ready.then(() => {
       if (watches.get(id) === started) post({ kind: 'ready', id });
@@ -53,7 +53,7 @@ const watch = (id: number, dir: string, report: boolean): void => {
 // Main builds every request.
 port.on('message', (request: WatchRequest) => {
   if (request.kind === 'watch') {
-    watch(request.id, request.dir, request.report);
+    watch(request.id, request.dir, request.base, request.report);
   } else if (request.kind === 'unwatch') {
     watches.get(request.id)?.dispose();
     watches.delete(request.id);

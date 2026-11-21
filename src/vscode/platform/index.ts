@@ -20,6 +20,7 @@ import { createVsCodeSecretsStore } from './secrets-store';
 import { VsCodeSettingsStore } from './settings-store';
 import { createVsCodeShellService } from './shell-service';
 import { createVsCodeTrustService } from './trust-service';
+import { createVsCodeWalkSettings } from './walk-settings';
 import { createVsCodeWindowService } from './window-service';
 import { createVsCodeWorkspaceFolders } from './workspace-folders';
 
@@ -31,10 +32,12 @@ export function createVsCodePlatform(context: vscode.ExtensionContext): Platform
   const trust = createVsCodeTrustService();
   const browserServedFiles = new LocalServedRoots({ isTrusted: (root) => trust.isTrusted(root), refusalText: () => vscode.l10n.t('Open this preview from Damocles.'), log });
   context.subscriptions.push(browserServedFiles);
+  const settings = new VsCodeSettingsStore();
   return {
     // env.remoteName is set in the local extension host too whenever a remote one exists; only the extension's kind says where it runs.
     capabilities: { ...VSCODE_HOST_CAPABILITIES, globalMemoryOnServer: context.extension.extensionKind === vscode.ExtensionKind.Workspace },
-    settings: new VsCodeSettingsStore(),
+    settings,
+    walkSettings: createVsCodeWalkSettings(settings),
     secrets: createVsCodeSecretsStore(context.secrets),
     state: createVsCodeKeyValueState(context),
     trust,

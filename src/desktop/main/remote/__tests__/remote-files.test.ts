@@ -62,13 +62,17 @@ describe('remoteFileRef with the target\'s confinement', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it('opens a repository file of a linked project, and still refuses a link inside it that leads outside', async () => {
+  // The host's file system confines a link that leads out of the project only under throughLinks.
+  it('opens a repository file of a linked project, refuses a link inside it that leads outside within the project, and follows it through links', async () => {
     const inside = remoteFileRef([project], path.join(root, 'real-app', 'src', 'a.ts'));
     expect(inside).toEqual({ projectKey: project.key, relativePath: 'src/a.ts' });
-    expect(await files.confineExisting(project, inside!.relativePath)).toEqual({ ok: true, path: path.join(root, 'real-app', 'src', 'a.ts') });
+    for (const rule of ['withinProject', 'throughLinks'] as const) {
+      expect(await files.confineExisting(project, inside!.relativePath, rule)).toEqual({ ok: true, path: path.join(root, 'real-app', 'src', 'a.ts') });
+    }
     const escaping = remoteFileRef([project], path.join(root, 'real-app', 'out', 'key.txt'));
     expect(escaping).toEqual({ projectKey: project.key, relativePath: 'out/key.txt' });
-    expect(await files.confineExisting(project, escaping!.relativePath)).toEqual({ ok: false, reason: 'outside' });
+    expect(await files.confineExisting(project, escaping!.relativePath, 'withinProject')).toEqual({ ok: false, reason: 'outside' });
+    expect(await files.confineExisting(project, escaping!.relativePath, 'throughLinks')).toEqual({ ok: true, path: path.join(root, 'secrets', 'key.txt'), via: { link: 'out', realRoot: path.join(root, 'secrets') } });
     expect(remoteFileRef([project], path.join(root, 'secrets', 'key.txt'))).toBeUndefined();
   });
 });

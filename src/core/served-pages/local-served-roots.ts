@@ -1,16 +1,19 @@
 // The loopback servers of a chat's roots where the chat's core serves them itself (VS Code; docs/invariants.md "Browser"): one
 // PreviewHttpServer per root, with the policy desktop main's ServedRoots serves by, held by the chats that opened a file of it,
 // each on a grant host of its own, and closed with the last of them.
-import { constants, promises as fs } from 'node:fs';
+import { constants, promises as fs, type BigIntStats } from 'node:fs';
 import * as path from 'node:path';
 import type { Disposable } from '../../platform/disposable';
 import type { BrowserServedFiles } from '../../platform/platform';
 import type { PanelHost } from '../../platform/window-service';
 import { MAX_SERVED_FOLDERS_PER_CHAT, type ServedFile, type ServedFileAnswer } from '../../shared/served-file-url';
 import { hasUnsafeWindowsSegment, isRelativeFilePath } from '../../shared/relative-path';
+import type { LinkRule } from '../../platform/file-confinement';
 import { readPreviewFile } from '../design/design-preview';
-import { followsLocalLinksOnly } from '../local-links';
+import { followsLocalLinksOnly, realpathOnOwnShare } from '../local-links';
 import { folderKey } from '../workspace-folders/folder-key';
+import { isInsideRealRoot, linkRootOf } from '../workspace-folders/real-root';
+import { linkedPreviewRefused } from './host-data-stores';
 import { PreviewHttpServer } from './preview-http-server';
 import { answerPreview, type PreviewAnswer, type PreviewRangeRead, type PreviewRequest } from './preview-reader';
 import { answerDesign, servedPathRefusal } from './root-files';
@@ -77,18 +80,12 @@ function handleChunks(handle: fs.FileHandle, start: number, end: number): AsyncI
   return { [Symbol.asyncIterator]: () => iterator };
 }
 
-// Whether realTarget is realRoot or lies under it; both are native realpaths.
-function insideRealRoot(realRoot: string, realTarget: string): boolean {
-  const relative = path.relative(folderKey(realRoot), folderKey(realTarget));
-  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
-}
-
 /**
- * length bytes from offset (a negative offset counts from the end) of a project file, as answerPreview reads them, confined as
- * desktop's `confineEntry` confines (docs/invariants.md "Desktop host", Confinement): no link on the way to its folder leads off
- * this computer's drives (`followsLocalLinksOnly`, by lstat and readlink, before anything is resolved), the folder's real path
- * lies under the root's, and the file itself is a regular file, never followed, opened as the one its lstat found. `pinned`: root
- * is a real path, and a root whose real path is another now (the folder swapped for a link) serves nothing.
+ * length bytes from offset (a negative offset counts from the end) of a granted folder's file, as answerPreview reads them,
+ * confined as desktop's `confineEntry` confines (docs/invariants.md "Desktop host", Confinement): no link on the way to its
+ * folder leads off this computer's drives (`followsLocalLinksOnly`, by lstat and readlink, before anything is resolved), the
+ * folder's real path lies under the root's, and the file itself is a regular file, never followed, opened as the one its lstat
+ * found. `pinned`: root is a real path, and a root whose real path is another now (the folder swapped for a link) serves nothing.
  */
 export async function confinedRange(root: string, relPath: string, offset: number, length: number, pinned = false): Promise<PreviewRangeRead> {
   if (!isRelativeFilePath(relPath) || (process.platform === 'win32' && hasUnsafeWindowsSegment(relPath))) return { ok: false, reason: 'outside' };
@@ -102,12 +99,46 @@ export async function confinedRange(root: string, relPath: string, offset: numbe
     let realParent: string;
     [realRoot, realParent] = await Promise.all([fs.realpath(root), fs.realpath(path.dirname(lexical))]);
     if (pinned && folderKey(realRoot) !== folderKey(root)) return { ok: false, reason: 'outside' };
-    if (!insideRealRoot(realRoot, realParent)) return { ok: false, reason: 'outside' };
+    if (!isInsideRealRoot(realRoot, realParent)) return { ok: false, reason: 'outside' };
     entry = path.join(realParent, path.basename(lexical));
     found = await fs.lstat(entry, { bigint: true });
   } catch (err) {
     return readFailure(err);
   }
+  return openedRange(entry, found, realRoot, offset, length);
+}
+
+// A project's range, every link followed as desktop's preview read follows them (`confineResolved` under rule, then an lstat of
+// the realpath; docs/invariants.md "Desktop host", HTML previews): a realpath outside the root's only under throughLinks.
+async function projectRange(root: string, relPath: string, rule: LinkRule, offset: number, length: number, log: (line: string) => void): Promise<PreviewRangeRead> {
+  if (!isRelativeFilePath(relPath) || (process.platform === 'win32' && hasUnsafeWindowsSegment(relPath))) return { ok: false, reason: 'outside' };
+  const segments = relPath.split('/');
+  let base: string;
+  let target: string;
+  let found;
+  try {
+    if (!(await followsLocalLinksOnly(root, segments))) return { ok: false, reason: 'outside' };
+    const [realRoot, realTarget] = await Promise.all([fs.realpath(root), fs.realpath(path.join(root, ...segments))]);
+    // the link root holds realTarget, so this one check covers it too
+    if (!realpathOnOwnShare(root, realRoot, realTarget)) return { ok: false, reason: 'outside' };
+    if (isInsideRealRoot(realRoot, realTarget)) {
+      base = realRoot;
+    } else {
+      const via = rule === 'throughLinks' ? await linkRootOf(root, segments, realTarget) : undefined;
+      if (via === undefined || (await linkedPreviewRefused(realTarget, via.realRoot, log))) return { ok: false, reason: 'outside' };
+      base = via.realRoot;
+    }
+    target = realTarget;
+    found = await fs.lstat(target, { bigint: true });
+  } catch (err) {
+    return readFailure(err);
+  }
+  return openedRange(target, found, base, offset, length);
+}
+
+// The range of entry, which an lstat found as `found`, opened only while it is still that regular file; resolvedPath is entry
+// relative to base.
+async function openedRange(entry: string, found: BigIntStats, base: string, offset: number, length: number): Promise<PreviewRangeRead> {
   if (!found.isFile()) return { ok: false, reason: 'notAFile', folder: found.isDirectory() };
   let handle: fs.FileHandle;
   try {
@@ -128,7 +159,7 @@ export async function confinedRange(root: string, relPath: string, offset: numbe
   const size = Number(opened.size);
   const start = offset < 0 ? Math.max(0, size + offset) : Math.min(offset, size);
   const count = Math.min(length, size - start);
-  return { ok: true, size, offset: start, length: count, resolvedPath: path.relative(realRoot, entry).split(path.sep).join('/'), chunks: handleChunks(handle, start, start + count) };
+  return { ok: true, size, offset: start, length: count, resolvedPath: path.relative(base, entry).split(path.sep).join('/'), chunks: handleChunks(handle, start, start + count) };
 }
 
 export class LocalServedRoots implements BrowserServedFiles, Disposable {
@@ -188,7 +219,14 @@ export class LocalServedRoots implements BrowserServedFiles, Disposable {
     const trusted = (): boolean => file.kind === 'project' && this.deps.isTrusted(root);
     const serve = file.kind === 'design'
       ? (request: Pick<PreviewRequest, 'method' | 'pathname'>): Promise<PreviewAnswer> => answerDesign(request, (relPath) => readPreviewFile(root, file.designId, relPath), log)
-      : (request: Pick<PreviewRequest, 'method' | 'pathname' | 'range' | 'ifRange'>): Promise<PreviewAnswer> => answerPreview({ ...request, trusted: trusted(), target: 'browser' }, { range: (relPath, offset, length) => confinedRange(root, relPath, offset, length, file.kind === 'folder') }, log);
+      : (request: Pick<PreviewRequest, 'method' | 'pathname' | 'range' | 'ifRange'>): Promise<PreviewAnswer> => {
+        // one look at trust per request, so the response's CSP and its read's link rule agree
+        const linked = trusted();
+        const range = file.kind === 'folder'
+          ? (relPath: string, offset: number, length: number): Promise<PreviewRangeRead> => confinedRange(root, relPath, offset, length, true)
+          : (relPath: string, offset: number, length: number): Promise<PreviewRangeRead> => projectRange(root, relPath, linked ? 'throughLinks' : 'withinProject', offset, length, log);
+        return answerPreview({ ...request, trusted: linked, target: 'browser' }, { range }, log);
+      };
     return PreviewHttpServer.start({
       serve,
       // a design server's own refusals are text and run nothing, so they carry the untrusted policy

@@ -6,10 +6,10 @@ import * as vm from 'node:vm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveRgPath } from '../../../core/chat-panel/ripgrep';
 import { ALL_IGNORE_FILES } from '../../../core/search-walk';
-import { walkIgnoreOf } from '../../../core/search-walk/ignore-settings';
 import { MAX_SEARCH_RESULTS, type SearchQuery, type SearchRange } from '../../../shared/text-search';
 import type { SearchDone, SearchFileUpdate, SearchResultsBatch } from '../../preload/shell-channels';
-import { DEFAULT_FILES_EXCLUDE, DEFAULT_SEARCH_EXCLUDE } from '../../local-services/desktop-configuration';
+import { DEFAULT_FILES_EXCLUDE, DEFAULT_SEARCH_EXCLUDE, SEARCH_FOLLOW_SYMLINKS_SETTING } from '../../local-services/desktop-configuration';
+import { createDesktopWalkSettings } from '../../local-services/walk-settings';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { excludeSettingGlobs } from '../../workspace/search/rg-args';
 import type { SearchRequest, SearchRun, SearchRunSink } from '../../workspace/search/search-runner';
@@ -25,12 +25,14 @@ class FakeRg implements SearchRun {
   killed = false;
   readonly args: readonly string[];
   readonly cwd: string;
+  readonly walk: SearchRequest['walk'];
   private readonly sink: SearchRunSink;
   private stderr = '';
   private ended = false;
   constructor(cwd: string, request: SearchRequest, sink: SearchRunSink) {
     this.args = [...request.match, request.pattern];
     this.cwd = cwd;
+    this.walk = request.walk;
     this.sink = sink;
   }
   kill(): void {
@@ -84,7 +86,8 @@ function service(overrides: Partial<SearchServiceDeps> & { readonly mtimes?: Wor
     folder: () => ({ projectKey: 'p', fsPath: '/proj' }),
     workspaces: { ...workspaces, local, forProject: () => local },
     osOf: () => process.platform,
-    ignore: () => ALL_IGNORE_FILES,
+    walk: () => ({ ignore: ALL_IGNORE_FILES, followLinks: false }),
+    linksNotSearched: () => undefined,
     excludeSettings: () => ['**/node_modules'],
     settings: () => settings,
     buffers: () => buffers,
@@ -297,6 +300,19 @@ describe('search service', () => {
   });
 });
 
+describe('search service and the walk\'s follow mode', () => {
+  it.each([true, false])('walks through links as the port says (%s), and notes a host that cannot only when it was asked to', async (followLinks) => {
+    const notice = 'Update the Damocles server on box to search through links.';
+    const search = service({ walk: () => ({ ignore: ALL_IGNORE_FILES, followLinks }), linksNotSearched: () => notice });
+    search.start(1, query(), true);
+    await settle();
+    expect(spawned[0]!.walk.followLinks).toBe(followLinks ? true : undefined);
+    spawned[0]!.close(1);
+    await settle();
+    expect(dones).toEqual([{ searchId: 1, resultCount: 0, fileCount: 0, limitHit: false, ...(followLinks ? { linksNotSearched: notice } : {}) }]);
+  });
+});
+
 describe('search service with the bundled ripgrep', () => {
   let root: string;
   let project: string;
@@ -324,17 +340,20 @@ describe('search service with the bundled ripgrep', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  async function run(overrides: Partial<SearchQuery>): Promise<string[]> {
-    return paths([{ files: await runFiles(overrides) }]).sort();
+  async function run(overrides: Partial<SearchQuery>, followLinks = false): Promise<string[]> {
+    return paths([{ files: await runFiles(overrides, followLinks) }]).sort();
   }
 
-  async function runFiles(overrides: Partial<SearchQuery>): Promise<SearchResultsBatch['files']> {
+  async function runFiles(overrides: Partial<SearchQuery>, followLinks = false): Promise<SearchResultsBatch['files']> {
+    // desktop's port over a store holding only damocles.desktop.search.followSymlinks, the ignore switches at their defaults
+    const walkSettings = createDesktopWalkSettings({ get: <T>(key: string): T | undefined => (key === SEARCH_FOLLOW_SYMLINKS_SETTING ? followLinks as T : undefined), onDidChange: () => ({ dispose: () => undefined }) });
     const done = new Promise<void>((resolve) => {
       const search = new SearchService({
         folder: () => ({ projectKey: 'p', fsPath: project }),
         osOf: () => process.platform,
         workspaces: testWorkspaces({ watchers: createFakePlatform().fileWatchers, rgPath: () => resolveRgPath({ resourceRoot: process.cwd(), unpackedRoot: process.cwd() }) }),
-        ignore: () => walkIgnoreOf({ get: () => undefined }),
+        walk: () => walkSettings.read(),
+        linksNotSearched: () => undefined,
         excludeSettings: () => [...excludeSettingGlobs(DEFAULT_FILES_EXCLUDE), ...excludeSettingGlobs(DEFAULT_SEARCH_EXCLUDE)],
         settings: () => settings,
         buffers: () => buffers,
@@ -353,10 +372,15 @@ describe('search service with the bundled ripgrep', () => {
     return batches.splice(0).flatMap((batch) => batch.files);
   }
 
-  it('searches a pattern starting with - as text, skips node_modules unless the toggle is off, and never reads through links', async () => {
+  it('searches a pattern starting with - as text, skips node_modules unless the toggle is off, and reads through no link with the follow setting off', async () => {
     expect(await run({ pattern: '-flag' })).toEqual(['src/a.ts']);
     expect(await run({ pattern: 'value' })).toEqual(['lib/c.ts', 'src/a.ts', 'src/gen/b.ts']);
     expect(await run({ pattern: 'value', useExcludeSettingsAndIgnoreFiles: false })).toEqual(['lib/c.ts', 'node_modules/pkg/d.js', 'src/a.ts', 'src/gen/b.ts']);
+  });
+
+  it('with the follow setting on searches through a file link and a junction out of the project, named by the path through each', async () => {
+    expect(await run({ pattern: 'value' }, true)).toEqual(['lib/c.ts', 'link.ts', 'linked/secret.ts', 'src/a.ts', 'src/gen/b.ts']);
+    expect(await run({ pattern: 'value', useExcludeSettingsAndIgnoreFiles: false }, true)).toEqual(['lib/c.ts', 'link.ts', 'linked/secret.ts', 'node_modules/pkg/d.js', 'src/a.ts', 'src/gen/b.ts']);
   });
 
   it('limits results by include and exclude globs', async () => {

@@ -16,7 +16,7 @@ import { getStatusNote, recordResultText, resumeSentence } from '../subagents/st
 import { getLifetimeTotal } from '../subagents/usage';
 import { buildAgentResultJson } from '../subagents/subagent-stream-bridge';
 import { formatAgentConversation } from '../subagents/subagent-runner';
-import type { AgentManager, BranchAgent, SpawnRequest } from '../subagents/agent-manager';
+import type { AgentManager, BranchAgent } from '../subagents/agent-manager';
 import type { AgentRecord } from '../subagents/types';
 import {
   endedOnRejection,
@@ -210,34 +210,28 @@ export function buildSubagentTools(pi: PiCodingAgentModule, manager: AgentManage
     executionMode: 'parallel',
     execute: async (toolCallId, params, signal) => {
       const call = parseAgentArguments(params);
-      if (call.kind === 'resume') {
-        // A resume keeps the agent's original mode; the manager binds the signal only to a foreground agent.
-        const record = await manager.resume({
+      // A new agent's mode is the call's or its template's, a resumed one keeps its own; the manager binds the signal only to a foreground agent.
+      const record = call.kind === 'resume'
+        ? await manager.resume({
           kind: 'resume',
           agentId: call.agentId,
           ...(call.message !== undefined ? { message: call.message } : {}),
           toolCallId,
           ...(signal ? { signal } : {}),
+        })
+        : await manager.spawn({
+          kind: 'spawn',
+          type: call.type,
+          prompt: call.prompt,
+          description: call.description,
+          toolCallId,
+          ...(call.runInBackground !== undefined ? { runInBackground: call.runInBackground } : {}),
+          ...(signal ? { signal } : {}),
         });
-        if (record.background) {
-          return agentResult(JSON.stringify({ status: 'async_launched', agentId: record.id }), { agentId: record.id, status: 'async_launched' });
-        }
-        await record.promise;
-        return agentResult(recordResultJson(record), recordToolDetails(record));
+      if (record.background) {
+        return agentResult(JSON.stringify({ status: 'async_launched', agentId: record.id }), { agentId: record.id, status: 'async_launched' });
       }
-      const spec: SpawnRequest = {
-        kind: 'spawn',
-        type: call.type,
-        prompt: call.prompt,
-        description: call.description,
-        toolCallId,
-        runInBackground: manager.resolveRunInBackground(call.type, call.runInBackground),
-      };
-      if (spec.runInBackground) {
-        const id = manager.spawn(spec);
-        return agentResult(JSON.stringify({ status: 'async_launched', agentId: id }), { agentId: id, status: 'async_launched' });
-      }
-      const record = await manager.spawnAndWait({ ...spec, ...(signal ? { signal } : {}) });
+      await record.promise;
       return agentResult(recordResultJson(record), recordToolDetails(record));
     },
   });

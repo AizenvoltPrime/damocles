@@ -85,7 +85,9 @@ async function go(path?: string): Promise<void> {
   if (!result.ok) {
     problem.value = result.error === 'eperm-privacy'
       ? t('remote.folders.privacy', { folder: visibleText(result.folder), helper: '/usr/libexec/sshd-keygen-wrapper' })
-      : t(`remote.folders.${result.error}`, { name: props.hostName });
+      : 'refusal' in result
+        ? t(`remote.folders.${result.refusal}`, { name: props.hostName })
+        : t(`remote.folders.${result.error}`, { name: props.hostName });
     return;
   }
   problem.value = undefined;

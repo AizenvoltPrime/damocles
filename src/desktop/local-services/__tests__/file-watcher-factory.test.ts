@@ -53,7 +53,9 @@ import * as fs from 'node:fs';
 import type { OpenFolder, WorkspaceFolders } from '../../../platform/workspace-folders';
 import type { FileWatcher } from '../../../platform/file-watcher';
 import { createInProcessTreeHost, SHALLOW_COALESCE_MS } from '../../watch-worker/fs-watch-tree';
-import { DesktopFileWatcherFactory, isShallowGlob, startInotifyTree, watchRoot } from '../file-watcher-factory';
+import picomatch from 'picomatch';
+import { isShallowGlob, literalGlob, watchRoot } from '../../../core/watch-root';
+import { DesktopFileWatcherFactory, startInotifyTree } from '../file-watcher-factory';
 
 let dir: string;
 let factory: DesktopFileWatcherFactory;
@@ -106,13 +108,30 @@ async function untilLive(watcher: FileWatcher, probeDir: string, probeName: stri
 
 describe('watchRoot', () => {
   it('subscribes at the static prefix, recursively only when the rest of the glob needs it', () => {
-    expect(watchRoot(dir, 'auth.json')).toEqual({ root: dir, recursive: false });
-    expect(watchRoot(dir, '*.jsonl')).toEqual({ root: dir, recursive: false });
-    expect(watchRoot(dir, '{AGENTS.md,CLAUDE.md}')).toEqual({ root: dir, recursive: false });
-    expect(watchRoot(dir, '.pi/skills/**')).toEqual({ root: path.join(dir, '.pi', 'skills'), recursive: true });
-    expect(watchRoot(dir, '.damocles/settings*.json')).toEqual({ root: path.join(dir, '.damocles'), recursive: false });
-    expect(watchRoot(dir, '**/*.md')).toEqual({ root: dir, recursive: true });
+    expect(watchRoot(dir, 'auth.json')).toEqual({ root: dir, recursive: false, glob: 'auth.json' });
+    expect(watchRoot(dir, '*.jsonl')).toEqual({ root: dir, recursive: false, glob: '*.jsonl' });
+    expect(watchRoot(dir, '{AGENTS.md,CLAUDE.md}')).toEqual({ root: dir, recursive: false, glob: '{AGENTS.md,CLAUDE.md}' });
+    expect(watchRoot(dir, '.pi/skills/**')).toEqual({ root: path.join(dir, '.pi', 'skills'), recursive: true, glob: '**' });
+    expect(watchRoot(dir, '.damocles/settings*.json')).toEqual({ root: path.join(dir, '.damocles'), recursive: false, glob: 'settings*.json' });
+    expect(watchRoot(dir, '**/*.md')).toEqual({ root: dir, recursive: true, glob: '**/*.md' });
+    expect(watchRoot(dir, '.codex/config.toml')).toEqual({ root: path.join(dir, '.codex'), recursive: false, glob: 'config.toml' });
     expect(isShallowGlob('a/*.md')).toBe(false);
+  });
+
+  it.each(['New folder (2)', 'foo[1]', 'a*b', 'a+(b)', '!x', 'a{b}', 'a?b', 'a,b', 'a|b', 'a)b', 'C(++)', 'out/New folder (2)/x'])('narrows a literal folder %s to itself, watched without recursion', (folder) => {
+    expect(watchRoot(dir, `${literalGlob(folder)}/*`)).toEqual({ root: path.join(dir, ...folder.split('/')), recursive: false, glob: '*' });
+    expect(watchRoot(dir, literalGlob(folder))).toEqual({ root: path.join(dir, ...folder.split('/').slice(0, -1)), recursive: false, glob: literalGlob(folder.split('/').at(-1)!) });
+  });
+
+  it('matches exactly the literal folder\'s direct children, and keeps a negated glob from narrowing', () => {
+    // a Windows name holds no backslash, and picomatch reads one there as a separator
+    for (const folder of ['New folder (2)', 'foo[1]', 'a*b', 'a+(b)', '!x', 'a{b}', 'a)b', 'a|b', 'a(1)+b', 'C(++)', 'foo[1]+x', 'a@(b)', ...(process.platform === 'win32' ? [] : ['a\\b'])]) {
+      const matches = picomatch(`${literalGlob(folder)}/*`, { dot: true });
+      expect([matches(`${folder}/f.txt`), matches(`${folder}/sub/f.txt`), matches(`${folder}x/f.txt`), matches('other/f.txt')]).toEqual([true, false, false, false]);
+    }
+    expect(watchRoot(dir, '!x/*')).toEqual({ root: dir, recursive: true, glob: '!x/*' });
+    // a closing bracket, brace or parenthesis alone opens no glob syntax, so a path written plainly keeps narrowing
+    expect(watchRoot(dir, 'a)b/c}d/e]f/*')).toEqual({ root: path.join(dir, 'a)b', 'c}d', 'e]f'), recursive: false, glob: '*' });
   });
 });
 

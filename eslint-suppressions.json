@@ -49,7 +49,7 @@
       "count": 1
     }
   },
-  "src/core/pi-session/agent-dir.ts": {
+  "src/core/pi-session/agent-dir-setup.ts": {
     "damocles/no-sync": {
       "count": 5
     }
@@ -82,11 +82,6 @@
   "src/core/pi-session/context-files.ts": {
     "damocles/no-sync": {
       "count": 2
-    }
-  },
-  "src/core/pi-session/folder-runtime.ts": {
-    "damocles/no-sync": {
-      "count": 1
     }
   },
   "src/core/pi-session/hooks/config.ts": {
@@ -154,27 +149,12 @@
       "count": 1
     }
   },
-  "src/core/pi-session/subagents/custom-agents.ts": {
-    "damocles/no-sync": {
-      "count": 2
-    }
-  },
   "src/core/pi-session/subagents/enabled-models.ts": {
     "damocles/no-sync": {
       "count": 2
     }
   },
   "src/core/pi-session/subagents/env.ts": {
-    "damocles/no-sync": {
-      "count": 3
-    }
-  },
-  "src/core/pi-session/subagents/fs-safety.ts": {
-    "damocles/no-sync": {
-      "count": 3
-    }
-  },
-  "src/core/pi-session/subagents/skill-loader.ts": {
     "damocles/no-sync": {
       "count": 3
     }
@@ -216,7 +196,7 @@
   },
   "src/desktop/local-services/file-watcher-factory.ts": {
     "damocles/no-sync": {
-      "count": 11
+      "count": 8
     }
   },
   "src/desktop/local-services/localization-service.ts": {
@@ -225,11 +205,6 @@
     }
   },
   "src/desktop/local-services/settings-store.ts": {
-    "damocles/no-sync": {
-      "count": 1
-    }
-  },
-  "src/desktop/local-services/watch-worker-host.ts": {
     "damocles/no-sync": {
       "count": 1
     }

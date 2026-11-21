@@ -75,7 +75,7 @@ interface ClientOptions {
   readonly drained?: (() => Promise<void>) | undefined;
   // the hello's; the connection id when absent
   readonly clientId?: string;
-  // the names of FEATURES its attach listed; none when absent, as an app that predates core.attachFeatures
+  // the names of FEATURES its attach listed; none when absent
   readonly features?: readonly string[] | undefined;
   // runs before the attach, so what the attach delivers (a held intent) finds its handlers
   readonly before?: (main: MainEndpoint) => void;
@@ -807,6 +807,18 @@ describe('core routes', () => {
 
     expect(await client.main.request('sessionFiles.write', params)).toEqual({ kind: 'refused', reason: 'otherProcess' });
     expect(seen).toEqual([params]);
+  });
+
+  it('answer a session file write core does not own as outside to a client whose attach did not list files.sessionFileRefusal', async () => {
+    const h = setUp();
+    const older = h.client('c-old');
+    const current = h.client('c-new', { features: ['files.sessionFileRefusal'] });
+    h.core.serve('sessionFiles.write', () => ({ kind: 'notOwned' }) as const);
+    const params = { path: '/home/u/.damocles/locks/sessions/s1.lock', bytes: new Uint8Array([0x0a]), expectedSha256: null };
+
+    expect(await older.main.request('sessionFiles.write', params)).toEqual({ kind: 'outside' });
+    expect(await current.main.request('sessionFiles.write', params)).toEqual({ kind: 'notOwned' });
+    expect(older.close).not.toHaveBeenCalled();
   });
 
   it('give every client the held memory queues, a fresh one the last list, and take or discard a queue as the asking client', async () => {

@@ -7,6 +7,7 @@ import type { Disposable } from '../../platform/disposable';
 import type { FileWatcherFactory } from '../../platform/file-watcher';
 import type { TrustService } from '../../platform/trust-service';
 import type { WorkspaceFolders } from '../../platform/workspace-folders';
+import { checkConfigPath } from '../config/local-config-path';
 import { GIT_HARDENING_ARGS } from '../git-hardening';
 import { gitExecutable } from '../git-executable';
 import { DAMOCLES_HOME_DIR, FOLDER_IDENTITIES_PATH, PROJECT_RELOCATIONS_PATH, WORKTREES_ROOT_DIR } from '../paths';
@@ -337,9 +338,12 @@ export class ProjectRelocations implements Disposable {
     }));
   }
 
-  // The host keeps a registry, or one was written.
+  // The host keeps a registry, or one was written; a file the network rule refuses is there, read by the registry as it reads it.
   private async hasRegistry(): Promise<boolean> {
-    return this.deps.worktrees !== undefined || fs.promises.access(path.join(WORKTREES_ROOT_DIR, REGISTRY_FILE)).then(() => true, () => false);
+    if (this.deps.worktrees !== undefined) return true;
+    const file = path.join(WORKTREES_ROOT_DIR, REGISTRY_FILE);
+    if ((await checkConfigPath(WORKTREES_ROOT_DIR, file)) !== 'ok') return true;
+    return fs.promises.access(file).then(() => true, () => false);
   }
 
   private chatWorktreeOf(folder: string, records: readonly WorktreeRecord[]): { readonly projectPath?: string } | undefined {

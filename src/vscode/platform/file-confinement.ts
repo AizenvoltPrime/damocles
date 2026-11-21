@@ -1,20 +1,28 @@
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import type { FileConfinement } from '../../platform/file-confinement';
-import { folderKey } from '../../core/workspace-folders/folder-key';
+import { followsLocalLinksOnly, realpathOnOwnShare } from '../../core/local-links';
+import { isInsideRealRoot, linkRootOf } from '../../core/workspace-folders/real-root';
+import { hasUnsafeWindowsSegment, isRelativeFilePath } from '../../shared/relative-path';
 
 /**
- * Links followed by realpath. VS Code's own file service stats and opens through every link in the workspace, so a walk here
- * would keep no credentials off the network, and no VS Code view names a project file for a mention (fileMentionDrop).
+ * Desktop's rule (confine.ts): under either rule the segments are walked by followsLocalLinksOnly before any stat or realpath,
+ * and the realpath must stay off other shares (realpathOnOwnShare); throughLinks also follows a link out of the folder to the
+ * deepest link's realpath.
  */
 export function createVsCodeFileConfinement(): FileConfinement {
   return {
-    confineExisting: async (folder, relativePath) => {
+    confineExisting: async (folder, relativePath, rule) => {
+      const segments = relativePath === '' ? [] : relativePath.split('/');
+      // the walk and the link root read lexical prefixes, which a '..' segment would leave
+      if (relativePath !== '' && (!isRelativeFilePath(relativePath) || (process.platform === 'win32' && hasUnsafeWindowsSegment(relativePath)))) return { ok: false, reason: 'outside' };
       try {
-        const [realFolder, realFile] = await Promise.all([fs.realpath(folder), fs.realpath(path.join(folder, ...relativePath.split('/')))]);
-        const relative = path.relative(folderKey(realFolder), folderKey(realFile));
-        const inside = relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
-        return inside ? { ok: true, path: realFile } : { ok: false, reason: 'outside' };
+        if (!(await followsLocalLinksOnly(folder, segments))) return { ok: false, reason: 'outside' };
+        const [realFolder, realFile] = await Promise.all([fs.realpath(folder), fs.realpath(path.join(folder, ...segments))]);
+        if (!realpathOnOwnShare(folder, realFolder, realFile)) return { ok: false, reason: 'outside' };
+        if (isInsideRealRoot(realFolder, realFile)) return { ok: true, path: realFile };
+        const via = rule === 'throughLinks' ? await linkRootOf(folder, segments, realFile) : undefined;
+        return via ? { ok: true, path: realFile, via } : { ok: false, reason: 'outside' };
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code;
         return { ok: false, reason: code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'failed' };

@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CONFIG_READ_LIMIT, identityRelation, MAX_REMOTES, normalizedRemote, readFolderIdentity, remotesOfConfig, rootsOfOutput } from '../identity';
 import { FolderIdentityStore, MAX_RECORDED_FOLDERS, parseStore } from '../identity-store';
+import { fileLinkedOntoDevice, folderOnAdminShare } from '../../../__mocks__/admin-share';
 
 let dir: string;
 
@@ -152,6 +153,29 @@ describe('FolderIdentityStore', () => {
     const folder = path.join(dir, 'acme');
     await store.record([{ folder, identity: { subpath: '', remotes, roots: ['c'.repeat(40)] } }], 1);
     expect(await store.entries()).toEqual([{ path: folder, subpath: '', remotes, roots: ['c'.repeat(40)], seenAt: 1 }]);
+  });
+
+  it.runIf(process.platform === 'win32')('reads and writes through a store folder linked onto a share, as the user moved it there (win32)', async (ctx) => {
+    const real = folderOnAdminShare(ctx, path.join(dir, 'data'));
+    try {
+      const store = new FolderIdentityStore({ file: path.join(dir, 'data', 'folder-identities.json'), log: () => undefined });
+      const folder = path.join(dir, 'acme');
+      await store.record([{ folder, identity }], 1);
+      expect(await store.entries()).toEqual([{ path: folder, ...identity, seenAt: 1 }]);
+      expect(fs.existsSync(path.join(real, 'folder-identities.json'))).toBe(true);
+    } finally {
+      fs.rmSync(real, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === 'win32')('neither reads nor writes a store file that links off its folder (win32)', async (ctx) => {
+    const file = path.join(dir, 'folder-identities.json');
+    fileLinkedOntoDevice(ctx, file);
+    const lines: string[] = [];
+    const store = new FolderIdentityStore({ file, log: (line) => lines.push(line) });
+    expect(await store.entries()).toEqual([]);
+    expect(lines).toEqual([`[FolderIdentities] ${file} links to a network share or WSL path, so it is not read`]);
+    await expect(store.record([{ folder: path.join(dir, 'acme'), identity }], 1)).rejects.toMatchObject({ name: 'ConfigWriteRefused' });
   });
 
   it('keeps the MAX_RECORDED_FOLDERS seen last', async () => {

@@ -1,7 +1,7 @@
 import * as path from 'node:path';
 import type { ElectronApplication } from '@playwright/test';
-import { projectMirrorFolder } from '../../src/desktop/main/remote/session-mirror';
 import { targetFolderKeyOf } from '../../src/shared/project-location';
+import { projectMirrorFolder } from '../../src/shared/remote-mirror';
 import { filesUnder } from '../desktop/support/loopback';
 import { sendPrompt } from '../desktop/support/loopback-agent';
 import { shellPage } from '../desktop/support/shell';

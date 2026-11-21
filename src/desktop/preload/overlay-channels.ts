@@ -10,6 +10,7 @@ import type { ChimeTone, NotificationBody, NotificationCenterState, ToastAnswer 
 import type { ReleaseIndex, ReleaseNotes, UpdateSnapshot, VersionInfo } from './updates';
 import type { ScmLetter } from './scm-channels';
 import type { HostLatency, HostReconnect } from '../../shared/host-connection';
+import type { LinkRefusal } from '../../platform/file-confinement';
 import type { HostColor } from '../../shared/host-colors';
 import type { PermissionMode } from '../../shared/types/settings';
 import type { TerminalColor, TerminalGlyph, TerminalPickShells, TerminalProfileReport, TerminalProjectOption } from './terminal-channels';
@@ -598,7 +599,7 @@ export interface RemoteBrowseFolder {
 
 // eperm-privacy: macOS refused a privacy-protected folder (Desktop, Documents, Downloads, iCloud Drive) named by folder.
 // While a picker is open: root is the confinement root the listing lies in (no crumb above it), files the folder's files in
-// file mode, and outside a path no root holds.
+// file mode, and outside a path no root holds, or with refusal one a link on it leads off (LinkRefusal).
 export type RemoteBrowseResult =
   | {
       readonly ok: true;
@@ -611,6 +612,7 @@ export type RemoteBrowseResult =
       readonly files?: readonly string[];
     }
   | { readonly ok: false; readonly error: 'eperm-privacy'; readonly folder: string }
+  | { readonly ok: false; readonly error: 'outside'; readonly refusal: LinkRefusal }
   | { readonly ok: false; readonly error: 'missing' | 'failed' | 'notConnected' | 'outside' };
 
 // A remote core's file or folder picker in the Connect dialog's folder browser; roots are the folders it is confined to.

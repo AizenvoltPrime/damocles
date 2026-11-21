@@ -218,6 +218,19 @@ describe.runIf(process.platform === 'win32')('DesktopFileWatcherFactory on Windo
     expect(events).toEqual(['delete brief.txt']);
   });
 
+  it('reports a file created and deleted within the window its root is deleted in as deleted', async () => {
+    const root = path.join(dir, 'project');
+    fs.mkdirSync(root);
+    const watcher = factory.watch(root, '**');
+    await live(watcher, root);
+    const events = record(watcher, root);
+    fs.writeFileSync(path.join(root, 'brief.txt'), 'x');
+    fs.rmSync(path.join(root, 'brief.txt'));
+    fs.rmSync(root, { recursive: true });
+    await vi.waitFor(() => expect(lines).toContain(`[watcher] ${root} is gone; watching for it to come back`), WAIT);
+    expect(events).toContain('delete brief.txt');
+  });
+
   it('reports an atomic replace as a change, never a create', async () => {
     const file = path.join(dir, 'settings.json');
     fs.writeFileSync(file, '{}');

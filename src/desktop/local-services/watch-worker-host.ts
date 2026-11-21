@@ -1,5 +1,4 @@
-import * as fs from 'node:fs';
-import type { FsWatchTreeHost, Log, RawListener } from '../watch-worker/fs-watch-tree';
+import { presentBelow, type FsWatchTreeHost, type Log, type RawListener } from '../watch-worker/fs-watch-tree';
 import { parseWatchReply, type WatchRequest } from '../watch-worker/protocol';
 import { settlePending } from '../../shared/settle-pending';
 
@@ -17,6 +16,7 @@ export const MAX_WORKER_RESTARTS = 5;
 
 interface Watch {
   readonly dir: string;
+  readonly base: string;
   readonly emit: RawListener;
   readonly lost: () => void;
   // settles the watch's ready; a restarted worker's ready reply settles one still pending
@@ -60,7 +60,7 @@ export function createWorkerTreeHost(startWorker: () => WatchWorker, log: Log): 
     }
     if (closed || watches.size === 0) return;
     const restarted = (running = spawn());
-    for (const [id, watch] of watches) restarted.worker.postMessage({ kind: 'watch', id, dir: watch.dir, report: false });
+    for (const [id, watch] of watches) restarted.worker.postMessage({ kind: 'watch', id, dir: watch.dir, base: watch.base, report: false });
     log(`[watcher] the watch worker restarted; ${watches.size} watches re-established`);
   };
 
@@ -99,8 +99,9 @@ export function createWorkerTreeHost(startWorker: () => WatchWorker, log: Log): 
     watches.delete(reply.id);
     if (reply.kind === 'failed') {
       log(`[watcher] could not watch ${watch.dir}: ${reply.message}`);
-      // As when the watch fails on main: only a directory that vanished meanwhile is waited for again.
-      if (fs.existsSync(watch.dir)) return;
+      // As when the watch fails on main: only a directory that vanished, or came to lie past a link off base's share, meanwhile
+      // is waited for again.
+      if (presentBelow(watch.base, watch.dir)) return;
     }
     watch.lost();
   };
@@ -123,7 +124,7 @@ export function createWorkerTreeHost(startWorker: () => WatchWorker, log: Log): 
   };
 
   return {
-    start: (dir, report, emit, lost) => {
+    start: (dir, report, emit, lost, base) => {
       if (closed || failures > MAX_WORKER_RESTARTS) return { dispose: () => undefined, ready: Promise.resolve() };
       const run = (running ??= spawn());
       const id = nextId++;
@@ -131,8 +132,8 @@ export function createWorkerTreeHost(startWorker: () => WatchWorker, log: Log): 
       const ready = new Promise<void>((resolve) => {
         markReady = resolve;
       });
-      watches.set(id, { dir, emit, lost, ready: markReady });
-      run.worker.postMessage({ kind: 'watch', id, dir, report });
+      watches.set(id, { dir, base, emit, lost, ready: markReady });
+      run.worker.postMessage({ kind: 'watch', id, dir, base, report });
       return {
         ready,
         dispose: () => {

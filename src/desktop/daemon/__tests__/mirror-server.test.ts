@@ -7,7 +7,7 @@ import { piSessionDir } from '../../../core/pi-session/session-store/session-dir
 import { worktreeFolderFor } from '../../../core/worktrees/records';
 import type { MirrorFile } from '../control-messages';
 import type { FileWatcherFactory } from '../../../platform/file-watcher';
-import { createMirrorWatches, HASH_SPAN_BYTES, MAX_MIRROR_WATCHES, syncMirror, syncProject, syncSubcalls, type MirrorStream } from '../mirror-server';
+import { createMirrorWatches, HASH_SPAN_BYTES, MAX_MIRROR_WATCHES, projectSessionFolders, syncMirror, syncProject, syncSubcalls, type MirrorStream } from '../mirror-server';
 
 let agentDir: string;
 let project: string;
@@ -495,6 +495,24 @@ describe('mirror watches on the daemon', () => {
     await expect(watches.follow(project, () => undefined)).rejects.toThrow('connection-1 is closed');
     await expect(watches.followSubcalls(() => undefined)).rejects.toThrow('connection-1 is closed');
     expect(made).toHaveLength(1);
+  });
+
+  it.runIf(process.platform === 'win32')('reads no registry.json that links off its folder\'s share, and lists the project\'s own folder alone (win32)', async (ctx) => {
+    // a registry listing a chat worktree of the project, reached only through this computer's admin share
+    const remote = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dm-mirror-share-')));
+    try {
+      fs.writeFileSync(path.join(remote, 'registry.json'), JSON.stringify({ version: 1, records: [chatRecord('live0001', project)] }));
+      fs.mkdirSync(worktreesRoot, { recursive: true });
+      try {
+        fs.readdirSync(`\\\\localhost\\${remote[0]}$${remote.slice(2)}`);
+        fs.symlinkSync(`\\\\localhost\\${remote[0]}$${remote.slice(2)}\\registry.json`, path.join(worktreesRoot, 'registry.json'), 'file');
+      } catch {
+        ctx.skip('this user cannot reach \\\\localhost\\C$ or make a file symlink');
+      }
+      expect(await projectSessionFolders(agentDir, worktreesRoot, project)).toEqual({ own: sessions, worktrees: [], unreadable: true });
+    } finally {
+      fs.rmSync(remote, { recursive: true, force: true });
+    }
   });
 
   it('follows the project\'s own folder while the registry does not parse, the registry\'s watch announcing the fix', async () => {

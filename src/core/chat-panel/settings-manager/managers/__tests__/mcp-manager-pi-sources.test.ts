@@ -112,7 +112,8 @@ describe("pi config sources", () => {
     const created = platform.fileWatchers.watchers.slice(before);
 
     expect(created.some((w) => w.base === fakeWorkspace && w.glob === ".pi/mcp.json")).toBe(true);
-    expect(created.some((w) => w.base === path.dirname(USER_PI()) && w.glob === "mcp.json")).toBe(true);
+    // based at the home folder, so the desktop watcher judges a link at `.pi` or `.pi/agent` by the network rule
+    expect(created.some((w) => w.base === fakeHome && w.glob === ".pi/agent/mcp.json")).toBe(true);
     manager.dispose();
   });
 });

@@ -21,13 +21,14 @@ const query = (overrides: Partial<SearchQuery> = {}): SearchQuery => ({
   ...overrides,
 });
 
-const request = (overrides: Partial<SearchQuery> = {}, extra: { include?: string[]; exclude?: string[]; excludeSettings?: string[]; ignore?: WalkIgnore; contextLines?: number } = {}) =>
+const request = (overrides: Partial<SearchQuery> = {}, extra: { include?: string[]; exclude?: string[]; excludeSettings?: string[]; ignore?: WalkIgnore; followLinks?: boolean; contextLines?: number } = {}) =>
   searchRequest({
     query: query(overrides),
     include: extra.include ?? [],
     exclude: extra.exclude ?? [],
     excludeSettings: extra.excludeSettings ?? [],
     ignore: extra.ignore ?? ALL_IGNORE_FILES,
+    followLinks: extra.followLinks ?? false,
     contextLines: extra.contextLines ?? 0,
   });
 const args = (overrides: Partial<SearchQuery> = {}, extra: { contextLines?: number } = {}): readonly string[] => request(overrides, extra).match;
@@ -93,6 +94,15 @@ describe('searchRequest', () => {
     expect(on.walk).toEqual({ ignore, overrides: ['src/**', '!**/gen', '!**/node_modules', '!**/.git'] });
     const off = request({ useExcludeSettingsAndIgnoreFiles: false }, { exclude: ['**/gen'], excludeSettings: ['**/node_modules', '**/.git'], ignore });
     expect(off.walk).toEqual({ ignore: { files: false, global: false, parents: false }, overrides: ['!**/gen'] });
+  });
+
+  it('walks through links with the follow setting on, whatever the toggle, and never asks rg to follow one', () => {
+    for (const useExcludeSettingsAndIgnoreFiles of [true, false]) {
+      const followed = request({ useExcludeSettingsAndIgnoreFiles }, { followLinks: true });
+      expect(followed.walk.followLinks).toBe(true);
+      expect(followed.match).not.toContain('--follow');
+      expect(request({ useExcludeSettingsAndIgnoreFiles }).walk).not.toHaveProperty('followLinks');
+    }
   });
 });
 

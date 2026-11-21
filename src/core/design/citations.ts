@@ -37,7 +37,7 @@ export class ProjectFiles {
   async resolve(file: string): Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
     const relative = relativeProjectPath(file);
     if (!relative) return { ok: false, reason: `${file} is not a path relative to the working folder` };
-    const confined = await this.confinement.confineExisting(this.cwd, relative);
+    const confined = await this.confinement.confineExisting(this.cwd, relative, 'withinProject');
     if (!confined.ok) {
       return { ok: false, reason: confined.reason === 'missing' ? `${file} does not exist` : confined.reason === 'outside' ? `${file} is outside the working folder` : `${file} could not be read` };
     }

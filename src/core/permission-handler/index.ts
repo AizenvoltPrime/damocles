@@ -22,7 +22,7 @@ import type { PermissionMode } from '../../shared/types/settings';
 import type { PermissionUpdate, PromptApprover, PromptOwner, Question } from '../../shared/types/permissions';
 import { log } from '../logger';
 import { bypassAllowed, hostDefaultMode } from '../client-snapshots';
-import type { PermissionResult, CanUseToolContext, SettledApproval, McpToolIdentity, ChatPermissions, MatchRuleOptions, DesignApprovalAnswer } from './types';
+import type { PermissionResult, CanUseToolContext, SettledApproval, McpToolIdentity, ChatPermissions, MatchRuleOptions, DesignApprovalAnswer, SkillDescriber } from './types';
 import { buildUnaskedDenyResult } from './utils';
 import type { McpResourceRuleFilter } from './mcp-resource-rule';
 import { IMAGE_MODEL_SETTING } from '../pi-session/tools/image-tool-specs';
@@ -50,8 +50,11 @@ export class PermissionHandler {
   private onPermissionsChanged: (() => void) | null = null;
 
   // panelId is the chat panel this handler belongs to; proposal diffs are shown there on hosts that render editors in the panel.
-  /** `settingsFolder` is the chat's folder, whose permission-mode and YOLO defaults seed this handler; `pi` reads the loaded pi module, whose edit a single Edit's approval diff runs. */
-  constructor(platform: Platform, pi: () => PiCodingAgentModule | null, panelId?: string, settingsFolder?: SettingsFolder) {
+  /**
+   * `settingsFolder` is the chat's folder, whose permission-mode and YOLO defaults seed this handler; `pi` reads the loaded pi
+   * module, whose edit a single Edit's approval diff runs; `describeSkill` fills a skill approval prompt's description.
+   */
+  constructor(platform: Platform, pi: () => PiCodingAgentModule | null, panelId?: string, settingsFolder?: SettingsFolder, describeSkill: SkillDescriber = async () => undefined) {
     this.platform = platform;
     this.state = new PermissionState();
     this.diffManager = new DiffManager(platform.editor, panelId, pi, diffService());
@@ -76,6 +79,7 @@ export class PermissionHandler {
     this.skillManager = new SkillManager(
       this.state,
       getPostMessage,
+      describeSkill,
       () => bypassAllowed(platform),
     );
     this.evaluatorManager = new EvaluatorManager(this.state, platform);

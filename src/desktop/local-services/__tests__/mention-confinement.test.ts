@@ -50,20 +50,32 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+const depsOf = (trusted: boolean) => ({ folders, confinement: createDesktopFileConfinement(), trust: { isTrusted: () => trusted } });
+
 describe('a mention through the desktop confinement', () => {
   it('resolves a file inside the chat\'s project', async () => {
-    const deps = { folders, confinement: createDesktopFileConfinement() };
+    const deps = depsOf(false);
     expect(await resolveMention(deps, { projectKey: folderKey(project), relativePath: 'real/a.ts' }, project)).toEqual({ ok: true, path: path.join(project, 'real', 'a.ts'), display: 'real/a.ts' });
     expect(await resolveMention(deps, { path: path.join(project, 'real', 'a.ts') }, project)).toMatchObject({ ok: true, display: 'real/a.ts' });
   });
 
-  it.runIf(process.platform === 'win32')('refuses a repository link to a share by project key or by path, and never touches the share', async () => {
+  it('follows a link out of the project only in a trusted one, showing the path through the link', async () => {
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'b.ts'), '');
+    fs.symlinkSync(outside, path.join(project, 'out'), 'junction');
+    const target = { projectKey: folderKey(project), relativePath: 'out/b.ts' };
+    expect(await resolveMention(depsOf(true), target, project)).toEqual({ ok: true, path: path.join(outside, 'b.ts'), display: 'out/b.ts' });
+    expect(await resolveMention(depsOf(false), target, project)).toEqual({ ok: false, reason: 'outsideProject' });
+  });
+
+  it.runIf(process.platform === 'win32').each([[true], [false]])('refuses a repository link to a share by project key or by path, and never touches the share (trusted: %s)', async (trusted) => {
     // A real junction (no privilege needed) whose readlink answers a UNC path.
     const link = path.join(project, 'share');
     fs.symlinkSync(path.join(project, 'real'), link, 'junction');
     fakeTargets.set(folderKey(link), '\\\\server\\share\\x');
     guarded.push(link);
-    const deps = { folders, confinement: createDesktopFileConfinement() };
+    const deps = depsOf(trusted);
     expect(await resolveMention(deps, { projectKey: folderKey(project), relativePath: 'share/a.ts' }, project)).toEqual({ ok: false, reason: 'outsideProject' });
     expect(await resolveMention(deps, { projectKey: folderKey(project), relativePath: 'share' }, project)).toEqual({ ok: false, reason: 'outsideProject' });
     expect(await resolveMention(deps, { path: path.join(link, 'a.ts') }, project)).toEqual({ ok: false, reason: 'outsideChat' });

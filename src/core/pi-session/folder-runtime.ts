@@ -4,21 +4,24 @@ import type {
   ExtensionAPI,
   ExtensionFactory,
   ModelRuntime,
+  PromptTemplate,
+  ResourceDiagnostic,
   SessionContext,
   ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import type { Model, Api } from '@earendil-works/pi-ai';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
-import { existsSync } from 'fs';
 import * as os from 'os';
 import { log } from '../logger';
 import { installedPlatform } from '../platform-host';
 import { browserReachable } from '../user-scope';
 import { outsidePins } from '../client-snapshots';
 import type { PiCodingAgentModule } from './pi-loader';
-import { overrideGlobalContextFile } from './context-files';
+import { overrideGlobalContextFile, type ContextWorktree } from './context-files';
+import { agentConfigBases, configLinkPolicy, type ConfigNotices } from '../config/local-config-path';
 import { createDamoclesExtensionFactory, type PanelRegistryReader, type CheckpointRegistryReader } from './damocles-extension';
-import { assetSourceDirs, assetSources, type AssetSourceName } from '../asset-sources';
+import { assetSourceDirs, assetSources, type AssetSourceDir } from '../asset-sources';
+import { boundedLog, discoverCommands, isRunnable, LinkTargetWatchers, mergeAssets, skillLinkTargets, toPromptTemplate, type CommandAsset, type WatchTarget } from '../assets';
 import { HooksConfigService, type DispatchDeps } from './hooks';
 import type { McpClientManager } from './mcp/mcp-client-manager';
 import type { McpModule } from './mcp/mcp-client-loader';
@@ -38,6 +41,7 @@ import {
   type NoticeMemory,
   type PersonalToolLists,
   type ToolNameList,
+  type ToolRenames,
 } from './mcp/tool-name-migration';
 import { isNestedMcpName } from './mcp/naming';
 import { McpToolRegistrar } from './tools/mcp-tools';
@@ -54,37 +58,46 @@ import type { TrustService } from '../../platform/trust-service';
 import type { Disposable } from '../../platform/disposable';
 import type { SettingInspection } from '../../platform/settings-store';
 import type { FileWatcher, FileWatcherFactory } from '../../platform/file-watcher';
-import { personalFilesTrusted, worktreeWalkOf } from '../worktrees/personal-config';
+import { personalConfigRoot, personalFilesTrusted, worktreeWalkOf } from '../worktrees/personal-config';
 import { modelInPlan, notInPlanClause } from './pi-models';
 import { clearTerminatedCalls } from './terminated-calls';
 import { readSessionFileEntries } from './session-store/session-file-entries';
 
-/** An existing asset resource directory plus its source attribution (for pi's resource source info). */
-interface AssetResourceEntry {
-  path: string;
-  source: AssetSourceName;
-  scope: 'project' | 'user';
-}
-
 /**
- * Existing asset resource directories for a given kind ('skills' | 'commands') across every source
- * (`.damocles` first, then `.claude` + `.codex` ordered by `damocles.assetSourcePrecedence`), project
- * (`<cwd>`) then user-global (`~`) within each. Codex maps 'commands' → `.codex/prompts`. Project dirs
- * are dropped in an untrusted workspace so a repo cannot inject system-prompt text through a `SKILL.md`.
- * Only existing dirs are returned so the loader never warns on a missing one. Additive to pi-native
- * dirs; pi-native sources outrank these, and earlier dirs in this list outrank later ones (pi's loader
- * is first-wins on a name collision).
+ * What this folder's pi loader gets from the `.damocles`/`.claude`/`.codex` roots, taken before each services creation and
+ * reload. prompts: every runnable command as a pi template, in `assetSourceDirs` order (first wins on a name). skillRoots: the
+ * skill roots the link policy admits, untrusted project ones left out, so a repo cannot inject system-prompt text through a
+ * `SKILL.md`. followed: the project-scope link targets behind both, which this runtime watches.
  */
-function assetResourceEntries(cwd: string, kind: 'skills' | 'commands', trust: TrustService): AssetResourceEntry[] {
-  const trusted = trust.isTrusted(cwd);
-  return assetSourceDirs(kind, { workspacePath: cwd, homeDir: os.homedir() })
-    .filter((d) => trusted || d.scope !== 'project')
-    .map((d) => ({ path: d.dir, source: d.source, scope: d.scope }))
-    .filter((e) => existsSync(e.path));
+interface AssetSnapshot {
+  readonly prompts: PromptTemplate[];
+  readonly skillRoots: readonly AssetSourceDir[];
+  readonly followed: readonly WatchTarget[];
 }
 
-function assetResourcePaths(cwd: string, kind: 'skills' | 'commands', trust: TrustService): string[] {
-  return assetResourceEntries(cwd, kind, trust).map((e) => e.path);
+// Equal for two snapshots that would give pi the same templates, skill roots and watches.
+function snapshotKey(snapshot: AssetSnapshot): string {
+  return JSON.stringify([
+    snapshot.prompts.map((prompt) => [prompt.name, prompt.filePath, prompt.description, prompt.argumentHint ?? null, prompt.content]),
+    snapshot.skillRoots.map((root) => [root.dir, root.source, root.scope]),
+    snapshot.followed,
+  ]);
+}
+
+/** The user roots' commands and admitted skill roots, each in walk order, as one scan of the user roots found them. */
+export interface UserAssets {
+  readonly commands: readonly CommandAsset[];
+  readonly skillRoots: readonly AssetSourceDir[];
+}
+
+/** Rows from separate scans of the project and user roots, ordered as one scan of both lists them. */
+function inRootOrder<T extends { readonly source: AssetSourceDir['source']; readonly scope: AssetSourceDir['scope'] }>(
+  kind: 'commands' | 'skills',
+  workspacePath: string,
+  homeDir: string,
+  rows: readonly T[],
+): T[] {
+  return assetSourceDirs(kind, { workspacePath, homeDir }).flatMap((dir) => rows.filter((row) => row.source === dir.source && row.scope === dir.scope));
 }
 
 /**
@@ -156,15 +169,20 @@ export interface FolderRuntimeOptions {
   additionMemory: AdditionMemory;
   /** The project scope's `damocles.tools.disabled`, in its file or as a setting where the host keeps no file, or null when it holds none. */
   projectDisabledTools: () => ToolNameList | null;
-  /** `damocles.tools.disabled` at the user scope, and at the local scope in a trusted folder. */
-  personalDisabledTools: (trusted: boolean) => PersonalToolLists;
+  /** `damocles.tools.disabled` at the user scope, and at the local scope in a trusted folder; `stillTrusted` is read again inside the local write. */
+  personalDisabledTools: (trusted: boolean, stillTrusted: () => boolean) => PersonalToolLists;
   /** `inspect()` of `damocles.mcp.toolExposure`, read on every use. */
   toolExposureSetting: () => SettingInspection<unknown>;
   /** `inspect()` of `damocles.mcp.resourceExposure`, read on every use. */
   resourceExposureSetting: () => SettingInspection<unknown>;
   trust: TrustService;
   fileWatchers: FileWatcherFactory;
+  /** Where a config file this folder reads and refuses (hooks.json, the global instruction file) is reported. */
+  notifications: ConfigNotices;
 }
+
+// pi's warnings carry repository paths and names
+const logPiWarning = boundedLog((line) => log('%s', line));
 
 function disposeSessionSafe(session: AgentSession): void {
   try {
@@ -193,6 +211,9 @@ export class FolderRuntime {
   private readonly _pi: PiCodingAgentModule;
   private readonly _mcpModule: McpModule;
   private readonly _agentDir: string;
+  /** pi's link policy for this folder's loaders and settings: links judged from the folder, the home folder, the agent dir's
+   *  scope root and the personal config root, whichever deepest holds the path. */
+  private readonly _linkPolicy: (file: string) => boolean;
   private readonly _modelRuntime: ModelRuntime;
   private readonly _planModelIds: FolderRuntimeOptions['planModelIds'];
   private _services: AgentSessionServices | null = null;
@@ -214,7 +235,7 @@ export class FolderRuntime {
   private readonly _mcpUnsubscribe: () => void;
   private readonly _ruleMemory: MigrationMemory;
   private readonly _projectDisabledTools: () => ToolNameList | null;
-  private readonly _personalDisabledTools: (trusted: boolean) => PersonalToolLists;
+  private readonly _personalDisabledTools: FolderRuntimeOptions['personalDisabledTools'];
   /** Per-live-session posters of renamed-tool notices, keyed by pi sessionId. */
   private readonly _ruleNoticePosters = new Map<string, (notices: McpRenamedToolRuleNotice[]) => void>();
   /** Notices found while no panel was registered to show them. */
@@ -256,11 +277,15 @@ export class FolderRuntime {
   private readonly _assetWatchers: FileWatcher[] = [];
   private readonly _trust: TrustService;
   private readonly _fileWatchers: FileWatcherFactory;
+  private readonly _notifications: ConfigNotices;
   private _assetDebounce: NodeJS.Timeout | null = null;
-  /** The additional resource roots handed to pi's loader. pi aliases these arrays rather than copying
-   *  them and re-reads them on every `reload()`, so they are only ever updated in place. */
+  /** The skill roots handed to pi's loader. pi aliases this array rather than copying it and re-reads it on every
+   *  `reload()`, so it is only ever updated in place. */
   private readonly _additionalSkillPaths: string[] = [];
-  private readonly _additionalPromptTemplatePaths: string[] = [];
+  private _assetSnapshot: AssetSnapshot = { prompts: [], skillRoots: [], followed: [] };
+  /** The warnings of pi's last resource load, by kind, path and message, so one that persists is logged only once. */
+  private _loggedPiWarnings = new Set<string>();
+  private readonly _assetTargets: LinkTargetWatchers;
   /** Count of sessions bound off this folder's services; the first uses the pristine creation runtime. */
   private _sessionsCreated = 0;
   private _disposed = false;
@@ -272,10 +297,19 @@ export class FolderRuntime {
     this._pi = options.pi;
     this._mcpModule = options.mcpModule;
     this._agentDir = options.agentDir;
+    this._linkPolicy = configLinkPolicy([options.cwd, ...agentConfigBases(options.agentDir, os.homedir()), personalConfigRoot(options.cwd)]);
     this._modelRuntime = options.modelRuntime;
     this._planModelIds = options.planModelIds;
     this._trust = options.trust;
     this._fileWatchers = options.fileWatchers;
+    this._notifications = options.notifications;
+    this._assetTargets = new LinkTargetWatchers(
+      options.fileWatchers,
+      () => this._scheduleAssetReload(),
+      () => {
+        this._retryAssetScan().catch((err) => log('[FolderRuntime] asset retry scan failed: %O', err));
+      },
+    );
     this._ruleMemory = { notices: options.noticeMemory, additions: options.additionMemory };
     this._projectDisabledTools = options.projectDisabledTools;
     this._personalDisabledTools = options.personalDisabledTools;
@@ -299,7 +333,7 @@ export class FolderRuntime {
       this.queueRenamedToolRuleMigration();
     });
     this._trustListener = options.trust.onDidChangeTrust(() => this.queueRenamedToolRuleMigration());
-    this._hooksConfig = new HooksConfigService(options.cwd, options.trust, options.fileWatchers);
+    this._hooksConfig = new HooksConfigService(options.cwd, options.trust, options.fileWatchers, options.notifications);
     // a daemon's core: the browser tools join ToolSearch's menu when the first client attaches and leave it with the last
     let browserReach = browserReachable();
     this._browserReachListener = installedPlatform()?.remote?.clients.onDidChange(() => {
@@ -354,7 +388,9 @@ export class FolderRuntime {
       workspaceRoot: this.cwd,
       userHome: os.homedir(),
     };
-    this._refreshAdditionalResourcePaths();
+    // The settings take the trust the snapshot was taken under, so a change during the scan shows as a mismatch, which
+    // PiRuntime's post-creation check answers with a reload.
+    const snapshotTrusted = await this._refreshAssetSnapshot();
     // its availability refresh reads every provider's credential, so it must never run inside a turn's pin
     this._services = await outsidePins(() => pi.createAgentSessionServices({
       cwd: this.cwd,
@@ -362,10 +398,12 @@ export class FolderRuntime {
       modelRuntime: this._modelRuntime,
       // pi trusts project settings by default, and they can install and run code (`.pi/settings.json`
       // packages, `.pi/extensions`). The subscription plugin is user-scope, so this does not affect it.
-      settingsManager: withSettingsPolicy(pi.SettingsManager.create(this.cwd, this._agentDir, { projectTrusted: this._trust.isTrusted(this.cwd) })),
+      settingsManager: withSettingsPolicy(pi.SettingsManager.create(this.cwd, this._agentDir, { projectTrusted: snapshotTrusted, linkPolicy: this._linkPolicy })),
       // The Damocles extension (permission gate + plan-mode injection + MCP tool registration). pi
       // re-applies extensionFactories on `resourceLoader.reload()`, so it survives reloads.
       resourceLoaderOptions: {
+        // pi asks before it follows a link in its resource walks and before it reads a context file (patch 007)
+        linkPolicy: this._linkPolicy,
         extensionFactories: [
           createDamoclesExtensionFactory(
             this._panelRegistryReader(),
@@ -374,13 +412,14 @@ export class FolderRuntime {
             (extensionApi, republishToolSearch) => this.attachExtensionInstance(extensionApi, republishToolSearch),
           ),
         ],
-        // Surface `.damocles` + `.claude` + `.codex` skills and slash commands (commands = pi
-        // prompt templates; Codex commands live under `.codex/prompts`) as additional resource roots,
-        // additive to pi-native dirs (agentDir + cwd/.pi); pi-native sources outrank these on a name
-        // collision, `.damocles` outranks the other two, and `damocles.assetSourcePrecedence` orders
-        // Claude vs Codex among them.
+        // `.damocles` + `.claude` + `.codex` skill roots, additive to pi-native dirs (agentDir + cwd/.pi), which outrank them.
         additionalSkillPaths: this._additionalSkillPaths,
-        additionalPromptTemplatePaths: this._additionalPromptTemplatePaths,
+        // Commands reach pi only from the snapshot (pi's own prompt walk never sees their roots); pi-native templates win a name,
+        // compared exactly as pi's expandPromptTemplate matches it, so every menu row pi did not shadow still expands.
+        promptsOverride: (base) => {
+          const names = new Set(base.prompts.map((prompt) => prompt.name));
+          return { prompts: [...base.prompts, ...this._assetSnapshot.prompts.filter((prompt) => !names.has(prompt.name))], diagnostics: base.diagnostics };
+        },
         agentsFilesOverride: (base) => ({
           agentsFiles: overrideGlobalContextFile(base.agentsFiles, {
             agentDir: this._agentDir,
@@ -388,7 +427,8 @@ export class FolderRuntime {
             // Read per call, never captured: a trust-change reload re-runs this closure, and that is
             // what surfaces or withdraws the project instructions file with no window reload.
             trusted: this._trust.isTrusted(this.cwd),
-            ...worktreeWalkOf(this.cwd),
+            notifications: this._notifications,
+            ...this._contextWorktree(),
           }),
         }),
         // Damocles does not support user-installed pi extensions: drop any configured in pi so leftover
@@ -414,9 +454,10 @@ export class FolderRuntime {
     for (const { path: extPath, error } of this.getExtensionErrors()) {
       log('[FolderRuntime] extension failed to load (%s): %s', extPath, error);
     }
-    // Attach the source/scope metadata for the `.damocles`/`.claude`/`.codex` roots, and watch the
-    // project ones so a skill or command created later reaches the agent with no window reload.
+    // Attach the source/scope metadata for the `.damocles`/`.claude`/`.codex` skill roots, and watch the
+    // project roots so a skill or command created later reaches the agent with no window reload.
     this.applyAssetResources();
+    this.logPiWarnings();
     this._setupProjectAssetWatchers();
     log('[FolderRuntime] created (cwd=%s)', this.cwd);
   }
@@ -449,26 +490,32 @@ export class FolderRuntime {
    * other files, agent `disallowed_tools`, the project scope's `damocles.tools.disabled`, and a folder server's
    * retired tools in places other folders share. Runs whenever the folder's tools change, so a server that
    * connects later is handled then, and on a trust change. Folder files and the local scope are read or touched
-   * only in a trusted folder, and its personal files only while personalFilesTrusted admits them. A run whose personal-list rewrite failed is not done, so the next one retries it.
+   * only in a trusted folder, and its personal files only while personalFilesTrusted admits them. A run whose personal-list rewrite failed, or that could not check, read or rewrite a rules file, is not done, so the next one retries it.
    */
   private queueRenamedToolRuleMigration(): void {
     // Inputs are read in the queued step, after every trust listener (the agent registry's reload) ran.
     this._ruleMigration = this._ruleMigration
       .then(async () => {
         if (this._disposed) return;
-        const input = this._mcpView.legacyToolNameInput();
-        const renames = toolRenames(legacyToCurrentToolNames(input), retiredResourceToolNames(input));
+        const renamesNow = (): ToolRenames => {
+          const input = this._mcpView.legacyToolNameInput();
+          return toolRenames(legacyToCurrentToolNames(input), retiredResourceToolNames(input));
+        };
+        if (renamesNow().rules.size === 0) return;
+        // Trust and every other input are read together after this wait, so none is older than the agents read with them.
+        const lists = await this.agentDisallowedToolLists();
+        if (this._disposed) return;
+        const renames = renamesNow();
         if (renames.rules.size === 0) return;
         const isTrusted = (target: string): boolean => this._trust.isTrusted(target);
-        const folder = isTrusted(this.cwd) ? { path: this.cwd, personalFiles: personalFilesTrusted(isTrusted, this.cwd) } : null;
+        const folder = isTrusted(this.cwd) ? { path: this.cwd, personalFiles: personalFilesTrusted(isTrusted, this.cwd), trusted: () => personalFilesTrusted(isTrusted, this.cwd) } : null;
         const entries = (map: ReadonlyMap<string, string>) => [...map].map(([legacy, current]) => `${legacy}>${current}`).sort();
         const signature = [`trusted=${folder !== null}`, `personal=${folder?.personalFiles === true}`, ...entries(renames.rules), 'shared:', ...entries(renames.shared.rules)].join('\n');
         if (signature === this._ruleMigrationSignature) return;
-        const lists = this.agentDisallowedToolLists();
         const projectDisabled = folder ? this._projectDisabledTools() : null;
         if (projectDisabled) lists.push(projectDisabled);
         // A renamed tool's personal entries move into toolExposure elsewhere (`McpManager.migrateDisabledMcpTools`).
-        const { notices, complete } = await migrateRenamedToolRules(folder, renames, this._ruleMemory, lists, this._personalDisabledTools(folder !== null));
+        const { notices, complete } = await migrateRenamedToolRules(folder, renames, this._ruleMemory, lists, this._personalDisabledTools(folder !== null, () => isTrusted(this.cwd)));
         if (complete) this._ruleMigrationSignature = signature;
         await this.deliverRuleNotices(notices);
       })
@@ -476,8 +523,10 @@ export class FolderRuntime {
   }
 
   /** The `disallowed_tools` of the markdown agents this folder loads (project agents only when trusted). */
-  private agentDisallowedToolLists(): ToolNameList[] {
-    return this.getWorkspaceAgentRegistry()
+  private async agentDisallowedToolLists(): Promise<ToolNameList[]> {
+    const agents = this.getWorkspaceAgentRegistry();
+    await agents.whenLoaded();
+    return agents
       .getRegistry()
       .getAvailableConfigs()
       .flatMap((agent) => (agent.filePath && agent.disallowedTools ? [{ path: agent.filePath, names: agent.disallowedTools }] : []));
@@ -603,47 +652,74 @@ export class FolderRuntime {
   }
 
   /**
-   * Recompute the additional resource roots in place, so the next `reload()` rebuilds its base set
-   * from the dirs that exist right now, in `assetSourceDirs` order (project ahead of user within a
-   * source). pi aliases these arrays rather than copying them
-   * (`resource-loader.ts:418-419` in pi 1.5.2) and re-reads them per reload (`:632`, `:647`), which is what makes
-   * an in-place splice reach it. Reassigning the fields, or handing pi a fresh array, would leave the
-   * loader on the stale one.
+   * Take the asset snapshot and update the skill roots in place, so the next `reload()` rebuilds from what the link policy
+   * admits right now, in `assetSourceDirs` order. pi aliases `additionalSkillPaths` rather than copying it
+   * (`resource-loader.ts:418-419` in pi 1.5.2) and re-reads it per reload (`:632`), so only an in-place splice reaches it.
    *
    * This has to happen before the reload rather than after it. `extendResources` merges primary-first
-   * (`resource-loader.ts:508-512`), so a dir that reaches the loader only through that call lands
-   * BEHIND the base entries and loses a name collision it should win. That is reachable two ways: a
-   * trust grant admitting the project dirs, and a project asset dir created after creation, which is the
-   * case the asset watchers exist for.
+   * (`resource-loader.ts:508-512`), so a root that reaches the loader only through that call lands BEHIND the base entries
+   * and loses a name collision it should win (a trust grant admitting the project roots, a root created after creation).
+   * Returns the trust the snapshot was taken under. `user`, PiRuntime's one scan of the user roots for a burst of user asset
+   * changes, stands in for this folder's own walk of them.
    */
-  private _refreshAdditionalResourcePaths(): void {
-    const skills = assetResourcePaths(this.cwd, 'skills', this._trust);
-    this._additionalSkillPaths.splice(0, this._additionalSkillPaths.length, ...skills);
-    const commands = assetResourcePaths(this.cwd, 'commands', this._trust);
-    this._additionalPromptTemplatePaths.splice(0, this._additionalPromptTemplatePaths.length, ...commands);
+  private async _refreshAssetSnapshot(user?: Promise<UserAssets | null>): Promise<boolean> {
+    const pi = this._pi;
+    const userAssets = (await user) ?? null;
+    let trusted: boolean;
+    let scan: { commands: CommandAsset[]; skillRoots: AssetSourceDir[]; followed: WatchTarget[] };
+    // Scanned again until trust held for a whole scan, so the snapshot, the skill roots and the watched targets are one trust's.
+    do {
+      trusted = this._trust.isTrusted(this.cwd);
+      scan = await this._scanAssets(trusted, userAssets);
+    } while (this._trust.isTrusted(this.cwd) !== trusted);
+    this._assetSnapshot = {
+      prompts: mergeAssets(scan.commands).filter(isRunnable).map((command) => toPromptTemplate(command, pi.createSyntheticSourceInfo)),
+      skillRoots: scan.skillRoots,
+      followed: scan.followed,
+    };
+    this._additionalSkillPaths.splice(0, this._additionalSkillPaths.length, ...scan.skillRoots.map((root) => root.dir));
+    this._assetTargets.sync(this._assetSnapshot.followed);
+    return trusted;
+  }
+
+  /** The commands and skill roots in `assetSourceDirs` order, and the project roots' link targets; `user` replaces the walk of the user roots. */
+  private async _scanAssets(trusted: boolean, user: UserAssets | null): Promise<{ commands: CommandAsset[]; skillRoots: AssetSourceDir[]; followed: WatchTarget[] }> {
+    const homeDir = os.homedir();
+    const scopes = { workspacePath: this.cwd, homeDir, trusted, log: (line: string) => log('%s', line), ...(user ? { skipUserRoots: true as const } : {}) };
+    const [{ commands, followed: commandTargets }, skills] = await Promise.all([
+      discoverCommands({ ...scopes, parseFrontmatter: this._pi.parseFrontmatter }),
+      skillLinkTargets(scopes),
+    ]);
+    const followed = [...commandTargets.project, ...skills.followed.project];
+    if (!user) return { commands, skillRoots: skills.roots, followed };
+    return {
+      commands: inRootOrder('commands', this.cwd, homeDir, [...commands, ...user.commands]),
+      skillRoots: inRootOrder('skills', this.cwd, homeDir, [...skills.roots, ...user.skillRoots]),
+      followed,
+    };
+  }
+
+  /** The chat worktree walk of this folder's instruction files, with this folder's link policy; none outside a chat worktree. */
+  private _contextWorktree(): { worktree?: ContextWorktree } {
+    const { worktree } = worktreeWalkOf(this.cwd);
+    return worktree ? { worktree: { ...worktree, linkPolicy: this._linkPolicy } } : {};
   }
 
   /**
-   * Push the current `.damocles`/`.claude`/`.codex` skill + command directories into the live resource
-   * loader via `extendResources` (which re-scans immediately). Every reload already rebuilds the base
-   * set from the same recomputed dirs, so this is a no-op on the path list itself. What it adds is the
-   * per-dir source/scope metadata pi's resource-source info reports, which `reload()` does not carry.
-   * Re-applied after creation and after every `reload()` (via `_reloadResources`). existsSync-filtered,
-   * so absent dirs add nothing and produce no "path does not exist" warning.
+   * Push the snapshot's skill roots into the live loader via `extendResources` (which re-scans immediately). The reload
+   * already loaded the same roots; what this adds is the per-root source/scope metadata pi's resource-source info reports,
+   * which `reload()` does not carry, so it is re-applied after creation and after every reload.
    */
   private applyAssetResources(): void {
     const loader = this._services?.resourceLoader;
     if (!loader) return;
-    const toEntries = (kind: 'skills' | 'commands') =>
-      assetResourceEntries(this.cwd, kind, this._trust).map((e) => ({
-        path: e.path,
-        metadata: { source: e.source, scope: e.scope, origin: 'top-level' as const },
-      }));
-    const skillPaths = toEntries('skills');
-    const promptPaths = toEntries('commands');
-    if (skillPaths.length === 0 && promptPaths.length === 0) return;
+    const skillPaths = this._assetSnapshot.skillRoots.map((root) => ({
+      path: root.dir,
+      metadata: { source: root.source, scope: root.scope, origin: 'top-level' as const },
+    }));
+    if (skillPaths.length === 0) return;
     try {
-      loader.extendResources({ skillPaths, promptPaths });
+      loader.extendResources({ skillPaths });
     } catch (err) {
       log('[FolderRuntime] applyAssetResources failed: %O', err);
     }
@@ -658,8 +734,8 @@ export class FolderRuntime {
    * one adopt the other's. The rejection still reaches the caller; the chain is kept alive with a
    * swallowing continuation so one failed reload can't poison later ones.
    */
-  private _reloadResources(binding: ReloadBinding): Promise<void> {
-    const run = this._reloadSync.then(() => this._runResourceReload(binding));
+  private _reloadResources(binding: ReloadBinding, user?: Promise<UserAssets | null>): Promise<void> {
+    const run = this._reloadSync.then(() => this._runResourceReload(binding, user));
     this._reloadSync = run.then(
       () => undefined,
       () => undefined,
@@ -667,12 +743,12 @@ export class FolderRuntime {
     return run;
   }
 
-  /** Recompute the additional resource roots, reload the resource loader, retire/adopt the attachment
-   *  of the instance the reload replaces or mints, then re-apply the asset dirs (the reload drops the
-   *  `extendResources` source/scope metadata, so it has to be re-pushed each time). */
-  private async _runResourceReload(binding: ReloadBinding): Promise<void> {
+  /** Retake the asset snapshot, reload the resource loader, retire/adopt the attachment of the instance the reload
+   *  replaces or mints, then re-apply the skill roots (the reload drops the `extendResources` source/scope metadata). */
+  private async _runResourceReload(binding: ReloadBinding, user?: Promise<UserAssets | null>): Promise<void> {
     if (this._disposed || !this._services) return;
-    this._refreshAdditionalResourcePaths();
+    await this._refreshAssetSnapshot(user);
+    if (this._disposed) return;
     // Cleared BEFORE the reload: a leftover value may belong to a session-BOUND instance, and adopting
     // that below would hand the runtime a disposer for a live panel.
     this._lastAttachedInstanceDetach = null;
@@ -689,14 +765,68 @@ export class FolderRuntime {
     if (binding === 'bare') this._trackCurrentInstanceAsUnbound();
     else this._lastAttachedInstanceDetach = null;
     this.applyAssetResources();
+    this.logPiWarnings();
+  }
+
+  /**
+   * Log the warnings of pi's last resource load (skills, prompts, themes, context files, extensions; its link policy's
+   * refusals among them), each one only when the previous load did not have it. Call it after every reload of this
+   * folder's loader, a session's own `reload()` included.
+   */
+  logPiWarnings(): void {
+    const loader = this.services.resourceLoader;
+    const diagnostics: Array<[string, readonly ResourceDiagnostic[]]> = [
+      ['skills', loader.getSkills().diagnostics],
+      ['prompts', loader.getPrompts().diagnostics],
+      ['themes', loader.getThemes().diagnostics],
+      ['context', loader.getContextDiagnostics?.() ?? []],
+    ];
+    const warnings = diagnostics.flatMap(([kind, found]) =>
+      found.filter((diagnostic) => diagnostic.type === 'warning').map((diagnostic) => ({ kind, path: diagnostic.path ?? '', message: diagnostic.message })));
+    for (const { path, warning } of loader.getExtensions().warnings ?? []) warnings.push({ kind: 'extensions', path, message: warning });
+    const current = new Set<string>();
+    for (const { kind, path, message } of warnings) {
+      const key = JSON.stringify([kind, path, message]);
+      if (!this._loggedPiWarnings.has(key) && !current.has(key)) logPiWarning(`[FolderRuntime] pi ${kind} warning (${path}): ${message}`);
+      current.add(key);
+    }
+    this._loggedPiWarnings = current;
   }
 
   /**
    * Reload with no session about to bind (asset edits, trust change, plugin swaps), so this runtime owns
-   * retiring the instance it mints. Pending provider registrations stay on the loader for the caller.
+   * retiring the instance it mints. Pending provider registrations stay on the loader for the caller. `user` is PiRuntime's
+   * scan of the user roots for this reload; a null scan, one that did not run, leaves this folder to walk them itself.
    */
-  reloadBare(): Promise<void> {
-    return this._reloadResources('bare');
+  reloadBare(user?: Promise<UserAssets | null>): Promise<void> {
+    return this._reloadResources('bare', user);
+  }
+
+  /**
+   * Asks a verdict the last scan found transient (a drive that did not answer) again with the probed scan alone, queued with
+   * the reloads, and reloads pi only when the snapshot changed: pi's own walk judges links synchronously with no drive probe,
+   * so a reload while the drive still does not answer would block this thread on it.
+   */
+  private _retryAssetScan(): Promise<void> {
+    const run = this._reloadSync.then(async () => {
+      if (this._disposed || !this._services) return;
+      const before = snapshotKey(this._assetSnapshot);
+      await this._refreshAssetSnapshot();
+      if (snapshotKey(this._assetSnapshot) !== before) this._scheduleAssetReload();
+    });
+    this._reloadSync = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private _scheduleAssetReload(): void {
+    if (this._disposed) return;
+    if (this._assetDebounce) clearTimeout(this._assetDebounce);
+    this._assetDebounce = setTimeout(() => {
+      this.reloadBare().catch((err) => log('[FolderRuntime] asset watcher reload failed: %O', err));
+    }, 300);
   }
 
   /**
@@ -706,18 +836,13 @@ export class FolderRuntime {
    * `extendResources` is additive and can never drop a resource, so a deletion only takes effect once
    * the loader's base set is recomputed and the surviving dirs re-extended. Debounced, and the `.catch`
    * keeps a failed reload from surfacing as an unhandled rejection. The user-scope roots are watched
-   * once by `PiRuntime`.
+   * once by `PiRuntime`, and so are the user-scope link targets; the project-scope ones are synced after each snapshot.
    *
    * These stay registered in an untrusted workspace: the reload they fire still excludes project dirs,
    * so the only cost is a redundant reload.
    */
   private _setupProjectAssetWatchers(): void {
-    const onChange = () => {
-      if (this._assetDebounce) clearTimeout(this._assetDebounce);
-      this._assetDebounce = setTimeout(() => {
-        this.reloadBare().catch((err) => log('[FolderRuntime] asset watcher reload failed: %O', err));
-      }, 300);
-    };
+    const onChange = () => this._scheduleAssetReload();
     for (const source of assetSources()) {
       for (const sub of [source.skills, source.commands]) {
         this._assetWatchers.push(this._fileWatchers.watch(this.cwd, `${sub}/**`));
@@ -816,6 +941,8 @@ export class FolderRuntime {
       modelRuntime: this._modelRuntime,
       settingsManager: isolatedSettings,
       resourceLoaderOptions: {
+        // pi's package walk runs before the no* flags apply
+        linkPolicy: this._linkPolicy,
         extensionFactories: [opts.extensionFactory],
         systemPromptOverride: () => opts.systemPrompt,
         // Suppress the AGENTS.md/CLAUDE.md re-append that would otherwise follow systemPromptOverride.
@@ -964,6 +1091,7 @@ export class FolderRuntime {
    * agent dir.
    */
   getWorkspaceAgentRegistry(): WorkspaceAgentRegistry {
+    if (this._disposed) throw new Error(`FolderRuntime(${this.cwd}): agent registry used after dispose`);
     if (!this._workspaceAgents) {
       this._workspaceAgents = new WorkspaceAgentRegistry(this.cwd, this._pi.parseFrontmatter, this._trust, this._fileWatchers);
     }
@@ -997,6 +1125,7 @@ export class FolderRuntime {
     }
     for (const watcher of this._assetWatchers) watcher.dispose();
     this._assetWatchers.length = 0;
+    this._assetTargets.dispose();
     this._panelRegistry.clear();
     this._checkpointRegistry.clear();
     this._activeToolRefreshers.clear();

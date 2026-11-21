@@ -14,7 +14,7 @@ import { installPlatform } from '../../platform-host';
 import { buildAccountInfo } from '../account-billing';
 import { PiRuntime } from '../pi-runtime';
 import { withSettingsPolicy } from '../settings-policy';
-import { SUBSCRIPTION_SOURCE } from '../subscription';
+import { SUBSCRIPTION_SOURCE } from '../subscription-source';
 
 const HOUR = 60 * 60 * 1000;
 const ALLOWANCE: HeldAuthEntry = { type: 'oauth', expires: Date.now() + HOUR, hasKey: false, flatFee: false, allowance: true };

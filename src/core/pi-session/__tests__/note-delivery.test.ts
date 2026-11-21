@@ -16,6 +16,7 @@ import { buildCustomTools } from '../tools';
 import type { ShellCancelRegistry } from '../tools/shell-cancel-registry';
 import { log } from '../../logger';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import { AgentRegistry } from '../subagents/agent-types';
 import { englishText } from '../../../shared/localized-text';
 
 // The only visible trace a team note left nothing behind, so it is asserted rather than assumed.
@@ -89,6 +90,9 @@ interface Harness {
 }
 
 /** Only the collaborators a note can reach; anything a note must not touch is here so it can be asserted silent. */
+/** The folder agent registry of a panel these tests build no folder for. */
+const NO_AGENTS = { getRegistry: () => new AgentRegistry() };
+
 function harness(): Harness {
   const emitted: ExtensionToWebviewMessage[] = [];
   const steer = vi.fn(async () => 'steered');
@@ -258,8 +262,8 @@ describe('cancel note delivery targets the agent that ran the command', () => {
 describe('the gate cancel handle delivers like the tools of its context', () => {
   it('sends the note of a Stop on a subagent call its gate still holds to that subagent', async () => {
     const h = harness();
-    const engine = (h.session as unknown as { buildSubagentEngine(pi: unknown, folder: unknown): { shellCancelFor(agentId: string): ShellCancelRegistry } })
-      .buildSubagentEngine(fakePi(), {});
+    const engine = (h.session as unknown as { buildSubagentEngine(pi: unknown, folder: unknown, agents: unknown): { shellCancelFor(agentId: string): ShellCancelRegistry } })
+      .buildSubagentEngine(fakePi(), {}, NO_AGENTS);
     engine.shellCancelFor('agent-7').admit('sub-call', undefined);
 
     expect(h.session.cancelToolCall('sub-call', NOTE)).toBe(true);
@@ -545,8 +549,8 @@ describe('a note accepted with no run in progress', () => {
 describe('each build context supplies its own delivery', () => {
   it('gives a spawned subagent a delivery bound to its own agent id', async () => {
     const h = harness();
-    const engine = (h.session as unknown as { buildSubagentEngine: (pi: PiCodingAgentModule) => { buildAgentToolset: (input: unknown) => unknown } })
-      .buildSubagentEngine(fakePi());
+    const engine = (h.session as unknown as { buildSubagentEngine: (pi: PiCodingAgentModule, folder: unknown, agents: unknown) => { buildAgentToolset: (input: unknown) => unknown } })
+      .buildSubagentEngine(fakePi(), {}, NO_AGENTS);
     engine.buildAgentToolset({ agentId: 'agent-7', agentName: 'Explore', mcpDisallowed: [] });
 
     expect(buildCustomTools).toHaveBeenCalledTimes(1);

@@ -500,6 +500,22 @@
           "label": "Smart case",
           "description": "Search case-insensitively if the pattern is all lowercase, otherwise, search case-sensitively."
         },
+        "followSymlinks": {
+          "label": "Follow symlinks",
+          "description": "Controls whether to follow symlinks while searching."
+        },
+        "useIgnoreFiles": {
+          "label": "Use ignore files",
+          "description": "Controls whether to use .gitignore, .ignore and .rgignore files when searching for files."
+        },
+        "useGlobalIgnoreFiles": {
+          "label": "Use global ignore files",
+          "description": "Controls whether to use your global gitignore file (for example, from $HOME/.config/git/ignore) when searching for files. Requires Use ignore files to be enabled."
+        },
+        "useParentIgnoreFiles": {
+          "label": "Use parent ignore files",
+          "description": "Controls whether to use .gitignore, .ignore and .rgignore files in parent directories when searching for files. Requires Use ignore files to be enabled."
+        },
         "searchOnType": {
           "label": "Search on type",
           "description": "Search all files as you type."
@@ -1391,6 +1407,10 @@
     },
     "decoration": {
       "submodule": "Submodule"
+    },
+    "link": {
+      "to": "Link to {target}",
+      "broken": "Broken link to {target}"
     },
     "transfer": {
       "running": {
@@ -2779,7 +2799,9 @@
       "failed": "The folders could not be listed.",
       "notConnected": "{name} is not connected.",
       "privacy": "macOS kept Damocles out of {folder}. To open folders there, give {helper} Full Disk Access in System Settings, Privacy & Security, on that Mac.",
-      "outside": "That folder is outside the projects on {name}."
+      "outside": "That folder is outside the projects on {name}.",
+      "share": "A link on its path leads to a network share or WSL path.",
+      "oldDaemon": "Update the Damocles server on {name} to open links that lead outside the project."
     },
     "pick": {
       "fileTitle": "Choose a file on {name}",
@@ -2869,7 +2891,8 @@
     },
     "editor": {
       "offline": "{name} is offline.",
-      "reconnect": "Reconnect"
+      "reconnect": "Reconnect",
+      "updateServer": "Update the Damocles server on {name} to open links that lead outside the project."
     },
     "add": {
       "menuLabel": "Open a project",

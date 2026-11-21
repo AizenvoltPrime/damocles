@@ -4,9 +4,9 @@ import { authorityKeyOfProject, targetFolderKeyOf } from '../../../shared/projec
 import type { Endpoint } from '../../core-protocol/endpoint';
 import type { StreamChannel } from '../../../remote/mux';
 import { abandonStream, streamBytes, writeBytes } from '../../../remote/tunnel-pipe';
-import type { Project } from '../../local-services/confine';
+import type { Confined, LinkRefusal, LinkRule, Project } from '../../local-services/confine';
 import type { PtyHostExit, PtyHostProcess } from '../../workspace/host-starters';
-import type { ClientToWorkspace, WireFileBytes, WireIdentity, WireTransferEntry, WorkspaceToClient } from '../../workspace/messages';
+import type { ClientToWorkspace, Links, WireFileBytes, WireIdentity, WireTransferEntry, WorkspaceToClient } from '../../workspace/messages';
 import type { TransferEntry } from '../../workspace/transfer-ops';
 import type { FileBytes } from '../../../core/file-bytes';
 import type { EntryIdentity, WatchEvent } from '../../workspace/file-system';
@@ -37,8 +37,7 @@ export class TransfersUnsupportedError extends Error {
   }
 }
 
-// files.readFileRange with its answer's resolvedPath and folder, which a preview's deny list needs; a daemon listing only
-// files.readFileRange reads no range for this app
+// files.readFileRange with its answer's resolvedPath and folder, which a preview's deny list needs
 export const RANGED_READS_FEATURE = 'files.readFileRange.resolvedPath';
 
 /** files.readFileRange on a host whose daemon does not list RANGED_READS_FEATURE; nothing was sent. */
@@ -92,11 +91,21 @@ export class ListingUnsupportedError extends Error {
   }
 }
 
+// project-path requests confined under throughLinks when they carry links: 'follow', and quickOpen.list and search.run's
+// walk through links under followLinks
+export const LINKS_FEATURE = 'files.links';
+const FOLLOW: Links = { links: 'follow' };
+
 // quickOpen.list and search.run with the walk's ignore switches and overrides, which the host's walk process lists
 export const WALK_FEATURES: readonly string[] = ['quickOpen.walk', 'search.walk'];
 
 export function carriesWalks(features: readonly string[]): boolean {
   return WALK_FEATURES.every((feature) => features.includes(feature));
+}
+
+// a daemon that walks without links; one that cannot walk fails its search instead
+export function walksWithoutLinks(features: readonly string[]): boolean {
+  return carriesWalks(features) && !features.includes(LINKS_FEATURE);
 }
 
 export interface RemoteWorkspaceDeps {
@@ -119,6 +128,9 @@ export interface RemoteWorkspaceDeps {
   readonly outside: boolean;
   // the daemon lists OUTSIDE_LISTING_FEATURE; without it listOutside throws ListingUnsupportedError before sending
   readonly listing: boolean;
+  // the daemon lists LINKS_FEATURE; without it a throughLinks request it answers outside answers refusal 'oldDaemon', and a
+  // listing or search asked to follow links is sent without followLinks
+  readonly links: boolean;
   // the daemon lists WALK_FEATURES; without them a Quick Open listing ends with no files and a search with searchUnsupported's
   // localized message, before sending
   readonly walks: boolean;
@@ -133,6 +145,9 @@ function answersRange(offset: number, length: number, read: { readonly size: num
   const start = offset < 0 ? Math.max(0, read.size + offset) : Math.min(offset, read.size);
   return read.offset === start && read.length === Math.min(length, read.size - start);
 }
+
+// a listing's or entry operation's answer, whose refusal names a link on its path
+type Refusable = { readonly ok: true } | { readonly ok: false; readonly reason: string; readonly refusal?: LinkRefusal };
 
 const asBuffer = (bytes: Uint8Array): Buffer => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
@@ -217,12 +232,25 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
     watches.clear();
   });
 
+  // Every answer to a request confined under throughLinks passes here. An older daemon drops links and stays strict, so its
+  // outside may be a link it cannot follow and reads as oldDaemon; it cannot say why, so its refusal of a link onto a share
+  // reads as oldDaemon too. walk and terminals.linkKind carry no refusal: an older daemon's outside stays a failed walk and no
+  // link.
+  const linked = async <R extends Refusable>(asking: Promise<R>): Promise<R> => {
+    const answer: Refusable = await asking;
+    if (!answer.ok && !deps.links && answer.reason === 'outside') return { ok: false, reason: 'outside', refusal: 'oldDaemon' } as R;
+    return answer as R;
+  };
+  const confined = async (rule: LinkRule, asking: Promise<Confined>): Promise<Confined> => (rule === 'throughLinks' ? linked(asking) : asking);
+  const linksOf = (rule: LinkRule): Links => (rule === 'throughLinks' ? { links: 'follow' } : {});
+
+  // Every method but confineExisting, confineMissing and readFileRange asks for throughLinks, as the local workspace confines.
   return {
     files: {
-      confineExisting: async (project, relativePath) => call('files.confineExisting', { project: toWire(project), relativePath }),
-      confineMissing: async (project, relativePath) => call('files.confineMissing', { project: toWire(project), relativePath }),
+      confineExisting: async (project, relativePath, rule, opts = {}) => confined(rule, call('files.confineExisting', { project: toWire(project), relativePath, ...linksOf(rule), ...(opts.spell ? { spell: opts.spell } : {}) })),
+      confineMissing: async (project, relativePath, rule) => confined(rule, call('files.confineMissing', { project: toWire(project), relativePath, ...linksOf(rule) })),
       entry: async (project, relativePath) => {
-        const entry = await call('files.entry', { project: toWire(project), relativePath });
+        const entry = await linked(call('files.entry', { project: toWire(project), relativePath, ...FOLLOW }));
         if (!entry.ok) return entry;
         const { identity } = entry;
         return { ...entry, identity: { dev: BigInt(identity.dev), ino: BigInt(identity.ino), birthtimeNs: BigInt(identity.birthtimeNs) } };
@@ -235,7 +263,7 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
       },
       realpath: (target) => call('files.realpath', { target }),
       read: async (filePath, limitBytes) => fromWireBytes(await call('files.read', { path: filePath, ...(limitBytes !== undefined ? { limitBytes } : {}) }), limitBytes ?? EDITOR_CONFIRM_DOCUMENT_BYTES),
-      writeInPlace: async (project, location, bytes) => call('files.writeInPlace', { project: toWire(project), location: locationToWire(location), bytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength) }),
+      writeInPlace: async (project, location, bytes) => call('files.writeInPlace', { project: toWire(project), location: locationToWire(location), bytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength), ...FOLLOW }),
       readHostSettings: async () => {
         const { path, read } = await call('files.readHostSettings', {});
         return { path, read: read.kind === 'outside' ? read : fromWireBytes(read, EDITOR_CONFIRM_DOCUMENT_BYTES) };
@@ -259,9 +287,9 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
         if (!deps.listing) throw new ListingUnsupportedError(authorityKey);
         return call('files.listOutside', { folder, prefix });
       },
-      createEntry: async (project, relativeDir, name, kind) => call('files.createEntry', { project: toWire(project), relativeDir, name, kind }),
-      renameEntry: async (project, relativePath, newName) => call('files.renameEntry', { project: toWire(project), relativePath, newName }),
-      deleteEntry: async (project, relativePath, confirmed) => call('files.deleteEntry', { project: toWire(project), relativePath, confirmed: toWireIdentity(confirmed) }),
+      createEntry: async (project, relativeDir, name, kind) => linked(call('files.createEntry', { project: toWire(project), relativeDir, name, kind, ...FOLLOW })),
+      renameEntry: async (project, relativePath, newName) => linked(call('files.renameEntry', { project: toWire(project), relativePath, newName, ...FOLLOW })),
+      deleteEntry: async (project, relativePath, confirmed) => linked(call('files.deleteEntry', { project: toWire(project), relativePath, confirmed: toWireIdentity(confirmed), ...FOLLOW })),
       trash: (entryPath) => call('files.trash', { path: entryPath }),
       isDirectory: (target, signal) => call('files.isDirectory', { target }, signal),
       mtimes: (folder, relativePaths) => call('files.mtimes', { folder, relativePaths }),
@@ -276,7 +304,7 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
             next: async () => {
               if (done) return { done: true, value: undefined };
               requireTransfers();
-              const page = started ? await call('files.walkNext', { walkId }) : await call('files.walk', { walkId, project: toWire(project), relativePath });
+              const page = started ? await call('files.walkNext', { walkId }) : await call('files.walk', { walkId, project: toWire(project), relativePath, ...FOLLOW });
               started = true;
               if (page.done) done = true;
               if (page.entries.length === 0 && page.done) return { done: true, value: undefined };
@@ -292,13 +320,13 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
       }),
       clashes: async (project, relativeDir, names) => {
         requireTransfers();
-        return call('files.clashes', { project: toWire(project), relativeDir, names });
+        return linked(call('files.clashes', { project: toWire(project), relativeDir, names, ...FOLLOW }));
       },
       // the bytes go out on their own stream within its credit while the host writes them; a source that throws or a signal that
       // aborts (a cancel) ends the stream short, which the host answers by removing its part
       receiveFile: async (project, relativeDir, name, source, options, signal) => {
         const stream = transferStream();
-        const answer = call('files.receiveFile', { project: toWire(project), relativeDir, name, stream: stream.id, ...options });
+        const answer = linked(call('files.receiveFile', { project: toWire(project), relativeDir, name, stream: stream.id, ...options, ...FOLLOW }));
         const sent = writeBytes(stream, source, signal).then(() => undefined, (err: unknown) => err);
         const result = await answer.finally(() => stream.end());
         const thrown = await sent;
@@ -307,7 +335,7 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
       },
       readFile: async (project, relativePath) => {
         const stream = transferStream();
-        const read = await call('files.readFile', { project: toWire(project), relativePath, stream: stream.id }).catch((err: unknown) => {
+        const read = await linked(call('files.readFile', { project: toWire(project), relativePath, stream: stream.id, ...FOLLOW })).catch((err: unknown) => {
           stream.end();
           throw err;
         });
@@ -317,11 +345,11 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
         }
         return { ok: true, size: read.size, chunks: streamBytes(stream) };
       },
-      readFileRange: async (project, relativePath, offset, length) => {
+      readFileRange: async (project, relativePath, offset, length, preview) => {
         if (closed) throw deps.notConnected();
         if (!deps.rangedReads) throw new RangedReadsUnsupportedError(authorityKey);
         const stream = transferStream();
-        const read = await call('files.readFileRange', { project: toWire(project), relativePath, stream: stream.id, offset, length }).catch((err: unknown) => {
+        const read = await call('files.readFileRange', { project: toWire(project), relativePath, stream: stream.id, offset, length, ...(preview ? { preview } : {}) }).catch((err: unknown) => {
           stream.end();
           throw err;
         });
@@ -339,27 +367,27 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
       // a signal that aborts sends the request's cancel, which stops the host's copy and removes its part
       copy: async (from, relativePath, to, toDir, name, replace, signal) => {
         requireTransfers();
-        return call('files.copy', { from: toWire(from), relativePath, to: toWire(to), toDir, name, replace }, signal);
+        return linked(call('files.copy', { from: toWire(from), relativePath, to: toWire(to), toDir, name, replace, ...FOLLOW }, signal));
       },
       move: async (from, relativePath, to, toDir, name, replace, signal) => {
         requireTransfers();
-        return call('files.move', { from: toWire(from), relativePath, to: toWire(to), toDir, name, replace }, signal);
+        return linked(call('files.move', { from: toWire(from), relativePath, to: toWire(to), toDir, name, replace, ...FOLLOW }, signal));
       },
       makeFolder: async (project, relativeDir, name, mode) => {
         requireTransfers();
-        return call('files.makeFolder', { project: toWire(project), relativeDir, name, ...(mode !== undefined ? { mode } : {}) });
+        return linked(call('files.makeFolder', { project: toWire(project), relativeDir, name, ...(mode !== undefined ? { mode } : {}), ...FOLLOW }));
       },
       makeLink: async (project, relativeDir, name, target, replace, within) => {
         requireTransfers();
-        return call('files.makeLink', { project: toWire(project), relativeDir, name, target, replace, ...(within !== undefined ? { within } : {}) });
+        return linked(call('files.makeLink', { project: toWire(project), relativeDir, name, target, replace, ...(within !== undefined ? { within } : {}), ...FOLLOW }));
       },
       verifyLink: async (project, relativePath, within) => {
         requireTransfers();
-        return call('files.verifyLink', { project: toWire(project), relativePath, within });
+        return linked(call('files.verifyLink', { project: toWire(project), relativePath, within, ...FOLLOW }));
       },
       removeFolder: async (project, relativePath, confirmed) => {
         requireTransfers();
-        return call('files.removeFolder', { project: toWire(project), relativePath, confirmed: toWireIdentity(confirmed) });
+        return linked(call('files.removeFolder', { project: toWire(project), relativePath, confirmed: toWireIdentity(confirmed), ...FOLLOW }));
       },
       watch: (base, glob, listener) => {
         const watchId = nextId++;
@@ -378,13 +406,15 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
       },
     },
     tree: {
-      list: async (project, relativeDir, excludes) => call('tree.list', { project: toWire(project), relativeDir, excludes }),
+      list: async (project, relativeDir, excludes) => linked(call('tree.list', { project: toWire(project), relativeDir, excludes, ...FOLLOW })),
     },
     search: {
       run: (cwd, request, sink) => {
         const runId = nextId++;
         searches.set(runId, sink);
-        const sent = deps.walks ? call('search.run', { runId, cwd, match: request.match, pattern: request.pattern, walk: request.walk }) : Promise.reject(new Error(deps.searchUnsupported()));
+        const { followLinks: _followLinks, ...unlinked } = request.walk;
+        const walk = deps.links ? request.walk : unlinked;
+        const sent = deps.walks ? call('search.run', { runId, cwd, match: request.match, pattern: request.pattern, walk }) : Promise.reject(new Error(deps.searchUnsupported()));
         sent.catch((err: unknown) => {
           if (!searches.delete(runId)) return;
           sink.end({ error: err instanceof Error ? err.message : String(err) });
@@ -397,7 +427,7 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
       },
     },
     quickOpen: {
-      list: (root, ignore, excludes, sink) => {
+      list: (root, { ignore, followLinks }, excludes, sink) => {
         const runId = nextId++;
         listings.set(runId, sink);
         if (!deps.walks) {
@@ -405,7 +435,7 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
             if (listings.delete(runId)) sink.end();
           });
         } else {
-          call('quickOpen.list', { runId, root, ignore, excludes }).catch((err: unknown) => {
+          call('quickOpen.list', { runId, root, ignore, ...(followLinks && deps.links ? { followLinks: true } : {}), excludes }).catch((err: unknown) => {
             if (!listings.delete(runId)) return;
             sink.end(err instanceof Error ? err.message : String(err));
           });
@@ -440,7 +470,7 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
       },
       list: () => call('terminals.list', {}),
       windowsBuild: () => call('terminals.windowsBuild', {}),
-      linkKind: async (project, relativePath) => call('terminals.linkKind', { project: toWire(project), relativePath }),
+      linkKind: async (project, relativePath) => call('terminals.linkKind', { project: toWire(project), relativePath, ...FOLLOW }),
     },
   };
 }

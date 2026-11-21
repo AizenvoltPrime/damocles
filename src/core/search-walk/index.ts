@@ -1,6 +1,5 @@
 export { BATCH_COMMAND_LINE, commandLineCost, commandLineLength } from './command-line';
 export { GlobSyntaxError, overrideRules } from './rg-ignore';
-export { walkIgnoreOf } from './ignore-settings';
 export {
   batchLineBudget,
   decodeRgText,
@@ -15,10 +14,12 @@ export {
 export {
   ALL_IGNORE_FILES,
   insideGitRepo,
+  isTimedFile,
   rootPointerReach,
   walkFiles,
   walkTree,
   type PointerReach,
+  type TimedFiles,
   type TreeEntry,
   type Walk,
   type WalkIgnore,

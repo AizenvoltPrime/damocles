@@ -2,6 +2,7 @@
 // both import this file.
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from './types/messages';
 import type { PermissionMode } from './types/settings';
+import type { UnreadableRuleFile } from './types/permissions';
 import type { LocalizedText } from './localized-text';
 import { isSwitchableToolGroup, TOOL_GROUP_SETTINGS, TOOLS_DISABLED_SETTING, type ToolGroup } from './types/tools';
 
@@ -149,12 +150,15 @@ export interface PermissionRuleLists {
  * The client's user layer as a daemon's core reads it: the contributed setting keys of its user settings, and the permission
  * rules of each of its user files (~/.damocles/settings*.json, ~/.claude/settings*.json), one entry per file in
  * loadPermissionsByPriority's order, so a `!` carve-out never crosses files. Never env, apiKeyHelper, hooks or tokens.
- * pending: not known yet.
+ * pending: not known yet. unreadable: the first of those files, in that order, that the client could not check or read
+ * and never read, so which of its rules apply cannot be known; a daemon's core that does not parse it reads the file as
+ * holding none.
  */
 export interface ClientUser {
   readonly settings: Readonly<Record<string, unknown>>;
   readonly permissionRules: readonly PermissionRuleLists[];
   readonly pending?: ClientPending;
+  readonly unreadable?: UnreadableRuleFile;
 }
 
 /**

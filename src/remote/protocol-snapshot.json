@@ -2,109 +2,20 @@
  "protocolVersion": 1,
  "preRelease": true,
  "features": [
-  "core.attach",
-  "control.coreState",
-  "control.restartCore",
-  "views.join",
-  "settingsView.scope",
-  "user.credentials",
-  "user.voice.speak",
-  "client.mirrors",
-  "chat.remotePolicy",
-  "editor.markdownContent",
-  "client.sharedLoopback",
-  "workspace.hostSettings",
-  "client.allowance",
-  "account.allowanceUnavailable",
-  "account.modelPicker",
-  "account.providerPrecedence",
-  "account.providerSignIn",
-  "client.availableModelIds",
-  "client.keySaved",
-  "client.preferApiKey",
-  "chat.modelRefusal",
-  "account.authFailureReason",
-  "history.authFailureReplay",
-  "account.authFailureMissing",
-  "chat.modelRefusalAccount",
-  "chat.promptRejected",
-  "chat.btwAuthFailure",
-  "chats.openTranscript",
-  "model.credentialSource",
-  "chats.listMirrored",
   "protocol.resume",
   "control.ping",
-  "views.drained",
-  "actor",
-  "panelViews",
-  "credentialsPush",
-  "signIn",
   "clients",
   "linger",
-  "chats.stop",
   "control.disconnect",
-  "chat.activity.sessionId",
-  "askpass.credential",
-  "askpass.daemonRelay",
-  "agent.forwarding",
   "ssh.installAuthorizedKey",
   "control.shutdownForRemoval",
-  "settings.remoteHosts",
-  "capabilities.bypassPermissions",
-  "capabilities.globalMemoryOnServer",
-  "credentialsPush.planModelIds",
-  "terminals.view",
-  "terminals.detachView",
   "files.watchLimit",
   "control.sharedHome",
-  "agent.perClientSockets",
-  "hostSockets",
-  "linger.alreadyEnabled",
-  "linger.domainUsers",
-  "ssh.installAuthorizedKey.accountFailed",
-  "ssh.installAuthorizedKey.restricted",
   "askpass.credential.verifiedErase",
-  "e2e.stubOAuth",
-  "usageStats.byCredential",
-  "panels.viewDetached",
-  "panels.binaryAudience",
-  "chat.queuedPartsReturn",
   "control.listOwnRuns",
   "files.watchReady",
-  "terminals.screenShellState",
-  "history.nestedLive",
-  "chat.sendRefusalReturned",
-  "chat.turnElapsed",
-  "clients.windowState",
-  "l10n.localizedText",
-  "clients.language",
-  "l10n.parsedText",
-  "notices.answerIndex",
-  "scm.commitFailureText",
-  "scm.mergeMarkers",
-  "files.notAFile",
-  "chat.worktreeStateText",
-  "chat.queueRefusalCause",
-  "terminals.screenHostClock",
-  "core.attachClientStateRemoved",
-  "account.signInInputError",
   "ports",
-  "ports.urlSeen",
-  "user.browser.tool",
-  "user.browser.release",
-  "browser.newPageUrl",
-  "clientNetwork",
-  "e2e.clientNetworkAnswers",
-  "user.memory",
-  "user.mcp",
   "clientMcp",
-  "mcp.remoteAvailable",
-  "mcp.placement",
-  "mcp.hostTabOnly",
-  "settingsView.mcp",
-  "usageStats.hostId",
-  "paths.remoteMirrors",
-  "window.openAppSettingsScope",
   "mirror.changed",
   "mirror.subcalls",
   "control.portProbe",
@@ -112,41 +23,18 @@
   "agent.relay",
   "files.transfer",
   "files.makeLinkWithin",
-  "files.clashesError",
-  "cli",
-  "user.memory.injectionGate",
-  "user.memory.appliedIds",
-  "user.browser.releaseScope",
-  "mux.streamsPerOpener",
-  "user.browser.discard",
-  "user.memory.searchFilters",
   "user.memory.heldQueues",
-  "memory.auditApplyFailed",
-  "clientMcp.toolExposure",
-  "clientMcp.timeout",
-  "mcp.machineExposure",
   "files.verifyLink",
   "files.folderMode",
-  "files.cancel",
-  "files.walkEntryError",
-  "files.moveLeftMore",
   "tools.setOnHost",
   "files.outside",
   "files.listOutside",
   "sessionFiles",
   "files.readOutsideLimit",
-  "question.typedPreview",
-  "panels.parent",
-  "chat.design",
-  "chat.designFilesFailed",
-  "chat.designRewind",
-  "designVersionPrompt",
-  "chat.designOpenInBrowser",
   "design.read",
   "design.info",
   "design.openPreview",
   "design.changed",
-  "chat.designOpenPreview",
   "design.capture",
   "design.render",
   "design.probe",
@@ -156,100 +44,35 @@
   "design.markup",
   "design.tweak",
   "design.previewScreen",
-  "design.tweaks",
-  "chat.designReferences",
-  "user.browser.parityCapture",
-  "chats.designFinishedVersion",
-  "core.attachFeatures",
-  "chat.designAwaitingContinue",
-  "chat.designMarkupMarks",
-  "chat.designStructuredChanges",
-  "chat.toolMetadataText",
-  "question.multiSelectPreviews",
-  "chats.designSuperseded",
-  "chat.designApproval",
   "user.memory.list",
-  "view.userMemory",
-  "files.readFileRange",
   "files.readFileRange.resolvedPath",
-  "browser.useClientCertificate",
-  "user.memory.listNotesOnly",
-  "user.memory.offReason",
-  "chats.reveal",
   "chats.showSession",
   "user.browser.servedFiles",
-  "browser.servedFileUrl",
-  "chat.steeredDesignPrompts",
-  "chat.designDecisionChecks",
-  "browser.servedFileUnavailable",
-  "chat.designDecisionReferences",
-  "settings.memoryInjectRerank",
   "user.credentials.env",
-  "forge.accounts",
   "scm.remoteEndpoints",
-  "forge.bindings",
   "askpass.credential.origin",
   "clientForges",
   "user.forge",
-  "forge.ci",
   "scm.commitOnRemote",
-  "forge.links",
-  "forge.clone",
-  "forge.publish",
   "scm.renameRemote",
   "scm.commit.protectedBranches",
-  "forge.branchProtection",
-  "forge.history",
-  "forge.publishOwners",
-  "forge.protectedPush",
   "scm.push.createOnly",
-  "forge.servers",
   "scm.unpushedCount",
   "scm.ignoreCase",
-  "askpass.credential.shellCall",
-  "forge.gitCredentialConsent",
-  "forge.keepHosts",
   "client.pending",
-  "account.memoryJudgeCopilot",
-  "chat.windDownHooks",
-  "chat.subagentStopReason",
   "chat.configuredProviders",
-  "projects.relocate.local",
-  "projects.relocate.worktrees",
-  "projects.movedFrom",
   "projects.relocate",
   "mirror.worktreeChats",
-  "chat.teamStopReason",
-  "permission.reasonFieldsRemoved",
-  "worktrees.namedFor",
-  "projects.relocationStartedAt",
-  "projects.relocationWaiting",
   "projects.relocationAbandon",
-  "chats.listMirroredHostOs",
   "design.infoMissing",
-  "chats.listMirroredProject",
-  "browser.servedFileUnavailableRemoved",
   "user.browser.servedFolders",
   "control.shutdownWhenIdle.clients",
   "quickOpen.walk",
   "search.walk",
-  "editor.readTextRemoved",
   "scm.absentProject",
-  "user.browser.servedOrigins",
-  "settings.browserUploadFolderCaps",
   "editor.isDirty",
-  "editor.readTextRefused",
-  "files.readTextRemoved",
-  "permission.patchOmittedReasons",
-  "permission.unsavedChanges",
-  "trust.revoked",
-  "projects.preflightSkipIdentity",
-  "paths.walkChild",
-  "projects.preflightChecksBusy",
-  "chat.thinkingDroppedText",
-  "paths.diffWorker",
-  "permission.patchUnavailable",
-  "review.snapshotFields"
+  "files.links",
+  "files.sessionFileRefusal"
  ],
  "contracts": {
   "CoreRequests": {
@@ -14560,6 +14383,14 @@
             }
            }
           },
+          "\"notOwned\"": {
+           "object": {
+            "kind": {
+             "optional": false,
+             "type": "\"notOwned\""
+            }
+           }
+          },
           "\"outside\"": {
            "object": {
             "kind": {
@@ -19962,6 +19793,50 @@
              }
             ]
            }
+          },
+          "unreadable": {
+           "optional": true,
+           "type": {
+            "object": {
+             "file": {
+              "optional": false,
+              "type": "string"
+             },
+             "reason": {
+              "optional": false,
+              "type": {
+               "object": {
+                "args": {
+                 "optional": true,
+                 "type": {
+                  "array": {
+                   "union": [
+                    "number",
+                    "string",
+                    {
+                     "object": {
+                      "number": {
+                       "optional": false,
+                       "type": "number"
+                      }
+                     }
+                    },
+                    {
+                     "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                    }
+                   ]
+                  }
+                 }
+                },
+                "message": {
+                 "optional": false,
+                 "type": "string"
+                }
+               }
+              }
+             }
+            }
+           }
           }
          }
         }
@@ -21039,6 +20914,50 @@
                 }
                ]
               }
+             },
+             "unreadable": {
+              "optional": true,
+              "type": {
+               "object": {
+                "file": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "reason": {
+                 "optional": false,
+                 "type": {
+                  "object": {
+                   "args": {
+                    "optional": true,
+                    "type": {
+                     "array": {
+                      "union": [
+                       "number",
+                       "string",
+                       {
+                        "object": {
+                         "number": {
+                          "optional": false,
+                          "type": "number"
+                         }
+                        }
+                       },
+                       {
+                        "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                       }
+                      ]
+                     }
+                    }
+                   },
+                   "message": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 }
+                }
+               }
+              }
              }
             }
            }
@@ -21412,6 +21331,10 @@
         "optional": false,
         "type": {
          "object": {
+          "links": {
+           "optional": true,
+           "type": "\"follow\""
+          },
           "names": {
            "optional": false,
            "type": {
@@ -21491,6 +21414,39 @@
              "optional": true,
              "type": "string"
             },
+            "error": {
+             "optional": true,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
             "message": {
              "optional": true,
              "type": "string"
@@ -21509,6 +21465,10 @@
                "\"outside\""
               ]
              }
+            },
+            "refusal": {
+             "optional": true,
+             "type": "\"share\""
             }
            }
           }
@@ -21526,6 +21486,10 @@
         "optional": false,
         "type": {
          "object": {
+          "links": {
+           "optional": true,
+           "type": "\"follow\""
+          },
           "project": {
            "optional": false,
            "type": {
@@ -21548,6 +21512,10 @@
           "relativePath": {
            "optional": false,
            "type": "string"
+          },
+          "spell": {
+           "optional": true,
+           "type": "true"
           }
          }
         }
@@ -21558,6 +21526,39 @@
          "union": [
           {
            "object": {
+            "error": {
+             "optional": true,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
             "ok": {
              "optional": false,
              "type": "false"
@@ -21571,6 +21572,10 @@
                "\"outside\""
               ]
              }
+            },
+            "refusal": {
+             "optional": true,
+             "type": "\"share\""
             }
            }
           },
@@ -21583,6 +21588,25 @@
             "path": {
              "optional": false,
              "type": "string"
+            },
+            "spelling": {
+             "optional": true,
+             "type": "string"
+            },
+            "via": {
+             "optional": true,
+             "type": {
+              "object": {
+               "link": {
+                "optional": false,
+                "type": "string"
+               },
+               "realRoot": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
             }
            }
           }
@@ -21600,6 +21624,10 @@
         "optional": false,
         "type": {
          "object": {
+          "links": {
+           "optional": true,
+           "type": "\"follow\""
+          },
           "project": {
            "optional": false,
            "type": {
@@ -21632,6 +21660,39 @@
          "union": [
           {
            "object": {
+            "error": {
+             "optional": true,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
             "ok": {
              "optional": false,
              "type": "false"
@@ -21645,6 +21706,10 @@
                "\"outside\""
               ]
              }
+            },
+            "refusal": {
+             "optional": true,
+             "type": "\"share\""
             }
            }
           },
@@ -21657,6 +21722,25 @@
             "path": {
              "optional": false,
              "type": "string"
+            },
+            "spelling": {
+             "optional": true,
+             "type": "string"
+            },
+            "via": {
+             "optional": true,
+             "type": {
+              "object": {
+               "link": {
+                "optional": false,
+                "type": "string"
+               },
+               "realRoot": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
             }
            }
           }
@@ -21692,6 +21776,10 @@
              }
             }
            }
+          },
+          "links": {
+           "optional": true,
+           "type": "\"follow\""
           },
           "name": {
            "optional": false,
@@ -21741,6 +21829,39 @@
              "optional": true,
              "type": "string"
             },
+            "error": {
+             "optional": true,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
             "message": {
              "optional": true,
              "type": "string"
@@ -21764,9 +21885,14 @@
                "\"notEmpty\"",
                "\"notFolder\"",
                "\"outside\"",
+               "\"sessionFile\"",
                "\"unsupported\""
               ]
              }
+            },
+            "refusal": {
+             "optional": true,
+             "type": "\"share\""
             }
            }
           },
@@ -21800,6 +21926,10 @@
              "\"file\""
             ]
            }
+          },
+          "links": {
+           "optional": true,
+           "type": "\"follow\""
           },
           "name": {
            "optional": false,
@@ -21837,6 +21967,39 @@
          "union": [
           {
            "object": {
+            "error": {
+             "optional": true,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
             "message": {
              "optional": true,
              "type": "string"
@@ -21852,9 +22015,14 @@
                "\"exists\"",
                "\"failed\"",
                "\"missing\"",
-               "\"outside\""
+               "\"outside\"",
+               "\"sessionFile\""
               ]
              }
+            },
+            "refusal": {
+             "optional": true,
+             "type": "\"share\""
             }
            }
           },
@@ -21899,6 +22067,10 @@
             }
            }
           },
+          "links": {
+           "optional": true,
+           "type": "\"follow\""
+          },
           "project": {
            "optional": false,
            "type": {
@@ -21931,6 +22103,39 @@
          "union": [
           {
            "object": {
+            "error": {
+             "optional": true,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
             "message": {
              "optional": true,
              "type": "string"
@@ -21946,9 +22151,14 @@
                "\"changed\"",
                "\"failed\"",
                "\"missing\"",
-               "\"outside\""
+               "\"outside\"",
+               "\"sessionFile\""
               ]
              }
+            },
+            "refusal": {
+             "optional": true,
+             "type": "\"share\""
             }
            }
           },
@@ -21974,6 +22184,10 @@
         "optional": false,
         "type": {
          "object": {
+          "links": {
+           "optional": true,
+           "type": "\"follow\""
+          },
           "project": {
            "optional": false,
            "type": {
@@ -22004,6 +22218,61 @@
         "optional": false,
         "type": {
          "union": [
+          {
+           "object": {
+            "error": {
+             "optional": true,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
+            "ok": {
+             "optional": false,
+             "type": "false"
+            },
+            "reason": {
+             "optional": false,
+             "type": {
+              "union": [
+               "\"failed\"",
+               "\"missing\"",
+               "\"outside\""
+              ]
+             }
+            },
+            "refusal": {
+             "optional": true,
+             "type": "\"share\""
+            }
+           }
+          },
           {
            "object": {
             "folder": {
@@ -22036,24 +22305,10 @@
             "path": {
              "optional": false,
              "type": "string"
-            }
-           }
-          },
-          {
-           "object": {
-            "ok": {
-             "optional": false,
-             "type": "false"
             },
-            "reason": {
-             "optional": false,
-             "type": {
-              "union": [
-               "\"failed\"",
-               "\"missing\"",
-               "\"outside\""
-              ]
-             }
+            "sessionStore": {
+             "optional": true,
+             "type": "true"
             }
            }
           }
@@ -22205,6 +22460,10 @@
         "optional": false,
         "type": {
          "object": {
+          "links": {
+           "optional": true,
+           "type": "\"follow\""
+          },
           "mode": {
            "optional": true,
            "type": "number"
@@ -22249,6 +22508,39 @@
              "optional": true,
              "type": "string"
             },
+            "error": {
+             "optional": true,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
             "message": {
              "optional": true,
              "type": "string"
@@ -22272,9 +22564,14 @@
                "\"notEmpty\"",
                "\"notFolder\"",
                "\"outside\"",
+               "\"sessionFile\"",
                "\"unsupported\""
               ]
              }
+            },
+            "refusal": {
+             "optional": true,
+             "type": "\"share\""
             }
            }
           },
@@ -22300,6 +22597,10 @@
         "optional": false,
         "type": {
          "object": {
+          "links": {
+           "optional": true,
+           "type": "\"follow\""
+          },
           "name": {
            "optional": false,
            "type": "string"
@@ -22352,6 +22653,39 @@
              "optional": true,
              "type": "string"
             },
+            "error": {
+             "optional": true,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
             "message": {
              "optional": true,
              "type": "string"
@@ -22375,9 +22709,14 @@
                "\"notEmpty\"",
                "\"notFolder\"",
                "\"outside\"",
+               "\"sessionFile\"",
                "\"unsupported\""
               ]
              }
+            },
+            "refusal": {
+             "optional": true,
+             "type": "\"share\""
             }
            }
           },
@@ -22421,6 +22760,10 @@
              }
             }
            }
+          },
+          "links": {
+           "optional": true,
+           "type": "\"follow\""
           },
           "name": {
            "optional": false,
@@ -22470,6 +22813,39 @@
              "optional": true,
              "type": "string"
             },
+            "error": {
+             "optional": true,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
             "message": {
              "optional": true,
              "type": "string"
@@ -22493,9 +22869,14 @@
                "\"notEmpty\"",
                "\"notFolder\"",
                "\"outside\"",
+               "\"sessionFile\"",
                "\"unsupported\""
               ]
              }
+            },
+            "refusal": {
+             "optional": true,
+             "type": "\"share\""
             }
            }
           },
@@ -22756,6 +23137,10 @@
         "optional": false,
         "type": {
          "object": {
+          "links": {
+           "optional": true,
+           "type": "\"follow\""
+          },
           "project": {
            "optional": false,
            "type": {
@@ -22796,6 +23181,39 @@
              "optional": true,
              "type": "string"
             },
+            "error": {
+             "optional": true,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
             "ok": {
              "optional": false,
              "type": "false"
@@ -22810,6 +23228,10 @@
                "\"outside\""
               ]
              }
+            },
+            "refusal": {
+             "optional": true,
+             "type": "\"share\""
             }
            }
           },
@@ -22846,6 +23268,17 @@
           "offset": {
            "optional": false,
            "type": "number"
+          },
+          "preview": {
+           "optional": true,
+           "type": {
+            "object": {
+             "trusted": {
+              "optional": false,
+              "type": "boolean"
+             }
+            }
+           }
           },
           "project": {
            "optional": false,
@@ -23215,6 +23648,10 @@
         "optional": false,
         "type": {
          "object": {
+          "links": {
+           "optional": true,
+           "type": "\"follow\""
+          },
           "mode": {
            "optional": false,
            "type": "number"
@@ -23275,6 +23712,39 @@
              "optional": true,
              "type": "string"
             },
+            "error": {
+             "optional": true,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
             "message": {
              "optional": true,
              "type": "string"
@@ -23298,9 +23768,14 @@
                "\"notEmpty\"",
                "\"notFolder\"",
                "\"outside\"",
+               "\"sessionFile\"",
                "\"unsupported\""
               ]
              }
+            },
+            "refusal": {
+             "optional": true,
+             "type": "\"share\""
             }
            }
           },
@@ -23345,6 +23820,10 @@
             }
            }
           },
+          "links": {
+           "optional": true,
+           "type": "\"follow\""
+          },
           "project": {
            "optional": false,
            "type": {
@@ -23381,6 +23860,39 @@
              "optional": true,
              "type": "string"
             },
+            "error": {
+             "optional": true,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
             "message": {
              "optional": true,
              "type": "string"
@@ -23404,9 +23916,14 @@
                "\"notEmpty\"",
                "\"notFolder\"",
                "\"outside\"",
+               "\"sessionFile\"",
                "\"unsupported\""
               ]
              }
+            },
+            "refusal": {
+             "optional": true,
+             "type": "\"share\""
             }
            }
           },
@@ -23432,6 +23949,10 @@
         "optional": false,
         "type": {
          "object": {
+          "links": {
+           "optional": true,
+           "type": "\"follow\""
+          },
           "newName": {
            "optional": false,
            "type": "string"
@@ -23468,6 +23989,39 @@
          "union": [
           {
            "object": {
+            "error": {
+             "optional": true,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
             "message": {
              "optional": true,
              "type": "string"
@@ -23483,9 +24037,14 @@
                "\"exists\"",
                "\"failed\"",
                "\"missing\"",
-               "\"outside\""
+               "\"outside\"",
+               "\"sessionFile\""
               ]
              }
+            },
+            "refusal": {
+             "optional": true,
+             "type": "\"share\""
             }
            }
           },
@@ -23645,6 +24204,10 @@
         "optional": false,
         "type": {
          "object": {
+          "links": {
+           "optional": true,
+           "type": "\"follow\""
+          },
           "project": {
            "optional": false,
            "type": {
@@ -23685,6 +24248,39 @@
              "optional": true,
              "type": "string"
             },
+            "error": {
+             "optional": true,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
             "message": {
              "optional": true,
              "type": "string"
@@ -23708,9 +24304,14 @@
                "\"notEmpty\"",
                "\"notFolder\"",
                "\"outside\"",
+               "\"sessionFile\"",
                "\"unsupported\""
               ]
              }
+            },
+            "refusal": {
+             "optional": true,
+             "type": "\"share\""
             }
            }
           },
@@ -23736,6 +24337,10 @@
         "optional": false,
         "type": {
          "object": {
+          "links": {
+           "optional": true,
+           "type": "\"follow\""
+          },
           "project": {
            "optional": false,
            "type": {
@@ -24067,6 +24672,10 @@
            "type": {
             "named": "Uint8Array<ArrayBufferLike>"
            }
+          },
+          "links": {
+           "optional": true,
+           "type": "\"follow\""
           },
           "location": {
            "optional": false,
@@ -24518,6 +25127,10 @@
             "array": "string"
            }
           },
+          "followLinks": {
+           "optional": true,
+           "type": "true"
+          },
           "ignore": {
            "optional": false,
            "type": {
@@ -24607,6 +25220,10 @@
            "optional": false,
            "type": {
             "object": {
+             "followLinks": {
+              "optional": true,
+              "type": "true"
+             },
              "ignore": {
               "optional": false,
               "type": {
@@ -24815,6 +25432,10 @@
         "optional": false,
         "type": {
          "object": {
+          "links": {
+           "optional": true,
+           "type": "\"follow\""
+          },
           "project": {
            "optional": false,
            "type": {
@@ -24987,6 +25608,10 @@
             "array": "string"
            }
           },
+          "links": {
+           "optional": true,
+           "type": "\"follow\""
+          },
           "project": {
            "optional": false,
            "type": {
@@ -25037,6 +25662,21 @@
                   ]
                  }
                 },
+                "link": {
+                 "optional": true,
+                 "type": {
+                  "object": {
+                   "broken": {
+                    "optional": true,
+                    "type": "true"
+                   },
+                   "target": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 }
+                },
                 "name": {
                  "optional": false,
                  "type": "string"
@@ -25048,11 +25688,59 @@
             "ok": {
              "optional": false,
              "type": "true"
+            },
+            "via": {
+             "optional": true,
+             "type": {
+              "object": {
+               "link": {
+                "optional": false,
+                "type": "string"
+               },
+               "realRoot": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
             }
            }
           },
           {
            "object": {
+            "error": {
+             "optional": true,
+             "type": {
+              "object": {
+               "args": {
+                "optional": true,
+                "type": {
+                 "array": {
+                  "union": [
+                   "number",
+                   "string",
+                   {
+                    "object": {
+                     "number": {
+                      "optional": false,
+                      "type": "number"
+                     }
+                    }
+                   },
+                   {
+                    "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                   }
+                  ]
+                 }
+                }
+               },
+               "message": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             }
+            },
             "ok": {
              "optional": false,
              "type": "false"
@@ -25066,6 +25754,10 @@
                "\"outside\""
               ]
              }
+            },
+            "refusal": {
+             "optional": true,
+             "type": "\"share\""
             }
            }
           }
@@ -26164,6 +26856,50 @@
                     "value": "unknown"
                    }
                   ]
+                 }
+                },
+                "unreadable": {
+                 "optional": true,
+                 "type": {
+                  "object": {
+                   "file": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "reason": {
+                    "optional": false,
+                    "type": {
+                     "object": {
+                      "args": {
+                       "optional": true,
+                       "type": {
+                        "array": {
+                         "union": [
+                          "number",
+                          "string",
+                          {
+                           "object": {
+                            "number": {
+                             "optional": false,
+                             "type": "number"
+                            }
+                           }
+                          },
+                          {
+                           "ref": "import(\"src/shared/localized-text\").LocalizedText"
+                          }
+                         ]
+                        }
+                       }
+                      },
+                      "message": {
+                       "optional": false,
+                       "type": "string"
+                      }
+                     }
+                    }
+                   }
+                  }
                  }
                 }
                }
@@ -32604,6 +33340,55 @@
             "untrusted": {
              "optional": true,
              "type": "boolean"
+            },
+            "withheld": {
+             "optional": true,
+             "type": {
+              "union": [
+               {
+                "object": {
+                 "detail": {
+                  "optional": false,
+                  "type": "string"
+                 },
+                 "reason": {
+                  "optional": false,
+                  "type": "\"invalidFrontmatter\""
+                 }
+                }
+               },
+               {
+                "object": {
+                 "reason": {
+                  "optional": false,
+                  "type": "\"broken\""
+                 },
+                 "target": {
+                  "optional": false,
+                  "type": "string"
+                 }
+                }
+               },
+               {
+                "object": {
+                 "reason": {
+                  "optional": false,
+                  "type": {
+                   "union": [
+                    "\"linkOutside\"",
+                    "\"loop\"",
+                    "\"missingDescription\"",
+                    "\"reservedNamespace\"",
+                    "\"share\"",
+                    "\"tooLarge\"",
+                    "\"unreachable\""
+                   ]
+                  }
+                 }
+                }
+               }
+              ]
+             }
             }
            }
           },
@@ -32653,6 +33438,55 @@
             "untrusted": {
              "optional": true,
              "type": "boolean"
+            },
+            "withheld": {
+             "optional": true,
+             "type": {
+              "union": [
+               {
+                "object": {
+                 "detail": {
+                  "optional": false,
+                  "type": "string"
+                 },
+                 "reason": {
+                  "optional": false,
+                  "type": "\"invalidFrontmatter\""
+                 }
+                }
+               },
+               {
+                "object": {
+                 "reason": {
+                  "optional": false,
+                  "type": "\"broken\""
+                 },
+                 "target": {
+                  "optional": false,
+                  "type": "string"
+                 }
+                }
+               },
+               {
+                "object": {
+                 "reason": {
+                  "optional": false,
+                  "type": {
+                   "union": [
+                    "\"linkOutside\"",
+                    "\"loop\"",
+                    "\"missingDescription\"",
+                    "\"reservedNamespace\"",
+                    "\"share\"",
+                    "\"tooLarge\"",
+                    "\"unreachable\""
+                   ]
+                  }
+                 }
+                }
+               }
+              ]
+             }
             }
            }
           }
@@ -32663,6 +33497,83 @@
       "type": {
        "optional": false,
        "type": "\"customSlashCommands\""
+      },
+      "withheldRoots": {
+       "optional": true,
+       "type": {
+        "array": {
+         "object": {
+          "assets": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"commands\"",
+             "\"skills\""
+            ]
+           }
+          },
+          "filePath": {
+           "optional": false,
+           "type": "string"
+          },
+          "folder": {
+           "optional": false,
+           "type": "string"
+          },
+          "kind": {
+           "optional": false,
+           "type": "\"withheldRoot\""
+          },
+          "source": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"project\"",
+             "\"user\""
+            ]
+           }
+          },
+          "untrusted": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "withheld": {
+           "optional": false,
+           "type": {
+            "union": [
+             {
+              "object": {
+               "reason": {
+                "optional": false,
+                "type": "\"broken\""
+               },
+               "target": {
+                "optional": false,
+                "type": "string"
+               }
+              }
+             },
+             {
+              "object": {
+               "reason": {
+                "optional": false,
+                "type": {
+                 "union": [
+                  "\"linkOutside\"",
+                  "\"loop\"",
+                  "\"share\"",
+                  "\"unreachable\""
+                 ]
+                }
+               }
+              }
+             }
+            ]
+           }
+          }
+         }
+        }
+       }
       }
      }
     },
@@ -36980,6 +37891,7 @@
             "optional": false,
             "type": {
              "union": [
+              "\"fileLinksToShare\"",
               "\"fileNotObject\"",
               "\"fileServersNotObject\"",
               "\"fileUnparseable\"",

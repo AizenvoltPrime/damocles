@@ -3,8 +3,6 @@
 
 /** The scm.commit field an older daemon's parser drops; its commit then asks only by damocles.desktop.git.branchProtection. */
 export const SCM_COMMIT_PROTECTED_BRANCHES_FEATURE = 'scm.commit.protectedBranches';
-/** The MainRequest forge.branchProtection of this computer's core. */
-export const FORGE_BRANCH_PROTECTION_FEATURE = 'forge.branchProtection';
 
 export const MAX_PROTECTED_REMOTES = 32;
 export const MAX_PROTECTION_RULES = 200;

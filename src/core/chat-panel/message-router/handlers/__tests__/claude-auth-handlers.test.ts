@@ -36,8 +36,8 @@ vi.mock("../../../../pi-session/pi-runtime", () => ({
   remoteSignInRefusal: () => ({ message: "Sign-ins change only in the User tab on your computer." }),
 }));
 
+vi.mock("../../../../pi-session/agent-dir-setup", () => ({ ensurePiAgentDir: () => undefined }));
 vi.mock("../../../../pi-session/agent-dir", () => ({
-  ensurePiAgentDir: () => undefined,
   PI_AGENT_DIR: "/fake/agent",
 }));
 

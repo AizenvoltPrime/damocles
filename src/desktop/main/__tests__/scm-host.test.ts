@@ -2329,12 +2329,12 @@ describe('source control host: a remote repository', () => {
     expect(editorPane.openNamedPath).not.toHaveBeenCalled();
   });
 
-  it('names a remote change the editor could not open in the user\'s language', async () => {
+  it('leaves the notice of a remote change the editor could not open to the editor\'s user open', async () => {
     const { host, editorPane, notices } = setup(remote('/srv/app/src/a.ts'));
-    Object.assign(host.deps, { t: (message: string, ...args: string[]) => `«${message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)]))}»` });
     vi.mocked(editorPane.openFromUser).mockResolvedValueOnce({ ok: false, reason: 'missing' } as never);
+    const before = notices.length;
     await host.runRequest({ op: 'openFile', repoId: 'repo-1', path: 'src/a.ts' });
-    expect(notices.at(-1)).toMatchObject({ severity: 'error', message: '«a.ts could not be opened.»' });
+    expect(notices.slice(before)).toEqual([]);
   });
 
   it('refuses a path the target answers outside its projects: this computer\'s file, a UNC path, another authority\'s', async () => {

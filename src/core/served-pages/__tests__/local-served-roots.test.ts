@@ -11,6 +11,9 @@ import { ChatServedFiles, outsideRootsRefusal, type ServedFileRoots } from '../.
 import { LocalServedRoots } from '../local-served-roots';
 import { previewCsp } from '../serve-policy';
 
+// no drive letter maps a share, so a realpath on one is the project's own or refused
+vi.mock('../../mapped-drives', () => ({ mappedDrivePath: vi.fn(() => null) }));
+
 interface Answer {
   readonly status: number;
   readonly headers: http.IncomingHttpHeaders;
@@ -106,12 +109,126 @@ describe('a VS Code chat\'s served roots', () => {
     expect((await get(`${origin}/docs/app.js`, { cookie })).headers['content-security-policy']).toBe(previewCsp(true, 'browser'));
   });
 
-  it('never follows a link at the file itself, as desktop\'s confinement does', async () => {
-    await fs.symlink(path.join(project, 'docs'), path.join(project, 'docs-link'), 'junction');
+  it('follows a link out of a trusted project as desktop\'s preview read does, and no link out of an untrusted one', async () => {
+    await fs.writeFile(path.join(outside, 'page.html'), '<p>linked</p>');
+    await fs.symlink(path.join(outside, 'page.html'), path.join(project, 'file-link.html'), process.platform === 'win32' ? 'file' : undefined).catch((err: NodeJS.ErrnoException) => {
+      // creating a file link on Windows needs Developer Mode or an elevated process
+      if (err.code !== 'EPERM') throw err;
+    });
     const answer = await roots.url(fakeChat(), { kind: 'project', relPath: 'docs/index.html' }, project);
     if (!('url' in answer)) throw new Error(answer.refused);
     const { cookie, origin } = await open(answer.url);
-    expect((await get(`${origin}/docs-link`, { cookie })).status).toBe(404);
+    expect((await get(`${origin}/out/secret.html`, { cookie })).status).toBe(404);
+    trusted = true;
+    const linked = await get(`${origin}/out/secret.html`, { cookie });
+    expect(linked.status).toBe(200);
+    expect(linked.body).toBe('outside the project');
+    expect(linked.headers['content-security-policy']).toBe(previewCsp(true, 'browser'));
+    expect((await get(`${origin}/out/page.html`, { cookie })).body).toBe('<p>linked</p>');
+    if (await fs.lstat(path.join(project, 'file-link.html')).then(() => true, () => false)) expect((await get(`${origin}/file-link.html`, { cookie })).body).toBe('<p>linked</p>');
+    // a folder named without its slash is still a folder through the link
+    expect((await get(`${origin}/out`, { cookie })).status).toBe(308);
+    trusted = false;
+    expect((await get(`${origin}/out/page.html`, { cookie })).status).toBe(404);
+  });
+
+  it('refuses a trusted link whose target lies in a dot folder, below the link root or above it', async () => {
+    await fs.mkdir(path.join(outside, '.git'));
+    await fs.writeFile(path.join(outside, '.git', 'config'), '[core]');
+    // a link inside the linked folder into its own dot folder, and a project link into a dot folder's subfolder
+    await fs.symlink(path.join(outside, '.git'), path.join(outside, 'cfg'), 'junction');
+    await fs.mkdir(path.join(dir, '.secret', 'site'), { recursive: true });
+    await fs.writeFile(path.join(dir, '.secret', 'site', 'page.html'), 'token');
+    await fs.symlink(path.join(dir, '.secret', 'site'), path.join(project, 'hidden'), 'junction');
+    trusted = true;
+    const answer = await roots.url(fakeChat(), { kind: 'project', relPath: 'docs/index.html' }, project);
+    if (!('url' in answer)) throw new Error(answer.refused);
+    const { cookie, origin } = await open(answer.url);
+    expect((await get(`${origin}/out/secret.html`, { cookie })).status).toBe(200);
+    expect((await get(`${origin}/out/cfg/config`, { cookie })).status).toBe(404);
+    expect((await get(`${origin}/hidden/page.html`, { cookie })).status).toBe(404);
+  });
+
+  it('refuses a trusted link into a data store of this host, and serves the same folder when it is none', async () => {
+    const store = path.join(dir, 'store');
+    await fs.mkdir(store);
+    await fs.writeFile(path.join(store, 'page.html'), '<p>store</p>');
+    await fs.symlink(store, path.join(project, 'data'), 'junction');
+    trusted = true;
+    const answer = await roots.url(fakeChat(), { kind: 'project', relPath: 'docs/index.html' }, project);
+    if (!('url' in answer)) throw new Error(answer.refused);
+    const { cookie, origin } = await open(answer.url);
+    expect((await get(`${origin}/data/page.html`, { cookie })).status).toBe(200);
+    vi.stubEnv(process.platform === 'win32' ? 'ProgramData' : 'XDG_CONFIG_HOME', store);
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+    });
+    expect((await get(`${origin}/data/page.html`, { cookie })).status).toBe(404);
+  });
+
+  it('reads trust once per request, so a response\'s CSP and its read\'s link rule agree', async () => {
+    let looks = 0;
+    const flipping = new LocalServedRoots({ isTrusted: () => ++looks % 2 === 0, refusalText: () => 'Open this preview from Damocles.', log: () => undefined });
+    onTestFinished(() => flipping.dispose());
+    const answer = await flipping.url(fakeChat(), { kind: 'project', relPath: 'docs/index.html' }, project);
+    if (!('url' in answer)) throw new Error(answer.refused);
+    const { cookie, origin } = await open(answer.url);
+    const statuses = new Set<number>();
+    for (let request = 0; request < 4; request++) {
+      const linked = await get(`${origin}/out/secret.html`, { cookie });
+      statuses.add(linked.status);
+      expect(linked.headers['content-security-policy'], String(linked.status)).toBe(previewCsp(linked.status === 200, 'browser'));
+    }
+    expect([...statuses].sort()).toEqual([200, 404]);
+  });
+
+  it('follows a link that stays inside an untrusted project, at the file itself too, and none that leaves it, as desktop\'s preview read does', async () => {
+    await fs.symlink(path.join(project, 'docs'), path.join(project, 'docs-link'), 'junction');
+    await fs.symlink(path.join(project, 'docs', 'index.html'), path.join(project, 'page-link.html'), 'file');
+    await fs.symlink(path.join(outside, 'secret.html'), path.join(project, 'secret-link.html'), 'file');
+    const answer = await roots.url(fakeChat(), { kind: 'project', relPath: 'docs/index.html' }, project);
+    if (!('url' in answer)) throw new Error(answer.refused);
+    const { cookie, origin } = await open(answer.url);
+    const page = await get(`${origin}/page-link.html`, { cookie });
+    expect(page.status).toBe(200);
+    expect(page.body).toBe('<script type="module" src="app.js"></script>');
+    expect(page.headers['content-security-policy']).toBe(previewCsp(false, 'browser'));
+    expect((await get(`${origin}/docs-link`, { cookie })).status).toBe(308);
+    expect((await get(`${origin}/docs-link/app.js`, { cookie })).status).toBe(200);
+    expect((await get(`${origin}/secret-link.html`, { cookie })).status).toBe(404);
+    expect((await get(`${origin}/out/secret.html`, { cookie })).status).toBe(404);
+  });
+
+  it.runIf(process.platform === 'win32')('refuses a link swapped onto a share after the walk passed, touching nothing on it', async () => {
+    trusted = true;
+    const answer = await roots.url(fakeChat(), { kind: 'project', relPath: 'docs/index.html' }, project);
+    if (!('url' in answer)) throw new Error(answer.refused);
+    const { cookie, origin } = await open(answer.url);
+    const link = path.join(project, 'out');
+    const realpath = fs.realpath.bind(fs);
+    const reached: string[] = [];
+    // every realpath at or under the link answers a share, as when it was swapped after the walk
+    const realpathSpy = vi.spyOn(fs, 'realpath').mockImplementation((async (file: PathLike) => {
+      const spelled = String(file);
+      const below = path.relative(link.toLowerCase(), spelled.toLowerCase());
+      return below === '' || (!below.startsWith('..') && !path.isAbsolute(below)) ? path.join('\\\\192.0.2.1\\s', path.relative(link, spelled)) : realpath(spelled);
+    }) as typeof fs.realpath);
+    const spies = (['lstat', 'stat', 'open'] as const).map((name) => {
+      const original = (fs[name] as (...args: unknown[]) => Promise<unknown>).bind(fs);
+      return vi.spyOn(fs, name).mockImplementation((async (file: PathLike, ...rest: unknown[]) => {
+        if (/^[\\/]{2}/.test(String(file))) {
+          reached.push(`${name} ${String(file)}`);
+          throw new Error(`reached ${String(file)}`);
+        }
+        return original(file, ...rest);
+      }) as never);
+    });
+    onTestFinished(() => {
+      realpathSpy.mockRestore();
+      for (const spy of spies) spy.mockRestore();
+    });
+    expect((await get(`${origin}/out/secret.html`, { cookie })).status).toBe(404);
+    expect(reached).toEqual([]);
   });
 
   it.runIf(process.platform === 'win32')('refuses a file under a folder link that leads to a network path without resolving the link', async () => {
@@ -284,6 +401,17 @@ describe('a VS Code chat\'s granted folder', () => {
     // the grant goes with the chat
     chat.close();
     expect((await get(`${origin}/sub/index.html`, { cookie })).status).toBe(421);
+  });
+
+  it('never follows a link at the file itself, a folder link without its slash included', async () => {
+    await fs.symlink(path.join(outside, 'sub'), path.join(outside, 'sub-link'), 'junction');
+    await fs.symlink(path.join(outside, 'sub', 'index.html'), path.join(outside, 'page-link.html'), 'file');
+    const answer = await roots.url(fakeChat(), { kind: 'folder', folder: outside, relPath: 'sub/index.html' }, outside);
+    if (!('url' in answer)) throw new Error(answer.refused);
+    const { cookie, origin } = await open(answer.url);
+    expect((await get(`${origin}/sub-link/index.html`, { cookie })).status).toBe(200);
+    expect((await get(`${origin}/sub-link`, { cookie })).status).toBe(404);
+    expect((await get(`${origin}/page-link.html`, { cookie })).status).toBe(404);
   });
 
   it('stops serving a granted folder that was swapped for a link to another folder', async () => {

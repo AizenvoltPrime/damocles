@@ -39,6 +39,7 @@ function heldEngine(posted: ExtensionToWebviewMessage[]): { engine: SubagentEngi
     cwd: process.cwd(),
     trust: createFakePlatform().trust,
     registry: new AgentRegistry(),
+    registryLoaded: async () => {},
     createSession: async (opts) => {
       const booted = await sessions.boot([fauxAssistantMessage('Done.')], { extensionFactory: opts.extensionFactory });
       resolveHeld({ booted, settle: booted.hold() });
@@ -78,7 +79,7 @@ describe("a subagent's Stop while a pi extension holds its run's wind-down", () 
     const posted: ExtensionToWebviewMessage[] = [];
     const { engine, held } = heldEngine(posted);
     const manager = new AgentManager(engine, 1);
-    const id = manager.spawn(SPAWN);
+    const { id } = await manager.spawn(SPAWN);
     const { booted, settle } = await within(held(), 10_000, 'the subagent session');
     await within(settle.waiting, 10_000, 'the agent_settled handler');
 
@@ -99,7 +100,7 @@ describe("a subagent's Stop while a pi extension holds its run's wind-down", () 
     const posted: ExtensionToWebviewMessage[] = [];
     const { engine, held } = heldEngine(posted);
     const manager = new AgentManager(engine, 1);
-    const id = manager.spawn(SPAWN);
+    const { id } = await manager.spawn(SPAWN);
     const { booted, settle } = await within(held(), 10_000, 'the subagent session');
     await within(settle.waiting, 10_000, 'the agent_settled handler');
     const hookEnds = trackRunningHook(booted.session.sessionManager.getSessionId(), { command: 'bash ./scripts/notify.sh', scope: 'project' });
@@ -121,7 +122,7 @@ describe("a subagent's Stop while a pi extension holds its run's wind-down", () 
     const posted: ExtensionToWebviewMessage[] = [];
     const { engine, held } = heldEngine(posted);
     const manager = new AgentManager(engine, 1);
-    const id = manager.spawn(SPAWN);
+    const { id } = await manager.spawn(SPAWN);
     const { booted, settle } = await within(held(), 10_000, 'the subagent session');
     await within(settle.waiting, 10_000, 'the agent_settled handler');
     manager.abort(id, 'user');
@@ -152,7 +153,7 @@ describe("a subagent's Stop while a pi extension holds its run's wind-down", () 
     const posted: ExtensionToWebviewMessage[] = [];
     const { engine, held } = heldEngine(posted);
     const manager = new AgentManager(engine, 1);
-    const id = manager.spawn(SPAWN);
+    const { id } = await manager.spawn(SPAWN);
     const { settle } = await within(held(), 10_000, 'the subagent session');
     await within(settle.waiting, 10_000, 'the agent_settled handler');
 

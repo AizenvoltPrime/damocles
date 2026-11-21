@@ -11,7 +11,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { stripBom } from '../../config/bom';
+import { agentConfigBases, configLinkPolicy, noticeRefusedConfigRead } from '../../config/local-config-path';
 import { platform } from '../../platform-host';
+import { personalConfigRoot } from '../../worktrees/personal-config';
 import { PI_AGENT_DIR } from '../agent-dir';
 import { log } from '../../logger';
 
@@ -33,8 +35,12 @@ function settingsPaths(cwd: string): [project: string, global: string] {
   return [join(cwd, '.pi', 'settings.json'), join(PI_AGENT_DIR, 'settings.json')];
 }
 
-/** Read `enabledModels` from a single settings.json file. Undefined when missing or absent. */
-function readField(path: string): string[] | undefined {
+/** Read `enabledModels` from a single settings.json file. Undefined when missing, absent or refused by `admits`, as pi loads none from it. */
+function readField(path: string, admits: (file: string) => boolean): string[] | undefined {
+  if (!admits(path)) {
+    noticeRefusedConfigRead(path, platform().notifications);
+    return undefined;
+  }
   if (!existsSync(path)) return undefined;
   try {
     const raw = JSON.parse(stripBom(readFileSync(path, 'utf-8')));
@@ -48,10 +54,11 @@ function readField(path: string): string[] | undefined {
 }
 
 /** Read enabledModels from pi's settings — project-local overrides global. A restricted window ignores
- *  the project file, as pi's own settings manager does. */
+ *  the project file, as pi's own settings manager does, and each file follows the link policy of the folder's pi loader. */
 export function readEnabledModels(cwd: string): string[] | undefined {
   const [project, global] = settingsPaths(cwd);
-  return (platform().trust.isTrusted(cwd) ? readField(project) : undefined) ?? readField(global);
+  const admits = configLinkPolicy([cwd, ...agentConfigBases(PI_AGENT_DIR), personalConfigRoot(cwd)]);
+  return (platform().trust.isTrusted(cwd) ? readField(project, admits) : undefined) ?? readField(global, admits);
 }
 
 /**

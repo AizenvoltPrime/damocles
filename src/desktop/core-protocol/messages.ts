@@ -390,7 +390,8 @@ export interface MainRequests {
   'catalog.tag': Call<{ readonly sessionId: string; readonly tag: string | null }, CatalogResult>;
   'catalog.delete': Call<{ readonly sessionId: string }, CatalogResult>;
   // a session file of this core's own store, which only this core writes (session-file-write.ts); path is native to its
-  // machine; expectedSha256: the bytes the editor last read, null for a file it found missing
+  // machine; expectedSha256: the bytes the editor last read, null for a file it found missing; notOwned reaches only a client
+  // whose attach lists files.sessionFileRefusal, any other reads outside (core-routes.ts)
   'sessionFiles.write': Call<{ readonly path: string; readonly bytes: Uint8Array; readonly expectedSha256: string | null }, SessionFileWrite>;
   'folders.setDefault': Call<{ readonly key: string }, void>;
   // url: an address of a forwarded port, which main checked; absent opens a blank page
@@ -449,7 +450,7 @@ export interface MainRequests {
   // relayed through main; account: whose credential it is and how it was settled. consentedAccountId: the account the user let
   // the target use in main's consent dialog, never taken from the target. Never logged.
   'forge.gitCredential': Call<{ readonly request: GitCredentialRequest; readonly origin: GitCredentialOrigin; readonly authorityKey: string; readonly projectKey?: string; readonly consentedAccountId?: string }, ForgeGitCredentialResult>;
-  // this computer's core, CI (core/forge/ci-watch.ts, feature forge.ci): a status watch by main's id, defined with repo and shown
+  // this computer's core, CI (core/forge/ci-watch.ts): a status watch by main's id, defined with repo and shown
   // while active (without repo: only shown or hidden, a log watch too), answered with its view and followed on forge.ci.changed;
   // null: no chip
   'forge.ci.watch': Call<{ readonly id: string; readonly repo?: CiRepo; readonly active: boolean }, CiStatus | null>;
@@ -464,33 +465,33 @@ export interface MainRequests {
   // the server's page of a pipeline, run, job or commit's checks, built from the server's web URL, the repository path and the
   // id or commit; main opens it
   'forge.ci.webUrl': Call<{ readonly repo: CiRepo; readonly target: CiTarget }, { readonly url: string; readonly serverName: string } | null>;
-  // this computer's core, links (core/forge/links.ts, feature forge.links): a file or commit address on the managed server a
+  // this computer's core, links (core/forge/links.ts): a file or commit address on the managed server a
   // remote of repo points at, which main opens or copies and never passes to a renderer
   'forge.link': Call<{ readonly repo: CiRepo; readonly target: ForgeLinkTarget }, { readonly url: string; readonly serverName: string; readonly remote: string } | { readonly unavailable: LocalizedText }>;
-  // this computer's core, history details (core/forge/history.ts, feature forge.history): the repository's server (null: none
+  // this computer's core, history details (core/forge/history.ts): the repository's server (null: none
   // with an account), one history page's author picture keys by lower-cased email (published on forgeAuthorAvatars before
   // the answer), and the merged pull or merge request containing a commit
   'forge.history.context': Call<{ readonly repo: CiRepo }, HistoryForgeContext | null>;
   'forge.history.avatars': Call<{ readonly repo: CiRepo; readonly authors: readonly HistoryAuthor[] }, AuthorAvatars>;
   'forge.history.containing': Call<{ readonly repo: CiRepo; readonly sha: string }, ContainingChange | null>;
-  // this computer's core, branch protection (core/forge/branch-protection.ts, feature forge.branchProtection): the rules it
+  // this computer's core, branch protection (core/forge/branch-protection.ts): the rules it
   // holds for each remote of the repository, answered at once; a missing or stale entry is read in the background
   'forge.branchProtection': Call<{ readonly repo: CiRepo }, readonly RemoteBranchProtection[]>;
-  // a push refused on branch of remote (feature forge.protectedPush): whether the server protects it for the push's account,
+  // a push refused on branch of remote: whether the server protects it for the push's account,
   // from rules read in the last 30 minutes, else read now
   'forge.pushProtection': Call<{ readonly repo: PushedRepo; readonly remote: string; readonly branch: string }, PushProtection>;
-  // the managed servers once the forge files were read or failed to (feature forge.servers): a remote attach's clientForges
+  // the managed servers once the forge files were read or failed to: a remote attach's clientForges
   'forge.servers': Call<object, ClientForges>;
-  // this computer's core, the clone picker (core/forge/clone-picker.ts, feature forge.clone): the accounts, one account's
+  // this computer's core, the clone picker (core/forge/clone-picker.ts): the accounts, one account's
   // listing with opaque row keys, a pasted address's row, and the clone address a key or paste stands for (main only)
   'forge.clone.accounts': Call<object, CloneAccountsView>;
   'forge.clone.search': Call<{ readonly accountId: string; readonly query: string }, CloneSearchOutcome>;
   'forge.clone.paste': Call<{ readonly text: string }, ClonePasteAnswer>;
   'forge.clone.target': Call<{ readonly source: CloneSource }, CloneTarget>;
-  // this computer's core, publish and fork on a denied push (core/forge/publish.ts, features forge.publish and
-  // forge.publishOwners): every signed-in account with its own namespace, one account's organizations or groups (the Owner
-  // values a create accepts for it), a create by such a value, the server's access check of a refused push, a fork polled until
-  // copied, the create page of a merge or pull request (main opens it), and an organization's page
+  // this computer's core, publish and fork on a denied push (core/forge/publish.ts): every signed-in account with its own
+  // namespace, one account's organizations or groups (the Owner values a create accepts for it), a create by such a value, the
+  // server's access check of a refused push, a fork polled until copied, the create page of a merge or pull request (main
+  // opens it), and an organization's page
   'forge.publishAccounts': Call<object, PublishAccountsView>;
   'forge.publishOwners': Call<{ readonly accountId: string }, PublishOwnersAnswerOf<LocalizedText>>;
   'forge.createRepository': Call<{ readonly owner: string; readonly name: string; readonly visibility: PublishVisibility }, CreateRepositoryOutcome>;
@@ -718,7 +719,7 @@ export interface MirrorTopics {
   // value undefined: the key was removed
   state: { readonly scope: StateScope; readonly key: string; readonly value: unknown };
   // keys: every trusted folder's folderKey; granted and revoked: the folders the change names, as TrustService.onDidChangeTrust
-  // delivers them (revoked: feature trust.revoked; a client without it names none)
+  // delivers them
   trust: { readonly keys: readonly string[]; readonly granted: readonly string[]; readonly revoked?: readonly string[] };
   folders: { readonly folders: readonly OpenFolder[] };
   panel: { readonly panelId: string; readonly visible: boolean; readonly active: boolean; readonly column?: number };
@@ -1047,7 +1048,7 @@ const catalogResult: Parser<CatalogResult> = either(
 );
 const sha256Hex: Parser<string> = (raw) => (typeof raw === 'string' && /^[0-9a-f]{64}$/.test(raw) ? raw : INVALID);
 const sessionFileWrite: Parser<SessionFileWrite> = either(
-  either(obj({ kind: oneOf(['written'] as const), mtimeMs: finite }), obj({ kind: oneOf(['changed', 'outside'] as const) })),
+  either(obj({ kind: oneOf(['written'] as const), mtimeMs: finite }), obj({ kind: oneOf(['changed', 'outside', 'notOwned'] as const) })),
   obj({ kind: oneOf(['refused'] as const), reason: oneOf(['held', 'otherProcess'] as const) }),
 );
 const worktreeStateEvent: Parser<PanelWorktreeStateEvent> = obj({
@@ -1198,6 +1199,7 @@ const clientUser: Parser<ClientUser> = obj({
   settings: dict(value, MAX_KEY_CHARS, MAX_ITEMS),
   permissionRules: arr(obj({ allow: strings, ask: strings, deny: strings, dir: oneOf(['.damocles', '.claude'] as const) }), MAX_ACTIONS),
   pending: clientPending,
+  unreadable: opt(obj({ file: filePath, reason: localizedMessage })),
 });
 const clientPolicy: Parser<ClientPolicy> = obj({
   voice: bool,

@@ -4,10 +4,10 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   LEGACY_SUBSCRIPTION_REPOS,
-  SUBSCRIPTION_SOURCE,
   classifySubscriptionSource,
   readClaudeAuthFromDisk,
 } from '../subscription';
+import { SUBSCRIPTION_SOURCE } from '../subscription-source';
 
 const repo = 'https://github.com/gotgenes/pi-anthropic-auth';
 const legacyRepo = 'https://github.com/AizenvoltPrime/pi-anthropic-oauth';

@@ -41,16 +41,39 @@ describe('Agent tool result details', () => {
   }
   const params = { description: 'd', prompt: 'p', subagent_type: 'Explore' };
 
+  /** A spawn that settled with `over`, in the foreground unless `over` says otherwise. */
+  function spawned(over: Partial<AgentRecord>): AgentManager['spawn'] {
+    return async () => {
+      const record = rec({ background: false, ...over });
+      record.promise = Promise.resolve('');
+      return record;
+    };
+  }
+
+  // The manager waits for the registry and reads the template's mode default, so the call goes to it as the model wrote it.
+  it('hands the manager the call as written, with the call\'s signal', async () => {
+    const calls: unknown[] = [];
+    const execute = agentTool({ spawn: async (call) => (calls.push(call), spawned({ id: 'agent-1', background: true })(call)) });
+    const signal = new AbortController().signal;
+
+    await execute('tc1', params, signal);
+    await execute('tc2', { ...params, run_in_background: false }, signal);
+
+    expect(calls).toEqual([
+      { kind: 'spawn', type: 'Explore', prompt: 'p', description: 'd', toolCallId: 'tc1', signal },
+      { kind: 'spawn', type: 'Explore', prompt: 'p', description: 'd', toolCallId: 'tc2', runInBackground: false, signal },
+    ]);
+  });
+
   it('a background spawn acknowledges with the agent id and async_launched', async () => {
-    const execute = agentTool({ resolveRunInBackground: () => true, spawn: () => 'agent-1' });
+    const execute = agentTool({ spawn: spawned({ id: 'agent-1', status: 'running', background: true }) });
     const result = await execute('tc1', params);
     expect(result.details).toEqual({ agentId: 'agent-1', status: 'async_launched' });
   });
 
   it('a foreground spawn carries its terminal status and stop reason in its details and beside agentStatus', async () => {
     const execute = agentTool({
-      resolveRunInBackground: () => false,
-      spawnAndWait: async () => rec({ id: 'agent-2', status: 'stopped', stopReason: 'denied', rejectedTool: 'Bash', result: 'partial' }),
+      spawn: spawned({ id: 'agent-2', status: 'stopped', stopReason: 'denied', rejectedTool: 'Bash', result: 'partial' }),
     });
     const result = await execute('tc2', params);
     expect(result.details).toEqual({ agentId: 'agent-2', status: 'stopped', stopReason: 'denied' });
@@ -66,13 +89,13 @@ describe('Agent tool result details', () => {
     ['completed', { status: 'completed', result: 'ok' }],
     ['error', { status: 'error', error: 'boom' }],
   ] as const)('a foreground %s result JSON carries the agent status', async (status, over) => {
-    const execute = agentTool({ resolveRunInBackground: () => false, spawnAndWait: async () => rec({ id: 'agent-s', ...over }) });
+    const execute = agentTool({ spawn: spawned({ id: 'agent-s', ...over }) });
     const result = await execute('tc-s', params);
     expect(JSON.parse(result.content[0]!.text)).toMatchObject({ agentId: 'agent-s', agentStatus: status });
   });
 
   it('a clean foreground completion has no stop reason', async () => {
-    const execute = agentTool({ resolveRunInBackground: () => false, spawnAndWait: async () => rec({ id: 'agent-3', result: 'ok' }) });
+    const execute = agentTool({ spawn: spawned({ id: 'agent-3', result: 'ok' }) });
     expect((await execute('tc3', params)).details).toEqual({ agentId: 'agent-3', status: 'completed' });
   });
 
@@ -89,7 +112,7 @@ describe('Agent tool result details', () => {
     ['a message on a partial spawn', { prompt: 'p', message: 'go' }, `A new agent needs description, prompt and subagent_type: missing description, subagent_type. ${RESUME_INSTEAD} message goes only with resume: put a new agent's instructions in prompt.`],
   ])('rejects %s, naming the fields to change', async (_label, args, error) => {
     const resume = async () => { throw new Error('resume must not run'); };
-    const execute = agentTool({ resolveRunInBackground: () => false, resume, spawn: () => 'never', spawnAndWait: resume });
+    const execute = agentTool({ resume, spawn: resume });
     await expect(execute('tc', args)).rejects.toThrow(new Error(error));
   });
 

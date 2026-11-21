@@ -6,6 +6,7 @@ import { MAX_QUICK_OPEN_LISTING_RESULTS, MAX_QUICK_OPEN_QUERY_LENGTH, quickOpenR
 import type { OutsideListing, OutsideListingEntry } from '../workspace/file-system';
 import { MAX_NAME_PREFIX_LENGTH, namePrefixMatches } from '../workspace/outside-listing';
 import type { ProjectWorkspace } from '../workspace/project-workspace';
+import { confirmsConfined } from './documents/document-service';
 import { compareEntries } from './files/file-tree';
 import { ListingUnsupportedError } from './workspace/remote-workspace';
 import type { RootSpellings } from './workspace/root-spellings';
@@ -364,8 +365,8 @@ async function exactRowAt(typed: TypedPathTarget, workspace: ProjectWorkspace, r
   const { authority, os, path: target } = typed;
   // a project confines the paths it holds in any spelling before any outside rule, which refuses every path of a share
   const held = await deps.spellings.match({ authority, os }, roots, target);
-  const confined = held && (await workspace.files.confineExisting(held.root, held.relativePath));
-  if (held && confined?.ok && deps.spellings.confirms(held, confined.path)) {
+  const confined = held && (await workspace.files.confineExisting(held.root, held.relativePath, 'throughLinks'));
+  if (held && confined?.ok && (await confirmsConfined(deps.spellings, held, confined, () => workspace.files.confineExisting(held.root, '', 'withinProject')))) {
     return (await workspace.files.isDirectory(confined.path)) ? undefined : { row: projectRow(held.root, held.relativePath), real: confined.path };
   }
   // a UNC path names a project's file or nothing, so the outside rule never sees one
@@ -375,8 +376,8 @@ async function exactRowAt(typed: TypedPathTarget, workspace: ProjectWorkspace, r
   if (resolved.kind === 'share') {
     if (resolved.entry !== 'file') return undefined;
     const onShare = await deps.spellings.match({ authority, os }, roots, resolved.path);
-    const shareFile = onShare && (await workspace.files.confineExisting(onShare.root, onShare.relativePath));
-    if (!onShare || !shareFile?.ok || !deps.spellings.confirms(onShare, shareFile.path) || folderKeyOn(os, shareFile.path) !== folderKeyOn(os, resolved.path)) return undefined;
+    const shareFile = onShare && (await workspace.files.confineExisting(onShare.root, onShare.relativePath, 'throughLinks'));
+    if (!onShare || !shareFile?.ok || !(await confirmsConfined(deps.spellings, onShare, shareFile, () => workspace.files.confineExisting(onShare.root, '', 'withinProject'))) || folderKeyOn(os, shareFile.path) !== folderKeyOn(os, resolved.path)) return undefined;
     return { row: projectRow(onShare.root, onShare.relativePath), real: shareFile.path };
   }
   if (resolved.kind !== 'file') return undefined;

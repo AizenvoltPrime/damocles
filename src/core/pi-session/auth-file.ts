@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { log } from '../logger';
 import { stripBom } from '../config/bom';
+import { agentConfigBases, ConfigReadRefused, configLinkPolicy, noticeRefusedConfigRead } from '../config/local-config-path';
 import { currentPin } from '../client-snapshots';
 import { installedPlatform } from '../platform-host';
 import type { RemoteHost } from '../../platform/remote-host';
@@ -38,12 +39,16 @@ function parseAuth(text: string, authPath: string): Record<string, unknown> {
  * pending deletion, which fails pi's next `mkdir` of it with EPERM, and pi's writers retry EPERM only 5 times
  * (pi-coding-agent 1.5.2 `core/auth-storage.js:14-17`, `:105-107`). Undefined when there is no file. Text that does not parse is re-read a
  * few times; if it still does not parse, returns the last content this process parsed, or throws when there
- * is none or `lastGood` is false.
+ * is none or `lastGood` is false. Throws ConfigReadRefused, after telling the user once, for a file pi's link policy refuses too.
  */
 export function readAuthFile(agentDir: string, { lastGood = true }: { readonly lastGood?: boolean } = {}): Record<string, unknown> | undefined {
-  const remote = installedPlatform()?.remote;
-  if (remote) return clientAuthFile(remote);
+  const platform = installedPlatform();
+  if (platform?.remote) return clientAuthFile(platform.remote);
   const authPath = path.resolve(agentDir, 'auth.json');
+  if (!configLinkPolicy(agentConfigBases(agentDir))(authPath)) {
+    noticeRefusedConfigRead(authPath, platform?.notifications);
+    throw new ConfigReadRefused(authPath);
+  }
   for (let attempt = 1; ; attempt++) {
     let text: string;
     try {

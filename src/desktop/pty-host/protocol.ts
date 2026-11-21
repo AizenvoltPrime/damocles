@@ -101,9 +101,8 @@ export const KEPT_SHELL_SEQUENCE: RegExp = /^[ABCDEP](?:;|$)/;
 /**
  * host → main. error: the pty could not start; exitCode is the process's. process: node-pty's foreground process name changed
  * (macOS and Linux). screen: the answer to serialize; sequences is the index the next OSC 633 sequence after it gets,
- * shellSequences the latest kept payloads in index order and processName the last process name posted (feature
- * terminals.screenShellState), now the host's clock at the serialize, which each kept time is read against (feature
- * terminals.screenHostClock).
+ * shellSequences the latest kept payloads in index order and processName the last process name posted, now the host's clock
+ * at the serialize, which each kept time is read against.
  */
 export type HostMessage =
   | { readonly type: 'ready'; readonly id: string; readonly pid: number }

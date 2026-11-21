@@ -6,7 +6,7 @@ import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW, migrateLegacyModelValue, thinki
 import { TOOL_ENTER_PLAN_MODE } from '../../shared/tool-names';
 import { ACCOUNT_PROVIDER_NAMES } from '../../shared/settings-sections';
 import { catalogEntryOfPiModel, modelLabel, MODEL_VENDOR_NAMES, type ModelVendor } from '../../shared/model-vendor';
-import { providerLimitsModelsByPlan } from './custom-providers';
+import { providerLimitsModelsByPlan } from './provider-defs';
 import { TEAM_MAIN_PI_TOOL_NAMES } from './tools/team-tools';
 import { OPENAI_API_PROVIDER, OPENAI_CODEX_PROVIDER, type OpenAIAuthStatus } from './openai-auth';
 

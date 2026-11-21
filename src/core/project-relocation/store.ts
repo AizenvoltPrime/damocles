@@ -9,6 +9,7 @@ import type { Disposable } from '../../platform/disposable';
 import type { FileWatcher, FileWatcherFactory } from '../../platform/file-watcher';
 import { isSafeAgentPathId } from '../../shared/agent-path-id';
 import { writeJsonConfig } from '../config/json-config-write';
+import { checkConfigPathSync } from '../config/local-config-path';
 import { isFolderId } from '../pi-session/checkpoints/resolver';
 import { currentHostPathOf, foldAliases, type AliasSource, type HostAlias } from './aliases';
 import { RELOCATION_STEPS, type Coded, type RelocationFolder, type RelocationRecord, type RelocationStepName, type RelocationStepState, type WorktreeRepairFailure } from './types';
@@ -170,13 +171,18 @@ export class RelocationStore implements Disposable {
     await writeJsonConfig(this.file, (current) => {
       const journal = change(current === undefined ? { records: [], foreign: [], hostAliases: [] } : parseJournal(current, this.log));
       return `${JSON.stringify({ version: JOURNAL_VERSION, id: journal.id ?? randomUUID(), relocations: [...journal.records, ...journal.foreign], hostAliases: journal.hostAliases }, null, 2)}\n`;
-    }, { fileMode: JOURNAL_FILE_MODE });
+    }, { fileMode: JOURNAL_FILE_MODE, baseFolder: path.dirname(this.file) });
     this.reload();
   }
 
   private readJournal(): ParsedJournal | undefined {
     let text: string;
     try {
+      // eslint-disable-next-line damocles/no-sync -- right before the synchronous read below, judged from the store's own folder
+      if (checkConfigPathSync(path.dirname(this.file), this.file) !== 'ok') {
+        this.log(`[ProjectRelocations] ${this.file} links to a network share or WSL path, so it is not read`);
+        return undefined;
+      }
       // eslint-disable-next-line damocles/no-sync -- a few KB, read so records() and the alias map are never older than the file
       text = fs.readFileSync(this.file, 'utf8');
     } catch (err) {

@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { syncBuiltinESMExports } from 'node:module';
 import type { AgentSession, AgentSessionServices, ModelRuntime, SessionManager } from '@earendil-works/pi-coding-agent';
 import * as piMcp from '@earendil-works/pi-mcp';
 
@@ -15,7 +16,47 @@ vi.mock('os', async (importOriginal) => {
   return { ...actual, homedir, default: { ...actual, homedir } };
 });
 
+// readlinkSync answers for these links (lowercased paths) as Windows would for a link onto a share; pi's own fs is real.
+const fakeLinks = vi.hoisted(() => new Map<string, string>());
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const readlinkSync = ((...args: Parameters<typeof actual.readlinkSync>) =>
+    fakeLinks.get(String(args[0]).toLowerCase()) ?? actual.readlinkSync(...args)) as typeof actual.readlinkSync;
+  return { ...actual, readlinkSync, default: { ...actual, readlinkSync } };
+});
+
+// Files every link policy refuses, as Windows does for one linked onto another share; any other file a policy judges itself.
+const refusedFiles = vi.hoisted(() => new Set<string>());
+vi.mock('../../config/local-config-path', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../config/local-config-path')>();
+  return {
+    ...actual,
+    configLinkPolicy: (bases: readonly string[]) => {
+      const judged = actual.configLinkPolicy(bases);
+      return (file: string): boolean => !refusedFiles.has(file) && judged(file);
+    },
+  };
+});
+
+// Links whose path ends with one of these, joined with '/', answer the async network check as a drive that did not answer.
+const timedOut = vi.hoisted(() => new Set<string>());
+vi.mock('../../local-links', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../local-links')>();
+  return {
+    ...actual,
+    followsLocalLinksOnly: async (...args: Parameters<typeof actual.followsLocalLinksOnly>): Promise<boolean> => {
+      const spelled = args[1].join('/');
+      if ([...timedOut].some((suffix) => spelled.endsWith(suffix))) throw Object.assign(new Error('the drive did not answer'), { code: 'ETIMEDOUT' });
+      return actual.followsLocalLinksOnly(...args);
+    },
+  };
+});
+
 import { FolderRuntime } from '../folder-runtime';
+import { AgentRegistry } from '../subagents/agent-types';
+import type { WorkspaceAgentRegistry } from '../subagents/workspace-agent-registry';
+import { DRIVE_ANSWER_TTL_MS } from '../../local-links';
+import { LinkTargetWatchers, type WatchTarget } from '../../assets';
 import { recordTerminatedCall, takeTerminatedCalls } from '../terminated-calls';
 import { PiRuntime, renamedRuleNoticeMemory } from '../pi-runtime';
 import { initPiLoader, type PiCodingAgentModule } from '../pi-loader';
@@ -27,9 +68,55 @@ import type { PanelGateContext } from '../permission-gate';
 import type { CheckpointService } from '../checkpoint-service';
 import { folderKey } from '../../workspace-folders/folder-key';
 import { createFakePlatform, installFakePlatform } from '../../../__mocks__/fake-platform';
+import { installLogSink } from '../../logger';
 
 /** Trust and watchers for the folder runtimes built here; trusted by default, as the host is. */
 const testPlatform = createFakePlatform();
+
+const FS_READS = ['existsSync', 'statSync', 'lstatSync', 'readFileSync', 'readdirSync', 'realpathSync', 'openSync', 'accessSync', 'opendirSync'] as const;
+
+/**
+ * Records each call pi makes to the node:fs reads in FS_READS, with its path, until stop(). pi imports node:fs as an ES
+ * module, so the wrappers reach it only through the builtin's CommonJS object and syncBuiltinESMExports.
+ */
+async function recordPiFsCalls(): Promise<{ calls: Array<{ name: string; file: string }>; stop: () => void }> {
+  type Read = ((...args: unknown[]) => unknown) & { native?: (...args: unknown[]) => unknown };
+  const realFs = (await vi.importActual<{ default: Record<(typeof FS_READS)[number], Read> }>('node:fs')).default;
+  const calls: Array<{ name: string; file: string }> = [];
+  const originals = new Map<(typeof FS_READS)[number], Read>();
+  const record = (name: string, read: (...args: unknown[]) => unknown) => (...args: unknown[]) => {
+    if (new Error().stack?.includes('pi-coding-agent')) calls.push({ name, file: String(args[0]) });
+    return read(...args);
+  };
+  for (const name of FS_READS) {
+    const read = realFs[name];
+    originals.set(name, read);
+    realFs[name] = Object.assign(record(name, read), read.native ? { native: record(name, read.native) } : {});
+  }
+  syncBuiltinESMExports();
+  return {
+    calls,
+    stop: () => {
+      for (const [name, read] of originals) realFs[name] = read;
+      syncBuiltinESMExports();
+    },
+  };
+}
+
+/** The recorded calls naming file or a path below it, other than those of the reads in allowed. */
+function callsOn(calls: ReadonlyArray<{ name: string; file: string }>, file: string, allowed: readonly string[] = []): string[] {
+  const key = file.toLowerCase();
+  return calls
+    .filter(({ name, file: called }) => !allowed.includes(name) && (called.toLowerCase() === key || called.toLowerCase().startsWith(key + path.sep)))
+    .map(({ name, file: called }) => `${name} ${called}`);
+}
+
+/** The lines Damocles logs from now on. */
+function captureLog(): string[] {
+  const lines: string[] = [];
+  installLogSink({ appendLine: (line) => void lines.push(line), show: () => undefined, dispose: () => undefined });
+  return lines;
+}
 
 
 /** A folder runtime with no services, for the registry and republisher bookkeeping that needs none. */
@@ -51,6 +138,7 @@ function bareFolder(made: FolderRuntime[], cwd = '/tmp/ws'): FolderRuntime {
     resourceExposureSetting: () => ({}),
     trust: testPlatform.trust,
     fileWatchers: testPlatform.fileWatchers,
+    notifications: testPlatform.notifications,
   });
   made.push(folder);
   return folder;
@@ -109,6 +197,14 @@ describe('per-session registries are released by their owner only', () => {
 
     expect(entries(folder)).toEqual([undefined, undefined, undefined, undefined]);
   });
+
+  // A lookup after dispose would build a second registry, with watchers nothing disposes, that no reload of this folder reaches.
+  it('refuses its agent registry once disposed', async () => {
+    const folder = bareFolder(made);
+    await folder.dispose();
+
+    expect(() => folder.getWorkspaceAgentRegistry()).toThrow('/tmp/ws): agent registry used after dispose');
+  });
 });
 
 describe('renamed-tool rule migration', () => {
@@ -147,7 +243,7 @@ describe('renamed-tool rule migration', () => {
       retiredResources = { user: [], folder: [] },
     }: {
       noticeMemory?: NoticeMemory;
-      personalDisabledTools?: (trusted: boolean) => PersonalToolLists;
+      personalDisabledTools?: (trusted: boolean, stillTrusted: () => boolean) => PersonalToolLists;
       retiredResources?: LegacyToolNameInput['retiredResources'];
     } = {},
   ) {
@@ -176,6 +272,7 @@ describe('renamed-tool rule migration', () => {
       resourceExposureSetting: () => ({}),
       trust: platform.trust,
       fileWatchers: platform.fileWatchers,
+      notifications: platform.notifications,
     });
     made.push(folder);
     const tools = assignServerToolNames('context7', ['resolve-library-id'], new Set());
@@ -211,6 +308,23 @@ describe('renamed-tool rule migration', () => {
     expect(rules(files.local)).toEqual([NEW]);
     expect(rules(files.project)).toEqual([OLD]);
     expect(posted).toEqual([[{ path: files.project, displayPath: { message: '{0}', args: [files.project] }, rules: [{ old: OLD, new: NEW }] }]]);
+  });
+
+  it('writes no folder file when trust is revoked while the run waits for the folder\'s agents', async () => {
+    const platform = createFakePlatform();
+    const { folder, cwd, files, toolsChanged, settled, rules } = migrationFolder(platform);
+    let land!: () => void;
+    const loaded = new Promise<void>((resolve) => { land = resolve; });
+    const waits = vi.fn(() => loaded);
+    vi.spyOn(folder, 'getWorkspaceAgentRegistry').mockReturnValue({ whenLoaded: waits, getRegistry: () => new AgentRegistry() } as unknown as WorkspaceAgentRegistry);
+
+    toolsChanged();
+    await vi.waitFor(() => expect(waits).toHaveBeenCalled());
+    platform.trust.revokeTrust([cwd]);
+    land();
+    await settled();
+
+    expect(rules(files.local)).toEqual([OLD]);
   });
 
   it('retries a run that failed instead of treating its inputs as done', async () => {
@@ -302,14 +416,32 @@ describe('renamed-tool rule migration', () => {
 
   it('rewrites the personal lists at the user scope only in an untrusted folder', async () => {
     const platform = createFakePlatform({ trusted: false });
-    const personal = vi.fn((_trusted: boolean): PersonalToolLists => ({ rewrite: async () => undefined, lists: () => [] }));
+    const personal = vi.fn((_trusted: boolean, _stillTrusted: () => boolean): PersonalToolLists => ({ rewrite: async () => undefined, lists: () => [] }));
     const { toolsChanged, settled } = migrationFolder(platform, { personalDisabledTools: personal, retiredResources: retiredSecret });
 
     toolsChanged();
     await settled();
 
-    expect(personal).toHaveBeenCalledWith(false);
-    expect(personal).not.toHaveBeenCalledWith(true);
+    expect(personal).toHaveBeenCalledWith(false, expect.any(Function));
+    expect(personal).not.toHaveBeenCalledWith(true, expect.any(Function));
+  });
+
+  // The local scope's list is the folder's own settings file, so its write re-reads the trust the run started under.
+  it('hands the personal-list rewrite a live trust check, which a revoke during the run turns false', async () => {
+    const platform = createFakePlatform();
+    const checks: Array<() => boolean> = [];
+    const personal = (_trusted: boolean, stillTrusted: () => boolean): PersonalToolLists => {
+      checks.push(stillTrusted);
+      return { rewrite: async () => undefined, lists: () => [] };
+    };
+    const { cwd, toolsChanged, settled } = migrationFolder(platform, { personalDisabledTools: personal, retiredResources: retiredSecret });
+
+    toolsChanged();
+    await settled();
+    expect(checks.map((check) => check())).toEqual([true]);
+    platform.trust.revokeTrust([cwd]);
+
+    expect(checks[0]!()).toBe(false);
   });
 
   it('runs again after a personal-list rewrite failed, with the same inputs', async () => {
@@ -494,6 +626,9 @@ describe('unbound extension instances', () => {
         },
         extendResources: () => undefined,
         getExtensions: () => ({ runtime: { pendingProviderRegistrations: [] }, errors: [] }),
+        getSkills: () => ({ skills: [], diagnostics: [] }),
+        getPrompts: () => ({ prompts: [], diagnostics: [] }),
+        getThemes: () => ({ themes: [], diagnostics: [] }),
       },
     };
     const internals = folder as unknown as { _services: unknown; _trackCurrentInstanceAsUnbound(): void };
@@ -626,6 +761,7 @@ describe('folder runtimes on real pi', () => {
   afterEach(async () => {
     for (const session of sessions.splice(0)) session.dispose();
     await PiRuntime.disposeInstance();
+    refusedFiles.clear();
     H.home = '';
     for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   });
@@ -686,6 +822,265 @@ describe('folder runtimes on real pi', () => {
     expect(fb.services.modelRuntime).toBe(runtime.modelRuntime);
   }, 60_000);
 
+  it('keeps a skill linked onto a share and a link loop out of pi’s skills', async () => {
+    const { a, runtime } = twoFolders();
+    const root = path.join(a, '.damocles', 'skills');
+    const elsewhere = tempDir('damocles-fr-elsewhere-');
+    write(path.join(elsewhere, 'nas-skill', 'SKILL.md'), '---\nname: nas-skill\ndescription: d\n---\nBody.\n');
+    const folderLink = (target: string, at: string) => fs.symlinkSync(target, at, process.platform === 'win32' ? 'junction' : 'dir');
+    folderLink(path.join(elsewhere, 'nas-skill'), path.join(root, 'nas'));
+    folderLink(root, path.join(root, 'loop1'));
+    folderLink(root, path.join(root, 'loop2'));
+    if (process.platform === 'win32') fakeLinks.set(path.join(root, 'nas').toLowerCase(), '\\\\host\\share\\nas-skill');
+    try {
+      const fa = await runtime.folder(a);
+      const names = fa.services.resourceLoader.getSkills().skills.map((s) => s.name);
+      expect(names).toContain('alpha-skill');
+      expect(names.filter((name) => name === 'alpha-skill')).toHaveLength(1);
+      if (process.platform === 'win32') expect(names).not.toContain('nas-skill');
+    } finally {
+      fakeLinks.clear();
+    }
+  }, 60_000);
+
+  // The walk logs what it cannot read and goes on, so no root a file system error hits keeps the folder from its services.
+  it('builds a folder\'s services when its command root holds a link loop, a folder it may not read and a link onto a drive that does not answer', async () => {
+    const { a, runtime } = twoFolders();
+    const commands = path.join(a, '.claude', 'commands');
+    write(path.join(commands, 'ok.md'), 'Fine.\n');
+    write(path.join(commands, 'locked', 'hidden.md'), 'Hidden.\n');
+    const clone = tempDir('damocles-fr-clone-');
+    write(path.join(clone, 'far.md'), 'Far.\n');
+    const folderLink = (target: string, at: string) => fs.symlinkSync(target, at, process.platform === 'win32' ? 'junction' : 'dir');
+    folderLink(commands, path.join(commands, 'loop'));
+    folderLink(clone, path.join(commands, 'nas'));
+    timedOut.add('.claude/commands/nas');
+    // the walk lists a folder by its real path, which on Windows spells out a short name the temp path may hold
+    const locked = fs.realpathSync.native(path.join(commands, 'locked')).toLowerCase();
+    const readdir = fs.promises.readdir.bind(fs.promises);
+    const denied = vi.spyOn(fs.promises, 'readdir').mockImplementation(((dir: fs.PathLike, options?: unknown) =>
+      String(dir).toLowerCase() === locked
+        ? Promise.reject(Object.assign(new Error(`EACCES: permission denied, scandir '${String(dir)}'`), { code: 'EACCES' }))
+        : readdir(dir, options as never)) as typeof fs.promises.readdir);
+    const lines = captureLog();
+    try {
+      const fa = await runtime.folder(a);
+
+      expect(fa.services.resourceLoader.getPrompts().prompts.map((prompt) => prompt.name)).toContain('ok');
+      expect(denied).toHaveBeenCalledWith(expect.stringMatching(/locked$/i), expect.anything());
+      expect(lines.filter((line) => line.includes('[assets]')).map((line) => line.replace(/^.*\\commands\\|^.*\/commands\//, '')).sort()).toEqual(['locked: EACCES', 'loop: loop', 'nas: unreachable']);
+    } finally {
+      denied.mockRestore();
+      timedOut.clear();
+    }
+  }, 60_000);
+
+  // fakeLinks change only what a Windows walk reads; off Windows the rule admits every link, so there is nothing to refuse.
+  it.runIf(process.platform === 'win32')('walks a link again at each reload, so one pointed onto a share since the last drops its skill', async () => {
+    const { a, runtime } = twoFolders();
+    const root = path.join(a, '.damocles', 'skills');
+    const elsewhere = tempDir('damocles-fr-elsewhere-');
+    write(path.join(elsewhere, 'moved-skill', 'SKILL.md'), '---\nname: moved-skill\ndescription: d\n---\nBody.\n');
+    fs.symlinkSync(path.join(elsewhere, 'moved-skill'), path.join(root, 'moved'), 'junction');
+    try {
+      const fa = await runtime.folder(a);
+      const names = () => fa.services.resourceLoader.getSkills().skills.map((s) => s.name);
+      expect(names()).toContain('moved-skill');
+      fakeLinks.set(path.join(root, 'moved').toLowerCase(), '\\\\host\\share\\moved-skill');
+      await fa.reloadBare();
+      expect(names()).not.toContain('moved-skill');
+      expect(names()).toContain('alpha-skill');
+    } finally {
+      fakeLinks.clear();
+    }
+  }, 60_000);
+
+  // pi's own walk takes the link policy synchronously, with no drive probe, so a reload would block on a drive that still
+  // does not answer: a retry rescans with the probed walk and reloads pi only once that scan finds something else.
+  describe('a link onto a drive that did not answer', () => {
+    const retries = (sync: { mock: { calls: Array<[Iterable<WatchTarget>]> } }): number =>
+      sync.mock.calls.filter(([targets]) => [...targets].some((target) => 'retry' in target)).length;
+
+    afterEach(() => {
+      timedOut.clear();
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    });
+
+    it('is asked again for a project command by a scan alone, and pi reloads once the drive answers', async () => {
+      const { a, runtime } = twoFolders();
+      const clone = tempDir('damocles-fr-clone-');
+      write(path.join(clone, 'pickup.md'), '---\ndescription: pick up\n---\nPick up.\n');
+      fs.mkdirSync(path.join(a, '.damocles', 'commands'), { recursive: true });
+      fs.symlinkSync(clone, path.join(a, '.damocles', 'commands', 'gs'), process.platform === 'win32' ? 'junction' : 'dir');
+      const fa = await runtime.folder(a);
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
+      timedOut.add('.damocles/commands/gs');
+      await fa.reloadBare();
+      const prompts = () => fa.services.resourceLoader.getPrompts().prompts.map((prompt) => prompt.name);
+      expect(prompts()).not.toContain('gs:pickup');
+      const reload = vi.spyOn(fa.services.resourceLoader, 'reload');
+      const sync = vi.spyOn(LinkTargetWatchers.prototype, 'sync');
+
+      await vi.advanceTimersByTimeAsync(DRIVE_ANSWER_TTL_MS);
+      await vi.waitFor(() => expect(retries(sync)).toBeGreaterThan(0));
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(reload).not.toHaveBeenCalled();
+
+      timedOut.clear();
+      await vi.advanceTimersByTimeAsync(DRIVE_ANSWER_TTL_MS);
+      await vi.waitFor(() => expect(reload).toHaveBeenCalledTimes(1), { timeout: 20_000 });
+      await vi.waitFor(() => expect(prompts()).toContain('gs:pickup'));
+    }, 60_000);
+
+    it('is asked again for a user command by a scan alone, and every folder reloads once the drive answers', async () => {
+      const { a, runtime } = twoFolders();
+      const clone = tempDir('damocles-fr-clone-');
+      write(path.join(clone, 'pickup.md'), '---\ndescription: pick up\n---\nPick up.\n');
+      fs.mkdirSync(path.join(H.home, '.claude', 'commands'), { recursive: true });
+      fs.symlinkSync(clone, path.join(H.home, '.claude', 'commands', 'team'), process.platform === 'win32' ? 'junction' : 'dir');
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
+      timedOut.add('.claude/commands/team');
+      const sync = vi.spyOn(LinkTargetWatchers.prototype, 'sync');
+      const fa = await runtime.folder(a);
+      await vi.waitFor(() => expect(retries(sync)).toBeGreaterThan(0), { timeout: 20_000 });
+      const reload = vi.spyOn(fa.services.resourceLoader, 'reload');
+      sync.mockClear();
+
+      await vi.advanceTimersByTimeAsync(DRIVE_ANSWER_TTL_MS);
+      await vi.waitFor(() => expect(retries(sync)).toBeGreaterThan(0));
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(reload).not.toHaveBeenCalled();
+
+      timedOut.clear();
+      await vi.advanceTimersByTimeAsync(DRIVE_ANSWER_TTL_MS);
+      await vi.waitFor(() => expect(reload).toHaveBeenCalledTimes(1), { timeout: 20_000 });
+      await vi.waitFor(() => expect(fa.services.resourceLoader.getPrompts().prompts.map((prompt) => prompt.name)).toContain('team:pickup'));
+    }, 60_000);
+  });
+
+  it('lets pi refuse every agent file the user link policy refuses: none is read or written, and each is named', async () => {
+    const fake = installFakePlatform();
+    H.home = tempDir('damocles-fr-home-');
+    const agentDir = tempDir('damocles-fr-agent-');
+    const files = {
+      settings: path.join(agentDir, 'settings.json'),
+      models: path.join(agentDir, 'models.json'),
+      auth: path.join(agentDir, 'auth.json'),
+      store: path.join(agentDir, 'models-store.json'),
+    };
+    write(files.settings, '{"theme":"dark"}\n');
+    write(files.models, '{"providers":{}}\n');
+    write(files.auth, '{"anthropic":{"type":"api_key","key":"sk-ant-test"}}\n');
+    for (const file of Object.values(files)) refusedFiles.add(file);
+    const runtime = PiRuntime.get(agentDir);
+    await runtime.init();
+
+    // pi's settings manager recorded the refusal of the file at its load (drainErrors), and Damocles named it once
+    expect((runtime as unknown as { _userSettingsLoadError: unknown })._userSettingsLoadError).toMatchObject({ scope: 'global', path: files.settings, error: { code: 'ELINKPOLICY' } });
+    const named = fake.notifications.calls.filter((call) => call.text.message === '{0} links to a network share or WSL path, so Damocles does not read it.').map((call) => call.text.args?.[0]);
+    expect(named).toEqual(expect.arrayContaining([files.settings, files.models]));
+    expect(fake.notifications.calls.map((call) => call.message)).not.toContainEqual(expect.stringContaining('Damocles could not read'));
+
+    const modelRuntime = runtime.modelRuntime!;
+    await modelRuntime.refresh({ allowNetwork: false });
+    expect(modelRuntime.getError()).toContain(`the link policy refuses it\n\nFile: ${files.models}`);
+    await expect(modelRuntime.getAuth('anthropic')).rejects.toThrow(files.auth);
+
+    // nothing seeded, saved or created
+    expect(fs.readFileSync(files.settings, 'utf8')).toBe('{"theme":"dark"}\n');
+    expect(fs.existsSync(files.store)).toBe(false);
+  }, 60_000);
+
+  const folderLink = (target: string, at: string) => fs.symlinkSync(target, at, process.platform === 'win32' ? 'junction' : 'dir');
+
+  it('lets pi read no gitdir a folder’s .git file names when the link policy refuses it, and logs the refusal', async () => {
+    const lines = captureLog();
+    const { a, runtime } = twoFolders();
+    const gitDir = path.join(tempDir('damocles-fr-gitdir-'), 'worktrees', 'a');
+    write(path.join(gitDir, 'HEAD'), 'ref: refs/heads/a\n');
+    write(path.join(gitDir, 'commondir'), '../..\n');
+    write(path.join(a, '.git'), `gitdir: ${gitDir}\n`);
+    refusedFiles.add(path.join(gitDir, 'HEAD'));
+
+    const fsCalls = await recordPiFsCalls();
+    try {
+      await runtime.folder(a);
+    } finally {
+      fsCalls.stop();
+    }
+
+    expect(callsOn(fsCalls.calls, gitDir)).toEqual([]);
+    expect(lines.filter((line) => line.includes(path.join(gitDir, 'HEAD')) && line.includes('git metadata not read: the link policy refuses it'))).toHaveLength(1);
+  }, 60_000);
+
+  it('lets pi read no linked .gitignore of a skill root that the link policy refuses, and logs the refusal', async () => {
+    const lines = captureLog();
+    const { a, runtime } = twoFolders();
+    const ignoreLink = path.join(a, '.damocles', 'skills', '.gitignore');
+    folderLink(tempDir('damocles-fr-elsewhere-'), ignoreLink);
+    refusedFiles.add(ignoreLink);
+
+    const fsCalls = await recordPiFsCalls();
+    try {
+      await runtime.folder(a);
+    } finally {
+      fsCalls.stop();
+    }
+
+    // an lstat of the name follows nothing, and is how pi finds that it is a link
+    expect(callsOn(fsCalls.calls, ignoreLink, ['lstatSync'])).toEqual([]);
+    expect(lines.filter((line) => line.includes(ignoreLink) && line.includes('link not followed: the link policy refuses it'))).toHaveLength(1);
+  }, 60_000);
+
+  it('lets pi stat no extension entry of a package that the link policy refuses, and logs the refusal', async () => {
+    const lines = captureLog();
+    H.home = tempDir('damocles-fr-home-');
+    const a = tempDir('damocles-fr-a-');
+    const agentDir = tempDir('damocles-fr-agent-');
+    const pkg = path.join(agentDir, 'extensions', 'pkg');
+    write(path.join(pkg, 'package.json'), JSON.stringify({ pi: { extensions: ['./remote'] } }));
+    const elsewhere = tempDir('damocles-fr-elsewhere-');
+    write(path.join(elsewhere, 'index.ts'), 'export default () => {};\n');
+    const remote = path.join(pkg, 'remote');
+    folderLink(elsewhere, remote);
+    refusedFiles.add(remote);
+    const runtime = PiRuntime.get(agentDir);
+
+    const fsCalls = await recordPiFsCalls();
+    try {
+      await runtime.folder(a);
+    } finally {
+      fsCalls.stop();
+    }
+
+    expect(callsOn(fsCalls.calls, remote)).toEqual([]);
+    expect(callsOn(fsCalls.calls, elsewhere)).toEqual([]);
+    expect(lines.filter((line) => line.includes(remote) && line.includes('link not followed: the link policy refuses it'))).toHaveLength(1);
+  }, 60_000);
+
+  it('logs a refusal once while it persists across reloads, and again when it comes back after it was gone', async () => {
+    const lines = captureLog();
+    const { a, runtime } = twoFolders();
+    const elsewhere = tempDir('damocles-fr-elsewhere-');
+    write(path.join(elsewhere, 'nas-skill', 'SKILL.md'), '---\nname: nas-skill\ndescription: d\n---\nBody.\n');
+    const link = path.join(a, '.damocles', 'skills', 'nas');
+    folderLink(path.join(elsewhere, 'nas-skill'), link);
+    refusedFiles.add(link);
+    const logged = () => lines.filter((line) => line.includes(link) && line.includes('link not followed: the link policy refuses it')).length;
+
+    const fa = await runtime.folder(a);
+    expect(logged()).toBe(1);
+    await fa.reloadBare();
+    expect(logged()).toBe(1);
+    refusedFiles.delete(link);
+    await fa.reloadBare();
+    expect(fa.services.resourceLoader.getSkills().skills.map((skill) => skill.name)).toContain('nas-skill');
+    refusedFiles.add(link);
+    await fa.reloadBare();
+    expect(logged()).toBe(2);
+  }, 60_000);
+
   it('creates one runtime per folder key and lists only finished ones', async () => {
     const { a, b, runtime } = twoFolders();
     const [first, second] = await Promise.all([runtime.folder(a), runtime.folder(a)]);
@@ -716,6 +1111,7 @@ describe('folder runtimes on real pi', () => {
     expect(skills(fa)).toContain('alpha-skill');
 
     const agents = (folder: typeof fa) => folder.getWorkspaceAgentRegistry().getRegistry().getAvailableConfigs().map((c) => c.name);
+    await fb.getWorkspaceAgentRegistry().whenLoaded();
     expect(agents(fb)).toContain('beta-agent');
     expect(agents(fb)).not.toContain('alpha-agent');
 

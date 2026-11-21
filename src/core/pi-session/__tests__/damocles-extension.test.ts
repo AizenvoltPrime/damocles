@@ -197,7 +197,7 @@ describe('createDamoclesExtensionFactory (US-004 routing)', () => {
     expect('damocles_plan_mode' in plainEvent.systemPromptOptions.sections).toBe(false);
 
     const missingEvent = eventFor();
-    expect(await run('before_agent_start', missingEvent, ctxFor('missing'))).toEqual([undefined, undefined, undefined]);
+    expect(await run('before_agent_start', missingEvent, ctxFor('missing'))).toEqual([undefined, undefined, undefined, undefined]);
     expect(missingEvent.systemPromptOptions.customPrompt).toBeUndefined();
   });
 
@@ -218,6 +218,27 @@ describe('createDamoclesExtensionFactory (US-004 routing)', () => {
     });
     history.pop();
     expect((await run('before_agent_start', eventFor(), ctx)).at(-1)).toBeUndefined();
+  });
+
+  it('appends a hidden note at a prompt start when the spawnable subagent types differ from the model\'s last word on them, and none once told', async () => {
+    const { pi, run } = fakePiAll();
+    let live = [{ name: 'Explore', description: 'finds' }];
+    createDamoclesExtensionFactory(readerOf({ ...panel('allow', false), agentTypes: () => ({ described: ['Explore'], live }) }), noCheckpoints())(pi as never);
+    const history: unknown[] = [{ role: 'user', content: [] }];
+    const ctx = { sessionManager: { getSessionId: () => 'A', buildSessionProjection: () => ({ messages: history }), getBranch: () => [] }, signal: undefined };
+    const eventFor = () => ({ type: 'before_agent_start', messageType: 'user', prompt: 'hi', systemPrompt: '', systemPromptOptions: { cwd: '/repo', selectedTools: [], sections: {} } });
+    const notes = async () => (await run('before_agent_start', eventFor(), ctx)).flatMap((result) => {
+      const message = (result as { message?: { customType?: string } } | undefined)?.message;
+      return message?.customType === 'damocles-agent-change' ? [message] : [];
+    });
+
+    expect(await notes()).toEqual([]);
+    live = [...live, { name: 'Reviewer', description: 'reviews' }];
+    const [note, ...more] = await notes();
+    expect(more).toEqual([]);
+    expect(note).toMatchObject({ display: false, details: { v: 1, types: ['Explore', 'Reviewer'], added: ['Reviewer'], removed: [] } });
+    history.push({ role: 'custom', ...note, timestamp: 2 });
+    expect(await notes()).toEqual([]);
   });
 });
 
@@ -886,6 +907,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
         resourceExposureSetting: () => ({}),
         trust: testPlatform.trust,
         fileWatchers: testPlatform.fileWatchers,
+        notifications: testPlatform.notifications,
       });
       runtime = folder;
       const { pi, wraps, emit } = piCapturingToolSearch();

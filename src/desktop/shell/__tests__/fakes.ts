@@ -507,6 +507,7 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     designLastFrame: vi.fn(async (): Promise<string | null> => null),
     onDesignPreviewClosed: vi.fn(designClosed.listen),
     listFiles: vi.fn(async () => ({ ok: true as const, entries: [] })),
+    filesCollapsed: vi.fn(),
     createFile: vi.fn(async () => ({ ok: true as const, relativePath: 'new.ts' })),
     renameFile: vi.fn(async () => ({ ok: true as const, relativePath: 'renamed.ts' })),
     deleteFile: vi.fn(async () => ({ ok: true as const })),

@@ -1,7 +1,14 @@
+import { createHash } from 'node:crypto';
+import * as path from 'node:path';
 import { isWorktreeId } from './worktree-id';
 
 // Files at the root of a host's session mirror (<userData>/remote/<hostId>/mirror/), beside its project folders, whose
 // names are 32 hex digits, so neither name can be a project's.
+
+/** The folder of one project's mirror: its target folder key hashed into a single segment. */
+export function projectMirrorFolder(root: string, folderKey: string): string {
+  return path.join(root, createHash('sha256').update(folderKey).digest('hex').slice(0, 32));
+}
 
 // the target's sub-call usage ledger (~/.damocles/usage/subcalls.jsonl on the target)
 export const MIRROR_SUBCALLS_FILE = 'subcalls.jsonl';

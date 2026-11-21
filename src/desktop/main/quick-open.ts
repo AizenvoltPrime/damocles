@@ -15,7 +15,8 @@ import {
 } from '../preload/overlay-channels';
 import type { FileRef } from '../preload/shell-channels';
 import { parseWorkerReply, type WorkerReply, type WorkerRequest } from '../quick-open-worker/protocol';
-import type { WalkIgnore } from '../../core/search-walk';
+import type { Disposable } from '../../platform/disposable';
+import type { WalkSettings } from '../../platform/walk-settings';
 import type { Project } from '../local-services/confine';
 import type { ProjectWorkspace } from '../workspace/project-workspace';
 import type { FileListing } from '../workspace/quick-open-listing';
@@ -42,8 +43,8 @@ export interface QuickOpenWorker {
 export interface QuickOpenDeps {
   readonly projects: () => readonly Project[];
   readonly workspaces: Workspaces;
-  // the walk's ignore switches from the search.use*IgnoreFiles settings
-  readonly ignore: () => WalkIgnore;
+  // the walk settings port (Platform.walkSettings), whose change invalidates every list
+  readonly walk: WalkSettings;
   // damocles.desktop.files.exclude globs that hide files
   readonly excludes: () => readonly string[];
   // keeps the project's watcher running, whose creates and deletes invalidate its list; false while its host is not connected
@@ -119,8 +120,11 @@ export class QuickOpenIndex {
   // cancels the deadline by which the worker must post something while a query waits
   private cancelSilence: (() => void) | undefined;
 
+  private readonly walkChange: Disposable;
+
   constructor(deps: QuickOpenDeps) {
     this.deps = deps;
+    this.walkChange = deps.walk.onDidChange(() => this.invalidate());
   }
 
   invalidate(projectKey?: string): void {
@@ -146,6 +150,7 @@ export class QuickOpenIndex {
   }
 
   dispose(): void {
+    this.walkChange.dispose();
     for (const search of [...this.searches.keys()]) this.end(search);
     this.stop();
   }
@@ -358,7 +363,7 @@ export class QuickOpenIndex {
       worker.postMessage({ kind: 'listEnd', listing, error: err.message });
       return;
     }
-    const running: FileListing = workspace.quickOpen.list(project.fsPath, this.deps.ignore(), this.deps.excludes(), {
+    const running: FileListing = workspace.quickOpen.list(project.fsPath, this.deps.walk.read(), this.deps.excludes(), {
       files: (files) => worker.postMessage({ kind: 'listFiles', listing, files }),
       end: (error) => {
         this.listings.delete(running);

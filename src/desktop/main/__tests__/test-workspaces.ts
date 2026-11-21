@@ -1,5 +1,6 @@
 import { rgPath } from '@vscode/ripgrep';
 import { DAMOCLES_HOME_DIR } from '../../../core/paths';
+import { FEATURES } from '../../../remote/protocol-version';
 import type { FileWatcherFactory } from '../../../platform/file-watcher';
 import type { CoreTransport } from '../../core-protocol/endpoint';
 import { createEndpoint, type Endpoint } from '../../core-protocol/endpoint';
@@ -14,7 +15,7 @@ import { createQuickOpenListing } from '../../workspace/quick-open-listing';
 import { createWalkHost, type WalkHost } from '../../../core/search-walk';
 import { InThreadWalkChild } from '../../../__mocks__/in-thread-walk-child';
 import { createSearchRunner, type SearchRunner } from '../../workspace/search/search-runner';
-import type { TerminalBackend } from '../../workspace/terminal/terminal-backend';
+import type { HostTerminalBackend } from '../../workspace/terminal/terminal-backend';
 import { createTreeListing } from '../../workspace/tree-listing';
 import { createRemoteWorkspace } from '../workspace/remote-workspace';
 import { createWorkspaces, NotConnectedError, type Workspaces } from '../workspace/workspaces';
@@ -35,7 +36,7 @@ export interface TestWorkspaceOptions {
   // the walks of Quick Open and Search; default: the walk process's body on this thread
   readonly walks?: WalkHost;
   readonly format?: Formatter;
-  readonly terminals?: TerminalBackend;
+  readonly terminals?: HostTerminalBackend;
   // the daemon watcher's inotify limit reports; default: none
   readonly watchLimits?: WorkspaceModules['watchLimits'];
   readonly log?: (line: string) => void;
@@ -55,7 +56,7 @@ function localModules(options: TestWorkspaceOptions): LocalWorkspace {
     search: options.search ?? createSearchRunner({ rgPath: resolveRg, walks, log }),
     quickOpen: createQuickOpenListing({ walks, log }),
     format: options.format ?? unused<Formatter>('formatter'),
-    terminals: options.terminals ?? unused<TerminalBackend>('terminal backend'),
+    terminals: options.terminals ?? unused<HostTerminalBackend>('terminal backend'),
   };
 }
 
@@ -103,7 +104,7 @@ function channel(): readonly [CoreTransport, CoreTransport] {
  * A remote authority in tests: this computer's real modules behind the daemon's workspace host, reached through the remote
  * client over an in-memory channel, so a service sees remote keys, rebuilt errors and connection ends as main does.
  */
-export function testRemote(options: TestWorkspaceOptions & { readonly authorityKey?: string }): TestRemote {
+export function testRemote(options: TestWorkspaceOptions & { readonly authorityKey?: string; readonly clientFeatures?: readonly string[] }): TestRemote {
   const log = options.log ?? (() => undefined);
   const authorityKey = options.authorityKey ?? 'loopback';
   const modules = localModules(options);
@@ -111,7 +112,9 @@ export function testRemote(options: TestWorkspaceOptions & { readonly authorityK
   const watchLimits = options.watchLimits ?? { roots: () => [], onReached: () => ({ dispose: () => undefined }), limit: async () => null };
   const host = createWorkspaceHost({ ...modules, hub, cli: { connected: () => ({ dispose: () => undefined }) }, terminalCredentials: () => ({}), watchLimits }, log);
   const [clientEnd, hostEnd] = channel();
-  const served = host.serve('test-connection', 'test-client', hostEnd, (reason) => { throw new Error(reason); }, () => undefined, () => false);
+  // an app of this build's attach, unless the test names an older client's
+  const clientFeatures = new Set(options.clientFeatures ?? FEATURES);
+  const served = host.serve('test-connection', 'test-client', hostEnd, (reason) => { throw new Error(reason); }, () => undefined, () => false, () => clientFeatures);
   const endpoint = createEndpoint<ClientToWorkspace, WorkspaceToClient>({ transport: clientEnd, outgoing: CLIENT_TO_WORKSPACE, incoming: WORKSPACE_TO_CLIENT, log, errors: ERROR_CODEC });
   const closeListeners = new Set<(reason: string) => void>();
   let closedWith: string | undefined;
@@ -130,6 +133,7 @@ export function testRemote(options: TestWorkspaceOptions & { readonly authorityK
     rangedReads: false,
     outside: true,
     listing: true,
+    links: true,
     walks: true,
     searchUnsupported: () => 'Update the Damocles server on this host to search it.',
     openStream: () => { throw new Error('no transfer streams in this suite'); },

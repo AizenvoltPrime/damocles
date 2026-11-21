@@ -1,26 +1,28 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { IconLoader, IconTerminal } from '@/components/icons';
-import type { SlashCommandItem } from '@shared/types/commands';
+import { IconFolder, IconLoader, IconTerminal } from '@/components/icons';
+import type { AssetWithheld, SlashMenuRow, WithheldRootInfo } from '@shared/types/commands';
 import type { SteerTargetInfo } from '@shared/types/subagents';
 import { highlightFirstMatch } from '@/utils/highlightMatches';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 
-const { t } = useI18n();
+const { t, te } = useI18n();
 const listLabel = computed(() => (props.mode === 'agent' ? t('composer.agentList') : t('composer.commandList')));
 
 const props = defineProps<{
   isOpen: boolean;
   /** The listbox id the composer's textarea names in aria-controls; option ids derive from it. */
   listId: string;
-  commands: SlashCommandItem[];
+  commands: SlashMenuRow[];
   selectedIndex: number;
   anchorElement: HTMLElement | null;
   query: string;
   isLoading: boolean;
   mode: 'command' | 'agent';
   agents: SteerTargetInfo[];
+  /** Why the unavailable row the user tried to pick cannot run, announced politely. */
+  inactiveReason?: AssetWithheld | null;
 }>();
 
 const emit = defineEmits<{
@@ -84,22 +86,71 @@ function highlightMatch(text: string): string {
   return highlightFirstMatch(text, props.query);
 }
 
-function isUntrusted(command: SlashCommandItem): boolean {
+function isRoot(row: SlashMenuRow): row is WithheldRootInfo {
+  return 'kind' in row && row.kind === 'withheldRoot';
+}
+
+function rowKey(row: SlashMenuRow): string {
+  return isRoot(row) ? `${row.source}:${row.folder}/${row.assets}` : row.name;
+}
+
+/** A withheld folder's name: its source folder, what it holds, and its scope. */
+function rootLabel(row: WithheldRootInfo): string {
+  const scopeKey = `slashCommand.scope.${row.source}`;
+  const scope = te(scopeKey) ? t(scopeKey) : row.source;
+  const key = `slashCommand.withheldRoot.${row.assets}`;
+  // a newer host's core may send a kind of folder this webview has no text for
+  return te(key) ? t(key, { folder: row.folder, scope }) : `${row.folder} ${row.assets}, ${scope}`;
+}
+
+function isUntrusted(command: SlashMenuRow): boolean {
   // `BuiltinSlashCommandInfo` carries no `untrusted` field, so narrow the union before reading it.
   return command.source !== 'builtin' && command.untrusted === true;
 }
 
-function argumentHint(command: SlashCommandItem): string | null {
+function withheldOf(command: SlashMenuRow): AssetWithheld | undefined {
+  return 'withheld' in command ? command.withheld : undefined;
+}
+
+/** A row that can neither run nor ask for trust; a `linkOutside` row stays active, as activating it asks for trust. */
+function isInert(command: SlashMenuRow): boolean {
+  const withheld = withheldOf(command);
+  return withheld !== undefined && withheld.reason !== 'linkOutside';
+}
+
+function withheldText(withheld: AssetWithheld): string {
+  switch (withheld.reason) {
+    case 'broken':
+      return t('slashCommand.withheld.broken', { target: withheld.target });
+    case 'invalidFrontmatter':
+      return t('slashCommand.withheld.invalidFrontmatter', { detail: withheld.detail });
+    default: {
+      const key = `slashCommand.withheld.${withheld.reason}`;
+      // a newer host's core may send a reason this webview has no text for
+      return te(key) ? t(key) : withheld.reason;
+    }
+  }
+}
+
+/** The row's second line: why it is withheld, else its description. */
+function descriptionOf(command: SlashMenuRow): string {
+  if (isRoot(command)) return withheldText(command.withheld);
+  const withheld = withheldOf(command);
+  return withheld === undefined ? command.description : withheldText(withheld);
+}
+
+function argumentHint(command: SlashMenuRow): string | null {
   // `SkillInfo` carries no `argumentHint`, so narrow the union before reading it.
   return 'argumentHint' in command ? command.argumentHint ?? null : null;
 }
 
-function getSourceBadge(command: SlashCommandItem): string | null {
+function getSourceBadge(command: SlashMenuRow): string | null {
   if (command.source === 'builtin') return null;
   if (command.untrusted) {
     return t('slashCommand.untrustedBadge');
   }
-  if (command.source === 'user') {
+  // a withheld folder's label names its scope
+  if (command.source === 'user' && !isRoot(command)) {
     return 'user';
   }
   return null;
@@ -221,26 +272,39 @@ function agentStatusText(agent: SteerTargetInfo): string | null {
               v-for="(cmd, index) in commands"
               v-else
               :id="`${listId}-${index}`"
-              :key="cmd.name"
+              :key="rowKey(cmd)"
               :ref="el => itemRefs[index] = el as HTMLDivElement"
-              class="flex min-h-8.5 cursor-pointer items-center gap-2.25 rounded-lg px-2.25 py-1.25 text-12.5 transition-colors duration-75"
+              class="flex min-h-8.5 cursor-pointer items-center gap-2.25 rounded-lg px-2.25 py-1.25 text-12.5 transition-colors duration-75 data-disabled:cursor-default data-disabled:opacity-50"
               :class="index === selectedIndex ? 'bg-(--d-accent-soft)' : ''"
               role="option"
               :aria-selected="index === selectedIndex"
+              :aria-disabled="isInert(cmd) || undefined"
+              :data-disabled="isInert(cmd) ? '' : undefined"
               @click="emit('select', index)"
               @mouseenter="$emit('update:selectedIndex', index)"
             >
               <!-- Icon -->
+              <IconFolder
+                v-if="isRoot(cmd)"
+                class="size-4 shrink-0 text-(--d-accent)"
+              />
               <IconTerminal
+                v-else
                 class="size-4 shrink-0 text-(--d-accent)"
               />
 
               <!-- Command info -->
               <div class="flex-1 min-w-0 flex flex-col">
                 <div class="flex items-center gap-2">
-                  <!-- Command name -->
+                  <!-- A withheld folder's name, or the command name -->
+                  <span
+                    v-if="isRoot(cmd)"
+                    data-row-label
+                    class="font-medium"
+                  >{{ rootLabel(cmd) }}</span>
                   <!-- eslint-disable vue/no-v-html -- highlightMatch escapes the text with escapeHtml -->
                   <span
+                    v-else
                     class="font-mono font-medium"
                     v-html="'/' + highlightMatch(cmd.name)"
                   />
@@ -264,14 +328,25 @@ function agentStatusText(agent: SteerTargetInfo): string | null {
                     {{ getSourceBadge(cmd) }}
                   </span>
                 </div>
-                <!-- Description -->
-                <span class="text-xs text-(--d-muted) truncate">
-                  {{ cmd.description }}
+                <!-- Description, or why the row is withheld; part of the option's text, so a screen reader reads it -->
+                <span
+                  class="text-xs truncate"
+                  :class="withheldOf(cmd) ? 'text-(--d-warning-text)' : 'text-(--d-muted)'"
+                >
+                  {{ descriptionOf(cmd) }}
                 </span>
               </div>
             </div>
           </div>
         </div>
+
+        <!-- an unavailable option stays focusable but picks nothing, so a picking key reports its reason here (a status message) -->
+        <p
+          class="sr-only"
+          aria-live="polite"
+        >
+          {{ inactiveReason ? withheldText(inactiveReason) : '' }}
+        </p>
 
         <div
           class="flex items-center gap-3.5 border-t border-(--d-border) bg-(--d-panel) px-3 py-1.75 text-11 text-(--d-faint)"

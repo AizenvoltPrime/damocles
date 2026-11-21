@@ -4,6 +4,7 @@
 //                                                        committed one is compatible; --allow-breaking only while pre-release
 //   node scripts/protocol-compat.ts --check             fails unless the committed snapshot matches the contracts
 //   node scripts/protocol-compat.ts --against <file>    fails on an incompatible change from an older snapshot (CI's base)
+// Every mode fails a FEATURES list that names a name twice or holds more than MAX_FEATURES (handshake.ts) names.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +13,8 @@ import ts from 'typescript';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const SNAPSHOT_PATH = join(ROOT, 'src', 'remote', 'protocol-snapshot.json');
 const VERSION_FILE = join(ROOT, 'src', 'remote', 'protocol-version.ts');
+// read as text: handshake.ts imports without the .ts extension Node's type stripping needs
+const HANDSHAKE_FILE = join(ROOT, 'src', 'remote', 'handshake.ts');
 // Nested types are spelled out this deep; past it a type is kept as its text.
 const MAX_DEPTH = 10;
 
@@ -20,6 +23,8 @@ export interface Contract {
   readonly type: string;
   readonly table?: boolean;
   readonly frozen?: boolean;
+  // no wire parser reads it, so an added variant or value needs no FEATURES name; a value's renderer needs a te() fallback
+  readonly dropsUnknown?: boolean;
 }
 
 /** A type as the snapshot records it. */
@@ -58,7 +63,10 @@ export interface CheckResult {
   readonly errors: readonly string[];
   readonly waivable: boolean;
   readonly breaking: readonly string[];
+  /** Additions an older peer refuses or never answers (a contract, a table entry, a variant, a value): each needs a FEATURES name. */
   readonly additive: readonly string[];
+  /** Additions an older peer drops: optional fields, and a dropsUnknown contract's variants and values. No FEATURES name. */
+  readonly optional: readonly string[];
   /** The two snapshots are identical. */
   readonly current: boolean;
 }
@@ -66,6 +74,7 @@ export interface CheckResult {
 interface Changes {
   readonly breaking: string[];
   readonly additive: string[];
+  readonly optional: string[];
 }
 
 export interface RunOptions {
@@ -77,7 +86,8 @@ export interface RunOptions {
 
 /**
  * The contracts: each interface or type alias, by the file that declares it. A table (a channel's commands, events, mirrors
- * or panel ops) may gain members; a frozen contract never changes, whatever the protocol version.
+ * or panel ops) may gain members; a frozen contract never changes, whatever the protocol version. ExtensionToWebviewMessage
+ * crosses as a `post` op's JSON text, which no wire parser reads, and the webview drops a type it has no handler for.
  */
 export const CONTRACTS: readonly Contract[] = [
   ...['CoreRequests', 'MainRequests', 'CoreEvents', 'MainEvents', 'CoreMirrorTopics', 'MirrorTopics', 'CorePanelOps', 'MainPanelOps'].map((type) => ({ file: 'src/desktop/core-protocol/messages.ts', type, table: true })),
@@ -87,7 +97,8 @@ export const CONTRACTS: readonly Contract[] = [
   { file: 'src/desktop/daemon/control-messages.ts', type: 'FrozenControl', table: true, frozen: true },
   ...['PortsRequests', 'PortsEvents'].map((type) => ({ file: 'src/desktop/daemon/ports/ports-messages.ts', type, table: true })),
   ...['Hello', 'Welcome', 'Refused', 'HostFacts'].map((type) => ({ file: 'src/remote/handshake.ts', type, frozen: true })),
-  ...['ExtensionToWebviewMessage', 'WebviewToExtensionMessage'].map((type) => ({ file: 'src/shared/types/messages.ts', type })),
+  { file: 'src/shared/types/messages.ts', type: 'ExtensionToWebviewMessage', dropsUnknown: true },
+  { file: 'src/shared/types/messages.ts', type: 'WebviewToExtensionMessage' },
 ];
 
 function compilerOptions(root: string): ts.CompilerOptions {
@@ -231,62 +242,77 @@ export function snapshot(root = ROOT, contracts: readonly Contract[] = CONTRACTS
 
 const text = (value: unknown): string => JSON.stringify(value);
 
-// Differences between an older and a newer description. A table may gain entries; an object may gain optional properties;
-// anything else that differs breaks an older peer.
-function compare(previous: Description, next: Description, where: string, found: Changes, table: boolean): void {
+// Differences between an older and a newer description. A table may gain entries, a tagged union variants and a union values,
+// each needing a FEATURES name unless dropsUnknown; an object may gain optional properties; anything else that differs breaks
+// an older peer.
+function compare(previous: Description, next: Description, where: string, found: Changes, table: boolean, dropsUnknown: boolean): void {
   if (text(previous) === text(next)) return;
+  const added = dropsUnknown ? found.optional : found.additive;
   if (typeof previous === 'object' && 'object' in previous && typeof next === 'object' && 'object' in next) {
     for (const [name, property] of Object.entries(previous.object)) {
       const now = next.object[name];
       if (!now) found.breaking.push(`${where}.${name} was removed`);
       else if (now.optional !== property.optional) found.breaking.push(`${where}.${name} became ${now.optional ? 'optional' : 'required'}`);
-      else compare(property.type, now.type, `${where}.${name}`, found, false);
+      else compare(property.type, now.type, `${where}.${name}`, found, false, dropsUnknown);
     }
     for (const [name, property] of Object.entries(next.object)) {
       if (previous.object[name]) continue;
       if (table) found.additive.push(`${where}.${name} was added`);
-      else if (property.optional) found.additive.push(`${where}.${name} was added (optional)`);
+      else if (property.optional) found.optional.push(`${where}.${name} was added (optional)`);
       else found.breaking.push(`${where}.${name} was added as required`);
     }
-    if (text(previous.index) !== text(next.index)) found.breaking.push(`${where} changed its index signature`);
+    const indexBefore = previous.index ?? [];
+    const indexNow = next.index ?? [];
+    if (text(indexBefore.map((info) => info.key)) !== text(indexNow.map((info) => info.key))) found.breaking.push(`${where} changed its index signature`);
+    else indexNow.forEach((info, at) => compare(indexBefore[at]!.value, info.value, `${where}[${info.key}]`, found, false, dropsUnknown));
     return;
   }
   if (typeof previous === 'object' && 'array' in previous && typeof next === 'object' && 'array' in next) {
-    compare(previous.array, next.array, `${where}[]`, found, false);
+    compare(previous.array, next.array, `${where}[]`, found, false, dropsUnknown);
     return;
   }
-  // Members are sorted by their text, so a member whose shape grew is compared with the one it replaced only while the order
-  // holds; a reorder is compared pairwise and reads as breaking unless each pair only gains optional fields.
-  if (typeof previous === 'object' && 'union' in previous && typeof next === 'object' && 'union' in next && previous.union.length === next.union.length) {
-    next.union.forEach((member, index) => {
-      const before = previous.union[index];
-      if (before !== undefined) compare(before, member, `${where}|${index}`, found, false);
-    });
-    return;
+  // A union's values (literals and primitives) compare as sets. Its other members are sorted by their text, so one whose shape
+  // grew is compared with the one it replaced only while the order holds; a reorder is compared pairwise and reads as
+  // breaking unless each pair only gains optional fields.
+  if (typeof previous === 'object' && 'union' in previous && typeof next === 'object' && 'union' in next) {
+    const shapesBefore = previous.union.filter((member) => typeof member !== 'string');
+    const shapesNow = next.union.filter((member) => typeof member !== 'string');
+    if (shapesBefore.length === shapesNow.length) {
+      const valuesBefore = previous.union.filter((member) => typeof member === 'string');
+      const valuesNow = next.union.filter((member) => typeof member === 'string');
+      for (const value of valuesBefore) if (!valuesNow.includes(value)) found.breaking.push(`${where} lost ${value}`);
+      for (const value of valuesNow) if (!valuesBefore.includes(value)) added.push(`${where} gained ${value}`);
+      shapesNow.forEach((member, index) => {
+        const before = shapesBefore[index];
+        if (before !== undefined) compare(before, member, `${where}|${index}`, found, false, dropsUnknown);
+      });
+      return;
+    }
   }
   if (typeof previous === 'object' && 'variants' in previous && typeof next === 'object' && 'variants' in next && next.variants === previous.variants) {
     for (const [tag, variant] of Object.entries(previous.of)) {
       const now = next.of[tag];
       if (now === undefined) found.breaking.push(`${where}[${previous.variants}=${tag}] was removed`);
-      else compare(variant, now, `${where}[${previous.variants}=${tag}]`, found, false);
+      else compare(variant, now, `${where}[${previous.variants}=${tag}]`, found, false, dropsUnknown);
     }
-    for (const tag of Object.keys(next.of)) if (!(tag in previous.of)) found.additive.push(`${where}[${previous.variants}=${tag}] was added`);
+    for (const tag of Object.keys(next.of)) if (!(tag in previous.of)) added.push(`${where}[${previous.variants}=${tag}] was added`);
     return;
   }
   found.breaking.push(`${where} changed from ${text(previous).slice(0, 200)} to ${text(next).slice(0, 200)}`);
 }
 
 /**
- * Whether next may follow previous: a breaking change needs a protocolVersion bump, an addition a new welcome feature, and a
- * frozen contract never changes. `waivable` says whether every error is one previous's pre-release state lets a writer accept.
+ * Whether next may follow previous: a breaking change needs a protocolVersion bump, an addition an older peer refuses or never
+ * answers a new FEATURES name, an addition it drops nothing, and a frozen contract never changes. `waivable` says whether every
+ * error is one previous's pre-release state lets a writer accept.
  */
 export function checkSnapshots(previous: Snapshot, next: Snapshot, contracts: readonly Contract[] = CONTRACTS): CheckResult {
   const kind = new Map(contracts.map((contract) => [contract.type, contract]));
-  const found: Changes = { breaking: [], additive: [] };
+  const found: Changes = { breaking: [], additive: [], optional: [] };
   for (const [name, description] of Object.entries(previous.contracts)) {
     const now = next.contracts[name];
     if (now === undefined) found.breaking.push(`${name} was removed`);
-    else compare(description, now, name, found, kind.get(name)?.table === true);
+    else compare(description, now, name, found, kind.get(name)?.table === true, kind.get(name)?.dropsUnknown === true);
   }
   for (const name of Object.keys(next.contracts)) if (!(name in previous.contracts)) found.additive.push(`${name} was added`);
   const bumped = next.protocolVersion > previous.protocolVersion;
@@ -297,12 +323,25 @@ export function checkSnapshots(previous: Snapshot, next: Snapshot, contracts: re
     if (kind.get(name)?.frozen && text(previous.contracts[name]) !== text(next.contracts[name])) errors.push(`${name} is frozen across every protocol version and changed`);
   }
   if (!bumped && found.breaking.length > 0) errors.push(...found.breaking.map((change) => `breaking without a protocolVersion bump: ${change}`));
-  if (!bumped && found.additive.length > 0 && newFeatures.length === 0) errors.push(...found.additive.map((change) => `additive change no new welcome feature names: ${change}`));
+  if (!bumped && found.additive.length > 0 && newFeatures.length === 0) errors.push(...found.additive.map((change) => `an older peer cannot take this addition and no new FEATURES name gates it: ${change}`));
   if (!bumped && previous.features.some((feature) => !next.features.includes(feature))) errors.push('a welcome feature was removed without a protocolVersion bump');
   const reentered = previous.preRelease !== true && next.preRelease === true;
   if (reentered) errors.push('PROTOCOL_PRE_RELEASE went back to true after a release');
   const current = text(previous) === text(next);
-  return { ok: errors.length === 0, errors, waivable: previous.preRelease === true && !reentered, breaking: found.breaking, additive: found.additive, current };
+  return { ok: errors.length === 0, errors, waivable: previous.preRelease === true && !reentered, breaking: found.breaking, additive: found.additive, optional: found.optional, current };
+}
+
+function readMaxFeatures(file = HANDSHAKE_FILE): number {
+  const max = /export const MAX_FEATURES = (\d+);/.exec(readFileSync(file, 'utf8'))?.[1];
+  if (max === undefined) throw new Error(`${file} does not declare MAX_FEATURES in its usual form`);
+  return Number(max);
+}
+
+// The welcome's and the core attach's parsers refuse a list past MAX_FEATURES; a name is listed once. Release state waives neither.
+function featureListErrors(features: readonly string[], maxFeatures: number): string[] {
+  const errors = [...new Set(features.filter((feature, index) => features.indexOf(feature) !== index))].map((feature) => `FEATURES names ${feature} more than once`);
+  if (features.length > maxFeatures) errors.push(`FEATURES holds ${features.length} names, past MAX_FEATURES (${maxFeatures}), so every welcome and core attach would be refused`);
+  return errors;
 }
 
 // A snapshot file is one snapshot() wrote.
@@ -315,6 +354,11 @@ const PRE_RELEASE_HINT = 'while PROTOCOL_PRE_RELEASE is true, rerun with --allow
 /** The command line; returns the exit code. The paths default to this repository's. */
 export function run(argv: readonly string[], { root = ROOT, contracts = CONTRACTS, versionFile = VERSION_FILE, snapshotPath = SNAPSHOT_PATH }: RunOptions = {}): number {
   const next = snapshot(root, contracts, versionFile);
+  const listErrors = featureListErrors(next.features, readMaxFeatures());
+  if (listErrors.length > 0) {
+    for (const error of listErrors) console.error(error);
+    return 1;
+  }
   const against = argv.indexOf('--against');
   if (against !== -1) {
     const file = argv[against + 1];

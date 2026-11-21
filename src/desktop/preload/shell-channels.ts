@@ -18,6 +18,8 @@ import type { DamoclesPortsApi } from './ports-channels';
 import type { DamoclesForgeShellApi } from './forge-channels';
 import type { CiState } from '../../shared/forge/ci';
 import type { RelocationStepName } from '../../core/project-relocation/types';
+import type { LinkRefusal } from '../../platform/file-confinement';
+import type { LocalizedText } from '../../shared/localized-text';
 import { MAX_ROOT_KEY_LENGTH, type FolderRoot } from './folder-root';
 import type { PROJECTS_VIEWS, SEARCH_ACTIONS_POSITIONS, SEARCH_COLLAPSE_RESULTS, SEARCH_DEFAULT_VIEW_MODES, SEARCH_EDITOR_DOUBLE_CLICK, SEARCH_MODES } from '../local-services/desktop-configuration';
 
@@ -266,6 +268,9 @@ export const SHELL_CHANNELS = {
   filesDownload: 'damocles:shell:files:download',
   // FilesTransferCancelRequest
   filesTransferCancel: 'damocles:shell:files:transfer-cancel',
+  // Files, renderer → main, send
+  // FileRef of a folder the tree no longer shows expanded: main stops watching a link root no expanded folder reaches
+  filesCollapsed: 'damocles:shell:files:collapsed',
   // Files, main → renderer
   // FilesChanged; the shell refetches only the expanded directories it names
   filesChanged: 'damocles:shell:files:changed',
@@ -1092,8 +1097,9 @@ export type ShellDocumentContent =
   | { readonly kind: 'image'; readonly documentId: string; readonly dataUrl: string; readonly bytes: number }
   // openAnyway: a file past the confirm threshold and within the hard maximum, which the tab's Open Anyway opens as text
   | { readonly kind: 'notDisplayed'; readonly documentId: string; readonly reason: NotDisplayedReason; readonly bytes?: number; readonly openAnyway?: true }
-  // a remote file whose host is not connected; its tab takes a new documentId once the host connects
-  | { readonly kind: 'offline'; readonly documentId: string; readonly hostId: string; readonly hostName: string };
+  // a remote file whose host is not connected; its tab takes a new documentId once the host connects. updateServer: the host is
+  // connected, but its server cannot follow the link on the file's path, and the tab takes the file once a server that can connects
+  | { readonly kind: 'offline'; readonly documentId: string; readonly hostId: string; readonly hostName: string; readonly updateServer?: true };
 
 // missing: a git side that does not exist there (a core-originated placeholder, never a file)
 export type NotDisplayedReason = 'binary' | 'tooLarge' | 'unreadable' | 'missing';
@@ -1467,16 +1473,19 @@ export interface FilesListRequest {
 
 export interface FileEntry {
   readonly name: string;
-  // a symlink is listed by what it points to and never followed outside the project
+  // a link is listed by what it points to; one onto another share or WSL path, or a dangling one, as a file
   readonly kind: 'file' | 'dir';
   // git ignores it (source control's check-ignore); the tree draws it faded
   readonly ignored?: true;
+  // a link: its own readlink text, never read through it; broken: what it points to is not there (ENOENT, ENOTDIR)
+  readonly link?: { readonly target: string; readonly broken?: true };
 }
 
+// refusal: why a link on the path was refused (LinkRefusal); error: a failed walk's or stat's own words
 export type FilesListResult =
   // directories first, then files, each in VS Code's default explorer order
   | { readonly ok: true; readonly entries: readonly FileEntry[] }
-  | { readonly ok: false; readonly reason: 'outside' | 'missing' | 'failed' };
+  | { readonly ok: false; readonly reason: 'outside' | 'missing' | 'failed'; readonly refusal?: LinkRefusal; readonly error?: LocalizedText };
 
 export interface FilesCreateRequest {
   readonly projectKey: string;
@@ -1493,9 +1502,12 @@ export interface FilesRenameRequest {
 
 export type FilesMutationResult =
   | { readonly ok: true; readonly relativePath: string }
-  | { readonly ok: false; readonly reason: 'invalidName' | 'exists' | 'outside' | 'missing' | 'failed'; readonly message?: string };
+  | { readonly ok: false; readonly reason: 'invalidName' | 'exists' | 'outside' | 'missing' | 'failed' | 'sessionFile'; readonly message?: string; readonly refusal?: LinkRefusal; readonly error?: LocalizedText };
 
-export type FilesDeleteResult = { readonly ok: true } | { readonly ok: false; readonly reason: 'cancelled' | 'outside' | 'missing' | 'failed'; readonly message?: string };
+// sessionFile: the entry is in or holds the session store of its host's chats, which only Damocles changes
+export type FilesDeleteResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: 'cancelled' | 'outside' | 'missing' | 'failed' | 'sessionFile'; readonly message?: string; readonly refusal?: LinkRefusal; readonly error?: LocalizedText };
 
 // Paths of one copy-in request; main refuses more.
 export const MAX_COPY_IN_PATHS = 10_000;
@@ -1613,6 +1625,8 @@ export interface SearchDone {
   // Cancel Search stopped it
   readonly cancelled?: true;
   readonly bufferWarning?: SearchBufferWarning;
+  // main's localized notice: the project's host cannot walk through links, so the search left them out
+  readonly linksNotSearched?: string;
 }
 
 export interface SearchFocus {
@@ -2031,6 +2045,7 @@ export interface DamoclesShellApi {
   onDesignPreviewClosed(listener: (tabId: string) => void): () => void;
   // Files
   listFiles(request: FilesListRequest): Promise<FilesListResult>;
+  filesCollapsed(folder: FileRef): void;
   createFile(request: FilesCreateRequest): Promise<FilesMutationResult>;
   renameFile(request: FilesRenameRequest): Promise<FilesMutationResult>;
   deleteFile(file: FileRef): Promise<FilesDeleteResult>;

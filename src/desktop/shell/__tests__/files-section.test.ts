@@ -5,7 +5,7 @@ import FilesSection from '../components/FilesSection.vue';
 import { shellI18n } from '../i18n';
 import { createEditorStore, EDITOR_STORE } from '../editor/editor-store';
 import { createScmStore, SCM_STORE } from '../scm/scm-store';
-import type { ShownFolder } from '../../preload/shell-channels';
+import type { FileEntry, ShownFolder } from '../../preload/shell-channels';
 import { FILE_DRAG_MIME, FILES_ROW_DRAG_MIME } from '@shared/file-drag';
 import { EDITOR_STATE, FakeResizeObserver, fakeShellApi, type FakeShellApi } from './fakes';
 
@@ -21,10 +21,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function mountFiles(options: { platform?: 'win32' | 'linux' | 'darwin'; projectPlatform?: 'win32' | 'linux' | 'darwin'; trash?: boolean; shown?: ShownFolder; projectKey?: string; remote?: boolean; offline?: boolean; transfersUnsupportedOn?: string; files?: readonly string[]; folders?: readonly string[]; presence?: 'missing' | 'unavailable' } = {}): Promise<{ wrapper: VueWrapper; api: FakeShellApi }> {
+async function mountFiles(options: { platform?: 'win32' | 'linux' | 'darwin'; projectPlatform?: 'win32' | 'linux' | 'darwin'; trash?: boolean; shown?: ShownFolder; projectKey?: string; remote?: boolean; offline?: boolean; transfersUnsupportedOn?: string; files?: readonly string[]; folders?: readonly string[]; presence?: 'missing' | 'unavailable'; links?: Readonly<Record<string, NonNullable<FileEntry['link']>>> } = {}): Promise<{ wrapper: VueWrapper; api: FakeShellApi }> {
   const files = options.files ?? ['notes.txt', 'todo.md'];
+  const linked = (entry: FileEntry): FileEntry => (options.links?.[entry.name] ? { ...entry, link: options.links[entry.name]! } : entry);
   const api = fakeShellApi([], {
-    listFiles: vi.fn(async () => ({ ok: true as const, entries: [...(options.folders ?? ['src']).map((name) => ({ name, kind: 'dir' as const })), ...files.map((name) => ({ name, kind: 'file' as const }))] })),
+    listFiles: vi.fn(async () => ({ ok: true as const, entries: [...(options.folders ?? ['src']).map((name) => ({ name, kind: 'dir' as const })), ...files.map((name) => ({ name, kind: 'file' as const }))].map(linked) })),
   });
   const wrapper = mount(FilesSection, {
     props: { api, projectKey: options.projectKey ?? 'home', projectName: 'Home', platform: options.platform ?? 'win32', projectPlatform: options.projectPlatform ?? options.platform ?? 'win32', trash: options.trash ?? true, collapsed: false, remote: options.remote ?? false, offline: options.offline ?? false, ...(options.shown ? { shown: options.shown } : {}), ...(options.transfersUnsupportedOn !== undefined ? { transfersUnsupportedOn: options.transfersUnsupportedOn } : {}), ...(options.presence ? { presence: options.presence } : {}) },
@@ -438,6 +439,9 @@ describe('Files drop target', () => {
     expect(files.dropEffect).toBe('copy');
     expect(highlighted(wrapper)).toBe('src');
     expect(wrapper.get('[data-testid="files-drop-highlight"]').classes()).toContain('d-fade-in');
+    // the tint is the row's own background, which a link badge on the row paints too
+    expect(row(wrapper, 'src').classes()).toContain('[--row-bg:var(--d-accent-soft)]');
+    expect(wrapper.get('[data-testid="files-drop-highlight"]').classes()).not.toContain('bg-(--d-accent-soft)');
     expect(wrapper.get('[data-testid="files-drop-hint"]').text()).toBe('Copy to src');
 
     drag(rowElement(wrapper, 'notes.txt'), 'dragover', files);
@@ -963,5 +967,128 @@ describe('Files auto-reveal of the active editor', () => {
     api.pushEditorState({ ...EDITOR_STATE, tabs: [{ ...shown }], activeTabId: 't' });
     await flushPromises();
     expect(document.activeElement).toBe(row(wrapper, 'todo.md').element);
+  });
+});
+
+describe('Files link rows', () => {
+  it('badge a link\'s icon, name its target in the tooltip and to a screen reader, and leave other rows as they are', async () => {
+    const { wrapper } = await mountFiles({ links: { src: { target: 'D:\\shared\\src' }, 'notes.txt': { target: '../gone\u202E.txt', broken: true } } });
+    const linked = row(wrapper, 'src');
+    expect(linked.find('[data-testid="file-icon-link"]').exists()).toBe(true);
+    expect(linked.find('[data-testid="file-icon-link"]').attributes('data-broken')).toBeUndefined();
+    expect(linked.attributes('title')).toBe('src\nLink to D:\\shared\\src');
+    expect(linked.find('[data-testid="files-link"]').text()).toBe('Link to D:\\shared\\src');
+    expect(linked.find('[data-testid="files-link"]').classes()).toContain('sr-only');
+
+    const broken = row(wrapper, 'notes.txt');
+    expect(broken.find('[data-testid="file-icon-link"]').attributes('data-broken')).toBe('true');
+    // a target's bidi and control characters show as escapes
+    expect(broken.attributes('title')).toBe('notes.txt\nBroken link to ../gone\\u{202E}.txt');
+    expect(broken.find('[data-testid="files-link"]').text()).toBe('Broken link to ../gone\\u{202E}.txt');
+
+    const plain = row(wrapper, 'todo.md');
+    expect(plain.find('[data-testid="file-icon-link"]').exists()).toBe(false);
+    expect(plain.find('[data-testid="files-link"]').exists()).toBe(false);
+    expect(plain.attributes('title')).toBe('todo.md');
+  });
+
+  it('gives each row its background as --row-bg, which a link badge paints: plain, hovered, selected and selected while hovered', async () => {
+    const shown = { id: 't', kind: 'code' as const, documentId: 'd-t', title: 'todo.md', projectKey: 'home', relativePath: 'todo.md', displayPath: 'C:\\home\\todo.md', dirty: false, readOnly: false, conflict: false };
+    const api = fakeShellApi([], {
+      listFiles: vi.fn(async () => ({ ok: true as const, entries: [{ name: 'notes.txt', kind: 'file' as const, link: { target: '/srv/notes.txt' } }, { name: 'todo.md', kind: 'file' as const, link: { target: '/srv/todo.md' } }] })),
+      getEditorState: vi.fn(async () => ({ ...EDITOR_STATE, tabs: [shown], activeTabId: 't' })),
+    });
+    const editor = createEditorStore(api);
+    await editor.start();
+    const wrapper = mount(FilesSection, {
+      props: { api, projectKey: 'home', projectName: 'Home', platform: 'win32', projectPlatform: 'win32', trash: true, collapsed: false },
+      global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: editor, [SCM_STORE]: createScmStore(api.scm) } },
+      attachTo: document.body,
+    });
+    mounted.push(wrapper);
+    await flushPromises();
+    const plain = row(wrapper, 'notes.txt').classes();
+    expect(plain).toEqual(expect.arrayContaining(['bg-(--row-bg)', '[--row-bg:transparent]', 'hover:[--row-bg:var(--d-hover)]']));
+    const selected = row(wrapper, 'todo.md').classes();
+    expect(selected).toEqual(expect.arrayContaining(['bg-(--row-bg)', '[--row-bg:var(--d-accent-soft)]']));
+    expect(selected.filter((name) => name.startsWith('hover:'))).toEqual([]);
+  });
+
+  it('words the link in the user\'s language', async () => {
+    shellI18n.global.locale.value = 'el';
+    const { wrapper } = await mountFiles({ links: { src: { target: '/srv/src' } } });
+    expect(row(wrapper, 'src').find('[data-testid="files-link"]').text()).toBe('Σύνδεσμος προς /srv/src');
+  });
+
+  it('tells main each folder it stops showing expanded: a collapse, Collapse all and a switch to another folder', async () => {
+    const { wrapper, api } = await mountFiles();
+    await row(wrapper, 'src').trigger('click');
+    await flushPromises();
+    await row(wrapper, 'src/src').trigger('click');
+    await flushPromises();
+    expect(api.filesCollapsed).not.toHaveBeenCalled();
+    await row(wrapper, 'src/src').trigger('click');
+    expect(vi.mocked(api.filesCollapsed).mock.calls).toEqual([[{ projectKey: 'home', relativePath: 'src/src' }]]);
+
+    vi.mocked(api.filesCollapsed).mockClear();
+    await row(wrapper, 'src/src').trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-testid="files-collapse-all"]').trigger('click');
+    expect(vi.mocked(api.filesCollapsed).mock.calls).toEqual([[{ projectKey: 'home', relativePath: 'src' }], [{ projectKey: 'home', relativePath: 'src/src' }]]);
+
+    vi.mocked(api.filesCollapsed).mockClear();
+    await row(wrapper, 'src').trigger('click');
+    await flushPromises();
+    await wrapper.setProps({ projectKey: 'other' });
+    await flushPromises();
+    expect(vi.mocked(api.filesCollapsed).mock.calls).toEqual([[{ projectKey: 'home', relativePath: 'src' }]]);
+  });
+
+  it('lists a folder hidden under a collapsed one only once it shows expanded again', async () => {
+    const { wrapper, api } = await mountFiles();
+    const listed = (): string[] => vi.mocked(api.listFiles).mock.calls.map(([request]) => request.relativeDir);
+    await row(wrapper, 'src').trigger('click');
+    await flushPromises();
+    await row(wrapper, 'src/src').trigger('click');
+    await flushPromises();
+    await row(wrapper, 'src').trigger('click');
+    // main ends the watches of the collapsed folder and of every folder under it
+    expect(vi.mocked(api.filesCollapsed).mock.calls).toEqual([[{ projectKey: 'home', relativePath: 'src' }]]);
+    vi.mocked(api.listFiles).mockClear();
+    api.filesChanged({ projectKey: 'home', relativeDirs: [] });
+    api.filesChanged({ projectKey: 'home', relativeDirs: ['src/src'] });
+    await flushPromises();
+    expect(listed()).toEqual(['']);
+    vi.mocked(api.listFiles).mockClear();
+    await row(wrapper, 'src').trigger('click');
+    await flushPromises();
+    expect(listed().sort()).toEqual(['src', 'src/src']);
+    expect(row(wrapper, 'src/src/src').exists()).toBe(true);
+  });
+
+  it('reports an expanded folder that leaves its parent\'s listing as collapsed, and lists it again once it is back', async () => {
+    const { wrapper, api } = await mountFiles();
+    const listed = (): string[] => vi.mocked(api.listFiles).mock.calls.map(([request]) => request.relativeDir);
+    const standard = vi.mocked(api.listFiles).getMockImplementation()!;
+    await row(wrapper, 'src').trigger('click');
+    await flushPromises();
+    await row(wrapper, 'src/src').trigger('click');
+    await flushPromises();
+    // files.exclude now hides src at the top
+    vi.mocked(api.listFiles).mockImplementation(async (request) => (request.relativeDir === '' ? { ok: true, entries: [{ name: 'notes.txt', kind: 'file' }] } : standard(request)));
+    api.filesChanged({ projectKey: 'home', relativeDirs: [] });
+    await flushPromises();
+    expect(vi.mocked(api.filesCollapsed).mock.calls).toEqual([[{ projectKey: 'home', relativePath: 'src' }]]);
+    vi.mocked(api.listFiles).mockClear();
+    api.filesChanged({ projectKey: 'home', relativeDirs: [] });
+    await flushPromises();
+    expect(listed()).toEqual(['']);
+    // shown again, it is expanded as it was and listed again, with the expanded folder under it
+    vi.mocked(api.listFiles).mockClear();
+    vi.mocked(api.listFiles).mockImplementation(standard);
+    api.filesChanged({ projectKey: 'home', relativeDirs: [''] });
+    await flushPromises();
+    expect(listed().sort()).toEqual(['', 'src', 'src/src']);
+    expect(row(wrapper, 'src/src/src').exists()).toBe(true);
   });
 });

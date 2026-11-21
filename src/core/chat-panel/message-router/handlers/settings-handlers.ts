@@ -32,7 +32,8 @@ import { englishText, LocalizedError, type LocalizedText } from "../../../../sha
 import { openaiAuthStatusMessage } from "./openai-handlers";
 import { postVoiceFilesSize, postVoiceRuntimeStatus } from "./voice-stream-handlers";
 import type { McpUserResourcePort } from "../../../pi-session/mcp/tool-source";
-import { READ_MCP_RESOURCE } from "../../../permission-handler/mcp-resource-rule";
+import { READ_MCP_RESOURCE, type McpResourceRuleFilter } from "../../../permission-handler/mcp-resource-rule";
+import { PermissionRulesUnreadable } from "../../../permission-handler/permission-settings";
 import { isBinaryMimeType, isDirectoryMimeType } from "../../../../shared/mcp-resource-mime";
 import { isMcpAppResource } from "../../../pi-session/tools/mcp-resource-tools";
 import { MAX_PENDING_TERMINAL_ATTACHMENTS } from "../../terminal-attachment-manager";
@@ -825,7 +826,16 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         refuse(l("MCP server {0} is not available in this chat.", resourceLabel(undefined, msg.serverName)));
         return;
       }
-      const rule = (await ctx.permissionHandler.mcpResourceRuleFilter(READ_MCP_RESOURCE)).resourceDenyRule(msg.serverName, msg.uri);
+      let filter: McpResourceRuleFilter;
+      try {
+        filter = await ctx.permissionHandler.mcpResourceRuleFilter(READ_MCP_RESOURCE);
+      } catch (err) {
+        // the picker waits for this request's reply, so rules that cannot be known refuse the attach with their reason
+        if (!(err instanceof PermissionRulesUnreadable)) throw err;
+        refuse(err.text);
+        return;
+      }
+      const rule = filter.resourceDenyRule(msg.serverName, msg.uri);
       if (rule !== undefined) {
         refuse(l("A deny rule covers this resource: {0}", rule));
         return;

@@ -4,9 +4,12 @@ import * as path from 'node:path';
 import { renameWithRetry } from '../../core/config/json-config-write';
 import { OPEN_READ_NONBLOCKING } from '../../core/file-bytes';
 import { folderKey } from '../../core/workspace-folders/folder-key';
-import { confineEntry, confineExisting, isInsideRealRoot, type ConfineFailure, type Project } from '../local-services/confine';
+import { linkedPreviewRefused } from '../../core/served-pages/host-data-stores';
+import { confineEntry, confineExisting, confineResolved, isInsideRealRoot, type ConfineFailure, type ConfineRefusal, type HostLinkRefusal, type LinkRefusal, type LinkRule, type Project } from '../local-services/confine';
 import { isValidFileName } from '../preload/file-names';
+import type { LocalizedText } from '../../shared/localized-text';
 import type { EntryIdentity } from './file-system';
+import { reachesSessions, SESSION_FILE_REFUSAL } from './session-guard';
 
 // Copies in and out of Files (docs/invariants.md "File transfers"): every file lands under a `.part` name beside its final
 // name and is renamed over it, so a cancelled or failed copy never leaves a partly written file.
@@ -30,13 +33,17 @@ export interface TransferEntry {
   readonly error?: string;
 }
 
-export type TransferFailure = ConfineFailure | 'exists' | 'invalidName' | 'incomplete' | 'unsupported' | 'notFolder' | 'notAFile' | 'intoItself' | 'notEmpty' | 'changed';
+// sessionFile: the item or its destination reaches a session store or its leases (reachesSessions), which only their engine changes
+export type TransferFailure = ConfineFailure | 'exists' | 'invalidName' | 'incomplete' | 'unsupported' | 'notFolder' | 'notAFile' | 'intoItself' | 'notEmpty' | 'changed' | 'sessionFile';
 
-export type TransferResult = { readonly ok: true } | { readonly ok: false; readonly reason: TransferFailure; readonly code?: string; readonly message?: string };
+// refusal and error: the confinement's, as ConfineRefusal carries them; R: the link refusals, HostLinkRefusal on a host
+export type TransferResult<R extends LinkRefusal = LinkRefusal> =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: TransferFailure; readonly code?: string; readonly message?: string; readonly refusal?: R; readonly error?: LocalizedText };
 
 // left: paths under the moved item a move across file systems could not carry (a link on a Windows host, a special file), at
 // most MOVE_LEFT_LISTED of them; leftMore: how many more there were
-export type MoveResult = { readonly ok: true; readonly left: readonly string[]; readonly leftMore?: number } | Exclude<TransferResult, { readonly ok: true }>;
+export type MoveResult<R extends LinkRefusal = LinkRefusal> = { readonly ok: true; readonly left: readonly string[]; readonly leftMore?: number } | Exclude<TransferResult<R>, { readonly ok: true }>;
 
 export interface ReceiveOptions {
   // mode & 0o777 is the mode a POSIX host creates the file with, under its umask
@@ -53,15 +60,16 @@ export interface Clash {
   readonly kind: TransferKind;
 }
 
-export type ClashesResult =
+export type ClashesResult<R extends LinkRefusal = LinkRefusal> =
   | { readonly ok: true; readonly clashes: ReadonlyArray<Clash | null> }
-  | { readonly ok: false; readonly reason: ConfineFailure | 'notFolder'; readonly code?: string; readonly message?: string };
+  | { readonly ok: false; readonly reason: ConfineFailure | 'notFolder'; readonly code?: string; readonly message?: string; readonly refusal?: R; readonly error?: LocalizedText };
 
-export type ReadResult =
+export type ReadResult<R extends LinkRefusal = LinkRefusal> =
   | { readonly ok: true; readonly size: number; readonly chunks: AsyncIterable<Uint8Array> }
-  | { readonly ok: false; readonly reason: ConfineFailure | 'notAFile'; readonly code?: string };
+  | { readonly ok: false; readonly reason: ConfineFailure | 'notAFile'; readonly code?: string; readonly refusal?: R; readonly error?: LocalizedText };
 
-// size: the whole file's; chunks: the length bytes from offset, both already clamped to the file; resolvedPath: confineEntry's;
+// size: the whole file's; chunks: the length bytes from offset, both already clamped to the file; resolvedPath: the file's
+// real path relative to the project's realpath, or to the link root (confineResolved, confineEntry);
 // folder: the entry that is not a file is a folder
 export type ReadRangeResult =
   | { readonly ok: true; readonly size: number; readonly offset: number; readonly length: number; readonly resolvedPath: string; readonly chunks: AsyncIterable<Uint8Array> }
@@ -100,13 +108,16 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function failure(err: unknown): Exclude<TransferResult, { readonly ok: true }> {
+type HostTransferResult = TransferResult<HostLinkRefusal>;
+type HostFailure = Exclude<HostTransferResult, { readonly ok: true }>;
+
+function failure(err: unknown): HostFailure {
   const code = errnoCode(err);
   return { ok: false, reason: 'failed', ...(code !== undefined ? { code } : {}), message: errorText(err) };
 }
 
 // a request the host cannot store: a size, mode or time out of range, or a link target it cannot hold
-const INVALID: Exclude<TransferResult, { readonly ok: true }> = { ok: false, reason: 'failed', code: 'EINVAL' };
+const INVALID: HostFailure = { ok: false, reason: 'failed', code: 'EINVAL' };
 
 function kindOf(stat: BigIntStats): TransferKind {
   if (stat.isSymbolicLink()) return 'link';
@@ -344,32 +355,49 @@ export interface TransferOpsDeps {
   readonly platform: NodeJS.Platform;
   readonly log: (line: string) => void;
   readonly now?: () => number;
+  // the host's Damocles home, whose session store and leases no transfer writes into, moves out of or removes (reachesSessions)
+  readonly damoclesHome: string;
 }
 
-export interface TransferOps {
+// A source a copy only reads may lie in a session store; every other item and destination reaching one is refused as
+// sessionFile. R: the link refusals an answer carries, HostLinkRefusal on a host.
+export interface TransferOps<R extends LinkRefusal = LinkRefusal> {
   walk(project: Project, relativePath: string): AsyncIterable<readonly TransferEntry[]>;
   // for each name, the entry of relativeDir it clashes with (ignoring case on win32 and darwin hosts), else null
-  clashes(project: Project, relativeDir: string, names: readonly string[]): Promise<ClashesResult>;
+  clashes(project: Project, relativeDir: string, names: readonly string[]): Promise<ClashesResult<R>>;
   // the source is returned however this ends; signal: a cancel, which removes the part and rejects
-  receiveFile(project: Project, relativeDir: string, name: string, source: AsyncIterable<Uint8Array>, options: ReceiveOptions, signal?: AbortSignal): Promise<TransferResult>;
-  copy(from: Project, relativePath: string, to: Project, toDir: string, name: string, replace: boolean, signal?: AbortSignal): Promise<TransferResult>;
-  move(from: Project, relativePath: string, to: Project, toDir: string, name: string, replace: boolean, signal?: AbortSignal): Promise<MoveResult>;
+  receiveFile(project: Project, relativeDir: string, name: string, source: AsyncIterable<Uint8Array>, options: ReceiveOptions, signal?: AbortSignal): Promise<TransferResult<R>>;
+  copy(from: Project, relativePath: string, to: Project, toDir: string, name: string, replace: boolean, signal?: AbortSignal): Promise<TransferResult<R>>;
+  move(from: Project, relativePath: string, to: Project, toDir: string, name: string, replace: boolean, signal?: AbortSignal): Promise<MoveResult<R>>;
   // mode: the source folder's, which a POSIX host creates the folder with under its umask, the owner's rwx always kept
-  makeFolder(project: Project, relativeDir: string, name: string, mode?: number): Promise<TransferResult>;
+  makeFolder(project: Project, relativeDir: string, name: string, mode?: number): Promise<TransferResult<R>>;
   // within: a folder of the project the link must resolve inside, followed on disk through every link; one that leads out is
   // removed and refused as outside
-  makeLink(project: Project, relativeDir: string, name: string, target: string, replace: boolean, within?: string): Promise<TransferResult>;
+  makeLink(project: Project, relativeDir: string, name: string, target: string, replace: boolean, within?: string): Promise<TransferResult<R>>;
   // the link at relativePath, made with within, checked again once every link landed; one that now leads out is removed and
   // refused as outside, and one no longer there passes
-  verifyLink(project: Project, relativePath: string, within: string): Promise<TransferResult>;
+  verifyLink(project: Project, relativePath: string, within: string): Promise<TransferResult<R>>;
   // a folder, never a link, and only while it is empty
-  removeFolder(project: Project, relativePath: string, confirmed: EntryIdentity): Promise<TransferResult>;
-  readFile(project: Project, relativePath: string): Promise<ReadResult>;
-  // at most length bytes from offset, a negative offset counting back from the end; confined as readFile is
-  readFileRange(project: Project, relativePath: string, offset: number, length: number): Promise<ReadRangeResult>;
+  removeFolder(project: Project, relativePath: string, confirmed: EntryIdentity): Promise<TransferResult<R>>;
+  // the entry itself, never a link or a folder
+  readFile(project: Project, relativePath: string): Promise<ReadResult<R>>;
+  // at most length bytes from offset, a negative offset counting back from the end; without preview confined as readFile is,
+  // under withinProject
+  readFileRange(project: Project, relativePath: string, offset: number, length: number, preview?: PreviewRead): Promise<ReadRangeResult>;
 }
 
-export function createTransferOps(deps: TransferOpsDeps): TransferOps {
+// An HTML preview's read, by its project's trust. trusted: throughLinks, and a file reached through a link that leaves the
+// project is refused as outside when linkedPreviewRefused refuses its absolute real path; untrusted: withinProject. Either
+// follows the last segment and must open a regular file.
+export interface PreviewRead {
+  readonly trusted: boolean;
+}
+
+// The methods that confine a project path for a user view, each under one rule.
+export type LinkedTransferOps<R extends LinkRefusal = LinkRefusal> = Omit<TransferOps<R>, 'readFileRange'>;
+
+// under: LinkedTransferOps under rule; the methods of the result itself apply throughLinks.
+export function createTransferOps(deps: TransferOpsDeps): TransferOps<HostLinkRefusal> & { under(rule: LinkRule): LinkedTransferOps<HostLinkRefusal> } {
   const { platform } = deps;
   const now = deps.now ?? Date.now;
   const foldsCase = platform === 'win32' || platform === 'darwin';
@@ -380,6 +408,8 @@ export function createTransferOps(deps: TransferOpsDeps): TransferOps {
   const fileMode = (mode: number): number | undefined => (platform === 'win32' ? undefined : mode & 0o777);
   // the owner keeps rwx, so the folder's own entries can still land in it
   const folderMode = (mode: number): number | undefined => (platform === 'win32' ? undefined : (mode & 0o777) | 0o700);
+  // checked before anything is written, swept or claimed at the destination
+  const reaches = (entry: string, removes: boolean): Promise<boolean> => reachesSessions(entry, deps.damoclesHome, removes);
 
   // the parts a crash left in folder, a day old or more; only regular files named as parts. Age is the ctime, since a part's
   // mtime is the source's from just before its rename
@@ -406,8 +436,8 @@ export function createTransferOps(deps: TransferOpsDeps): TransferOps {
   };
 
   // the confined folder at relativeDir, which must be a folder
-  const folderAt = async (project: Project, relativeDir: string): Promise<{ readonly ok: true; readonly path: string } | { readonly ok: false; readonly reason: ConfineFailure | 'notFolder' }> => {
-    const confined = await confineExisting(project, relativeDir);
+  const folderAt = async (project: Project, relativeDir: string, rule: LinkRule): Promise<{ readonly ok: true; readonly path: string } | ConfineRefusal<HostLinkRefusal> | { readonly ok: false; readonly reason: 'notFolder' }> => {
+    const confined = await confineExisting(project, relativeDir, rule);
     if (!confined.ok) return confined;
     try {
       return (await fs.stat(confined.path)).isDirectory() ? confined : { ok: false, reason: 'notFolder' };
@@ -433,7 +463,7 @@ export function createTransferOps(deps: TransferOpsDeps): TransferOps {
    * keep it, sets the mtime through its handle, and renames it over name. Without replace the name is claimed first by an
    * exclusive create, and the rename replaces only that empty claim, checked again before every attempt.
    */
-  const land = async (folder: string, name: string, replace: boolean, meta: { readonly mode: number; readonly mtimeMs: number }, fill: (handle: fs.FileHandle) => Promise<void>): Promise<TransferResult> => {
+  const land = async (folder: string, name: string, replace: boolean, meta: { readonly mode: number; readonly mtimeMs: number }, fill: (handle: fs.FileHandle) => Promise<void>): Promise<HostTransferResult> => {
     const target = path.join(folder, name);
     let claim: BigIntStats | undefined;
     let mode = meta.mode;
@@ -443,6 +473,8 @@ export function createTransferOps(deps: TransferOpsDeps): TransferOps {
       if (existing?.isFile()) mode = Number(existing.mode);
     } else {
       try {
+        // Windows' exclusive create follows a link at its path, dangling or not, so a link there is a name taken
+        if ((await lstatOrUndefined(target))?.isSymbolicLink()) return { ok: false, reason: 'exists' };
         const claimed = await createExclusive(target);
         await claimed.handle.close();
         claim = claimed.made;
@@ -490,7 +522,7 @@ export function createTransferOps(deps: TransferOpsDeps): TransferOps {
 
   // the link at at kept only while its target, read now unless given, resolves inside root; one that leads out, or whose check
   // cannot finish, is removed while it is still that link, and refused
-  const keepWithin = async (at: string, root: string, folder: string, given: string | undefined): Promise<TransferResult> => {
+  const keepWithin = async (at: string, root: string, folder: string, given: string | undefined): Promise<HostTransferResult> => {
     let made: BigIntStats;
     try {
       made = await fs.lstat(at, { bigint: true });
@@ -498,7 +530,7 @@ export function createTransferOps(deps: TransferOpsDeps): TransferOps {
       return errnoCode(err) === 'ENOENT' ? { ok: true } : failure(err);
     }
     if (!made.isSymbolicLink()) return { ok: true };
-    let refusal: TransferResult;
+    let refusal: HostTransferResult;
     try {
       if (await resolvesWithin(root, folder, given ?? await fs.readlink(at))) return { ok: true };
       refusal = { ok: false, reason: 'outside' };
@@ -530,7 +562,7 @@ export function createTransferOps(deps: TransferOpsDeps): TransferOps {
   };
 
   // a file of this host copied through a part, read from a handle that must still be the file confinement found
-  const copyFile = async (source: string, identity: BigIntStats, folder: string, name: string, replace: boolean, signal: AbortSignal | undefined): Promise<TransferResult> => {
+  const copyFile = async (source: string, identity: BigIntStats, folder: string, name: string, replace: boolean, signal: AbortSignal | undefined): Promise<HostTransferResult> => {
     let opened: { readonly handle: fs.FileHandle; readonly size: number };
     try {
       opened = await openSame(source, identity);
@@ -550,7 +582,7 @@ export function createTransferOps(deps: TransferOpsDeps): TransferOps {
 
   // rename across file systems: each item is copied, and each source item deleted only after its copy finished; an item below
   // the top that cannot be carried stays and is listed, a folder that cannot be made with everything under it
-  const moveAcross = async (source: string, folder: string, name: string, replace: boolean, signal: AbortSignal | undefined): Promise<MoveResult> => {
+  const moveAcross = async (source: string, folder: string, name: string, replace: boolean, signal: AbortSignal | undefined): Promise<MoveResult<HostLinkRefusal>> => {
     const left: string[] = [];
     let leftMore = 0;
     const leave = (relativePath: string): void => {
@@ -619,14 +651,14 @@ export function createTransferOps(deps: TransferOpsDeps): TransferOps {
     return { ok: true, left, ...(leftMore > 0 ? { leftMore } : {}) };
   };
 
-  return {
+  const under = (rule: LinkRule): LinkedTransferOps<HostLinkRefusal> => ({
     async *walk(project, relativePath) {
-      const root = relativePath === '' ? await confineExisting(project, '') : await confineEntry(project, relativePath);
+      const root = relativePath === '' ? await confineExisting(project, '', rule) : await confineEntry(project, relativePath, rule);
       if (!root.ok) throw new Error(`${relativePath || '.'} cannot be walked: ${root.reason}`);
       yield* walkPath(root.path);
     },
     async clashes(project, relativeDir, names) {
-      const folder = await folderAt(project, relativeDir);
+      const folder = await folderAt(project, relativeDir, rule);
       if (!folder.ok) return folder;
       let present: string[];
       try {
@@ -649,8 +681,9 @@ export function createTransferOps(deps: TransferOpsDeps): TransferOps {
       try {
         if (!checkedName(name)) return { ok: false, reason: 'invalidName' };
         if (!Number.isFinite(options.mtimeMs) || !Number.isSafeInteger(options.mode) || options.mode < 0 || !Number.isSafeInteger(options.size) || options.size < 0) return INVALID;
-        const folder = await folderAt(project, relativeDir);
+        const folder = await folderAt(project, relativeDir, rule);
         if (!folder.ok) return folder;
+        if (await reaches(path.join(folder.path, name), false)) return SESSION_FILE_REFUSAL;
         await sweepStaleParts(folder.path);
         return await land(folder.path, name, options.replace, options, fillFrom(chunks, options.size, signal));
       } finally {
@@ -659,23 +692,25 @@ export function createTransferOps(deps: TransferOpsDeps): TransferOps {
     },
     async copy(from, relativePath, to, toDir, name, replace, signal) {
       if (!checkedName(name)) return { ok: false, reason: 'invalidName' };
-      const source = await confineEntry(from, relativePath);
+      const source = await confineEntry(from, relativePath, rule);
       if (!source.ok) return source;
       if (!source.stat.isFile()) return { ok: false, reason: 'notAFile' };
-      const folder = await folderAt(to, toDir);
+      const folder = await folderAt(to, toDir, rule);
       if (!folder.ok) return folder;
+      if (await reaches(path.join(folder.path, name), false)) return SESSION_FILE_REFUSAL;
       await sweepStaleParts(folder.path);
       return copyFile(source.path, source.stat, folder.path, name, replace, signal);
     },
     async move(from, relativePath, to, toDir, name, replace, signal) {
       if (!checkedName(name)) return { ok: false, reason: 'invalidName' };
-      const source = await confineEntry(from, relativePath);
+      const source = await confineEntry(from, relativePath, rule);
       if (!source.ok) return source;
-      const folder = await folderAt(to, toDir);
+      const folder = await folderAt(to, toDir, rule);
       if (!folder.ok) return folder;
       if (source.stat.isDirectory() && isInsideRealRoot(source.path, folder.path)) return { ok: false, reason: 'intoItself' };
       const target = path.join(folder.path, name);
       if (target === source.path) return { ok: true, left: [] };
+      if ((await reaches(source.path, true)) || (await reaches(target, false))) return SESSION_FILE_REFUSAL;
       // a case-only rename on a case-insensitive file system finds the entry itself under the new name; checked again before
       // every attempt, since a retry waits while another process may make the name
       const targetAllowed = async (): Promise<void> => {
@@ -698,9 +733,10 @@ export function createTransferOps(deps: TransferOpsDeps): TransferOps {
     },
     async makeFolder(project, relativeDir, name, mode) {
       if (!checkedName(name)) return { ok: false, reason: 'invalidName' };
-      const folder = await folderAt(project, relativeDir);
+      const folder = await folderAt(project, relativeDir, rule);
       if (!folder.ok) return folder;
       const target = path.join(folder.path, name);
+      if (await reaches(target, false)) return SESSION_FILE_REFUSAL;
       try {
         await fs.mkdir(target, mode === undefined ? undefined : folderMode(mode));
         return { ok: true };
@@ -715,11 +751,12 @@ export function createTransferOps(deps: TransferOpsDeps): TransferOps {
       if (platform === 'win32') return { ok: false, reason: 'unsupported' };
       if (!checkedName(name)) return { ok: false, reason: 'invalidName' };
       if (target.length === 0 || target.length > MAX_LINK_TARGET_CHARS || target.includes('\0')) return INVALID;
-      const folder = await folderAt(project, relativeDir);
+      const folder = await folderAt(project, relativeDir, rule);
       if (!folder.ok) return folder;
-      const root = within === undefined ? undefined : await folderAt(project, within);
+      const root = within === undefined ? undefined : await folderAt(project, within, rule);
       if (root && !root.ok) return root;
       const at = path.join(folder.path, name);
+      if (await reaches(at, false)) return SESSION_FILE_REFUSAL;
       try {
         if (!replace) {
           await fs.symlink(target, at);
@@ -743,18 +780,21 @@ export function createTransferOps(deps: TransferOpsDeps): TransferOps {
     },
     async verifyLink(project, relativePath, within) {
       if (platform === 'win32') return { ok: false, reason: 'unsupported' };
-      const root = await folderAt(project, within);
+      const root = await folderAt(project, within, rule);
       if (!root.ok) return root;
-      const entry = await confineEntry(project, relativePath);
+      const entry = await confineEntry(project, relativePath, rule);
       if (!entry.ok) return entry.reason === 'missing' ? { ok: true } : entry;
       if (!entry.stat.isSymbolicLink()) return { ok: true };
+      // a link that leads out is removed, which no transfer does inside the session store
+      if (await reaches(entry.path, false)) return SESSION_FILE_REFUSAL;
       return keepWithin(entry.path, root.path, path.dirname(entry.path), undefined);
     },
     async removeFolder(project, relativePath, confirmed) {
-      const entry = await confineEntry(project, relativePath);
+      const entry = await confineEntry(project, relativePath, rule);
       if (!entry.ok) return entry;
       if (!entry.stat.isDirectory()) return { ok: false, reason: 'notFolder' };
       if (!sameEntry(entry.stat, confirmed)) return { ok: false, reason: 'changed' };
+      if (await reaches(entry.path, true)) return SESSION_FILE_REFUSAL;
       try {
         await fs.rmdir(entry.path);
         return { ok: true };
@@ -764,13 +804,19 @@ export function createTransferOps(deps: TransferOpsDeps): TransferOps {
       }
     },
     async readFile(project, relativePath) {
-      const opened = await openConfinedFile(project, relativePath);
+      const opened = await openConfinedFile(project, relativePath, rule);
       if (!opened.ok) return opened.reason === 'notAFile' ? { ok: false, reason: 'notAFile' } : opened;
       return { ok: true, size: opened.size, chunks: handleChunks(opened.handle, opened.size) };
     },
-    async readFileRange(project, relativePath, offset, length) {
+  });
+
+  return {
+    ...under('throughLinks'),
+    under,
+    async readFileRange(project, relativePath, offset, length, preview) {
       if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || length < 0) return { ok: false, reason: 'failed', code: 'EINVAL' };
-      const opened = await openConfinedFile(project, relativePath);
+      // without preview the entry itself is read, never followed, so a link answers notAFile
+      const opened = preview ? await openPreviewFile(project, relativePath, preview, deps.log) : await openConfinedFile(project, relativePath, 'withinProject');
       if (!opened.ok) return opened;
       const { handle, size, resolvedPath } = opened;
       const start = offset < 0 ? Math.max(0, size + offset) : Math.min(offset, size);
@@ -780,15 +826,36 @@ export function createTransferOps(deps: TransferOpsDeps): TransferOps {
   };
 }
 
+type OpenedFile = { readonly ok: true; readonly handle: fs.FileHandle; readonly size: number; readonly resolvedPath: string } | Exclude<ReadRangeResult, { readonly ok: true }> | ConfineRefusal<HostLinkRefusal>;
+
+function openFailure(err: unknown): Exclude<ReadRangeResult, { readonly ok: true }> {
+  const code = errnoCode(err);
+  return { ok: false, reason: code === 'ENOENT' ? 'missing' : 'failed', ...(code !== undefined ? { code } : {}) };
+}
+
 // A project's regular file, never a link or a folder, opened for reading as the entry confinement checked.
-async function openConfinedFile(project: Project, relativePath: string): Promise<{ readonly ok: true; readonly handle: fs.FileHandle; readonly size: number; readonly resolvedPath: string } | Exclude<ReadRangeResult, { readonly ok: true }>> {
-  const entry = await confineEntry(project, relativePath);
+async function openConfinedFile(project: Project, relativePath: string, rule: LinkRule): Promise<OpenedFile> {
+  const entry = await confineEntry(project, relativePath, rule);
   if (!entry.ok) return entry;
   if (!entry.stat.isFile()) return { ok: false, reason: 'notAFile', folder: entry.stat.isDirectory() };
   try {
     return { ok: true, resolvedPath: entry.resolvedPath, ...(await openSame(entry.path, entry.stat)) };
   } catch (err) {
-    const code = errnoCode(err);
-    return { ok: false, reason: code === 'ENOENT' ? 'missing' : 'failed', ...(code !== undefined ? { code } : {}) };
+    return openFailure(err);
+  }
+}
+
+// An HTML preview's file, every link followed as PreviewRead allows, opened as the regular file an lstat of its realpath found
+// (docs/invariants.md "Desktop host", HTML previews). A realpath ends in no link, so the lstat refuses one swapped in since.
+async function openPreviewFile(project: Project, relativePath: string, preview: PreviewRead, log: (line: string) => void): Promise<OpenedFile> {
+  const confined = await confineResolved(project, relativePath, preview.trusted ? 'throughLinks' : 'withinProject');
+  if (!confined.ok) return { ok: false, reason: confined.reason };
+  if (confined.via && (await linkedPreviewRefused(confined.path, confined.via.realRoot, log))) return { ok: false, reason: 'outside' };
+  try {
+    const stat = await fs.lstat(confined.path, { bigint: true });
+    if (!stat.isFile()) return { ok: false, reason: 'notAFile', folder: stat.isDirectory() };
+    return { ok: true, resolvedPath: confined.resolvedPath, ...(await openSame(confined.path, stat)) };
+  } catch (err) {
+    return openFailure(err);
   }
 }

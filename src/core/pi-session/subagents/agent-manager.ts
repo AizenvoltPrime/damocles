@@ -126,6 +126,8 @@ export interface SubagentEngine {
   /** Gates the project-scope skills an agent preloads from `cwd`. */
   trust: TrustService;
   registry: AgentRegistry;
+  /** Settles once `registry` holds a load of the markdown agents no older than the call (`WorkspaceAgentRegistry.whenLoaded`). */
+  registryLoaded: () => Promise<void>;
   createSession: (opts: PiCreateSubagentSessionOptions) => Promise<AgentSession>;
   forgetSession: (session: AgentSession) => void;
   permissionHandler: PermissionHandler;
@@ -210,15 +212,28 @@ export interface SubagentEngine {
   getHooksDispatch?: () => DispatchDeps | undefined;
 }
 
-/** A spawn request. `toolCallId` is the spawning `Agent` tool-call id (the webview subagent-card key). */
-export interface SpawnRequest {
+/** A spawn as the `Agent` call asks for it. `toolCallId` is the spawning `Agent` tool-call id (the webview subagent-card key). */
+export interface SpawnCall {
+  kind: 'spawn';
+  type: SubagentType;
+  prompt: string;
+  description: string;
+  toolCallId: string;
+  /** The call's `run_in_background`; omitted, the agent template's default applies. */
+  runInBackground?: boolean;
+  /** The `Agent` call's abort signal: it stops the wait before the spawn, and a foreground agent with the parent turn. */
+  signal?: AbortSignal;
+}
+
+/** A spawn past its checks, as the queue holds it. */
+interface SpawnRequest {
   kind: 'spawn';
   type: SubagentType;
   prompt: string;
   description: string;
   toolCallId: string;
   runInBackground: boolean;
-  /** Parent abort signal (foreground synchronous spawn) — aborts this subagent when the parent turn does. */
+  /** Parent abort signal (foreground spawn only) — aborts this subagent when the parent turn does. */
   signal?: AbortSignal;
 }
 
@@ -366,6 +381,11 @@ export class AgentManager {
       }));
   }
 
+  /** Settles as `SubagentEngine.registryLoaded` does; the `Agent` tool's description reads the registry after. */
+  whenAgentsLoaded(): Promise<void> {
+    return this.engine.registryLoaded();
+  }
+
   /** The spawnable agent types (name + description) for the `Agent` tool's `subagent_type` advertisement. */
   getSpawnableAgents(): { name: string; description: string }[] {
     return this.engine.registry.getAvailableConfigs().map((c) => ({ name: c.name, description: c.description }));
@@ -381,22 +401,42 @@ export class AgentManager {
     return this.engine.registry.getAgentConfig(type)?.runInBackground ?? false;
   }
 
-  /** Spawn a background subagent and return its id immediately. Queues if at the concurrency cap. */
-  spawn(spec: SpawnRequest): string {
+  /**
+   * Spawn a subagent once `SubagentEngine.registryLoaded` settles, through the single concurrency cap.
+   * Returns once it is running or queued; await `record.promise` for the result. Throws, recording
+   * nothing, when the call's signal, an ESC, a reset or a dispose stopped it during that wait, or when
+   * the type is not one the registry can spawn.
+   */
+  async spawn(call: SpawnCall): Promise<AgentRecord> {
+    const epoch = this.abortEpoch;
+    await this.registryLoadedOrAborted(call.signal);
+    if (this.disposed || epoch !== this.abortEpoch || call.signal?.aborted) {
+      throw new Error(`The "${call.type}" agent was stopped before it started.`);
+    }
+    if (!this.engine.registry.isValidType(call.type)) {
+      throw new Error(`"${call.type}" is not a subagent type this chat can start. The available types are: ${this.engine.registry.getAvailableTypes().join(', ')}.`);
+    }
+    const { signal, runInBackground: requested, ...rest } = call;
+    const background = this.resolveRunInBackground(call.type, requested);
     const id = newSubagentId();
-    this.engine.recordInvocation({ kind: 'subagent', id, toolCallId: spec.toolCallId, resume: false });
-    this.enqueueOrStart(id, spec);
-    return id;
+    this.engine.recordInvocation({ kind: 'subagent', id, toolCallId: call.toolCallId, resume: false });
+    return this.enqueueOrStart(id, { ...rest, runInBackground: background, ...(signal && !background ? { signal } : {}) });
   }
 
-  /** Spawn a foreground subagent and await completion. Shares the single concurrency cap with background
-   *  spawns — queues for a slot when at capacity rather than launching unconditionally. */
-  async spawnAndWait(spec: SpawnRequest): Promise<AgentRecord> {
-    const id = newSubagentId();
-    this.engine.recordInvocation({ kind: 'subagent', id, toolCallId: spec.toolCallId, resume: false });
-    const record = this.enqueueOrStart(id, spec);
-    await record.promise;
-    return record;
+  /** Settles when `SubagentEngine.registryLoaded` does, or as `signal` aborts. */
+  private async registryLoadedOrAborted(signal: AbortSignal | undefined): Promise<void> {
+    if (!signal) return this.engine.registryLoaded();
+    if (signal.aborted) return;
+    let onAbort!: () => void;
+    const aborted = new Promise<void>((resolve) => {
+      onAbort = resolve;
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+      await Promise.race([this.engine.registryLoaded(), aborted]);
+    } finally {
+      signal.removeEventListener('abort', onAbort);
+    }
   }
 
   /**
@@ -442,6 +482,8 @@ export class AgentManager {
       if (!state) throw unknownResumeError(agentId);
       if (state.status === 'running' || state.status === 'queued') throw stillActiveError(agentId, state.status);
       if (!canResumeSubagent(state)) throw notResumableError(agentId, state);
+      // Before the launch is rebuilt, whose background default the registry holds.
+      await this.engine.registryLoaded();
       let launch: SubagentLaunchData;
       if (file) {
         if (file.launch.kind !== 'subagent') throw unknownResumeError(agentId);
@@ -742,7 +784,7 @@ export class AgentManager {
    * The system prompt, toolset and gate factory for one run. Built from the agent template and the
    * panel as they are now, so a resumed agent picks up template edits and the current permission mode.
    */
-  private prepareRun(record: AgentRecord, config: AgentConfig, parentToolUseId: string): PreparedRun {
+  private async prepareRun(record: AgentRecord, config: AgentConfig, parentToolUseId: string): Promise<PreparedRun> {
     const env = detectEnv(this.engine.cwd);
     // Resolve the toolset BEFORE building the prompt: the prompt is capability-gated on what the agent
     // actually ends up holding, so the resolved set is an input to the prompt and not the other way
@@ -759,7 +801,7 @@ export class AgentManager {
       });
     }
     if (Array.isArray(config.skills)) {
-      const loaded = preloadSkills(config.skills, this.engine.cwd, {
+      const loaded = await preloadSkills(config.skills, this.engine.cwd, {
         includeProjectScope: this.engine.trust.isTrusted(this.engine.cwd),
       });
       if (loaded.length > 0) extras.skillBlocks = loaded;
@@ -843,7 +885,7 @@ export class AgentManager {
     resolved: ResolvedSubagentModel,
     bridge: SubagentStreamBridge,
   ): Promise<string> {
-    const prepared = this.prepareRun(record, config, spec.toolCallId);
+    const prepared = await this.prepareRun(record, config, spec.toolCallId);
     const reopenPath = spec.kind === 'resume' ? spec.target.path : null;
     // A fresh run: a spawn, or a resume of an agent that stopped before its task was committed.
     const fresh = spec.kind === 'spawn'

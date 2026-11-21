@@ -81,8 +81,9 @@ export interface SearchRequestArgs {
   readonly exclude: readonly string[];
   // the true entries of files.exclude and search.exclude
   readonly excludeSettings: readonly string[];
-  // walkIgnoreOf: the search.use*IgnoreFiles switches
+  // the walk settings port's (Platform.walkSettings) ignore switches and follow mode
   readonly ignore: WalkIgnore;
+  readonly followLinks: boolean;
   // a Search Editor's context lines, 0..MAX_CONTEXT_LINES
   readonly contextLines: number;
 }
@@ -90,9 +91,10 @@ export interface SearchRequestArgs {
 /**
  * A content search of the shown folder: rg's matching flags, the pattern, which the engine passes as the value of --regexp
  * (--fixed-strings reads it as a fixed string), and the walk that lists the files rg matches. The exclude settings and ignore
- * files apply only while the query's toggle is on; off, the walk reads no ignore file at all. `.git` is left to the excludes.
+ * files apply only while the query's toggle is on; off, the walk reads no ignore file at all. `.git` is left to the excludes. The
+ * follow mode applies under either.
  */
-export function searchRequest({ query, include, exclude, excludeSettings, ignore, contextLines }: SearchRequestArgs): SearchRequest {
+export function searchRequest({ query, include, exclude, excludeSettings, ignore, followLinks, contextLines }: SearchRequestArgs): SearchRequest {
   if (!Number.isInteger(contextLines) || contextLines < 0 || contextLines > MAX_CONTEXT_LINES) throw new Error('Context lines out of range');
   const match = ['--crlf'];
   if (contextLines > 0) match.push('--before-context', String(contextLines), '--after-context', String(contextLines));
@@ -106,5 +108,5 @@ export function searchRequest({ query, include, exclude, excludeSettings, ignore
   }
   const on = query.useExcludeSettingsAndIgnoreFiles;
   const overrides = [...include, ...exclude.map((glob) => `!${glob}`), ...(on ? excludeSettings.map((glob) => `!${glob}`) : [])];
-  return { match, pattern: query.pattern, walk: { ignore: on ? ignore : NO_IGNORE_FILES, overrides } };
+  return { match, pattern: query.pattern, walk: { ignore: on ? ignore : NO_IGNORE_FILES, overrides, ...(followLinks ? { followLinks: true } : {}) } };
 }

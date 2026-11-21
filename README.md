@@ -181,7 +181,7 @@ macOS builds are signed ad hoc, and Linux packages are not signed. The procedure
 | [Git hosting accounts](docs/git-hosting.md) | GitHub and GitLab sign-in, the account each project uses, git credentials, CI, links, history, clone, publish, fork and protected branches |
 | [Worktree isolation](docs/worktree-isolation.md) | Rules that keep a worktree chat out of its project folder |
 | [Jarvis mode](docs/voice-jarvis-mode.md) | On-device wake-word voice input: setup, engines, privacy and troubleshooting |
-| [Slash commands](docs/slash-commands.md) | Custom slash command files: locations, arguments, frontmatter and unsupported features |
+| [Slash commands](docs/slash-commands.md) | Custom slash command files: locations, arguments, frontmatter, namespaces, links and unsupported features |
 | [Development](docs/development.md) | Building from source, commands, packaging and architecture |
 | [Releasing Damocles](docs/release.md) | The release workflow, verification and publishing |
 | [Desktop code signing](docs/desktop-signing.md) | SignPath signing for Windows and the macOS signing plan |

@@ -28,13 +28,17 @@ import { NONCE_ENV } from '../../../workspace/terminal/shell-integration-injecti
 import { createTreeListing } from '../../../workspace/tree-listing';
 import { REPO_ROOT, startInProcessDaemon } from '../../../daemon/__tests__/in-process-daemon';
 import { connect } from '../../remote/connection';
-import { carriesOutsideFiles, carriesTransfers, carriesWalks, createRemoteWorkspace, ListingUnsupportedError, OUTSIDE_FILES_FEATURE, OUTSIDE_LISTING_FEATURE, OutsideFilesUnsupportedError, RANGED_READS_FEATURE, RangedReadsUnsupportedError, READ_OUTSIDE_LIMIT_FEATURE, SESSION_FILES_FEATURE, TRANSFER_FEATURES, TransfersUnsupportedError, WALK_FEATURES, WATCH_READY_FEATURE } from '../remote-workspace';
+import { carriesOutsideFiles, carriesTransfers, carriesWalks, createRemoteWorkspace, LINKS_FEATURE, ListingUnsupportedError, OUTSIDE_FILES_FEATURE, OUTSIDE_LISTING_FEATURE, OutsideFilesUnsupportedError, RANGED_READS_FEATURE, RangedReadsUnsupportedError, READ_OUTSIDE_LIMIT_FEATURE, SESSION_FILES_FEATURE, TRANSFER_FEATURES, TransfersUnsupportedError, WALK_FEATURES, WATCH_READY_FEATURE } from '../remote-workspace';
 import { NotConnectedError } from '../workspaces';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
 import { MAX_OPEN_STREAMS } from '../../../../remote/mux';
-import { CLIENT_TO_WORKSPACE } from '../../../workspace/messages';
+import { CLIENT_TO_WORKSPACE, type ClientToWorkspace, type WorkspaceToClient } from '../../../workspace/messages';
+import type { Endpoint } from '../../../core-protocol/endpoint';
 import { INVALID } from '../../../core-protocol/schema';
 import { FileTransferService } from '../../files/file-transfer';
+import { LocalizedError } from '../../../../shared/localized-text';
+import { FEATURES } from '../../../../remote/protocol-version';
+import { testRemote } from '../../__tests__/test-workspaces';
 
 // No pty host or formatter host starts in this suite; the terminal and format members it runs need none.
 const NO_HOSTS: HostStarters = {
@@ -46,6 +50,8 @@ interface Adapter {
   readonly workspace: ProjectWorkspace;
   // the key the adapter's callers name a project of this folder by
   readonly keyOf: (folder: string) => string;
+  // the remote client's own channel, for a request no workspace method sends
+  readonly endpoint?: Endpoint<ClientToWorkspace, WorkspaceToClient>;
   dispose(): Promise<void>;
 }
 
@@ -54,7 +60,8 @@ let watchWorker: string;
 
 beforeAll(async () => {
   watchWorker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'dm-conf-worker-')), 'watch-worker.js');
-  await build({ entryPoints: [path.join(REPO_ROOT, 'src', 'desktop', 'watch-worker', 'index.ts')], bundle: true, platform: 'node', format: 'cjs', target: 'node24', outfile: watchWorker, logLevel: 'silent' });
+  // koffi stays external, as in the app's worker bundle (esbuild.config.ts watchWorkerOptions): it loads its own native module
+  await build({ entryPoints: [path.join(REPO_ROOT, 'src', 'desktop', 'watch-worker', 'index.ts')], bundle: true, platform: 'node', format: 'cjs', target: 'node24', outfile: watchWorker, external: ['koffi'], logLevel: 'silent' });
 });
 
 afterAll(() => {
@@ -113,6 +120,7 @@ async function remoteAdapter(features: (listed: readonly string[]) => readonly s
     rangedReads: features(connection.features).includes(RANGED_READS_FEATURE),
     outside: carriesOutsideFiles(features(connection.features)),
     listing: features(connection.features).includes(OUTSIDE_LISTING_FEATURE),
+    links: features(connection.features).includes(LINKS_FEATURE),
     walks: carriesWalks(features(connection.features)),
     searchUnsupported: () => 'Update the Damocles server on this host to search it.',
     openStream: () => connection.openStream(),
@@ -120,6 +128,7 @@ async function remoteAdapter(features: (listed: readonly string[]) => readonly s
   });
   return {
     workspace,
+    endpoint,
     keyOf: (folder) => `loopback|${folderKey(folder)}`,
     dispose: async () => {
       connection.close('the suite ended');
@@ -161,10 +170,10 @@ function rgOwnWalk(cwd: string, request: SearchRequest): { files: Record<string,
   return { files: lineEvents(events), code: run.status };
 }
 
-function listing(workspace: ProjectWorkspace, root: string, excludes: readonly string[] = []): Promise<{ files: string[]; error: string | undefined }> {
+function listing(workspace: ProjectWorkspace, root: string, excludes: readonly string[] = [], followLinks = false): Promise<{ files: string[]; error: string | undefined }> {
   return new Promise((resolve) => {
     const files: string[] = [];
-    workspace.quickOpen.list(root, ALL_IGNORE_FILES, excludes, { files: (batch) => files.push(...batch), end: (error) => resolve({ files: files.sort(), error }) });
+    workspace.quickOpen.list(root, { ignore: ALL_IGNORE_FILES, followLinks }, excludes, { files: (batch) => files.push(...batch), end: (error) => resolve({ files: files.sort(), error }) });
   });
 }
 
@@ -193,9 +202,11 @@ describe.each(ADAPTERS)('ProjectWorkspace conformance: %s', (_name, start) => {
   });
 
   it('confines paths to the project and names an entry by its bigint identity', async () => {
-    expect(await workspace.files.confineExisting(project, 'src/a.ts')).toEqual({ ok: true, path: file('src/a.ts') });
-    expect(await workspace.files.confineExisting(project, 'nope.ts')).toEqual({ ok: false, reason: 'missing' });
-    expect(await workspace.files.confineMissing(project, 'src/new.ts')).toEqual({ ok: true, path: file('src/new.ts') });
+    for (const rule of ['withinProject', 'throughLinks'] as const) {
+      expect(await workspace.files.confineExisting(project, 'src/a.ts', rule)).toEqual({ ok: true, path: file('src/a.ts') });
+      expect(await workspace.files.confineExisting(project, 'nope.ts', rule)).toEqual({ ok: false, reason: 'missing' });
+      expect(await workspace.files.confineMissing(project, 'src/new.ts', rule)).toEqual({ ok: true, path: file('src/new.ts') });
+    }
     const entry = await workspace.files.entry(project, 'src');
     if (!entry.ok) throw new Error('no entry');
     expect(entry).toMatchObject({ path: file('src'), folder: true });
@@ -226,11 +237,189 @@ describe.each(ADAPTERS)('ProjectWorkspace conformance: %s', (_name, start) => {
     }
   });
 
-  it('refuses a path a link carries out of the project', async () => {
+  it('answers a confinement the file system failed with the failure\'s own words, which cross the wire as its text', async () => {
+    const drive = { message: 'The drive {0} did not answer within a second.', args: ['Q:\\'] };
+    const realpath = fs.promises.realpath.bind(fs.promises);
+    const offline = vi.spyOn(fs.promises, 'realpath').mockImplementation((async (target: fs.PathLike, options?: fs.ObjectEncodingOptions) => {
+      if (String(target) === file('src')) throw Object.assign(new LocalizedError(drive), { code: 'ETIMEDOUT' });
+      return realpath(target, options);
+    }) as typeof fs.promises.realpath);
+    try {
+      const failed = { ok: false, reason: 'failed', error: drive };
+      expect(await workspace.files.confineExisting(project, 'src', 'throughLinks')).toEqual(failed);
+      expect(await workspace.tree.list(project, 'src', [])).toEqual(failed);
+      expect(await workspace.files.createEntry(project, 'src', 'b.ts', 'file')).toEqual(failed);
+    } finally {
+      offline.mockRestore();
+    }
+  });
+
+  it('refuses a path a link carries out of the project within the project, and follows it through links to the link root', async () => {
     fs.symlinkSync(root, file('escape'), 'junction');
-    expect(await workspace.files.confineExisting(project, 'escape/outside.txt')).toEqual({ ok: false, reason: 'outside' });
-    expect(await workspace.files.confineMissing(project, 'escape/new.txt')).toEqual({ ok: false, reason: 'outside' });
-    expect(await workspace.tree.list(project, 'escape', [])).toMatchObject({ ok: false });
+    expect(await workspace.files.confineExisting(project, 'escape/outside.txt', 'withinProject')).toEqual({ ok: false, reason: 'outside' });
+    expect(await workspace.files.confineMissing(project, 'escape/new.txt', 'withinProject')).toEqual({ ok: false, reason: 'outside' });
+    const via = { link: 'escape', realRoot: root };
+    expect(await workspace.files.confineExisting(project, 'escape/outside.txt', 'throughLinks')).toEqual({ ok: true, path: path.join(root, 'outside.txt'), via });
+    expect(await workspace.files.confineMissing(project, 'escape/new.txt', 'throughLinks')).toEqual({ ok: true, path: path.join(root, 'new.txt'), via });
+  });
+
+  it.runIf(process.platform === 'win32' || process.platform === 'darwin')('spells a path typed in another case as its folders list it when asked, a link by its own name', async () => {
+    fs.symlinkSync(root, file('Out'), 'junction');
+    const spell = { spell: true } as const;
+    expect(await workspace.files.confineExisting(project, 'SRC/A.TS', 'throughLinks', spell)).toEqual({ ok: true, path: file('src/a.ts'), spelling: 'src/a.ts' });
+    expect(await workspace.files.confineExisting(project, 'OUT/OUTSIDE.TXT', 'throughLinks', spell)).toEqual({ ok: true, path: path.join(root, 'outside.txt'), via: { link: 'OUT', realRoot: root }, spelling: 'Out/outside.txt' });
+    expect(await workspace.files.confineExisting(project, 'Out/outside.txt', 'throughLinks', spell)).toEqual({ ok: true, path: path.join(root, 'outside.txt'), via: { link: 'Out', realRoot: root } });
+    // a caller that does not ask reads nothing more
+    expect(await workspace.files.confineExisting(project, 'OUT/OUTSIDE.TXT', 'throughLinks')).toEqual({ ok: true, path: path.join(root, 'outside.txt'), via: { link: 'OUT', realRoot: root } });
+  });
+
+  it('lists, reads, saves and changes a linked folder outside the project, and acts on the link row itself', async () => {
+    fs.symlinkSync(root, file('escape'), 'junction');
+    const target = path.join(root, 'outside.txt');
+    const listed = await workspace.tree.list(project, 'escape', []);
+    expect(listed.ok && listed.entries.find((entry) => entry.name === 'outside.txt')).toEqual({ name: 'outside.txt', kind: 'file' });
+    // the listing names the link root it went through, and the link's row carries its own target text
+    expect(listed.ok && listed.via).toEqual({ link: 'escape', realRoot: fs.realpathSync.native(root) });
+    const top = await workspace.tree.list(project, '', []);
+    expect(top.ok && top.entries.find((entry) => entry.name === 'escape')).toEqual({ name: 'escape', kind: 'dir', link: { target: fs.readlinkSync(file('escape')) } });
+    expect(await workspace.terminals.linkKind(project, 'escape/outside.txt')).toBe('file');
+    const read = await workspace.files.readFile(project, 'escape/outside.txt');
+    if (!read.ok) throw new Error(read.reason);
+    const chunks: Buffer[] = [];
+    for await (const chunk of read.chunks) chunks.push(Buffer.from(chunk));
+    expect(Buffer.concat(chunks).toString('utf8')).toBe('outside\n');
+    await workspace.files.writeInPlace(project, { path: target, projectKey: project.key, relativePath: 'escape/outside.txt' }, Buffer.from('saved'));
+    expect(fs.readFileSync(target, 'utf8')).toBe('saved');
+    expect(await workspace.files.createEntry(project, 'escape', 'made.txt', 'file')).toEqual({ ok: true });
+    expect(await workspace.files.renameEntry(project, 'escape/made.txt', 'renamed.txt')).toEqual({ ok: true });
+    const made = await workspace.files.entry(project, 'escape/renamed.txt');
+    if (!made.ok) throw new Error(made.reason);
+    expect(made.path).toBe(path.join(root, 'renamed.txt'));
+    expect(await workspace.files.deleteEntry(project, 'escape/renamed.txt', made.identity)).toEqual({ ok: true });
+    expect(fs.existsSync(path.join(root, 'renamed.txt'))).toBe(false);
+    // the link row is the link: renamed, never its target
+    expect(await workspace.files.entry(project, 'escape')).toMatchObject({ ok: true, path: file('escape'), folder: false });
+    expect(await workspace.files.renameEntry(project, 'escape', 'gate')).toEqual({ ok: true });
+    expect(fs.lstatSync(file('gate')).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(target, 'utf8')).toBe('saved');
+  });
+
+  it.runIf(process.platform === 'win32')('answers a listing and an entry operation whose path crosses a link to a UNC share with the share refusal', async () => {
+    fs.mkdirSync(path.join(root, 'real'));
+    fs.writeFileSync(path.join(root, 'real', 'x.txt'), 'x');
+    const link = file('share');
+    fs.symlinkSync(path.join(root, 'real'), link, 'junction');
+    const readlink = fs.promises.readlink.bind(fs.promises);
+    vi.spyOn(fs.promises, 'readlink').mockImplementation((async (target: fs.PathLike) => (folderKey(String(target)) === folderKey(link) ? '\\\\server\\share' : readlink(target))) as typeof fs.promises.readlink);
+    const share = { ok: false, reason: 'outside', refusal: 'share' };
+    try {
+      expect(await workspace.tree.list(project, 'share', [])).toEqual(share);
+      expect(await workspace.tree.list(project, 'share/deeper', [])).toEqual(share);
+      expect(await workspace.files.entry(project, 'share/x.txt')).toEqual(share);
+      expect(await workspace.files.createEntry(project, 'share', 'made.txt', 'file')).toEqual(share);
+      expect(await workspace.files.renameEntry(project, 'share/x.txt', 'y.txt')).toEqual(share);
+      expect(await workspace.files.deleteEntry(project, 'share/x.txt', { dev: 1n, ino: 2n, birthtimeNs: 3n })).toEqual(share);
+      expect(fs.readdirSync(path.join(root, 'real'))).toEqual(['x.txt']);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('reads an HTML preview\'s file by its project\'s trust, and a read without preview never follows its last segment', async () => {
+    const outside = path.join(root, 'assets');
+    fs.mkdirSync(path.join(outside, 'css'), { recursive: true });
+    fs.writeFileSync(path.join(outside, 'css', 'site.css'), 'body{}');
+    fs.writeFileSync(path.join(outside, '.env'), 'SECRET=1');
+    fs.mkdirSync(path.join(root, '.ssh'));
+    fs.writeFileSync(path.join(root, '.ssh', 'notes.txt'), 'private');
+    fs.mkdirSync(path.join(root, '.config', 'x'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.config', 'x', 'page.html'), '<p>');
+    fs.symlinkSync(outside, file('site'), 'junction');
+    fs.symlinkSync(path.join(root, '.ssh'), file('ssh'), 'junction');
+    fs.symlinkSync(path.join(root, '.config', 'x'), file('cfg'), 'junction');
+    fs.symlinkSync(file('src'), file('inner'), 'junction');
+    const trusted = { trusted: true };
+    const untrusted = { trusted: false };
+    const served = async (relativePath: string, preview?: { readonly trusted: boolean }) => {
+      const read = await workspace.files.readFileRange(project, relativePath, 0, 1024, preview);
+      if (!read.ok) return read;
+      for await (const chunk of read.chunks) void chunk;
+      return { ok: true, resolvedPath: read.resolvedPath };
+    };
+    expect(await served('site/css/site.css', trusted)).toEqual({ ok: true, resolvedPath: 'css/site.css' });
+    for (const denied of ['site/.env', 'ssh/notes.txt', 'cfg/page.html']) expect(await served(denied, trusted), denied).toEqual({ ok: false, reason: 'outside' });
+    expect(await served('site/css/site.css', untrusted)).toEqual({ ok: false, reason: 'outside' });
+    for (const preview of [trusted, untrusted]) expect(await served('inner/a.ts', preview)).toEqual({ ok: true, resolvedPath: 'src/a.ts' });
+    expect(await served('inner/a.ts')).toEqual({ ok: true, resolvedPath: 'src/a.ts' });
+    expect(await served('inner')).toEqual({ ok: false, reason: 'notAFile', folder: false });
+    expect(await served('site/css/site.css')).toEqual({ ok: false, reason: 'outside' });
+    expect(await served('site', trusted)).toEqual({ ok: false, reason: 'notAFile', folder: true });
+  });
+
+  it('refuses a trusted preview read through a link into a data store of the reading machine, and serves an ordinary folder', async () => {
+    // a store this machine's own env and home name: Windows' LOCALAPPDATA, macOS's ~/Library, Linux's /proc
+    const store = process.platform === 'win32'
+      ? fs.mkdtempSync(path.join(process.env['LOCALAPPDATA']!, 'dm-conf-store-'))
+      : process.platform === 'darwin' ? fs.mkdtempSync(path.join(os.homedir(), 'Library', 'Caches', 'dm-conf-store-')) : undefined;
+    try {
+      if (store !== undefined) fs.writeFileSync(path.join(store, 'page.html'), '<p>');
+      fs.symlinkSync(store ?? '/proc/self', file('data'), 'junction');
+      const name = store !== undefined ? 'data/page.html' : 'data/environ';
+      expect(await workspace.files.readFileRange(project, name, 0, 16, { trusted: true })).toEqual({ ok: false, reason: 'outside' });
+      // the temp folder this suite's files live in is inside LOCALAPPDATA on Windows, and still ordinary
+      fs.mkdirSync(path.join(root, 'assets'));
+      fs.writeFileSync(path.join(root, 'assets', 'page.html'), '<p>');
+      fs.symlinkSync(path.join(root, 'assets'), file('site'), 'junction');
+      const read = await workspace.files.readFileRange(project, 'site/page.html', 0, 16, { trusted: true });
+      if (read.ok) for await (const chunk of read.chunks) void chunk;
+      expect(read).toMatchObject({ ok: true, resolvedPath: 'page.html' });
+    } finally {
+      if (store !== undefined) fs.rmSync(store, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a preview read whose file is swapped for a link after its realpath, under either trust', async () => {
+    const outside = path.join(root, 'assets');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'page.html'), '<p>');
+    fs.mkdirSync(path.join(root, 'secret'));
+    fs.symlinkSync(outside, file('site'), 'junction');
+    // the link root's own check refuses a swap under it first; the lstat refuses one inside the project
+    const cases = [
+      ['site/page.html', path.join(outside, 'page.html'), { trusted: true }, { ok: false, reason: 'outside' }],
+      ['src/a.ts', file('src/a.ts'), { trusted: true }, { ok: false, reason: 'notAFile', folder: false }],
+      ['src/a.ts', file('src/a.ts'), { trusted: false }, { ok: false, reason: 'notAFile', folder: false }],
+    ] as const;
+    for (const [relativePath, real, preview, refused] of cases) {
+      fs.rmSync(real, { force: true });
+      fs.writeFileSync(real, 'x');
+      const realpath = fs.promises.realpath.bind(fs.promises);
+      const swapped = vi.spyOn(fs.promises, 'realpath').mockImplementation((async (target: fs.PathLike, options?: fs.ObjectEncodingOptions) => {
+        const answer = await realpath(target, options);
+        if (String(target) === file(relativePath)) {
+          fs.rmSync(real);
+          fs.symlinkSync(path.join(root, 'secret'), real, 'junction');
+        }
+        return answer;
+      }) as typeof fs.promises.realpath);
+      try {
+        expect(await workspace.files.readFileRange(project, relativePath, 0, 16, preview), relativePath).toEqual(refused);
+      } finally {
+        swapped.mockRestore();
+        fs.unlinkSync(real);
+      }
+    }
+  });
+
+  it.runIf(process.platform !== 'win32')('refuses a FIFO to every preview read without opening it', async () => {
+    execFileSync('mkfifo', [file('pipe.html')]);
+    try {
+      for (const preview of [{ trusted: true }, { trusted: false }, undefined]) {
+        expect(await workspace.files.readFileRange(project, 'pipe.html', 0, 16, preview)).toEqual({ ok: false, reason: 'notAFile', folder: false });
+      }
+    } finally {
+      releaseFifo(file('pipe.html'));
+    }
   });
 
   it('reads bytes as a Buffer within the limit', async () => {
@@ -592,7 +781,7 @@ describe.each(ADAPTERS)('ProjectWorkspace conformance: %s', (_name, start) => {
     fs.writeFileSync(file('wide.txt'), Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('before\nneedle wide\nafter\n', 'utf16le')]));
     const query = { pattern: 'needle', isRegex: false, matchCase: false, wholeWord: false, include: '', exclude: '', useExcludeSettingsAndIgnoreFiles: true, onlyOpenEditors: false };
     const request = (overrides: Partial<typeof query>, contextLines = 0): SearchRequest =>
-      searchRequest({ query: { ...query, ...overrides }, include: [], exclude: [], excludeSettings: ['**/.git', '**/node_modules'], ignore: ALL_IGNORE_FILES, contextLines });
+      searchRequest({ query: { ...query, ...overrides }, include: [], exclude: [], excludeSettings: ['**/.git', '**/node_modules'], ignore: ALL_IGNORE_FILES, followLinks: false, contextLines });
     const cases: Array<[string, SearchRequest]> = [
       ['the toggle on', request({})],
       ['the toggle off', request({ useExcludeSettingsAndIgnoreFiles: false })],
@@ -625,6 +814,19 @@ describe.each(ADAPTERS)('ProjectWorkspace conformance: %s', (_name, start) => {
     if (process.platform === 'win32') expect(rgOwnWalk(project.fsPath, NEEDLE).code).toBe(2);
   });
 
+  it('under followLinks lists and searches a junction\'s files by the path through it, and leaves a dangling one out', async () => {
+    fs.mkdirSync(path.join(root, 'linked'));
+    fs.writeFileSync(path.join(root, 'linked', 'secret.ts'), 'needle\n');
+    fs.symlinkSync(path.join(root, 'linked'), file('link'), 'junction');
+    fs.mkdirSync(path.join(root, 'gone'));
+    fs.symlinkSync(path.join(root, 'gone'), file('dangling'), 'junction');
+    fs.rmdirSync(path.join(root, 'gone'));
+    const found = await search(workspace, project.fsPath, { ...NEEDLE, walk: { ...NEEDLE.walk, followLinks: true } });
+    expect(Object.keys(lineEvents(found.events)).sort()).toEqual(['link/secret.ts', 'src/a.ts']);
+    expect(found.end).toEqual({ code: 0, stderr: '' });
+    expect(await listing(workspace, project.fsPath, [], true)).toEqual({ files: ['README.md', 'link/secret.ts', 'src/a.ts'], error: undefined });
+  });
+
   it('shows rg\'s own wording for a glob the walk refuses, and rg\'s stderr for a regex it refuses', async () => {
     const glob = await search(workspace, project.fsPath, { ...NEEDLE, walk: { ...NEEDLE.walk, overrides: ['a}'] } });
     expect(glob).toEqual({ events: [], end: { code: 2, stderr: expect.stringMatching(/^error parsing glob 'a}'/) } });
@@ -647,7 +849,7 @@ describe.each(ADAPTERS)('ProjectWorkspace conformance: %s', (_name, start) => {
     for (let index = 0; index < 200; index++) fs.writeFileSync(file(`src/f${index}.ts`), 'needle\n');
     const ends: string[] = [];
     workspace.search.run(project.fsPath, NEEDLE, { event: () => undefined, dropped: () => undefined, end: () => ends.push('search') }).kill();
-    workspace.quickOpen.list(project.fsPath, ALL_IGNORE_FILES, [], { files: () => undefined, end: () => ends.push('listing') }).kill();
+    workspace.quickOpen.list(project.fsPath, { ignore: ALL_IGNORE_FILES, followLinks: false }, [], { files: () => undefined, end: () => ends.push('listing') }).kill();
     // a run started after the kills ends after anything the killed ones could still send
     expect((await search(workspace, project.fsPath)).end).toMatchObject({ code: 0 });
     expect((await listing(workspace, project.fsPath)).error).toBeUndefined();
@@ -690,6 +892,23 @@ describe('transfers over a loopback connection', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it('confines a request without links within the project, so a client that does not ask never follows a link out', async () => {
+    await start();
+    fs.writeFileSync(path.join(root, 'outside.txt'), 'outside');
+    fs.symlinkSync(root, path.join(project.fsPath, 'escape'), 'junction');
+    const endpoint = adapter.endpoint!;
+    const wire = { key: folderKey(project.fsPath), fsPath: project.fsPath, name: project.name };
+    expect(await endpoint.request('files.confineExisting', { project: wire, relativePath: 'escape/outside.txt' }, undefined)).toEqual({ ok: false, reason: 'outside' });
+    expect(await endpoint.request('files.confineMissing', { project: wire, relativePath: 'escape/new.txt' }, undefined)).toEqual({ ok: false, reason: 'outside' });
+    expect(await endpoint.request('files.entry', { project: wire, relativePath: 'escape/outside.txt' }, undefined)).toEqual({ ok: false, reason: 'outside' });
+    expect(await endpoint.request('tree.list', { project: wire, relativeDir: 'escape', excludes: [] }, undefined)).toEqual({ ok: false, reason: 'outside' });
+    expect(await endpoint.request('terminals.linkKind', { project: wire, relativePath: 'escape/outside.txt' }, undefined)).toBeNull();
+    expect(await endpoint.request('files.createEntry', { project: wire, relativeDir: 'escape', name: 'made.txt', kind: 'file' }, undefined)).toEqual({ ok: false, reason: 'outside' });
+    expect(await endpoint.request('files.clashes', { project: wire, relativeDir: 'escape', names: ['outside.txt'] }, undefined)).toEqual({ ok: false, reason: 'outside' });
+    expect(fs.existsSync(path.join(root, 'made.txt'))).toBe(false);
+    expect(await endpoint.request('files.confineExisting', { project: wire, relativePath: 'escape/outside.txt', links: 'follow' }, undefined)).toEqual({ ok: true, path: path.join(root, 'outside.txt'), via: { link: 'escape', realRoot: root } });
+  });
+
   it('sends nothing to a daemon that does not list the transfer features, and the connection stays up', async () => {
     await start((listed) => listed.filter((feature) => !TRANSFER_FEATURES.includes(feature)));
     const { files } = adapter.workspace;
@@ -712,7 +931,7 @@ describe('transfers over a loopback connection', () => {
     ];
     for (const call of calls) await expect(call()).rejects.toBeInstanceOf(TransfersUnsupportedError);
     expect(fs.readdirSync(project.fsPath)).toEqual(['src']);
-    expect(await files.confineExisting(project, 'src/a.ts')).toEqual({ ok: true, path: path.join(project.fsPath, 'src', 'a.ts') });
+    expect(await files.confineExisting(project, 'src/a.ts', 'throughLinks')).toEqual({ ok: true, path: path.join(project.fsPath, 'src', 'a.ts') });
   });
 
   it.each([OUTSIDE_FILES_FEATURE, SESSION_FILES_FEATURE, READ_OUTSIDE_LIMIT_FEATURE])('sends nothing for a file outside every project to a daemon that does not list %s, and the connection stays up', async (missing) => {
@@ -723,7 +942,7 @@ describe('transfers over a loopback connection', () => {
     await expect(files.readOutside(target)).rejects.toBeInstanceOf(OutsideFilesUnsupportedError);
     await expect(files.writeOutside(target, Buffer.from('x'))).rejects.toBeInstanceOf(OutsideFilesUnsupportedError);
     expect(fs.readFileSync(target, 'utf8')).toBe('a');
-    expect(await files.confineExisting(project, 'src/a.ts')).toEqual({ ok: true, path: target });
+    expect(await files.confineExisting(project, 'src/a.ts', 'throughLinks')).toEqual({ ok: true, path: target });
   });
 
   it('sends no ranged read to a daemon that does not list files.readFileRange.resolvedPath, and its whole-file read still works', async () => {
@@ -745,7 +964,17 @@ describe('transfers over a loopback connection', () => {
     expect(await listing(workspace, project.fsPath)).toEqual({ files: [], error: undefined });
     expect(await search(workspace, project.fsPath)).toEqual({ events: [], end: { error: 'Update the Damocles server on this host to search it.' } });
     expect(requested).toEqual([]);
-    expect(await workspace.files.confineExisting(project, 'src/a.ts')).toEqual({ ok: true, path: path.join(project.fsPath, 'src', 'a.ts') });
+    expect(await workspace.files.confineExisting(project, 'src/a.ts', 'throughLinks')).toEqual({ ok: true, path: path.join(project.fsPath, 'src', 'a.ts') });
+  });
+
+  it('lists and searches without links on a daemon that does not list files.links', async () => {
+    await start((listed) => listed.filter((feature) => feature !== LINKS_FEATURE));
+    const { workspace } = adapter;
+    fs.mkdirSync(path.join(root, 'linked'));
+    fs.writeFileSync(path.join(root, 'linked', 'secret.ts'), 'needle\n');
+    fs.symlinkSync(path.join(root, 'linked'), path.join(project.fsPath, 'link'), 'junction');
+    expect(await listing(workspace, project.fsPath, [], true)).toEqual({ files: ['src/a.ts'], error: undefined });
+    expect(await search(workspace, project.fsPath, { ...NEEDLE, walk: { ...NEEDLE.walk, followLinks: true } })).toEqual({ events: [], end: { code: 1, stderr: '' } });
   });
 
   it('sends no listing to a daemon that does not list files.listOutside, and the connection stays up', async () => {
@@ -844,5 +1073,59 @@ describe('the outside answer on the wire', () => {
     // a POSIX host may list a name holding a backslash
     expect(result({ kind: 'folder', path: '/srv', entries: [{ name: 'a\\b', kind: 'file', link: false }], truncated: false })).not.toBe(INVALID);
     expect(result({ kind: 'folder', path: '/srv', entries: [{ name: 'l', kind: 'file', link: true, target: '/etc/x' }], truncated: false })).toEqual({ kind: 'folder', path: '/srv', entries: [{ name: 'l', kind: 'file', link: true, target: '/etc/x' }], truncated: false });
+  });
+});
+
+describe('a refusal of an action that reaches chat session files, as a client reads it', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dm-conf-sessions-')));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  // A client whose attach lists files.sessionFileRefusal reads the reason; any other, the attach's absence included, reads an
+  // existing one with the refusal's words, which its parser takes.
+  it('reaches a client that lists files.sessionFileRefusal as sessionFile, and any other as failed with its words', async () => {
+    const home = path.join(root, 'home', '.damocles');
+    const sessions = path.join(home, 'pi', 'agent', 'sessions', '--work--');
+    const chat = path.join(sessions, '2026-11-04T10-00-00-000Z_s1.jsonl');
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.writeFileSync(chat, 'chat\n');
+    const folder = path.join(root, 'proj');
+    fs.mkdirSync(folder);
+    fs.mkdirSync(path.join(sessions, 'empty'));
+    fs.writeFileSync(path.join(folder, 'b.jsonl'), 'evil\n');
+    fs.symlinkSync(path.dirname(sessions), path.join(folder, 'store'), 'junction');
+    const inStore = `store/--work--/${path.basename(chat)}`;
+    const failed = { ok: false, reason: 'failed', message: 'Chat session files are kept there, and only Damocles changes them.' };
+    for (const [clientFeatures, refused] of [[FEATURES, { ok: false, reason: 'sessionFile' }], [FEATURES.filter((name) => name !== 'files.sessionFileRefusal'), failed], [[], failed]] as const) {
+      const remote = testRemote({ watchers: createFakePlatform().fileWatchers, damoclesHome: home, clientFeatures });
+      try {
+        const project: Project = { key: `loopback|${folderKey(folder)}`, fsPath: folder, name: 'proj' };
+        const { files } = remote.workspace();
+        const entry = await files.entry(project, inStore);
+        if (!entry.ok) throw new Error(`the session file did not confine: ${entry.reason}`);
+        // an entry answer flags it, so Files refuses before its question
+        expect(entry.sessionStore).toBe(true);
+        expect(await files.deleteEntry(project, inStore, entry.identity)).toEqual(refused);
+        expect(await files.renameEntry(project, inStore, 'renamed.jsonl')).toEqual(refused);
+        expect(await files.createEntry(project, 'store/--work--', 'new.txt', 'file')).toEqual(refused);
+        const wire = { key: folderKey(folder), fsPath: folder, name: 'proj' };
+        expect(await remote.endpoint.request('files.makeFolder', { project: wire, relativeDir: 'store/--work--', name: 'made', links: 'follow' }, undefined)).toEqual(refused);
+        expect(await remote.endpoint.request('files.copy', { from: wire, relativePath: 'b.jsonl', to: wire, toDir: 'store/--work--', name: path.basename(chat), replace: true, links: 'follow' }, undefined)).toEqual(refused);
+        expect(await remote.endpoint.request('files.move', { from: wire, relativePath: inStore, to: wire, toDir: '', name: 'moved.jsonl', replace: false, links: 'follow' }, undefined)).toEqual(refused);
+        const empty = await files.entry(project, 'store/--work--/empty');
+        if (!empty.ok) throw new Error(`the empty folder did not confine: ${empty.reason}`);
+        const { dev, ino, birthtimeNs } = empty.identity;
+        expect(await remote.endpoint.request('files.removeFolder', { project: wire, relativePath: 'store/--work--/empty', confirmed: { dev: String(dev), ino: String(ino), birthtimeNs: String(birthtimeNs) }, links: 'follow' }, undefined)).toEqual(refused);
+      } finally {
+        remote.disconnect('the test ended');
+      }
+    }
+    expect([fs.readdirSync(sessions).sort(), fs.readFileSync(chat, 'utf8')]).toEqual([[path.basename(chat), 'empty'], 'chat\n']);
   });
 });

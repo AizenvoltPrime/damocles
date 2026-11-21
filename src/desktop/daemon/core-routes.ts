@@ -2,7 +2,7 @@
 // core-protocol/messages.ts has a route below, so a message added there without one fails `npm run typecheck`. Towards core
 // the daemon is main; towards each client attach it is core, and every client message is parsed there and sent again, never
 // forwarded raw, because core ends on any violation. A violation on a client's channel closes that client only.
-import { keyProviderOfSecret } from '../../core/pi-session/custom-providers';
+import { keyProviderOfSecret } from '../../core/pi-session/provider-defs';
 import { OPENAI_API_KEY_SECRET } from '../../core/pi-session/openai-auth';
 import { folderKey } from '../../core/workspace-folders/folder-key';
 import type { Disposable } from '../../platform/disposable';
@@ -22,6 +22,7 @@ import type { DaemonState } from './daemon-state';
 import { createPanelRetention, type PanelRetention } from './panel-retention';
 import type { RunRegistry } from './run-registry';
 import { createViewKeys, joinView } from './views-join';
+import { SESSION_FILE_REFUSAL_FEATURE } from './workspace-host';
 
 /**
  * What a route answers from when no client is attached: the features attached clients list, and whether a present client
@@ -249,9 +250,10 @@ export const CORE_PANEL_OP_ROUTES: Readonly<Record<keyof CorePanelOps, 'actingCl
 /**
  * core: sent to core as is; view: params.viewId is the client's view, sent as core's; restore: that view becomes the
  * client's; deliver: chats.deliver's view ids; unload: the panel rule first; join: views-join.ts; settingsView: attachment
- * ids mapped per client; commit: the token's client recorded; e2e: only with the daemon's e2e hooks.
+ * ids mapped per client; commit: the token's client recorded; e2e: only with the daemon's e2e hooks; sessionFile: sent to core
+ * as is, and core's notOwned answers a client whose attach did not list SESSION_FILE_REFUSAL_FEATURE as outside.
  */
-export type MainRequestRoute = 'core' | 'view' | 'restore' | 'deliver' | 'unload' | 'join' | 'settingsView' | 'commit' | 'e2e' | 'refused';
+export type MainRequestRoute = 'core' | 'view' | 'restore' | 'deliver' | 'unload' | 'join' | 'settingsView' | 'commit' | 'e2e' | 'sessionFile' | 'refused';
 
 export const MAIN_REQUEST_ROUTES: Readonly<Record<keyof MainRequests, MainRequestRoute>> = {
   // the daemon sends it itself before it exits
@@ -288,7 +290,7 @@ export const MAIN_REQUEST_ROUTES: Readonly<Record<keyof MainRequests, MainReques
   'catalog.rename': 'core',
   'catalog.tag': 'core',
   'catalog.delete': 'core',
-  'sessionFiles.write': 'core',
+  'sessionFiles.write': 'sessionFile',
   'folders.setDefault': 'core',
   'browser.newPage': 'refused',
   'browser.useClientCertificate': 'refused',
@@ -1303,6 +1305,12 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
             return forward(method, params, signal).finally(() => {
               if (token !== undefined && commitTokens.get(token) === session) commitTokens.delete(token);
             });
+          });
+          break;
+        case 'sessionFile':
+          serve(method, async (params: Params<MainRequests, 'sessionFiles.write'>, signal) => {
+            const written = (await forward(method, params, signal)) as Result<MainRequests, 'sessionFiles.write'>;
+            return written.kind === 'notOwned' && !capable(session, SESSION_FILE_REFUSAL_FEATURE) ? { kind: 'outside' } : written;
           });
           break;
         case 'e2e':

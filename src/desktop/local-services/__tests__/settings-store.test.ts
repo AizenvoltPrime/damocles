@@ -10,7 +10,8 @@ import { parseContributedConfiguration, settingTypeFits } from '../../../core/co
 import { readContributedConfiguration } from '../../../core/config/read-contributed-configuration';
 import { updateConfigAtEffectiveScope } from '../../../core/chat-panel/settings-manager/utils';
 import { DesktopSettingsStore, EMPTY_SETTINGS_RETRY_MS } from '../settings-store';
-import { DESKTOP_CONFIGURATION, RESTORE_LAYOUT_SETTING, TERMINAL_PROFILES_SETTING, THEME_SETTING } from '../desktop-configuration';
+import { DESKTOP_CONFIGURATION, RESTORE_LAYOUT_SETTING, SEARCH_FOLLOW_SYMLINKS_SETTING, SEARCH_SMART_CASE_SETTING, SEARCH_USE_PARENT_IGNORE_FILES_SETTING, TERMINAL_PROFILES_SETTING, THEME_SETTING } from '../desktop-configuration';
+import { createDesktopWalkSettings } from '../walk-settings';
 import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
 
 const PROJECT_GLOB = '.damocles/{settings.json,settings.local.json}';
@@ -169,11 +170,12 @@ describe('DesktopSettingsStore user scope', () => {
     }
   });
 
-  it('answers the VS Code search defaults so ripgrep keeps honoring ignore files', () => {
+  it('declares no bare VS Code search key, whose desktop setting is its damocles.desktop.search.* key', () => {
     const { store } = harness();
-    expect(store.get('search.useIgnoreFiles', false)).toBe(true);
-    expect(store.get('search.useGlobalIgnoreFiles', false)).toBe(true);
-    expect(store.get('search.useParentIgnoreFiles', false)).toBe(true);
+    for (const key of ['search.useIgnoreFiles', 'search.useGlobalIgnoreFiles', 'search.useParentIgnoreFiles', 'search.followSymlinks']) {
+      expect(store.inspect(key)).toStrictEqual({});
+      expect(DESKTOP_CONFIGURATION[`damocles.desktop.${key}`]).toMatchObject({ type: 'boolean', default: true, scope: 'application' });
+    }
   });
 
   it('writes the user file through the shared writer, preserving permissions and removing undefined', async () => {
@@ -474,13 +476,21 @@ describe('DesktopSettingsStore object values', () => {
   });
 });
 
-describe('DesktopSettingsStore host defaults', () => {
-  it('reports the VS Code search defaults as defaults, so a user value overrides them', async () => {
+describe('the walk settings port over DesktopSettingsStore', () => {
+  it('reads the four damocles.desktop.search.* switches, true by default, and fires on their changes only', async () => {
     const { store } = harness();
-    expect(store.inspect('search.useIgnoreFiles')).toStrictEqual({ defaultValue: true });
+    const walkSettings = createDesktopWalkSettings(store);
+    let fired = 0;
+    walkSettings.onDidChange(() => fired++);
+    expect(walkSettings.read()).toEqual({ ignore: { files: true, global: true, parents: true }, followLinks: true });
+    // a bare VS Code key in the desktop settings file no longer applies
     await store.update('search.useIgnoreFiles', false, 'user');
-    expect(store.get('search.useIgnoreFiles')).toBe(false);
-    expect(store.inspect('search.useIgnoreFiles')).toStrictEqual({ defaultValue: true, userValue: false });
+    await store.update(SEARCH_SMART_CASE_SETTING, true, 'user');
+    expect(fired).toBe(0);
+    await store.update(SEARCH_FOLLOW_SYMLINKS_SETTING, false, 'user');
+    await store.update(SEARCH_USE_PARENT_IGNORE_FILES_SETTING, false, 'user');
+    expect(walkSettings.read()).toEqual({ ignore: { files: true, global: true, parents: false }, followLinks: false });
+    expect(fired).toBe(2);
   });
 });
 

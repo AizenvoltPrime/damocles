@@ -78,6 +78,7 @@ function harness(scripts: Array<{ responses: FauxResponseStep[]; holdBeforeSettl
     cwd: process.cwd(),
     trust: createFakePlatform().trust,
     registry: new AgentRegistry(),
+    registryLoaded: async () => {},
     createSession: async (opts) => {
       const script = scripts[h.opened.length];
       if (!script) throw new Error('no script for this launch');
@@ -158,7 +159,7 @@ describe("a subagent's session file while a pi extension holds its stopped run",
       { responses: [fauxAssistantMessage('Resumed and done.')] },
     ]);
     const manager = new AgentManager(h.engine, 2);
-    const id = manager.spawn(SPAWN);
+    const { id } = await manager.spawn(SPAWN);
     await vi.waitFor(() => expect(h.held.length).toBe(1), { timeout: 10_000 });
     await within(h.held[0]!.waiting, 10_000, 'the held agent_before_settle handler');
     const agentFile = h.opened[0]!.booted.session.sessionManager.getSessionFile()!;
@@ -201,7 +202,7 @@ describe("a subagent's session file while a pi extension holds its stopped run",
       { responses: [fauxAssistantMessage('Resumed and done.')] },
     ]);
     const closed = new AgentManager(h.engine, 2);
-    const id = closed.spawn(SPAWN);
+    const { id } = await closed.spawn(SPAWN);
     await vi.waitFor(() => expect(h.held.length).toBe(1), { timeout: 10_000 });
     await within(h.held[0]!.waiting, 10_000, 'the held agent_before_settle handler');
     const agentFile = h.opened[0]!.booted.session.sessionManager.getSessionFile()!;
@@ -233,7 +234,7 @@ describe("a subagent's session file while a pi extension holds its stopped run",
       { responses: [fauxAssistantMessage('Resumed and done.')] },
     ]);
     const manager = new AgentManager(h.engine, 2);
-    const id = manager.spawn(SPAWN);
+    const { id } = await manager.spawn(SPAWN);
     await vi.waitFor(() => expect(h.held.length).toBe(1), { timeout: 10_000 });
     await within(h.held[0]!.waiting, 10_000, 'the held agent_before_settle handler');
     manager.abort(id, 'user');
@@ -266,7 +267,7 @@ describe("a subagent's session file while a pi extension holds its stopped run",
   it("a Stop of the resumed subagent while it waits for its file ends the wait, and the file keeps only the old run's writes", async () => {
     const h = harness([{ responses: [fauxAssistantMessage('Halfway.')], holdBeforeSettle: true }]);
     const manager = new AgentManager(h.engine, 2);
-    const id = manager.spawn(SPAWN);
+    const { id } = await manager.spawn(SPAWN);
     await vi.waitFor(() => expect(h.held.length).toBe(1), { timeout: 10_000 });
     await within(h.held[0]!.waiting, 10_000, 'the held agent_before_settle handler');
     const agentFile = h.opened[0]!.booted.session.sessionManager.getSessionFile()!;

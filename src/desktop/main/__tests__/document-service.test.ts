@@ -16,7 +16,7 @@ import { settingsFileVersion } from '../../../core/config/settings-file';
 import type { SettingsFileSaveOutcome } from '../../../core/chat-panel/settings-file-editor';
 import { DEFAULT_SEARCH_EDITOR_CONFIG } from '../search/search-editor-format';
 import type { MessageQuestion } from '../message-dialog';
-import type { Project } from '../../local-services/confine';
+import type { Confined, LinkRule, Project } from '../../local-services/confine';
 import { DocumentService, isDocumentDirty, RefusedPathError, type Backups, type DocumentChange, type TextDocument } from '../documents/document-service';
 import { RootSpellings } from '../workspace/root-spellings';
 import { englishText, LocalizedError } from '../../../shared/localized-text';
@@ -276,15 +276,34 @@ describe('confinement', () => {
     expect(await service.openProjectFile(folderKey(outside), 'a.ts')).toEqual({ ok: false, reason: 'outside' });
   });
 
-  it('refuses a symlink and a junction that lead outside the project, and follows one that stays inside', async () => {
-    fs.writeFileSync(path.join(outside, 'secret.txt'), 'secret');
-    fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(projectDir, 'link.txt'), 'file');
+  it('follows a symlink and a junction that lead outside the project, and names each document by the path through its link', async () => {
+    const secret = path.join(outside, 'secret.txt');
+    fs.writeFileSync(secret, 'secret');
+    fs.writeFileSync(path.join(outside, 'notes.md'), '# notes');
+    fs.symlinkSync(secret, path.join(projectDir, 'link.ts'), 'file');
     fs.symlinkSync(outside, path.join(projectDir, 'junction'), 'junction');
     write('src/real.ts', 'inside');
-    fs.symlinkSync(path.join(projectDir, 'src', 'real.ts'), path.join(projectDir, 'inner.ts'), 'file');
-    expect(await service.openProjectFile(project.key, 'link.txt')).toEqual({ ok: false, reason: 'outside' });
-    expect(await service.openProjectFile(project.key, 'junction/secret.txt')).toEqual({ ok: false, reason: 'outside' });
-    expect(await service.openProjectFile(project.key, 'inner.ts')).toMatchObject({ ok: true });
+    fs.symlinkSync(path.join(projectDir, 'src', 'real.ts'), path.join(projectDir, 'inner.md'), 'file');
+
+    const linked = await service.openProjectFile(project.key, 'link.ts');
+    expect(linked).toMatchObject({ ok: true, document: { kind: 'text', text: 'secret', name: 'link.ts', languageId: 'typescript', location: { path: secret, projectKey: project.key, relativePath: 'link.ts' } } });
+    expect(await service.openProjectFile(project.key, 'junction/notes.md')).toMatchObject({ ok: true, document: { name: 'notes.md', location: { path: path.join(outside, 'notes.md'), relativePath: 'junction/notes.md' } } });
+    // one document per file: a second path to it shows the first one's document
+    expect(await service.openProjectFile(project.key, 'junction/secret.txt')).toMatchObject({ ok: true, document: { id: linked.ok ? linked.document.id : '' } });
+    // a link that stays inside is named by its own last segment too
+    expect(await service.openProjectFile(project.key, 'inner.md')).toMatchObject({ ok: true, document: { name: 'inner.md', languageId: 'markdown', location: { path: path.join(projectDir, 'src', 'real.ts'), relativePath: 'inner.md' } } });
+  });
+
+  it.runIf(process.platform === 'win32')('refuses a link to a network share or WSL path as share, and never reaches its host', async () => {
+    const lstat = vi.spyOn(fs.promises, 'lstat');
+    const realpath = vi.spyOn(fs.promises, 'realpath');
+    fs.symlinkSync('\\\\damocles-test-host\\share\\x.ts', path.join(projectDir, 'share.ts'), 'file');
+    fs.symlinkSync('\\\\wsl.localhost\\Ubuntu\\home\\x.ts', path.join(projectDir, 'wsl.ts'), 'file');
+    expect(await service.openProjectFile(project.key, 'share.ts')).toEqual({ ok: false, reason: 'outside', refusal: 'share' });
+    expect(await service.openProjectFile(project.key, 'wsl.ts')).toEqual({ ok: false, reason: 'outside', refusal: 'share' });
+    const unc = (call: unknown[]): boolean => /^[\\/]{2}/.test(String(call[0]));
+    expect(lstat.mock.calls.filter(unc)).toEqual([]);
+    expect(realpath.mock.calls.filter(unc)).toEqual([]);
   });
 
   it('reports a missing file as missing', async () => {
@@ -560,7 +579,7 @@ describe('save, conflicts and reloads', () => {
   });
 });
 
-describe('reads of an open document follow no link that leaves the project', () => {
+describe('reads of an open document reach only the file it opened', () => {
   // Links nothing may follow: a stat, realpath or open at or under one, and any call on a UNC path, is recorded and throws
   // instead of reaching the network (as in confine.test.ts).
   let guarded: string[];
@@ -1089,6 +1108,32 @@ describe('files outside every project', () => {
     expect(await documents.openNamedPath('local', link)).toMatchObject({ kind: 'text', location: { path: file, outside: 'path' } });
   });
 
+  it('opens a core\'s path through a project link that leaves the project as that project\'s file, the document Files opens', async () => {
+    const projectLink = path.join(projectDir, 'notes-link.md');
+    fs.symlinkSync(file, projectLink, 'file');
+    const named = await documents.openNamedPath('local', projectLink);
+    expect(named).toMatchObject({ kind: 'text', name: 'notes-link.md', languageId: 'markdown', location: { path: file, projectKey: project.key, relativePath: 'notes-link.md' } });
+    expect(await documents.openProjectFile(project.key, 'notes-link.md')).toMatchObject({ ok: true, document: { id: named.id } });
+    // the target's own path names the same file, so it shows the same document
+    expect(await documents.openNamedPath('local', file)).toBe(named);
+  });
+
+  it('refuses a save once the project link it opened through is re-pointed, and keeps the buffer', async () => {
+    const other = path.join(outside, 'other.txt');
+    fs.writeFileSync(other, 'other\n');
+    const projectLink = path.join(projectDir, 'notes-link.txt');
+    fs.symlinkSync(file, projectLink, 'file');
+    const opened = await documents.openProjectFile(project.key, 'notes-link.txt');
+    if (!opened.ok || opened.document.kind !== 'text') throw new Error('not a text document');
+    const document = opened.document;
+    fs.rmSync(projectLink);
+    fs.symlinkSync(other, projectLink, 'file');
+    expect(await documents.save(document.id, document.version, 'edited\n')).toMatchObject({ ok: false, reason: 'failed', message: 'Failed to save \'notes-link.txt\': Its path now leads outside the file the editor opened.' });
+    expect(isDocumentDirty(document)).toBe(true);
+    expect(fs.readFileSync(file, 'utf8')).toBe('notes\n');
+    expect(fs.readFileSync(other, 'utf8')).toBe('other\n');
+  });
+
   it('shows a refused path\'s control and bidi characters by their escapes, and keeps the path itself', () => {
     const named = `${outside}${path.sep}a\u202Eb.txt`;
     const refused = new RefusedPathError(named, 'share');
@@ -1248,6 +1293,7 @@ describe('files outside every project', () => {
       ['a chat, a run or another write of its engine holds it', () => writeAnswer(() => ({ kind: 'refused', reason: 'held' })), 'A chat, an agent run, or a rename, tag or delete of its conversation is using this session file. Wait for it to finish or close the chat, then save again.'],
       ['another process holds its lease', () => writeAnswer(() => ({ kind: 'refused', reason: 'otherProcess' })), 'Another Damocles window is using this session file. Close the chat there, then save again.'],
       ['its path leads elsewhere now', () => writeAnswer(() => ({ kind: 'outside' })), 'Its path now leads outside the file the editor opened.'],
+      ['its engine owns no session file there', () => writeAnswer(() => ({ kind: 'notOwned' })), 'It is a Damocles session file, which only the Damocles engine that owns it saves.'],
       ['this computer\'s engine is stopped', () => {
         engineWrite = () => Promise.reject(new EngineUnavailableError('local', 'stopped'));
       }, 'Saving this file needs this computer\'s Damocles engine, which is not running. Restart the engine, then save again.'],
@@ -2181,6 +2227,66 @@ describe('save failure messages (textFileSaveErrorHandler.ts genericSaveError)',
     expect(logged.some((line) => line.includes(file))).toBe(true);
   });
 
+  it.runIf(process.platform === 'win32')('neither opens nor overwrites a settings file whose folder links onto a network share, reading nothing through the link', async () => {
+    write('.damocles/settings.json', '{}');
+    const opened = (await service.openSettingsFile('project')) as TextDocument;
+    const elsewhere = path.join(root, 'elsewhere');
+    fs.mkdirSync(elsewhere);
+    fs.writeFileSync(path.join(elsewhere, 'settings.json'), '{"a":1}');
+    fs.rmSync(path.join(projectDir, '.damocles'), { recursive: true });
+    const link = path.join(projectDir, '.damocles');
+    fs.symlinkSync(elsewhere, link, 'junction');
+    // the walk reads the junction as one onto \\host\share; every other call naming a path through it is recorded
+    const through: string[] = [];
+    const readlink = fs.promises.readlink.bind(fs.promises);
+    vi.spyOn(fs.promises, 'readlink').mockImplementation((async (file: fs.PathLike) => (String(file).toLowerCase() === link.toLowerCase() ? '\\\\host\\share\\x' : readlink(file))) as never);
+    for (const name of ['stat', 'open', 'readFile', 'realpath'] as const) {
+      const original = fs.promises[name].bind(fs.promises) as (...args: unknown[]) => Promise<unknown>;
+      vi.spyOn(fs.promises, name).mockImplementation((async (file: fs.PathLike, ...rest: unknown[]) => {
+        if (String(file).toLowerCase().startsWith(link.toLowerCase())) through.push(`${name} ${String(file)}`);
+        return original(file, ...rest);
+      }) as never);
+    }
+    const file = path.join(link, 'settings.json');
+    expect(await service.overwrite(opened.id)).toEqual({ ok: false, reason: 'failed', message: `Failed to save 'settings.json': ${file} links to a network share or WSL path, so Damocles does not read it.` });
+    await expect(service.openSettingsFile('project')).rejects.toMatchObject({ text: { message: '{0} links to a network share or WSL path, so Damocles does not read it.', args: [file] } });
+    expect(through).toEqual([]);
+    expect(settingsSaves).toEqual([]);
+  });
+
+  it.runIf(process.platform === 'win32')('refuses the watcher\'s re-read, Revert and Compare of an open settings file whose folder was swapped for a link onto a network share, reading nothing through the link', async () => {
+    write('.damocles/settings.json', '{}');
+    const opened = (await service.openSettingsFile('project')) as TextDocument;
+    // the watch's base is the settings file's scope root, so the watcher factory judges the link below it
+    const watcher = platform.fileWatchers.watcher(projectDir, '.damocles/settings.json');
+    const elsewhere = path.join(root, 'elsewhere');
+    fs.mkdirSync(elsewhere);
+    fs.writeFileSync(path.join(elsewhere, 'settings.json'), '{"a":1}');
+    fs.rmSync(path.join(projectDir, '.damocles'), { recursive: true });
+    const link = path.join(projectDir, '.damocles');
+    fs.symlinkSync(elsewhere, link, 'junction');
+    const through: string[] = [];
+    const readlink = fs.promises.readlink.bind(fs.promises);
+    vi.spyOn(fs.promises, 'readlink').mockImplementation((async (file: fs.PathLike) => (String(file).toLowerCase() === link.toLowerCase() ? '\\\\host\\share\\x' : readlink(file))) as never);
+    for (const name of ['stat', 'lstat', 'open', 'readFile', 'realpath'] as const) {
+      const original = fs.promises[name].bind(fs.promises) as (...args: unknown[]) => Promise<unknown>;
+      vi.spyOn(fs.promises, name).mockImplementation((async (file: fs.PathLike, ...rest: unknown[]) => {
+        const spelled = String(file).toLowerCase();
+        if (spelled.startsWith(`${link.toLowerCase()}\\`) || (spelled === link.toLowerCase() && name !== 'lstat')) through.push(`${name} ${String(file)}`);
+        return original(file, ...rest);
+      }) as never);
+    }
+    const file = path.join(link, 'settings.json');
+    const refusal = `${file} links to a network share or WSL path, so Damocles does not read it.`;
+    watcher.fireChange(file);
+    await waitFor(() => logged.some((line) => line.includes(refusal)));
+    expect(opened.text).toBe('{}');
+    expect(await service.revert(opened.id)).toEqual({ ok: false, reason: 'failed', message: refusal });
+    await expect(service.diskText(opened.id)).rejects.toMatchObject({ text: { message: '{0} links to a network share or WSL path, so Damocles does not read it.', args: [file] } });
+    expect(opened.text).toBe('{}');
+    expect(through).toEqual([]);
+  });
+
   it('refuses an overwrite of a settings file grown past the editor\'s hard limit, never reading it whole', async () => {
     const file = write('.damocles/settings.json', '{}');
     const settings = (await service.openSettingsFile('project')) as TextDocument;
@@ -2474,6 +2580,11 @@ describe('documents of a host that is not connected', () => {
         connected = testRemote({ watchers: platform.fileWatchers });
         documents.connectionsChanged();
       },
+      disconnect: () => {
+        connected?.disconnect('the host went away');
+        connected = undefined;
+        documents.connectionsChanged();
+      },
       end: () => connected?.disconnect('the test ended'),
     };
   }
@@ -2554,23 +2665,201 @@ describe('documents of a host that is not connected', () => {
     host.end();
   });
 
-  it('moves a backup whose file now leads outside its project to an untitled buffer with its text and backup, and says why', async () => {
-    fs.writeFileSync(path.join(outside, 'elsewhere.ts'), 'outside');
+  it('adopts a backup whose file lies under a link that leads out of its project, keeping the path through the link', async () => {
+    const target = path.join(outside, 'elsewhere.ts');
+    fs.writeFileSync(target, 'outside');
     const host = offlineHost();
     const backupId = '0f8fad5b-d9cb-469f-a165-70867728950e';
     const document = host.documents.openAwaitingHost(host.away.key, 'out/elsewhere.ts', { encoding: 'utf8', bom: false, eol: '\n' }) as TextDocument;
     host.documents.restoreBuffer(document.id, 'unsaved', backupId);
     fs.symlinkSync(outside, path.join(projectDir, 'out'), 'junction');
     host.connect();
-    await waitFor(() => host.replaced.length === 1);
-    expect(host.replaced[0]!.from).toBe(document.id);
-    const untitled = host.documents.get(host.replaced[0]!.to) as TextDocument;
-    expect(untitled).toMatchObject({ untitled: true, text: 'unsaved', backupId, location: undefined });
-    expect(host.documents.get(document.id)).toBeUndefined();
-    expect(host.warned).toEqual(['The unsaved changes to elsewhere.ts are in an untitled editor: It is now outside its project.']);
+    await waitFor(() => document.awaitingHost === undefined);
+    expect(host.replaced).toEqual([]);
+    expect(document).toMatchObject({ text: 'unsaved', diskText: 'outside', backupId, location: { path: target, projectKey: host.away.key, relativePath: 'out/elsewhere.ts' } });
+    expect(isDocumentDirty(document)).toBe(true);
+    expect(host.warned).toEqual([]);
     expect(removed).not.toContain(backupId);
     host.documents.dispose();
     host.end();
+  });
+
+  describe('a backup adopted through a link while another path to its file is open', () => {
+    const backupId = '4f8fad5b-d9cb-469f-a165-70867728950e';
+    let target: string;
+    let release: () => void;
+
+    // the backup's confinement on connect waits until the other path's document is open
+    function gatedHost() {
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      return offlineHost((workspace) => ({
+        ...workspace,
+        files: {
+          ...workspace.files,
+          confineExisting: async (owner: Project, relativePath: string, rule: LinkRule) => {
+            if (relativePath.startsWith('out/')) await gate;
+            return workspace.files.confineExisting(owner, relativePath, rule);
+          },
+        },
+      }));
+    }
+
+    beforeEach(() => {
+      target = path.join(outside, 'elsewhere.ts');
+      fs.writeFileSync(target, 'outside');
+      fs.symlinkSync(outside, path.join(projectDir, 'out'), 'junction');
+      fs.symlinkSync(outside, path.join(projectDir, 'other'), 'junction');
+    });
+
+    it('restores the backup into the clean document of that file, which its tabs then show', async () => {
+      const host = gatedHost();
+      const document = host.documents.openAwaitingHost(host.away.key, 'out/elsewhere.ts', { encoding: 'utf8', bom: false, eol: '\n' }) as TextDocument;
+      host.documents.restoreBuffer(document.id, 'unsaved', backupId);
+      host.connect();
+      const opened = await host.documents.openProjectFile(host.away.key, 'other/elsewhere.ts');
+      if (!opened.ok) throw new Error('not opened');
+      release();
+      await waitFor(() => host.replaced.length === 1);
+      expect(host.replaced).toEqual([{ from: document.id, to: opened.document.id }]);
+      expect(opened.document).toMatchObject({ text: 'unsaved', diskText: 'outside', backupId, location: { path: target, relativePath: 'other/elsewhere.ts' } });
+      expect(host.documents.all()).toEqual([opened.document]);
+      expect(host.warned).toEqual([]);
+      expect(removed).not.toContain(backupId);
+      host.documents.dispose();
+      host.end();
+    });
+
+    it('restores the backup of a file not yet on disk into the document another path opened for it', async () => {
+      fs.rmSync(target);
+      const host = gatedHost();
+      const format = { encoding: 'utf8', bom: false, eol: '\n' } as const;
+      const document = host.documents.openAwaitingHost(host.away.key, 'out/elsewhere.ts', format) as TextDocument;
+      host.documents.restoreBuffer(document.id, 'unsaved', backupId);
+      host.connect();
+      const opened = await host.documents.openProjectFile(host.away.key, 'other/elsewhere.ts', { missing: format });
+      if (!opened.ok) throw new Error('not opened');
+      release();
+      await waitFor(() => host.replaced.length === 1);
+      expect(host.replaced).toEqual([{ from: document.id, to: opened.document.id }]);
+      expect(opened.document).toMatchObject({ text: 'unsaved', backupId, location: { path: target, relativePath: 'other/elsewhere.ts' } });
+      expect(host.documents.all()).toEqual([opened.document]);
+      host.documents.dispose();
+      host.end();
+    });
+
+    it('moves the backup to an untitled buffer while that document has unsaved changes of its own', async () => {
+      const host = gatedHost();
+      const document = host.documents.openAwaitingHost(host.away.key, 'out/elsewhere.ts', { encoding: 'utf8', bom: false, eol: '\n' }) as TextDocument;
+      host.documents.restoreBuffer(document.id, 'unsaved', backupId);
+      host.connect();
+      const opened = await host.documents.openProjectFile(host.away.key, 'other/elsewhere.ts');
+      if (!opened.ok || opened.document.kind !== 'text') throw new Error('not opened');
+      host.documents.edit(opened.document.id, { version: opened.document.version, seq: 1, text: 'mine', overReload: false });
+      release();
+      await waitFor(() => host.replaced.length === 1);
+      expect(host.documents.get(host.replaced[0]!.to)).toMatchObject({ untitled: true, text: 'unsaved', backupId });
+      expect(opened.document.text).toBe('mine');
+      expect(host.documents.get(document.id)).toBeUndefined();
+      expect(host.warned).toEqual(['The unsaved changes to elsewhere.ts are in an untitled editor: It is already open with unsaved changes.']);
+      host.documents.dispose();
+      host.end();
+    });
+  });
+
+  describe('a file a link carries out of its project, on a server that cannot follow it', () => {
+    let old: boolean;
+    // the remote client's answer for such a server: a confinement through that link is refused as 'oldDaemon'
+    const oldServer = (workspace: ProjectWorkspace): ProjectWorkspace => {
+      if (!old) return workspace;
+      const strict = async (confining: Promise<Confined>): Promise<Confined> => {
+        const confined = await confining;
+        return confined.ok && confined.via ? { ok: false, reason: 'outside', refusal: 'oldDaemon' } : confined;
+      };
+      return {
+        ...workspace,
+        files: {
+          ...workspace.files,
+          confineExisting: (owner: Project, relativePath: string, rule: LinkRule) => strict(workspace.files.confineExisting(owner, relativePath, rule)),
+          confineMissing: (owner: Project, relativePath: string, rule: LinkRule) => strict(workspace.files.confineMissing(owner, relativePath, rule)),
+        },
+      };
+    };
+
+    beforeEach(() => {
+      old = true;
+      fs.writeFileSync(path.join(outside, 'elsewhere.ts'), 'outside');
+      fs.symlinkSync(outside, path.join(projectDir, 'out'), 'junction');
+    });
+
+    it('keeps an offline placeholder whose host connects with it, saying to update the server, and opens the file once a server that can connects', async () => {
+      const host = offlineHost(oldServer);
+      const placeholder = host.documents.openOffline({ projectKey: host.away.key, relativePath: 'out/elsewhere.ts' });
+      const changed: string[] = [];
+      host.documents.onDidChange((change) => {
+        if (change.content) changed.push(change.documentId);
+      });
+      host.connect();
+      await waitFor(() => changed.includes(placeholder.id));
+      expect(host.documents.content(placeholder.id)).toEqual({ kind: 'offline', documentId: placeholder.id, hostId: 'loopback', hostName: 'prod-1', updateServer: true });
+      expect(host.replaced).toEqual([]);
+      old = false;
+      host.documents.connectionsChanged();
+      await waitFor(() => host.replaced.length === 1);
+      const opened = host.documents.get(host.replaced[0]!.to);
+      expect(opened?.kind === 'text' && opened.text).toBe('outside');
+      expect(host.documents.get(placeholder.id)).toBeUndefined();
+      host.documents.dispose();
+      host.end();
+    });
+
+    it('names the host each time a placeholder comes to wait on a newer server: opened so, on connect, and on a reconnect', async () => {
+      fs.writeFileSync(path.join(outside, 'other.ts'), 'other');
+      const host = offlineHost(oldServer);
+      const outdated: string[] = [];
+      host.documents.onServerOutdated((authority) => outdated.push(authority));
+      const placeholder = host.documents.openOffline({ projectKey: host.away.key, relativePath: 'out/elsewhere.ts' });
+      expect(outdated).toEqual([]);
+      host.connect();
+      await waitFor(() => outdated.length === 1);
+      expect(host.documents.content(placeholder.id)).toMatchObject({ updateServer: true });
+      host.documents.openOffline({ projectKey: host.away.key, relativePath: 'out/other.ts' }, false, true);
+      expect(outdated).toEqual(['loopback', 'loopback']);
+      host.disconnect();
+      host.connect();
+      await waitFor(() => outdated.length === 4);
+      expect(outdated).toEqual(['loopback', 'loopback', 'loopback', 'loopback']);
+      host.documents.dispose();
+      host.end();
+    });
+
+    it('shows the offline placeholder again once the host whose server could not follow the link goes away', async () => {
+      const host = offlineHost(oldServer);
+      const placeholder = host.documents.openOffline({ projectKey: host.away.key, relativePath: 'out/elsewhere.ts' });
+      const changed: string[] = [];
+      host.documents.onDidChange((change) => {
+        if (change.content) changed.push(change.documentId);
+      });
+      host.connect();
+      await waitFor(() => changed.includes(placeholder.id));
+      changed.length = 0;
+      host.disconnect();
+      expect(changed).toEqual([placeholder.id]);
+      expect(host.documents.content(placeholder.id)).toEqual({ kind: 'offline', documentId: placeholder.id, hostId: 'loopback', hostName: 'prod-1' });
+      host.documents.dispose();
+    });
+
+    it('moves a backup awaiting its host to an untitled buffer whose warning says to update the server', async () => {
+      const host = offlineHost(oldServer);
+      const backupId = '2f8fad5b-d9cb-469f-a165-70867728950e';
+      const document = host.documents.openAwaitingHost(host.away.key, 'out/elsewhere.ts', { encoding: 'utf8', bom: false, eol: '\n' }) as TextDocument;
+      host.documents.restoreBuffer(document.id, 'unsaved', backupId);
+      host.connect();
+      await waitFor(() => host.replaced.length === 1);
+      expect(host.documents.get(host.replaced[0]!.to)).toMatchObject({ untitled: true, text: 'unsaved', backupId });
+      expect(host.warned).toEqual(['The unsaved changes to elsewhere.ts are in an untitled editor: Update the Damocles server on prod-1 to open links that lead outside the project.']);
+      host.documents.dispose();
+      host.end();
+    });
   });
 
   it('moves a backup whose file on the host is not valid UTF-8 to an untitled buffer, as the restore path refuses it', async () => {
@@ -2620,7 +2909,7 @@ describe('documents of a host that is not connected', () => {
       ...workspace,
       files: {
         ...workspace.files,
-        confineExisting: async (owner: Project, relativePath: string) => (resolvable ? workspace.files.confineExisting(owner, relativePath) : { ok: false as const, reason: 'failed' as const }),
+        confineExisting: async (owner: Project, relativePath: string, rule: LinkRule) => (resolvable ? workspace.files.confineExisting(owner, relativePath, rule) : { ok: false as const, reason: 'failed' as const }),
       },
     }));
     const document = host.documents.openAwaitingHost(host.away.key, 'src/b.ts', { encoding: 'utf8', bom: false, eol: '\n' }) as TextDocument;

@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import type { Disposable } from '../../platform/disposable';
 import type { FileWatcher, FileWatcherFactory } from '../../platform/file-watcher';
 import { writeJsonConfig } from '../config/json-config-write';
+import { checkConfigPathSync } from '../config/local-config-path';
 import { folderKey } from '../workspace-folders/folder-key';
 import { isRelocationPending } from '../project-relocation/current';
 import { folderContains, isAbsolutePath, liveChatRecordAt, liveChatRecords, relocatedRepositoryRoot, validRecord, worktreeFolderFor } from './records';
@@ -101,7 +102,7 @@ export class WorktreeRegistry implements Disposable {
   private readonly subscriptions: Disposable[] = [];
   private readonly log: (line: string) => void;
   private disposed = false;
-  // Why registry.json last failed to parse; the cache keeps the records it last parsed meanwhile.
+  // Why registry.json last failed to parse or was refused; the cache keeps the records it last parsed meanwhile.
   private readError: string | undefined;
 
   constructor(options: WorktreeRegistryOptions) {
@@ -323,12 +324,12 @@ export class WorktreeRegistry implements Disposable {
     this.unreadableListeners.clear();
   }
 
-  /** Why registry.json does not parse now; while set, the records are the ones last parsed and every write is refused. */
+  /** Why registry.json does not parse, or is refused by the network rule, now; while set, the records are the ones last parsed and every write is refused. */
   unreadable(): string | undefined {
     return this.readError;
   }
 
-  /** Fires once each time registry.json goes from parsing to not parsing. */
+  /** Fires once each time registry.json goes from parsing to not parsing or being refused by the network rule. */
   onDidBecomeUnreadable(listener: (error: string) => void): Disposable {
     this.unreadableListeners.add(listener);
     return { dispose: () => { this.unreadableListeners.delete(listener); } };
@@ -352,14 +353,21 @@ export class WorktreeRegistry implements Disposable {
       const parsed = current === undefined ? { records: [], foreign: [] } : parseRegistry(current, this.rootDir, this.log);
       const written = change(parsed.records, parsed.foreign);
       return `${JSON.stringify({ version: REGISTRY_VERSION, records: [...written, ...parsed.foreign] }, null, 2)}\n`;
-    });
+    }, { baseFolder: this.rootDir });
     this.reload();
   }
 
-  // undefined keeps the cache: the file could not be read or does not parse (the settings store's rule for a broken file).
+  // undefined keeps the cache: the file could not be read, links off the store folder's share, or does not parse (the
+  // settings store's rule for a broken file).
   private readSync(): { records: WorktreeRecord[]; foreign: unknown[] } | undefined {
     let text: string;
     try {
+      // eslint-disable-next-line damocles/no-sync -- right before the synchronous read below, judged from the store's own folder
+      if (checkConfigPathSync(this.rootDir, this.file) !== 'ok') {
+        this.log(`[WorktreeRegistry] ${this.file} links to a network share or WSL path, so it is not read`);
+        this.unreadableNow('it links to a network share or WSL path');
+        return undefined;
+      }
       text = fs.readFileSync(this.file, 'utf-8');
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -376,11 +384,15 @@ export class WorktreeRegistry implements Disposable {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.log(`[WorktreeRegistry] ${message}; keeping the records last read and refusing writes`);
-      const first = this.readError === undefined;
-      this.readError = message;
-      if (first) this.emitUnreadable(message);
+      this.unreadableNow(message);
       return undefined;
     }
+  }
+
+  private unreadableNow(error: string): void {
+    const first = this.readError === undefined;
+    this.readError = error;
+    if (first) this.emitUnreadable(error);
   }
 
   private emitUnreadable(error: string): void {

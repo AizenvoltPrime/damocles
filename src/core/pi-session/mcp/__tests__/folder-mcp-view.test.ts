@@ -357,6 +357,7 @@ describe('FolderRuntime: one folder manager per folder over the one user manager
       resourceExposureSetting: () => ({}),
       trust: testPlatform.trust,
       fileWatchers: testPlatform.fileWatchers,
+      notifications: testPlatform.notifications,
     });
     track(runtime);
     return { runtime, pool };

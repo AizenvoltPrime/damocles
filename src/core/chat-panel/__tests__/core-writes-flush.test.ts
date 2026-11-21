@@ -59,7 +59,7 @@ describe('flushCoreWrites', () => {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify({ permissions: { allow: ['old_tool(arg)'] } }));
     const onDisk = await flushAcrossHeldRename(file, {
-      first: () => rewritePermissionRuleToolNames(file, new Map([['old_tool', 'new_tool']]), { confineTo: path.dirname(file) }),
+      first: () => rewritePermissionRuleToolNames(file, new Map([['old_tool', 'new_tool']]), { baseFolder: workspace, confineTo: path.dirname(file) }),
       flush: flushCoreWrites,
       second: () => syncPermissionRulesToSettings(
         [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'git push:*' }], behavior: 'allow', destination: 'localSettings' }],

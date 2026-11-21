@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { stripBom } from '../config/bom';
+import { ConfigReadRefused } from '../config/local-config-path';
 
 // pi rewrites models-store.json in place under its lock, so an unlocked read can land between the truncate and the write.
 const READ_ATTEMPTS = 5;
@@ -16,9 +17,11 @@ export function piModelNetworkEnabled(modelRuntime: ModelRuntime): boolean {
 
 /**
  * When pi last saved a networked catalog for `providerId` in its models store (`ModelsStoreEntry.checkedAt`), or
- * undefined when it never did. Throws when the file cannot be read or still does not parse after a few attempts.
+ * undefined when it never did. Throws when the file cannot be read or still does not parse after a few attempts, and
+ * ConfigReadRefused when `linkPolicy`, pi's own for the file, refuses it.
  */
-export async function savedCatalogCheckedAt(storePath: string, providerId: string): Promise<number | undefined> {
+export async function savedCatalogCheckedAt(storePath: string, providerId: string, linkPolicy: (file: string) => boolean): Promise<number | undefined> {
+  if (!linkPolicy(storePath)) throw new ConfigReadRefused(storePath);
   for (let attempt = 1; ; attempt++) {
     let text: string;
     try {

@@ -983,6 +983,16 @@ const inserted = (row: ResultRow): string | undefined => {
         />{{ t(`search.bufferWarning.${done.bufferWarning}`) }}
       </p>
       <p
+        v-if="done?.linksNotSearched"
+        data-testid="search-links-not-searched"
+        class="flex items-start gap-1.25 text-(--d-warning-text)"
+      >
+        <TriangleAlert
+          aria-hidden="true"
+          class="mt-0.5 size-3 shrink-0"
+        />{{ done.linksNotSearched }}
+      </p>
+      <p
         v-for="skip in notices"
         :key="skip"
         role="status"

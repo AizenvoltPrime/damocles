@@ -124,6 +124,23 @@ describe('writeSessionFile', () => {
     expect(fs.readFileSync(target, 'utf8')).toBe('old\n');
   });
 
+  it('answers notOwned, writing nothing, for a lease file, a file of the store pi did not name and a session-named file outside the store', async () => {
+    const lease = path.join(path.dirname(sessionLeasePath(randomUUID())), `held-${randomUUID()}.lock`);
+    fs.mkdirSync(path.dirname(lease), { recursive: true });
+    fs.writeFileSync(lease, 'old\n');
+    const outsideStore = path.join(path.dirname(root), chatName(randomUUID()));
+    fs.writeFileSync(outsideStore, 'old\n');
+    try {
+      for (const target of [lease, file('notes.jsonl', 'old\n'), file(`${randomUUID()}/teams/team-1/events.jsonl`, 'old\n'), outsideStore]) {
+        expect(await writeSessionFile(target, bytes('new\n'), sha('old\n'))).toEqual({ kind: 'notOwned' });
+        expect(fs.readFileSync(target, 'utf8')).toBe('old\n');
+      }
+    } finally {
+      fs.rmSync(lease, { force: true });
+      fs.rmSync(outsideStore, { force: true });
+    }
+  });
+
   it('refuses an agent file while the run that opened it has not settled, and writes it once that run let go', async () => {
     const target = file(`${randomUUID()}/subagents/2026-11-04T10-00-00-000Z_agent-${randomUUID()}.jsonl`, 'old\n');
     const run = takeAgentFile({ kind: 'reopen', path: target, agentId: 'agent' })!;

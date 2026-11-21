@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch, watchEffect } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { AtSign, CircleAlert, CloudOff, ExternalLink, FolderSearch, LoaderCircle, Maximize2, Minimize2, MousePointerClick, X } from 'lucide-vue-next';
+import { AtSign, CircleAlert, CircleArrowUp, CloudOff, ExternalLink, FolderSearch, LoaderCircle, Maximize2, Minimize2, MousePointerClick, X } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import { useOverlayEscape } from '@/composables/useOverlayEscape';
 import type { DamoclesShellApi, FileRef, ShellEditorTab, ShellState } from '../../preload/shell-channels';
@@ -59,7 +59,8 @@ watch(tab, (current) => {
   if (loadsHere(current)) void store.loadShown(current.documentId);
 }, { immediate: true });
 const loadFailure = computed(() => (loadsHere(tab.value) && store.loadFailed(tab.value.documentId) ? tab.value : undefined));
-// A remote file whose host is not connected: main answers a placeholder until the host connects and the tab gets a new document.
+// A remote file whose host is not connected, or whose server cannot follow the link on its path: main answers a placeholder
+// until a connection opens the file and the tab gets a new document.
 const offline = computed(() => {
   const documentId = tab.value && TEXT_KINDS.has(tab.value.kind) ? tab.value.documentId : undefined;
   const content = documentId === undefined ? undefined : store.contents.value.get(documentId);
@@ -324,12 +325,19 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
           data-testid="editor-offline"
           class="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-13 text-(--d-muted)"
         >
-          <CloudOff
+          <CircleArrowUp
+            v-if="offline.updateServer"
             aria-hidden="true"
             class="size-6 text-(--d-faint)"
           />
-          <p>{{ t('remote.editor.offline', { name: offline.hostName }) }}</p>
+          <CloudOff
+            v-else
+            aria-hidden="true"
+            class="size-6 text-(--d-faint)"
+          />
+          <p>{{ offline.updateServer ? t('remote.editor.updateServer', { name: offline.hostName }) : t('remote.editor.offline', { name: offline.hostName }) }}</p>
           <Button
+            v-if="!offline.updateServer"
             size="sm"
             variant="outline"
             data-testid="editor-reconnect"

@@ -5,6 +5,7 @@ import { localMcpConfigPath } from "./mcp-config-import";
 import { LOCAL_MCP_RELATIVE_PATH } from "../../../../shared/types/mcp";
 import { log } from "../../../logger";
 import { personalConfigRoot } from "../../../worktrees/personal-config";
+import { checkConfigPath } from "../../../config/local-config-path";
 
 /**
  * Whether `<ws>/.damocles/mcp.local.json` is sitting in the working tree without git ignoring it. The
@@ -25,8 +26,11 @@ const GIT_TIMEOUT_MS = 10_000;
 export async function isLocalMcpFileUnignored(folder: string): Promise<boolean> {
   // D34: the personal file lives in the project folder, so git there answers whether it is ignored.
   const workspaceRoot = personalConfigRoot(folder);
+  const file = localMcpConfigPath(workspaceRoot);
   try {
-    await fs.access(localMcpConfigPath(workspaceRoot));
+    // a file that links off the folder's share is never touched; its read reports it
+    if ((await checkConfigPath(workspaceRoot, file)) !== "ok") return false;
+    await fs.access(file);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     // ENOENT is the ordinary case: no file, nothing to leak. Anything else leaves the answer unknown,

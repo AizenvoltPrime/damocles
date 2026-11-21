@@ -223,6 +223,8 @@ export interface ChatSession extends ActivitySource {
   ): Promise<SendOutcome>;
   /** Resolves `text` as pi would when it starts the prompt, for a caller that puts blocks ahead of it. */
   resolveSlashInvocation(text: string): Promise<SlashInvocation>;
+  /** Whether pi loaded a prompt template named exactly `name`, matched case-sensitively as pi's `expandPromptTemplate` does. */
+  hasPromptTemplate(name: string): Promise<boolean>;
   /** `typed` is what the user typed, which a UserPromptSubmit hook gets when `content` is a rewrite of it. */
   queueInput(content: ContentInput, messageId?: string, typed?: string, target?: string): QueueDisposition;
   interrupt(): Promise<void>;

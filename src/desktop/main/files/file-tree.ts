@@ -12,11 +12,12 @@ import type {
   FilesMutationResult,
 } from '../../preload/shell-channels';
 import type { AskMessage } from '../message-dialog';
-import { isRelativeOrRoot, type Project } from '../../local-services/confine';
-import type { EntryIdentity, WorkspaceFileSystem } from '../../workspace/file-system';
+import { isRelativeOrRoot, type LinkRoot, type Project } from '../../local-services/confine';
+import { WriteRefusedError, type EntryIdentity, type EntryResult, type WorkspaceFileSystem } from '../../workspace/file-system';
 import type { ProjectWorkspace } from '../../workspace/project-workspace';
 import { linuxToWslUnc } from '../remote/wsl/wsl-paths';
-import { excludeTest, type ExcludeTest } from '../../workspace/tree-listing';
+import { literalGlob } from '../../../core/watch-root';
+import { excludeTest, type ExcludeTest, type FolderListing } from '../../workspace/tree-listing';
 import { NotConnectedError, type Workspaces } from '../workspace/workspaces';
 
 // Bursts of watcher events (a checkout, a build) reach the shell as one change per this window.
@@ -64,9 +65,11 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// A failure the workspace reported, as the shell reports it: a failed fs call names its error, a confinement does not.
-function failed(result: { readonly reason: string; readonly message?: string }, log: (line: string) => void, action: string): FilesMutationResult & { ok: false } {
-  if (result.reason !== 'failed' || result.message === undefined) return { ok: false, reason: result.reason as 'outside' | 'missing' | 'failed' | 'exists' };
+// A failure the workspace reported, as the shell reports it: a failed fs call names its error, a confinement its refusal.
+function failed(result: Exclude<EntryResult, { readonly ok: true }>, log: (line: string) => void, action: string): FilesMutationResult & { ok: false } {
+  if (result.reason !== 'failed' || result.message === undefined) {
+    return { ok: false, reason: result.reason, ...(result.refusal !== undefined ? { refusal: result.refusal } : {}), ...(result.error !== undefined ? { error: result.error } : {}) };
+  }
   log(`[files] ${action} failed: ${result.message}`);
   return { ok: false, reason: 'failed', message: result.message };
 }
@@ -80,12 +83,26 @@ function parentOf(relativePath: string): string {
   return slash < 0 ? '' : relativePath.slice(0, slash);
 }
 
+// A folder with a listing in flight or a link watch; one with neither has no record, so records stay within the folders
+// shown expanded plus those being listed.
+interface FolderRecord {
+  // listings asked and not yet answered
+  inFlight: number;
+  // the number of the newest listing asked
+  asked: number;
+  // an answer to a listing numbered at most this watches nothing: an older one applied, or the folder collapsed after it was asked
+  settled: number;
+  // the link root the folder's applied listing went through, and the folder's own non-recursive watch there
+  linked: { readonly via: LinkRoot; watch: Disposable } | undefined;
+}
+
 interface Watched {
   // a remote workspace's watch ends with its connection, so the next connection's workspace watches again
   workspace: ProjectWorkspace;
   watcher: Disposable;
   readonly pending: Set<string>;
   timer: NodeJS.Timeout | undefined;
+  readonly folders: Map<string, FolderRecord>;
 }
 
 /** The Files section's data: lazy listings and confined operations, every path resolved inside its project in main. */
@@ -124,15 +141,17 @@ export class FileTree implements Disposable {
   async list(projectKey: string, relativeDir: string): Promise<FilesListResult> {
     const project = this.project(projectKey);
     if (!project || !isRelativeOrRoot(relativeDir)) return { ok: false, reason: 'outside' };
+    const answered = relativeDir !== '' && this.watch(project) ? this.asking(project.key, relativeDir) : undefined;
     // a host that is not connected, or whose connection ends during the call, fails this listing only
     const listing = await Promise.resolve()
       .then(() => this.deps.workspaces.forProject(projectKey).tree.list(project, relativeDir, this.excludePatterns()))
-      .catch((err: unknown): FilesListResult => {
+      .catch((err: unknown): FolderListing => {
         this.deps.log(`[files] listing ${relativeDir || '.'} of ${project.name} failed: ${errorText(err)}`);
         return { ok: false, reason: 'failed' };
       });
+    answered?.(listing);
     if (!listing.ok) return listing;
-    this.watch(project);
+    if (relativeDir === '') this.watch(project);
     const { entries } = listing;
     const ignored = await this.deps.ignored(projectKey, relativeDir, entries).catch((err: unknown) => {
       this.deps.log(`[files] the ignored-file query failed: ${errorText(err)}`);
@@ -169,6 +188,8 @@ export class FileTree implements Disposable {
     const files = this.files(projectKey);
     const entry = await files.entry(project, relativePath);
     if (!entry.ok) return entry;
+    // refused before the question; trash and deleteEntry refuse again when they run
+    if (entry.sessionStore) return { ok: false, reason: 'sessionFile' };
     const { identity, folder } = entry;
     const target = this.deps.target(projectKey);
     const name = visibleText(pathFor(target).basename(entry.path));
@@ -196,6 +217,11 @@ export class FileTree implements Disposable {
       await files.trash(entry.path);
       return { ok: true };
     } catch (err) {
+      // a permanent delete would be refused too, so none is offered
+      if (err instanceof WriteRefusedError && err.refusal === 'sessionFile') {
+        this.deps.log(`[files] refused to move ${relativePath} to the trash: ${errorText(err)}`);
+        return { ok: false, reason: 'sessionFile' };
+      }
       this.deps.log(`[files] moving ${relativePath} to the trash failed: ${errorText(err)}`);
       const permanently = await this.deps.ask({
         severity: 'danger',
@@ -215,7 +241,13 @@ export class FileTree implements Disposable {
     if (deleted.ok) return deleted;
     if (deleted.reason === 'changed') return { ok: false, reason: 'failed', message: this.deps.t('It changed while Damocles was asking.') };
     if (deleted.reason === 'failed' && deleted.message !== undefined) this.deps.log(`[files] deleting ${relativePath} failed: ${deleted.message}`);
-    return deleted.message !== undefined ? { ok: false, reason: deleted.reason, message: deleted.message } : { ok: false, reason: deleted.reason };
+    return {
+      ok: false,
+      reason: deleted.reason,
+      ...(deleted.message !== undefined ? { message: deleted.message } : {}),
+      ...(deleted.refusal !== undefined ? { refusal: deleted.refusal } : {}),
+      ...(deleted.error !== undefined ? { error: deleted.error } : {}),
+    };
   }
 
   async copyPath(projectKey: string, relativePath: string, relative: boolean): Promise<FilesActionResult> {
@@ -272,7 +304,7 @@ export class FileTree implements Disposable {
     const known = this.watched.get(project.key);
     if (known?.workspace === workspace) return true;
     known?.watcher.dispose();
-    const state: Watched = known ?? { workspace, watcher: { dispose: () => undefined }, pending: new Set(), timer: undefined };
+    const state: Watched = known ?? { workspace, watcher: { dispose: () => undefined }, pending: new Set(), timer: undefined, folders: new Map() };
     state.workspace = workspace;
     const watcher = workspace.files.watch(project.fsPath, '**', (event) => {
       if (event.kind !== 'change') this.record(project, state, event.path);
@@ -280,6 +312,11 @@ export class FileTree implements Disposable {
     state.watcher = watcher;
     this.watched.set(project.key, state);
     this.deps.log(`[files] watching ${project.fsPath}`);
+    for (const [dir, record] of state.folders) {
+      if (!record.linked) continue;
+      record.linked.watch.dispose();
+      record.linked.watch = this.watchLinked(project.key, state, dir, record.linked.via);
+    }
     // what changed before the watch was ready, while the host was away included, was never reported
     void watcher.ready.then(() => {
       if (this.watched.get(project.key) !== state || state.watcher !== watcher) return;
@@ -300,18 +337,90 @@ export class FileTree implements Disposable {
     for (const [key, state] of this.watched) {
       if (keys.has(key)) continue;
       state.watcher.dispose();
+      this.unwatchFolders(state);
       if (state.timer) clearTimeout(state.timer);
       this.watched.delete(key);
+    }
+  }
+
+  /** The tree stopped showing a folder expanded: neither it nor any folder under it is watched through a link any more. */
+  collapsed(projectKey: string, relativeDir: string): void {
+    const state = this.watched.get(projectKey);
+    if (!state) return;
+    for (const [dir, record] of state.folders) {
+      if (dir !== relativeDir && !dir.startsWith(`${relativeDir}/`)) continue;
+      this.unlink(dir, record);
+      if (record.inFlight > 0) record.settled = record.asked;
+      else state.folders.delete(dir);
     }
   }
 
   dispose(): void {
     for (const state of this.watched.values()) {
       state.watcher.dispose();
+      this.unwatchFolders(state);
       if (state.timer) clearTimeout(state.timer);
     }
     this.watched.clear();
     this.structureListeners.clear();
+  }
+
+  // Counts a listing of a folder of a watched project from its ask; the answer applies its link root only when it is the newest
+  // answer so far and the folder did not collapse after the ask, as the shell shows only the newest listing.
+  private asking(projectKey: string, relativeDir: string): (listing: FolderListing) => void {
+    const state = this.watched.get(projectKey)!;
+    const record = state.folders.get(relativeDir) ?? { inFlight: 0, asked: 0, settled: 0, linked: undefined };
+    state.folders.set(relativeDir, record);
+    record.inFlight++;
+    const number = ++record.asked;
+    return (listing) => {
+      record.inFlight--;
+      if (this.watched.get(projectKey) !== state) return;
+      if (listing.ok && number > record.settled) {
+        record.settled = number;
+        this.link(projectKey, state, relativeDir, record, listing.via);
+      }
+      if (record.inFlight === 0 && !record.linked) state.folders.delete(relativeDir);
+    };
+  }
+
+  // A folder whose listing went through a link out of the project is watched there; one inside it is the project watch's.
+  private link(projectKey: string, state: Watched, dir: string, record: FolderRecord, via: LinkRoot | undefined): void {
+    const known = record.linked?.via;
+    if (known?.link === via?.link && known?.realRoot === via?.realRoot) return;
+    this.unlink(dir, record);
+    if (!via) return;
+    if (dir !== via.link && !dir.startsWith(`${via.link}/`)) {
+      this.deps.log(`[files] not watching ${dir}: its listing names the link ${via.link}, which is not on its path`);
+      return;
+    }
+    record.linked = { via, watch: this.watchLinked(projectKey, state, dir, via) };
+  }
+
+  // The folder's direct children at its place under the link root, judged from that root (literalGlob keeps the watch shallow).
+  private watchLinked(projectKey: string, state: Watched, dir: string, via: LinkRoot): Disposable {
+    const rest = dir === via.link ? '' : dir.slice(via.link.length + 1);
+    const watcher = state.workspace.files.watch(via.realRoot, rest === '' ? '*' : `${literalGlob(rest)}/*`, (event) => {
+      if (event.kind !== 'change') this.recordLinked(projectKey, state, via, event.path);
+    });
+    this.deps.log(`[files] watching ${dir} under the link root ${via.realRoot}`);
+    // what changed in the folder before its watch was ready was never reported
+    void watcher.ready.then(() => {
+      if (this.watched.get(projectKey) === state && state.folders.get(dir)?.linked?.watch === watcher) this.deps.changed({ projectKey, relativeDirs: [dir] });
+    });
+    return watcher;
+  }
+
+  private unlink(dir: string, record: FolderRecord): void {
+    if (!record.linked) return;
+    record.linked.watch.dispose();
+    record.linked = undefined;
+    this.deps.log(`[files] stopped watching ${dir} under its link root`);
+  }
+
+  private unwatchFolders(state: Watched): void {
+    for (const record of state.folders.values()) record.linked?.watch.dispose();
+    state.folders.clear();
   }
 
   // every listing of the project and its Quick Open list may be stale
@@ -321,8 +430,21 @@ export class FileTree implements Disposable {
   }
 
   private record(project: Project, state: Watched, fsPath: string): void {
-    const flavor = pathFor(this.deps.target(project.key));
-    const relative = flavor.relative(project.fsPath, fsPath).split(flavor.sep).join('/');
+    this.recordRelative(project.key, state, this.relativeTo(project.key, project.fsPath, fsPath));
+  }
+
+  // An event under a link root, named by its path through the link.
+  private recordLinked(projectKey: string, state: Watched, via: LinkRoot, fsPath: string): void {
+    const below = this.relativeTo(projectKey, via.realRoot, fsPath);
+    if (isRelativeFilePath(below)) this.recordRelative(projectKey, state, `${via.link}/${below}`);
+  }
+
+  private relativeTo(projectKey: string, base: string, fsPath: string): string {
+    const flavor = pathFor(this.deps.target(projectKey));
+    return flavor.relative(base, fsPath).split(flavor.sep).join('/');
+  }
+
+  private recordRelative(projectKey: string, state: Watched, relative: string): void {
     if (relative === '' || !isRelativeFilePath(relative) || this.isExcluded(relative)) return;
     state.pending.add(parentOf(relative));
     if (state.timer) return;
@@ -330,8 +452,8 @@ export class FileTree implements Disposable {
       state.timer = undefined;
       const relativeDirs = [...state.pending];
       state.pending.clear();
-      this.deps.changed({ projectKey: project.key, relativeDirs });
-      for (const listener of [...this.structureListeners]) listener(project.key);
+      this.deps.changed({ projectKey, relativeDirs });
+      for (const listener of [...this.structureListeners]) listener(projectKey);
     }, CHANGE_BATCH_MS);
   }
 

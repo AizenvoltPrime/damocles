@@ -44,6 +44,7 @@ function realEngine(responses: FauxResponseStep[], prepare: (booted: HeldSettleS
     cwd: process.cwd(),
     trust: createFakePlatform().trust,
     registry: new AgentRegistry(),
+    registryLoaded: async () => {},
     createSession: async (opts) => {
       const booted = await sessions.boot(responses, { ...boot, extensionFactory: opts.extensionFactory });
       booted.session.subscribe((event) => {
@@ -97,7 +98,7 @@ describe("a run a user's pi extension opens in a subagent's session", () => {
   it('runs the task once that run is over, instead of failing the subagent', async () => {
     const { engine, booted } = realEngine(['Extension reply.', 'Done.'].map((text) => fauxAssistantMessage(text)), (b) => b.sendFromExtension('from the extension'));
     const manager = new AgentManager(engine, 1);
-    const id = manager.spawn(SPAWN);
+    const { id } = await manager.spawn(SPAWN);
     const { session } = await within(booted(), 10_000, 'the subagent session');
 
     await within(manager.getRecord(id)!.promise!, 10_000, 'the subagent');
@@ -113,7 +114,7 @@ describe("a run a user's pi extension opens in a subagent's session", () => {
       b.sendFromExtension('from the extension');
     }, {}, true);
     const manager = new AgentManager(engine, 1);
-    const id = manager.spawn(SPAWN);
+    const { id } = await manager.spawn(SPAWN);
     const { session } = await within(booted(), 10_000, 'the subagent session');
     let waiting = false;
     void settle.waiting.then(() => { waiting = true; });
@@ -140,7 +141,7 @@ describe("a Stop while pi still prepares a run a user's pi extension opened in a
       b.sendFromExtension('from the extension');
     }, { beforeAgentStart: true });
     const manager = new AgentManager(engine, 1);
-    const id = manager.spawn(SPAWN);
+    const { id } = await manager.spawn(SPAWN);
     const { session } = await within(booted(), 10_000, 'the subagent session');
     const ends: string[] = [];
     session.agent.subscribe((event) => {
@@ -164,7 +165,7 @@ describe("a steer that reaches a subagent while pi runs its run's agent_settled 
     let settle!: ReturnType<HeldSettleSession['hold']>;
     const { engine, booted } = realEngine([fauxAssistantMessage('Done.')], (b) => { settle = b.hold(); });
     const manager = new AgentManager(engine, 1);
-    const id = manager.spawn(SPAWN);
+    const { id } = await manager.spawn(SPAWN);
     const { session } = await within(booted(), 10_000, 'the subagent session');
     await within(settle.waiting, 10_000, 'the agent_settled handler');
 

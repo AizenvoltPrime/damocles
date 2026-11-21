@@ -24,12 +24,15 @@
  *   6. project-damocles: <cwd>/.damocles/agents/**\/*.md  (trust-gated, highest)
  */
 
-import { existsSync, readdirSync, type Dirent } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
+import { boundedLog, compareInNameOrder, walkAssetTree, type WatchTarget } from '../../assets';
+import { userConfigBase } from '../../config/local-config-path';
+import { log } from '../../logger';
 import { BUILTIN_TOOL_NAMES } from './agent-types';
-import { isSymlink, safeReadFile } from './fs-safety';
 import type { AgentConfig, AgentSource, MemoryScope, ThinkingLevel } from './types';
+
+const AGENT_MAX_DEPTH = 16;
 
 /** The frontmatter parser shape (satisfied by pi's `parseFrontmatter`), injected to avoid a static
  * value import of the ESM-only pi package. */
@@ -72,67 +75,65 @@ export function agentDiscoveryDirs(opts: {
   return dirs;
 }
 
-/** Scan for custom agent .md files. Later dirs override earlier ones with the same agent name. */
-export function loadCustomAgents(
-  cwd: string,
-  parseFrontmatter: ParseFrontmatter,
-  options: LoadCustomAgentsOptions,
-): Map<string, AgentConfig> {
-  const agents = new Map<string, AgentConfig>();
-  const dirs = agentDiscoveryDirs({
-    cwd,
-    homeDir: options.homeDir ?? homedir(),
-    includeProjectScope: options.includeProjectScope,
-  });
-  for (const { dir, source } of dirs) {
-    for (const file of collectMarkdownFiles(dir)) {
-      loadAgentFile(file, agents, source, parseFrontmatter);
-    }
-  }
-  return agents;
+export interface LoadedCustomAgents {
+  agents: Map<string, AgentConfig>;
+  /** The user-scope agents alone, as they stood before any project agent overrode a name. */
+  userAgents: Map<string, AgentConfig>;
+  /** What to watch so a change behind a followed or broken link reloads. */
+  followed: WatchTarget[];
 }
 
 /**
- * Recursively collect `.md` file paths under `dir`, skipping hidden dirs, node_modules, and symlinks.
- * Symlinks are never followed, matching the skill-loader / fs-safety posture, so a `agents/x -> /`
- * link in a (trusted-but-hostile) workspace can't make the scanner walk the whole linked subtree or
- * load definitions from outside the intended tree.
- *
- * Entries are visited in name order, so when two files in one directory declare the same frontmatter
- * `name` the alphabetically last file wins, on every filesystem.
+ * Scan for custom agent .md files, following links under docs/invariants.md "Asset discovery and links" (the caller
+ * reads project dirs only when trusted, so every scanned dir follows). An agent is its name: later dirs override earlier
+ * ones with the same agent name, and a link under another name is an agent of its own.
  */
-function collectMarkdownFiles(dir: string): string[] {
-  if (!existsSync(dir) || isSymlink(dir)) return [];
-
-  let entries: Dirent<string>[];
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return [];
+export async function loadCustomAgents(
+  cwd: string,
+  parseFrontmatter: ParseFrontmatter,
+  options: LoadCustomAgentsOptions,
+): Promise<LoadedCustomAgents> {
+  const agents = new Map<string, AgentConfig>();
+  const followed: WatchTarget[] = [];
+  const homeDir = options.homeDir ?? homedir();
+  const dirs = agentDiscoveryDirs({ cwd, homeDir, includeProjectScope: options.includeProjectScope });
+  const logLine = boundedLog((line) => log('%s', line));
+  let userAgents: Map<string, AgentConfig> | undefined;
+  for (const { dir, source } of dirs) {
+    // every user dir precedes every project dir (agentDiscoveryDirs)
+    if (source !== 'global') userAgents ??= new Map(agents);
+    const walk = await walkAssetTree({
+      scopeRoot: source === 'global' ? userConfigBase(dir, homeDir) : cwd,
+      root: dir,
+      policy: { kind: 'follow' },
+      maxDepth: AGENT_MAX_DEPTH,
+      dirGlob: '*.md',
+      repeatFolders: 'walk',
+      skipHidden: true,
+      log: logLine,
+    });
+    followed.push(...walk.followed);
+    // in name order, so of two files in one dir declaring the same `name` the last wins on every file system, links included
+    for (const entry of [...walk.entries].sort((a, b) => compareInNameOrder(a.segments, b.segments))) {
+      if (entry.kind !== 'file') continue;
+      try {
+        loadAgentFile(entry.path, entry.text, agents, source, parseFrontmatter);
+      } catch (err) {
+        logLine(`[assets] ${entry.path}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
-  entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-
-  const files: string[] = [];
-  for (const entry of entries) {
-    if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
-    if (entry.isSymbolicLink()) continue;
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) files.push(...collectMarkdownFiles(full));
-    else if (entry.isFile() && entry.name.endsWith('.md')) files.push(full);
-  }
-  return files;
+  return { agents, userAgents: userAgents ?? new Map(agents), followed };
 }
 
 /** Parse one agent markdown file and register it (keyed by frontmatter `name`, else filename stem). */
 function loadAgentFile(
   filePath: string,
+  content: string,
   agents: Map<string, AgentConfig>,
   source: AgentSource,
   parseFrontmatter: ParseFrontmatter,
 ): void {
-  const content = safeReadFile(filePath);
-  if (content === undefined) return; // missing, unreadable, or a symlink (rejected)
-
   const { frontmatter: fm, body } = parseFrontmatter<Record<string, unknown>>(content);
   const fmName = str(fm['name'])?.trim();
   const name = fmName || basename(filePath, '.md');

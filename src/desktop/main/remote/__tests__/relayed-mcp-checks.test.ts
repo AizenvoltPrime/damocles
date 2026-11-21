@@ -38,6 +38,7 @@ describe('main\'s checks of a relayed request', () => {
     hostPolicy: () => ({ allowBypass: false }),
     savedHost: () => true,
     engineHalted: () => false,
+    notifications: { warn: async () => undefined },
     local: { mcpServers: async () => [notes()], mcpCall: vi.fn(async () => ({ content: [] })), ...local } as LocalUserScope,
     log: () => undefined,
   });
@@ -138,6 +139,7 @@ describe('main\'s checks of a global profile answer', () => {
     hostPolicy: () => ({ allowBypass: false }),
     savedHost: () => true,
     engineHalted: () => false,
+    notifications: { warn: async () => undefined },
     local: { memoryProfile: async () => answer } as unknown as LocalUserScope,
     log: () => undefined,
   });
@@ -162,6 +164,7 @@ describe('main\'s relay of a global memory apply and search', () => {
     hostPolicy: () => ({ allowBypass: false }),
     savedHost: () => true,
     engineHalted: () => false,
+    notifications: { warn: async () => undefined },
     local: local as LocalUserScope,
     log: () => undefined,
   });

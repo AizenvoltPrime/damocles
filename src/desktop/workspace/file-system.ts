@@ -4,16 +4,16 @@ import * as path from 'node:path';
 import type { Disposable } from '../../platform/disposable';
 import type { FileWatcherFactory } from '../../platform/file-watcher';
 import { requireRootAnswers } from '../../core/local-links';
-import { piAgentDirIn, sessionFileAt, sessionsRootIn } from '../../core/pi-session/session-store/session-file-path';
 import { folderKey } from '../../core/workspace-folders/folder-key';
-import { confineEntry, confineExisting, confineMissing, confineOrCreateFolder, followsLocalLinksOnly, projectOfPath, type ConfineFailure, type Confined, type Project } from '../local-services/confine';
+import { confineEntry, confineExisting, confineMissing, confineOrCreateFolder, followsLocalLinksOnly, projectOfPath, type ConfineFailure, type ConfineOptions, type ConfineRefusal, type Confined, type HostLinkRefusal, type LinkRefusal, type LinkRule, type Project } from '../local-services/confine';
+import type { LocalizedText } from '../../shared/localized-text';
+import { isSessionFile, reachesSessions, SESSION_FILE_REFUSAL } from './session-guard';
 import { isUncOrDevicePath } from '../../shared/project-location';
 import { isUnsafeWindowsName } from '../../shared/relative-path';
-import { EDITOR_HARD_MAX_DOCUMENT_BYTES } from '../../shared/types/messages';
 import { OPEN_READ_NONBLOCKING, readFileBytes, readOpenedFile, type FileBytes } from '../../core/file-bytes';
 import type { ProjectFileLocation } from './search/types';
 import { namePrefixMatches } from './outside-listing';
-import { createdThroughLink, createTransferOps, type TransferOps } from './transfer-ops';
+import { createdThroughLink, createTransferOps, type LinkedTransferOps, type TransferOps } from './transfer-ops';
 
 export interface WatchEvent {
   readonly kind: 'create' | 'change' | 'delete';
@@ -27,13 +27,20 @@ export interface EntryIdentity {
   readonly birthtimeNs: bigint;
 }
 
-export type EntryResult = { readonly ok: true } | { readonly ok: false; readonly reason: ConfineFailure | 'exists'; readonly message?: string };
+// refusal and error: the confinement's, as ConfineRefusal carries them; sessionFile: the action would reach a session store
+// or its leases (reachesSessions), which only their engine changes
+export type EntryResult<R extends LinkRefusal = LinkRefusal> =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: ConfineFailure | 'exists' | 'sessionFile'; readonly message?: string; readonly refusal?: R; readonly error?: LocalizedText };
 
-export type ConfinedEntry =
-  | { readonly ok: true; readonly path: string; readonly folder: boolean; readonly identity: EntryIdentity }
-  | { readonly ok: false; readonly reason: ConfineFailure };
+// sessionStore: deleting or moving the entry would reach this host's session store, which deleteEntry and trash refuse
+export type ConfinedEntry<R extends LinkRefusal = LinkRefusal> =
+  | { readonly ok: true; readonly path: string; readonly folder: boolean; readonly identity: EntryIdentity; readonly sessionStore?: true }
+  | ConfineRefusal<R>;
 
-export type DeleteResult = { readonly ok: true } | { readonly ok: false; readonly reason: ConfineFailure | 'changed'; readonly message?: string };
+export type DeleteResult<R extends LinkRefusal = LinkRefusal> =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: ConfineFailure | 'changed' | 'sessionFile'; readonly message?: string; readonly refusal?: R; readonly error?: LocalizedText };
 
 // A folder of the folder browser: its subfolders by name.
 export type BrowseResult = { readonly ok: true; readonly path: string; readonly folders: readonly string[] } | { readonly ok: false; readonly reason: 'missing' | 'failed' };
@@ -57,8 +64,8 @@ export const OUTSIDE_LISTING_MAX_ENTRIES = 1000;
 const OUTSIDE_LISTING_MAX_SCANNED = 50_000;
 const OUTSIDE_LISTING_DEADLINE_MS = 2000;
 
-// Why a write Damocles refuses itself was refused; the caller words it for the user. sessionFile: a session file of this
-// machine's engine, which only that engine writes (feature sessionFiles).
+// Why a write Damocles refuses itself was refused; the caller words it for the user. sessionFile: a file of a session store
+// or lease folder (isSessionFile), which only its engine writes (feature sessionFiles).
 export type WriteRefusal = 'outsideProject' | 'outsideFile' | 'replaced' | 'notAFile' | 'diskFull' | 'sessionFile';
 
 export class WriteRefusedError extends Error {
@@ -93,16 +100,18 @@ export type OutsideResolution =
   | { readonly kind: 'missing' }
   | { readonly kind: 'outside'; readonly reason: OutsideRefusal };
 
-// Project paths are confined on the host that holds them (docs/invariants.md "Desktop host", Confinement).
-export interface WorkspaceFileSystem extends TransferOps {
-  confineExisting(project: Project, relativePath: string): Promise<Confined>;
-  confineMissing(project: Project, relativePath: string): Promise<Confined>;
+// Project paths are confined on the host that holds them (docs/invariants.md "Desktop host", Confinement). The methods of
+// LinkedFileOps confine under throughLinks, the rule of a user's view; a host serving a client picks the rule (under). R: the
+// link refusals an answer carries, HostLinkRefusal on a host.
+export interface WorkspaceFileSystem<R extends LinkRefusal = LinkRefusal> extends TransferOps<R> {
+  confineExisting(project: Project, relativePath: string, rule: LinkRule, opts?: ConfineOptions): Promise<Confined<R>>;
+  confineMissing(project: Project, relativePath: string, rule: LinkRule): Promise<Confined<R>>;
   // the entry itself, never followed, with what a delete compares against after its questions
-  entry(project: Project, relativePath: string): Promise<ConfinedEntry>;
+  entry(project: Project, relativePath: string): Promise<ConfinedEntry<R>>;
   projectOfPath(projects: readonly Project[], target: string): Promise<{ project: Project; relativePath: string; path: string } | undefined>;
   // undefined: missing
   realpath(target: string): Promise<string | undefined>;
-  // sessionFile on an existing file of this host's session store, by its canonical path
+  // sessionFile on an existing file of a session store or lease folder, by its canonical path (isSessionFile)
   read(filePath: string, limitBytes?: number): Promise<FileBytes>;
   // resolves the written file's mtime; throws WriteRefusedError for a write Damocles refuses itself, a session file included
   writeInPlace(project: Project, location: ProjectFileLocation, bytes: Buffer): Promise<number>;
@@ -118,11 +127,12 @@ export interface WorkspaceFileSystem extends TransferOps {
   writeOutside(filePath: string, bytes: Buffer): Promise<number>;
   // the entries of a folder outside every project whose name starts with prefix, within the listing's bounds
   listOutside(folder: string, prefix: string): Promise<OutsideListing>;
-  createEntry(project: Project, relativeDir: string, name: string, kind: 'file' | 'dir'): Promise<EntryResult>;
+  createEntry(project: Project, relativeDir: string, name: string, kind: 'file' | 'dir'): Promise<EntryResult<R>>;
   // relativePath is the entry itself; a link is renamed, never its target
-  renameEntry(project: Project, relativePath: string, newName: string): Promise<EntryResult>;
+  renameEntry(project: Project, relativePath: string, newName: string): Promise<EntryResult<R>>;
   // deletes for good only while the entry is still the one confirmed
-  deleteEntry(project: Project, relativePath: string, confirmed: EntryIdentity): Promise<DeleteResult>;
+  deleteEntry(project: Project, relativePath: string, confirmed: EntryIdentity): Promise<DeleteResult<R>>;
+  // throws WriteRefusedError (sessionFile) for an entry that reaches this host's session store, as deleteEntry refuses it
   trash(entryPath: string): Promise<void>;
   // a signal that aborts cancels a host's request; a local stat runs on
   isDirectory(target: string, signal?: AbortSignal): Promise<boolean>;
@@ -133,13 +143,12 @@ export interface WorkspaceFileSystem extends TransferOps {
   watch(base: string, glob: string, listener: (event: WatchEvent) => void): Disposable & { readonly ready: Promise<void> };
 }
 
-// A whole file's text read as UTF-8, or why it has none
-export type TextRead = { readonly kind: 'text'; readonly text: string } | Exclude<FileBytes, { readonly kind: 'bytes' }>;
+// The methods that confine a project path for a user view, each under one rule.
+export type LinkedFileOps<R extends LinkRefusal = LinkRefusal> = Pick<WorkspaceFileSystem<R>, 'entry' | 'createEntry' | 'renameEntry' | 'deleteEntry' | 'writeInPlace'> & LinkedTransferOps<R>;
 
-// This computer's file system; no wire carries its whole-file text read
-export interface LocalFileSystem extends WorkspaceFileSystem {
-  // through readFileBytes, up to the editor's hard limit
-  readText(filePath: string): Promise<TextRead>;
+// This computer's file system
+export interface LocalFileSystem extends WorkspaceFileSystem<HostLinkRefusal> {
+  under(rule: LinkRule): LinkedFileOps<HostLinkRefusal>;
 }
 
 export interface FileSystemDeps {
@@ -148,7 +157,7 @@ export interface FileSystemDeps {
   readonly trash: (absolutePath: string) => Promise<void>;
   // deletes for good, a folder with its contents and a link as itself
   readonly remove?: (absolutePath: string) => Promise<void>;
-  // the host's ~/.damocles, which holds HOST_SETTINGS_FILE and its engine's session store
+  // the host's ~/.damocles, which holds HOST_SETTINGS_FILE and its engine's session store and leases
   readonly damoclesHome: string;
   readonly log: (line: string) => void;
   // the host's OS, which transfers check names for; process.platform unless a test names another
@@ -199,24 +208,30 @@ async function identityOf(filePath: string): Promise<{ readonly dev: bigint; rea
   }
 }
 
-// A project file is written only while its path still resolves inside that project; every write names one. Resolves the
-// existing file's identity, or undefined when the file is to be created in its confined parent.
-async function reconfine(project: Project, location: ProjectFileLocation): Promise<{ readonly dev: bigint; readonly ino: bigint } | undefined> {
+// A project file is written only while its path still confines under rule to that very file, and is no session file; every
+// write names one. Resolves the existing file's identity, or undefined when the file is to be created in its confined parent.
+async function reconfine(project: Project, location: ProjectFileLocation, rule: LinkRule, damoclesHome: string): Promise<{ readonly dev: bigint; readonly ino: bigint } | undefined> {
   // The walk comes first, so the stat never follows a link to a share. The identity is taken before the realpath check, so
   // one swap at any point fails: before the stat or between the stat and the realpath, the realpath leaves the file; after
   // it, the opened handle differs.
   if (!(await followsLocalLinks(project, location.relativePath))) throw new WriteRefusedError(`${location.relativePath} is outside the project`, 'outsideProject');
   const identity = await identityOf(location.path);
-  const existing = await confineExisting(project, location.relativePath);
+  const existing = await confineExisting(project, location.relativePath, rule);
   if (existing.ok) {
     if (folderKey(existing.path) !== folderKey(location.path)) throw new WriteRefusedError(`${location.relativePath} now resolves outside the file the editor opened`, 'outsideFile');
     if (!identity) throw new WriteRefusedError(`${location.relativePath} changed while it was being saved`, 'replaced');
+    if (await isSessionFile(location.path, damoclesHome)) throw sessionFileRefusal(location.path);
     return identity;
   }
   if (existing.reason !== 'missing') throw new WriteRefusedError(`${location.relativePath} is outside the project`, 'outsideProject');
+  // Both refusals come before any folder is made, so a re-pointed link leaves nothing behind where it now leads.
+  const missing = await confineMissing(project, location.relativePath, rule);
+  if (!missing.ok || folderKey(missing.path) !== folderKey(location.path)) throw new WriteRefusedError(`${location.relativePath} is outside the project`, 'outsideProject');
+  if (await isSessionFile(location.path, damoclesHome)) throw sessionFileRefusal(location.path);
   const parent = path.posix.dirname(location.relativePath);
-  // A file whose folder was deleted too is written back with its folders (fileService.ts writeFile's mkdirp).
-  const confinedParent = await confineOrCreateFolder(project, parent === '.' ? '' : parent);
+  // A file whose folder was deleted too is written back with its folders (fileService.ts writeFile's mkdirp); confined again
+  // once they are made, against a link swapped in meanwhile.
+  const confinedParent = await confineOrCreateFolder(project, parent === '.' ? '' : parent, rule);
   if (!confinedParent.ok || folderKey(path.join(confinedParent.path, path.basename(location.path))) !== folderKey(location.path)) {
     throw new WriteRefusedError(`${location.relativePath} is outside the project`, 'outsideProject');
   }
@@ -275,33 +290,16 @@ async function writeChecked(
   }
 }
 
-/** A project file in place, only while its path still resolves to that file inside the project (reconfine, writeChecked). */
-export async function writeInPlace(project: Project, location: ProjectFileLocation, bytes: Buffer, log: (line: string) => void, sessionsRoot: string): Promise<number> {
-  const identity = await reconfine(project, location);
-  if (await isSessionFile(location.path, sessionsRoot)) throw sessionFileRefusal(location.path);
+/** A project file in place, only while its path still confines under rule to that file (reconfine, writeChecked). */
+export async function writeInPlace(project: Project, location: ProjectFileLocation, bytes: Buffer, log: (line: string) => void, damoclesHome: string, rule: LinkRule): Promise<number> {
+  const identity = await reconfine(project, location, rule, damoclesHome);
   return writeChecked(location.path, identity, bytes, log);
 }
 
-// The realpath of target, or of its deepest existing folder with the missing names below it.
-async function canonicalOf(target: string): Promise<string> {
-  try {
-    return await fs.realpath(target);
-  } catch (err) {
-    const parent = path.dirname(target);
-    if (!isGone(err) || parent === target) throw err;
-    return path.join(await canonicalOf(parent), path.basename(target));
-  }
-}
-
-// By canonical paths, so a link into the session folder or another spelling of it is one too (docs/invariants.md "Session store").
-async function isSessionFile(filePath: string, sessionsRoot: string): Promise<boolean> {
-  return sessionFileAt(await canonicalOf(filePath), await canonicalOf(sessionsRoot)) !== undefined;
-}
-
 // A path the check cannot resolve reads as no session file; every write checks again before its first byte.
-async function withSessionFlag<R extends FileBytes | { readonly kind: 'outside' }>(read: R, filePath: string, sessionsRoot: string): Promise<R> {
+async function withSessionFlag<R extends FileBytes | { readonly kind: 'outside' }>(read: R, filePath: string, damoclesHome: string): Promise<R> {
   if (read.kind !== 'bytes' && read.kind !== 'missing') return read;
-  const sessionFile = await isSessionFile(filePath, sessionsRoot).catch(() => false);
+  const sessionFile = await isSessionFile(filePath, damoclesHome).catch(() => false);
   return sessionFile ? { ...read, sessionFile: true as const } : read;
 }
 
@@ -457,11 +455,11 @@ function replacedRefusal(filePath: string): WriteRefusedError {
   return new WriteRefusedError(`${filePath} changed while it was being saved`, 'replaced');
 }
 
-async function writeOutside(filePath: string, bytes: Buffer, log: (line: string) => void, sessionsRoot: string): Promise<number> {
+async function writeOutside(filePath: string, bytes: Buffer, log: (line: string) => void, damoclesHome: string): Promise<number> {
   const lexical = outsideSegments(filePath);
   if (typeof lexical === 'string') throw outsideFileRefusal(filePath);
   const identity = await checkOutsideWrite(filePath, lexical);
-  if (await isSessionFile(filePath, sessionsRoot)) throw sessionFileRefusal(filePath);
+  if (await isSessionFile(filePath, damoclesHome)) throw sessionFileRefusal(filePath);
   // The checks ran before the open, so a path swapped away and back between them is checked again against the handle.
   const accepted = async (opened: BigIntStats): Promise<void> => {
     const leads = await leadsToHandle(filePath, lexical, opened);
@@ -488,7 +486,7 @@ async function readHostSettings(damoclesHome: string): Promise<HostSettingsRead>
     throw err;
   }
   const { project, location } = place;
-  const confined = await confineExisting(project, HOST_SETTINGS_FILE);
+  const confined = await confineExisting(project, HOST_SETTINGS_FILE, 'withinProject');
   if (!confined.ok) {
     const read = confined.reason === 'missing' ? { kind: 'missing' as const } : confined.reason === 'outside' ? { kind: 'outside' as const } : { kind: 'unreadable' as const, error: `${location.path} cannot be read` };
     return { path: location.path, read };
@@ -635,54 +633,28 @@ async function isAnotherEntry(target: string, entry: string): Promise<boolean> {
 
 export function createFileSystem(deps: FileSystemDeps): LocalFileSystem {
   const remove = deps.remove ?? ((target: string) => fs.rm(target, { recursive: true }));
-  const sessionsRoot = sessionsRootIn(piAgentDirIn(deps.damoclesHome));
-  return {
-    ...createTransferOps({ platform: deps.platform ?? process.platform, log: deps.log }),
-    confineExisting,
-    confineMissing,
-    projectOfPath,
+  const transfers = createTransferOps({ platform: deps.platform ?? process.platform, log: deps.log, damoclesHome: deps.damoclesHome });
+  const under = (rule: LinkRule): LinkedFileOps<HostLinkRefusal> => ({
+    ...transfers.under(rule),
     async entry(project, relativePath) {
-      const entry = await confineEntry(project, relativePath);
+      const entry = await confineEntry(project, relativePath, rule);
       if (!entry.ok) return entry;
       const { stat } = entry;
-      return { ok: true, path: entry.path, folder: stat.isDirectory(), identity: { dev: stat.dev, ino: stat.ino, birthtimeNs: stat.birthtimeNs } };
+      const sessionStore = await reachesSessions(entry.path, deps.damoclesHome, true);
+      return { ok: true, path: entry.path, folder: stat.isDirectory(), identity: { dev: stat.dev, ino: stat.ino, birthtimeNs: stat.birthtimeNs }, ...(sessionStore ? { sessionStore } : {}) };
     },
-    async realpath(target) {
-      // a realpath under an offline drive or share holds a pool thread about 21 s; the shared probe holds at most one per root
-      await requireRootAnswers(target);
-      try {
-        return await fs.realpath(target);
-      } catch (err) {
-        if (isMissing(err)) return undefined;
-        throw err;
-      }
-    },
-    async read(filePath, limitBytes) {
-      const read = await readFileBytes(filePath, limitBytes);
-      // a missing file is not resolved, so no folder of a project on a share is named; its first write refuses a session file
-      return read.kind === 'bytes' ? withSessionFlag(read, filePath, sessionsRoot) : read;
-    },
-    async readText(filePath) {
-      const read = await readFileBytes(filePath, EDITOR_HARD_MAX_DOCUMENT_BYTES);
-      return read.kind === 'bytes' ? { kind: 'text', text: read.bytes.toString('utf8') } : read;
-    },
-    writeInPlace: (project, location, bytes) => writeInPlace(project, location, bytes, deps.log, sessionsRoot),
-    readHostSettings: () => readHostSettings(deps.damoclesHome),
-    async writeHostSettings(bytes) {
-      const { project, location } = await hostSettingsLocation(deps.damoclesHome);
-      return writeInPlace(project, location, bytes, deps.log, sessionsRoot);
-    },
-    resolveOutside,
-    readOutside: async (filePath, limitBytes) => withSessionFlag(await readOutside(filePath, limitBytes), filePath, sessionsRoot),
-    writeOutside: (filePath, bytes) => writeOutside(filePath, bytes, deps.log, sessionsRoot),
+    writeInPlace: (project, location, bytes) => writeInPlace(project, location, bytes, deps.log, deps.damoclesHome, rule),
     async createEntry(project, relativeDir, name, kind) {
-      const parent = await confineExisting(project, relativeDir);
+      const parent = await confineExisting(project, relativeDir, rule);
       if (!parent.ok) return parent;
       const target = path.join(parent.path, name);
+      if (await reachesSessions(target, deps.damoclesHome, false)) return SESSION_FILE_REFUSAL;
       try {
         if (kind === 'dir') {
           await fs.mkdir(target);
         } else {
+          // Windows' exclusive create follows a link at its path, dangling or not, so a link there is a name taken
+          if (await fs.lstat(target).then((stat) => stat.isSymbolicLink(), (err: unknown) => (isMissing(err) ? false : Promise.reject(err)))) return { ok: false, reason: 'exists' };
           const handle = await fs.open(target, 'wx');
           let made: EntryIdentity;
           try {
@@ -699,10 +671,11 @@ export function createFileSystem(deps: FileSystemDeps): LocalFileSystem {
       return { ok: true };
     },
     async renameEntry(project, relativePath, newName) {
-      const entry = await confineEntry(project, relativePath);
+      const entry = await confineEntry(project, relativePath, rule);
       if (!entry.ok) return entry;
       const target = path.join(path.dirname(entry.path), newName);
       if (target === entry.path) return { ok: true };
+      if ((await reachesSessions(entry.path, deps.damoclesHome, true)) || (await reachesSessions(target, deps.damoclesHome, false))) return SESSION_FILE_REFUSAL;
       // fs.rename replaces an existing file on Windows (MoveFileEx with REPLACE_EXISTING); only a case-only rename on a
       // case-insensitive file system may find the entry itself under the new name.
       if (await isAnotherEntry(target, entry.path)) return { ok: false, reason: 'exists' };
@@ -715,8 +688,9 @@ export function createFileSystem(deps: FileSystemDeps): LocalFileSystem {
     },
     // Linux reuses a freed inode number at once, so a deleted and recreated file differs only in its birth time.
     async deleteEntry(project, relativePath, confirmed) {
-      const entry = await confineEntry(project, relativePath);
+      const entry = await confineEntry(project, relativePath, rule);
       if (!entry.ok) return entry;
+      if (await reachesSessions(entry.path, deps.damoclesHome, true)) return SESSION_FILE_REFUSAL;
       try {
         const now = await fs.lstat(entry.path, { bigint: true });
         if (now.dev !== confirmed.dev || now.ino !== confirmed.ino || now.birthtimeNs !== confirmed.birthtimeNs) return { ok: false, reason: 'changed' };
@@ -726,7 +700,41 @@ export function createFileSystem(deps: FileSystemDeps): LocalFileSystem {
       }
       return { ok: true };
     },
-    trash: (entryPath) => deps.trash(entryPath),
+  });
+  return {
+    ...under('throughLinks'),
+    under,
+    readFileRange: transfers.readFileRange,
+    confineExisting,
+    confineMissing,
+    projectOfPath,
+    async realpath(target) {
+      // a realpath under an offline drive or share holds a pool thread about 21 s; the shared probe holds at most one per root
+      await requireRootAnswers(target);
+      try {
+        return await fs.realpath(target);
+      } catch (err) {
+        if (isMissing(err)) return undefined;
+        throw err;
+      }
+    },
+    async read(filePath, limitBytes) {
+      const read = await readFileBytes(filePath, limitBytes);
+      // a missing file is not resolved, so no folder of a project on a share is named; its first write refuses a session file
+      return read.kind === 'bytes' ? withSessionFlag(read, filePath, deps.damoclesHome) : read;
+    },
+    readHostSettings: () => readHostSettings(deps.damoclesHome),
+    async writeHostSettings(bytes) {
+      const { project, location } = await hostSettingsLocation(deps.damoclesHome);
+      return writeInPlace(project, location, bytes, deps.log, deps.damoclesHome, 'withinProject');
+    },
+    resolveOutside,
+    readOutside: async (filePath, limitBytes) => withSessionFlag(await readOutside(filePath, limitBytes), filePath, deps.damoclesHome),
+    writeOutside: (filePath, bytes) => writeOutside(filePath, bytes, deps.log, deps.damoclesHome),
+    async trash(entryPath) {
+      if (await reachesSessions(entryPath, deps.damoclesHome, true)) throw new WriteRefusedError(`${entryPath} is in or holds a chat session store, which only its engine changes`, 'sessionFile');
+      await deps.trash(entryPath);
+    },
     isDirectory: (target) => fs.stat(target).then((stat) => stat.isDirectory(), (err: unknown) => {
       const code = errnoCode(err);
       if (code === 'ENOENT' || code === 'ENOTDIR') return false;

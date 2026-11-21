@@ -4,10 +4,11 @@
 import { CLI_RELAY, CLI_RELAY_ANSWER, type CliRelay, type CliRelayAnswer } from '../cli/cli-protocol';
 import type { Call, Contract, Tables } from '../core-protocol/messages';
 import { MAX_DATA_CHARS, MAX_ITEMS, MAX_KEY_CHARS, MAX_MESSAGE_CHARS, MAX_PATH_CHARS } from '../core-protocol/messages';
-import { arr, bool, bytes, data, dict, either, finite, int, INVALID, maybe, nonEmpty, none, num, obj, oneOf, opt, str, streamId, type Parser } from '../core-protocol/schema';
+import { arr, bool, bytes, data, dict, either, finite, int, INVALID, localized, maybe, nonEmpty, none, num, obj, oneOf, opt, str, streamId, type Parser } from '../core-protocol/schema';
 import type { WalkIgnore } from '../../core/search-walk';
 import { isRelativeFilePath } from '../../shared/relative-path';
-import type { Confined, Project } from '../local-services/confine';
+import type { LocalizedText } from '../../shared/localized-text';
+import type { ConfineRefusal, Confined, HostLinkRefusal, Project } from '../local-services/confine';
 import { isValidFileName } from '../preload/file-names';
 import type { FileEntry } from '../preload/shell-channels';
 import { MAX_EDITOR_TEXT_CHARS } from '../preload/shell-channels';
@@ -24,7 +25,7 @@ import type { TerminalProfile } from './terminal/profiles';
 import type { LiveTerminal } from './terminal/terminal-backend';
 import type { FolderListing } from './tree-listing';
 import { WALK_BATCH_FILES } from '../../core/search-walk/walk-protocol';
-import { MOVE_LEFT_LISTED, WALK_PAGE_ENTRIES, type Clash, type ClashesResult, type MoveResult, type TransferFailure, type TransferKind, type TransferResult } from './transfer-ops';
+import { MOVE_LEFT_LISTED, WALK_PAGE_ENTRIES, type Clash, type ClashesResult, type MoveResult, type PreviewRead, type TransferFailure, type TransferKind, type TransferResult } from './transfer-ops';
 
 // The largest message: a terminal screen of MAX_TERMINAL_SCREEN_CHARS UTF-16 units and its kept shell sequences'
 // MAX_KEPT_SHELL_SEQUENCE_CHARS, at most 3 UTF-8 bytes each, plus its envelope.
@@ -37,9 +38,13 @@ export interface WireIdentity {
   readonly birthtimeNs: string;
 }
 
+// A refusal as a host gives it: never 'oldDaemon', which only a client answers
+export type WireRefusal = ConfineRefusal<HostLinkRefusal>;
+
+// sessionStore: ConfinedEntry's, which an older host never sends
 export type WireConfinedEntry =
-  | { readonly ok: true; readonly path: string; readonly folder: boolean; readonly identity: WireIdentity }
-  | { readonly ok: false; readonly reason: 'outside' | 'missing' | 'failed' };
+  | { readonly ok: true; readonly path: string; readonly folder: boolean; readonly identity: WireIdentity; readonly sessionStore?: true }
+  | WireRefusal;
 
 // FileBytes with its bytes as the Uint8Array the codec decodes; the client wraps it in a Buffer. sessionFile: feature sessionFiles.
 export type WireFileBytes =
@@ -87,24 +92,32 @@ export interface WalkPage {
   readonly done: boolean;
 }
 
-export type WireReadResult = { readonly ok: true; readonly size: number } | { readonly ok: false; readonly reason: 'outside' | 'missing' | 'failed' | 'notAFile'; readonly code?: string };
+export type WireReadResult =
+  | { readonly ok: true; readonly size: number }
+  | { readonly ok: false; readonly reason: 'outside' | 'missing' | 'failed' | 'notAFile'; readonly code?: string; readonly refusal?: HostLinkRefusal; readonly error?: LocalizedText };
 
 // resolvedPath and folder (feature files.readFileRange.resolvedPath): ReadRangeResult's
 export type WireReadRangeResult =
   | { readonly ok: true; readonly size: number; readonly offset: number; readonly length: number; readonly resolvedPath?: string }
-  | (Exclude<WireReadResult, { readonly ok: true }> & { readonly folder?: boolean });
+  | { readonly ok: false; readonly reason: 'outside' | 'missing' | 'failed' | 'notAFile'; readonly code?: string; readonly folder?: boolean };
+
+// The rule a project path is confined under: follow, throughLinks; absent, withinProject (feature files.links).
+export interface Links {
+  readonly links?: 'follow';
+}
 
 export interface WorkspaceRequests {
-  'files.confineExisting': Call<{ readonly project: Project; readonly relativePath: string }, Confined>;
-  'files.confineMissing': Call<{ readonly project: Project; readonly relativePath: string }, Confined>;
-  'files.entry': Call<{ readonly project: Project; readonly relativePath: string }, WireConfinedEntry>;
+  // spell: answer Confined.spelling too; a host without it answers none
+  'files.confineExisting': Call<{ readonly project: Project; readonly relativePath: string; readonly spell?: true } & Links, Confined<HostLinkRefusal>>;
+  'files.confineMissing': Call<{ readonly project: Project; readonly relativePath: string } & Links, Confined<HostLinkRefusal>>;
+  'files.entry': Call<{ readonly project: Project; readonly relativePath: string } & Links, WireConfinedEntry>;
   'files.projectOfPath': Call<{ readonly projects: readonly Project[]; readonly target: string }, { readonly project: Project; readonly relativePath: string; readonly path: string } | undefined>;
   'files.realpath': Call<{ readonly target: string }, string | undefined>;
   // folderKey(path) on the host, for the project's key; reads no disk
   'files.folderKey': Call<{ readonly path: string }, string>;
   'files.read': Call<{ readonly path: string; readonly limitBytes?: number }, WireFileBytes>;
   // fails with WriteRefusedError by name, with its refusal; sessionFile only from a daemon listing sessionFiles
-  'files.writeInPlace': Call<{ readonly project: Project; readonly location: ProjectFileLocation; readonly bytes: Uint8Array }, number>;
+  'files.writeInPlace': Call<{ readonly project: Project; readonly location: ProjectFileLocation; readonly bytes: Uint8Array } & Links, number>;
   // the host's own ~/.damocles/settings.json, which the host names itself
   'files.readHostSettings': Call<object, WireHostSettingsRead>;
   'files.writeHostSettings': Call<{ readonly bytes: Uint8Array }, number>;
@@ -115,9 +128,11 @@ export interface WorkspaceRequests {
   'files.writeOutside': Call<{ readonly path: string; readonly bytes: Uint8Array }, number>;
   // a typed folder outside every project, its entries whose name starts with prefix (feature files.listOutside); main only
   'files.listOutside': Call<{ readonly folder: string; readonly prefix: string }, OutsideListing>;
-  'files.createEntry': Call<{ readonly project: Project; readonly relativeDir: string; readonly name: string; readonly kind: 'file' | 'dir' }, EntryResult>;
-  'files.renameEntry': Call<{ readonly project: Project; readonly relativePath: string; readonly newName: string }, EntryResult>;
-  'files.deleteEntry': Call<{ readonly project: Project; readonly relativePath: string; readonly confirmed: WireIdentity }, DeleteResult>;
+  // an entry's or a transfer's sessionFile reaches only a client whose attach lists files.sessionFileRefusal; any other
+  // reads 'failed' with the refusal's English text as its message (workspace-host.ts)
+  'files.createEntry': Call<{ readonly project: Project; readonly relativeDir: string; readonly name: string; readonly kind: 'file' | 'dir' } & Links, EntryResult<HostLinkRefusal>>;
+  'files.renameEntry': Call<{ readonly project: Project; readonly relativePath: string; readonly newName: string } & Links, EntryResult<HostLinkRefusal>>;
+  'files.deleteEntry': Call<{ readonly project: Project; readonly relativePath: string; readonly confirmed: WireIdentity } & Links, DeleteResult<HostLinkRefusal>>;
   'files.trash': Call<{ readonly path: string }, void>;
   'files.isDirectory': Call<{ readonly target: string }, boolean>;
   // each relative path's mtime under folder, joined on the host; undefined for one it cannot read
@@ -128,31 +143,33 @@ export interface WorkspaceRequests {
   // the watched folders whose tree ran out of inotify watches, and fs.inotify.max_user_watches (null when unreadable)
   'files.watchLimits': Call<object, WatchLimits>;
   // an lstat walk of the item, the first page; files.walkNext pages on until done, files.walkEnd stops it early
-  'files.walk': Call<{ readonly walkId: number; readonly project: Project; readonly relativePath: string }, WalkPage>;
+  'files.walk': Call<{ readonly walkId: number; readonly project: Project; readonly relativePath: string } & Links, WalkPage>;
   'files.walkNext': Call<{ readonly walkId: number }, WalkPage>;
   'files.walkEnd': Call<{ readonly walkId: number }, void>;
-  'files.clashes': Call<{ readonly project: Project; readonly relativeDir: string; readonly names: readonly string[] }, ClashesResult>;
+  'files.clashes': Call<{ readonly project: Project; readonly relativeDir: string; readonly names: readonly string[] } & Links, ClashesResult<HostLinkRefusal>>;
   // the bytes arrive on stream, a stream the client opened; an end before size bytes leaves no file
-  'files.receiveFile': Call<{ readonly project: Project; readonly relativeDir: string; readonly name: string; readonly stream: number; readonly mode: number; readonly mtimeMs: number; readonly replace: boolean; readonly size: number }, TransferResult>;
+  'files.receiveFile': Call<{ readonly project: Project; readonly relativeDir: string; readonly name: string; readonly stream: number; readonly mode: number; readonly mtimeMs: number; readonly replace: boolean; readonly size: number } & Links, TransferResult<HostLinkRefusal>>;
   // answered before the bytes, which follow on stream, a stream the client opened; the client ending its side stops them
-  'files.readFile': Call<{ readonly project: Project; readonly relativePath: string; readonly stream: number }, WireReadResult>;
-  // (feature files.readFileRange) as files.readFile, for at most length bytes from offset, a negative offset counting from the end
-  'files.readFileRange': Call<{ readonly project: Project; readonly relativePath: string; readonly stream: number; readonly offset: number; readonly length: number }, WireReadRangeResult>;
-  'files.copy': Call<{ readonly from: Project; readonly relativePath: string; readonly to: Project; readonly toDir: string; readonly name: string; readonly replace: boolean }, TransferResult>;
-  'files.move': Call<{ readonly from: Project; readonly relativePath: string; readonly to: Project; readonly toDir: string; readonly name: string; readonly replace: boolean }, MoveResult>;
+  'files.readFile': Call<{ readonly project: Project; readonly relativePath: string; readonly stream: number } & Links, WireReadResult>;
+  // (feature files.readFileRange.resolvedPath) as files.readFile under withinProject, for at most length bytes from offset, a
+  // negative offset counting from the end; preview: an HTML preview's read instead (PreviewRead)
+  'files.readFileRange': Call<{ readonly project: Project; readonly relativePath: string; readonly stream: number; readonly offset: number; readonly length: number; readonly preview?: PreviewRead }, WireReadRangeResult>;
+  'files.copy': Call<{ readonly from: Project; readonly relativePath: string; readonly to: Project; readonly toDir: string; readonly name: string; readonly replace: boolean } & Links, TransferResult<HostLinkRefusal>>;
+  'files.move': Call<{ readonly from: Project; readonly relativePath: string; readonly to: Project; readonly toDir: string; readonly name: string; readonly replace: boolean } & Links, MoveResult<HostLinkRefusal>>;
   // mode (feature files.folderMode): the source folder's, which a POSIX host creates it with under its umask
-  'files.makeFolder': Call<{ readonly project: Project; readonly relativeDir: string; readonly name: string; readonly mode?: number }, TransferResult>;
+  'files.makeFolder': Call<{ readonly project: Project; readonly relativeDir: string; readonly name: string; readonly mode?: number } & Links, TransferResult<HostLinkRefusal>>;
   // within: the folder the link must resolve inside on the host, every link on the way followed
-  'files.makeLink': Call<{ readonly project: Project; readonly relativeDir: string; readonly name: string; readonly target: string; readonly replace: boolean; readonly within?: string }, TransferResult>;
+  'files.makeLink': Call<{ readonly project: Project; readonly relativeDir: string; readonly name: string; readonly target: string; readonly replace: boolean; readonly within?: string } & Links, TransferResult<HostLinkRefusal>>;
   // a link made with within, checked again once every link of the transfer landed (feature files.verifyLink)
-  'files.verifyLink': Call<{ readonly project: Project; readonly relativePath: string; readonly within: string }, TransferResult>;
-  'files.removeFolder': Call<{ readonly project: Project; readonly relativePath: string; readonly confirmed: WireIdentity }, TransferResult>;
-  'tree.list': Call<{ readonly project: Project; readonly relativeDir: string; readonly excludes: readonly string[] }, FolderListing>;
-  // (feature search.walk) the host's walk lists the files below cwd and rg matches them with match, its matching flags, and pattern
+  'files.verifyLink': Call<{ readonly project: Project; readonly relativePath: string; readonly within: string } & Links, TransferResult<HostLinkRefusal>>;
+  'files.removeFolder': Call<{ readonly project: Project; readonly relativePath: string; readonly confirmed: WireIdentity } & Links, TransferResult<HostLinkRefusal>>;
+  'tree.list': Call<{ readonly project: Project; readonly relativeDir: string; readonly excludes: readonly string[] } & Links, FolderListing<HostLinkRefusal>>;
+  // (feature search.walk) the host's walk lists the files below cwd and rg matches them with match, its matching flags, and pattern;
+  // walk.followLinks: feature files.links
   'search.run': Call<{ readonly runId: number; readonly cwd: string; readonly match: readonly string[]; readonly pattern: string; readonly walk: SearchRequest['walk'] }, void>;
   'search.kill': Call<{ readonly runId: number }, void>;
-  // (feature quickOpen.walk) the host's walk lists the files, sent as quickOpen.files
-  'quickOpen.list': Call<{ readonly runId: number; readonly root: string; readonly ignore: WalkIgnore; readonly excludes: readonly string[] }, void>;
+  // (feature quickOpen.walk) the host's walk lists the files, sent as quickOpen.files; followLinks: feature files.links
+  'quickOpen.list': Call<{ readonly runId: number; readonly root: string; readonly ignore: WalkIgnore; readonly followLinks?: true; readonly excludes: readonly string[] }, void>;
   'quickOpen.kill': Call<{ readonly runId: number }, void>;
   'format.resolve': Call<{ readonly root: string; readonly file: string; readonly untrusted: readonly string[] }, FormatResolution>;
   'format.format': Call<{ readonly target: HostRoot; readonly request: { readonly prettier: string; readonly config: string | null; readonly file: string; readonly text: string } }, HostOutcome>;
@@ -163,7 +180,7 @@ export interface WorkspaceRequests {
   'terminals.detectProfiles': Call<object, readonly TerminalProfile[]>;
   'terminals.environment': Call<{ readonly locale: string }, Readonly<Record<string, string>>>;
   'terminals.injection': Call<{ readonly request: ShellInjectionRequest }, { readonly args: readonly string[]; readonly env: Readonly<Record<string, string>> } | undefined>;
-  'terminals.linkKind': Call<{ readonly project: Project; readonly relativePath: string }, TerminalLinkKind | null>;
+  'terminals.linkKind': Call<{ readonly project: Project; readonly relativePath: string } & Links, TerminalLinkKind | null>;
   // every terminal the host keeps; posting serialize for one attaches this connection to it
   'terminals.list': Call<object, readonly LiveTerminal[]>;
   // the host's Windows build, which its screens and its terminals' views give xterm; null off Windows
@@ -201,7 +218,7 @@ export interface ClientToWorkspace extends Contract {
 }
 
 export interface WorkspaceToClientRequests {
-  // a damocles command in one of this connection's terminals (feature `cli`); answered once main handled it, after its tabs
+  // a damocles command in one of this connection's terminals; answered once main handled it, after its tabs
   // closed for --wait
   'cli.request': Call<CliRelay, CliRelayAnswer>;
 }
@@ -238,13 +255,32 @@ const fileName: Parser<string> = (raw) => (isValidFileName(raw, process.platform
 const project: Parser<Project> = obj({ key, fsPath: filePath, name: str(MAX_PATH_CHARS) });
 const okTrue: Parser<true> = (raw) => (raw === true ? true : INVALID);
 const okFalse: Parser<false> = (raw) => (raw === false ? false : INVALID);
-const confinedResult: Parser<Confined> = either(obj({ ok: okTrue, path: filePath }), obj({ ok: okFalse, reason: confineFailure }));
+// a host's refusal: 'oldDaemon' is a client's own answer, never one a host sends
+const linkRefusal = opt(lit<HostLinkRefusal>('share'));
+// a failed walk's or stat's own words
+const failureText = opt(localized(MAX_MESSAGE_CHARS));
+const confinedResult: Parser<Confined<HostLinkRefusal>> = either(
+  obj({ ok: okTrue, path: filePath, via: opt(obj({ link: relativeFile, realRoot: filePath })), spelling: opt(relativeFile) }),
+  obj({ ok: okFalse, reason: confineFailure, refusal: linkRefusal, error: failureText }),
+);
+const links = opt(lit('follow'));
 const identity: Parser<WireIdentity> = obj({ dev: decimal, ino: decimal, birthtimeNs: decimal });
 const location: Parser<ProjectFileLocation> = obj({ path: filePath, projectKey: key, relativePath: relative });
-const entryResult: Parser<EntryResult> = either(obj({ ok: okTrue }), obj({ ok: okFalse, reason: oneOf(['outside', 'missing', 'failed', 'exists'] as const), message: opt(message) }));
-const deleteResult: Parser<DeleteResult> = either(obj({ ok: okTrue }), obj({ ok: okFalse, reason: oneOf(['outside', 'missing', 'failed', 'changed'] as const), message: opt(message) }));
-const fileEntry: Parser<FileEntry> = obj({ name: nonEmpty(MAX_PATH_CHARS), kind: oneOf(['file', 'dir'] as const), ignored: opt(okTrue) });
-const folderListing: Parser<FolderListing> = either(obj({ ok: okTrue, entries: arr(fileEntry, MAX_ITEMS) as Parser<FileEntry[]> }), obj({ ok: okFalse, reason: confineFailure }));
+const entryResult: Parser<EntryResult<HostLinkRefusal>> = either(
+  obj({ ok: okTrue }),
+  obj({ ok: okFalse, reason: oneOf(['outside', 'missing', 'failed', 'exists', 'sessionFile'] as const), message: opt(message), refusal: linkRefusal, error: failureText }),
+);
+const deleteResult: Parser<DeleteResult<HostLinkRefusal>> = either(
+  obj({ ok: okTrue }),
+  obj({ ok: okFalse, reason: oneOf(['outside', 'missing', 'failed', 'changed', 'sessionFile'] as const), message: opt(message), refusal: linkRefusal, error: failureText }),
+);
+// a link's own target text, which the renderer shows: no control character
+const linkText: Parser<string> = (raw) => (typeof raw === 'string' && raw.length <= MAX_PATH_CHARS && !/\p{Cc}/u.test(raw) ? raw : INVALID);
+const fileEntry: Parser<FileEntry> = obj({ name: nonEmpty(MAX_PATH_CHARS), kind: oneOf(['file', 'dir'] as const), ignored: opt(okTrue), link: opt(obj({ target: linkText, broken: opt(okTrue) })) });
+const folderListing: Parser<FolderListing<HostLinkRefusal>> = either(
+  obj({ ok: okTrue, entries: arr(fileEntry, MAX_ITEMS) as Parser<FileEntry[]>, via: opt(obj({ link: relativeFile, realRoot: filePath })) }),
+  obj({ ok: okFalse, reason: confineFailure, refusal: linkRefusal, error: failureText }),
+);
 const fileBytes: Parser<WireFileBytes> = either(
   either(obj({ kind: lit('bytes'), bytes: bytes(MAX_DATA_CHARS), mtimeMs: num, dev: num, ino: num, sessionFile: opt(okTrue) }), obj({ kind: lit('missing'), sessionFile: opt(okTrue) })),
   either(obj({ kind: lit('tooLarge'), bytes: int(0, Number.MAX_SAFE_INTEGER) }), either(obj({ kind: lit('notAFile'), folder: bool }), obj({ kind: lit('unreadable'), error: message, code: opt(str(64)) }))),
@@ -297,10 +333,10 @@ const hostMessage: Parser<HostMessage> = (raw) => parseHostMessage(raw) ?? INVAL
 const exitCode = int(-(2 ** 31), 2 ** 32);
 const transferKind = oneOf(['file', 'dir', 'link', 'other'] as const);
 const errno = str(64);
-const transferFailure: Parser<TransferFailure> = oneOf(['outside', 'missing', 'failed', 'exists', 'invalidName', 'incomplete', 'unsupported', 'notFolder', 'notAFile', 'intoItself', 'notEmpty', 'changed'] as const);
-const transferFailed = obj({ ok: okFalse, reason: transferFailure, code: opt(errno), message: opt(message) });
-const transferResult: Parser<TransferResult> = either(obj({ ok: okTrue }), transferFailed);
-const moveResult: Parser<MoveResult> = either(obj({ ok: okTrue, left: arr(relative, MOVE_LEFT_LISTED), leftMore: opt(int(1, Number.MAX_SAFE_INTEGER)) }), transferFailed);
+const transferFailure: Parser<TransferFailure> = oneOf(['outside', 'missing', 'failed', 'exists', 'invalidName', 'incomplete', 'unsupported', 'notFolder', 'notAFile', 'intoItself', 'notEmpty', 'changed', 'sessionFile'] as const);
+const transferFailed = obj({ ok: okFalse, reason: transferFailure, code: opt(errno), message: opt(message), refusal: linkRefusal, error: failureText });
+const transferResult: Parser<TransferResult<HostLinkRefusal>> = either(obj({ ok: okTrue }), transferFailed);
+const moveResult: Parser<MoveResult<HostLinkRefusal>> = either(obj({ ok: okTrue, left: arr(relative, MOVE_LEFT_LISTED), leftMore: opt(int(1, Number.MAX_SAFE_INTEGER)) }), transferFailed);
 const size = int(0, Number.MAX_SAFE_INTEGER);
 // names and link targets from the walked host are checked by the receiver, never here, so an odd name skips one item
 const transferEntry: Parser<WireTransferEntry> = obj({
@@ -316,33 +352,36 @@ const transferEntry: Parser<WireTransferEntry> = obj({
 });
 const walkPage: Parser<WalkPage> = obj({ entries: arr(transferEntry, WALK_PAGE_ENTRIES), done: bool });
 const clash: Parser<Clash | null> = either(obj({ name: nonEmpty(MAX_PATH_CHARS), kind: transferKind }), nul);
-const clashesResult: Parser<ClashesResult> = either(obj({ ok: okTrue, clashes: arr(clash, MAX_ITEMS) }), obj({ ok: okFalse, reason: oneOf(['outside', 'missing', 'failed', 'notFolder'] as const), code: opt(errno), message: opt(message) }));
-const readFailed = obj({ ok: okFalse, reason: oneOf(['outside', 'missing', 'failed', 'notAFile'] as const), code: opt(errno) });
+const clashesResult: Parser<ClashesResult<HostLinkRefusal>> = either(
+  obj({ ok: okTrue, clashes: arr(clash, MAX_ITEMS) }),
+  obj({ ok: okFalse, reason: oneOf(['outside', 'missing', 'failed', 'notFolder'] as const), code: opt(errno), message: opt(message), refusal: linkRefusal, error: failureText }),
+);
+const readFailed = obj({ ok: okFalse, reason: oneOf(['outside', 'missing', 'failed', 'notAFile'] as const), code: opt(errno), refusal: linkRefusal, error: failureText });
 const readResult: Parser<WireReadResult> = either(obj({ ok: okTrue, size }), readFailed);
 const readRangeResult: Parser<WireReadRangeResult> = either(obj({ ok: okTrue, size, offset: size, length: size, resolvedPath: opt(relative) }), obj({ ok: okFalse, reason: oneOf(['outside', 'missing', 'failed', 'notAFile'] as const), code: opt(errno), folder: opt(bool) }));
 
 export const CLIENT_TO_WORKSPACE: Tables<ClientToWorkspace> = {
   requests: {
-    'files.confineExisting': method(obj({ project, relativePath: relative }), confinedResult),
-    'files.confineMissing': method(obj({ project, relativePath: relative }), confinedResult),
+    'files.confineExisting': method(obj({ project, relativePath: relative, links, spell: opt(okTrue) }), confinedResult),
+    'files.confineMissing': method(obj({ project, relativePath: relative, links }), confinedResult),
     'files.entry': method(
-      obj({ project, relativePath: relative }),
-      either(obj({ ok: okTrue, path: filePath, folder: bool, identity }), obj({ ok: okFalse, reason: confineFailure })),
+      obj({ project, relativePath: relative, links }),
+      either(obj({ ok: okTrue, path: filePath, folder: bool, identity, sessionStore: opt(okTrue) }), obj({ ok: okFalse, reason: confineFailure, refusal: linkRefusal, error: failureText })),
     ),
     'files.projectOfPath': method(obj({ projects: arr(project, MAX_ITEMS), target: filePath }), maybe(obj({ project, relativePath: relative, path: filePath }))),
     'files.realpath': method(obj({ target: filePath }), maybe(filePath)),
     'files.folderKey': method(obj({ path: filePath }), filePath),
     'files.read': method(obj({ path: filePath, limitBytes: opt(int(0, MAX_DATA_CHARS)) }), fileBytes),
-    'files.writeInPlace': method(obj({ project, location, bytes: bytes(MAX_DATA_CHARS) }), num),
+    'files.writeInPlace': method(obj({ project, location, bytes: bytes(MAX_DATA_CHARS), links }), num),
     'files.readHostSettings': method(nothing, obj({ path: filePath, read: either(fileBytes, obj({ kind: lit('outside') })) })),
     'files.writeHostSettings': method(obj({ bytes: bytes(MAX_DATA_CHARS) }), num),
     'files.resolveOutside': method(obj({ target: filePath }), outsideResolution),
     'files.readOutside': method(obj({ path: filePath, limitBytes: opt(int(0, MAX_DATA_CHARS)) }), either(fileBytes, obj({ kind: lit('outside') }))),
     'files.writeOutside': method(obj({ path: filePath, bytes: bytes(MAX_DATA_CHARS) }), num),
     'files.listOutside': method(obj({ folder: filePath, prefix: namePrefix }), outsideListing),
-    'files.createEntry': method(obj({ project, relativeDir: relative, name: fileName, kind: oneOf(['file', 'dir'] as const) }), entryResult),
-    'files.renameEntry': method(obj({ project, relativePath: relative, newName: fileName }), entryResult),
-    'files.deleteEntry': method(obj({ project, relativePath: relative, confirmed: identity }), deleteResult),
+    'files.createEntry': method(obj({ project, relativeDir: relative, name: fileName, kind: oneOf(['file', 'dir'] as const), links }), entryResult),
+    'files.renameEntry': method(obj({ project, relativePath: relative, newName: fileName, links }), entryResult),
+    'files.deleteEntry': method(obj({ project, relativePath: relative, confirmed: identity, links }), deleteResult),
     'files.trash': method(obj({ path: filePath }), done),
     'files.isDirectory': method(obj({ target: filePath }), bool),
     'files.mtimes': method(obj({ folder: filePath, relativePaths: arr(relative, MAX_ITEMS) }), arr(maybe(num), MAX_ITEMS)),
@@ -350,23 +389,23 @@ export const CLIENT_TO_WORKSPACE: Tables<ClientToWorkspace> = {
     'files.watch': method(obj({ watchId: runId, base: filePath, glob: nonEmpty(MAX_PATH_CHARS) }), done),
     'files.unwatch': method(obj({ watchId: runId }), done),
     'files.watchLimits': method(nothing, obj({ roots: arr(filePath, MAX_ITEMS), limit: either(int(0, 2 ** 32), nul) })),
-    'files.walk': method(obj({ walkId: runId, project, relativePath: relative }), walkPage),
+    'files.walk': method(obj({ walkId: runId, project, relativePath: relative, links }), walkPage),
     'files.walkNext': method(obj({ walkId: runId }), walkPage),
     'files.walkEnd': method(obj({ walkId: runId }), done),
-    'files.clashes': method(obj({ project, relativeDir: relative, names: arr(fileName, MAX_ITEMS) }), clashesResult),
-    'files.receiveFile': method(obj({ project, relativeDir: relative, name: fileName, stream: streamId, mode: int(0, 0o7777), mtimeMs: finite, replace: bool, size }), transferResult),
-    'files.readFile': method(obj({ project, relativePath: relative, stream: streamId }), readResult),
-    'files.readFileRange': method(obj({ project, relativePath: relative, stream: streamId, offset: int(-Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER), length: size }), readRangeResult),
-    'files.copy': method(obj({ from: project, relativePath: relative, to: project, toDir: relative, name: fileName, replace: bool }), transferResult),
-    'files.move': method(obj({ from: project, relativePath: relative, to: project, toDir: relative, name: fileName, replace: bool }), moveResult),
-    'files.makeFolder': method(obj({ project, relativeDir: relative, name: fileName, mode: opt(int(0, 0o7777)) }), transferResult),
-    'files.makeLink': method(obj({ project, relativeDir: relative, name: fileName, target: nonEmpty(MAX_PATH_CHARS), replace: bool, within: opt(relative) }), transferResult),
-    'files.verifyLink': method(obj({ project, relativePath: relative, within: relative }), transferResult),
-    'files.removeFolder': method(obj({ project, relativePath: relative, confirmed: identity }), transferResult),
-    'tree.list': method(obj({ project, relativeDir: relative, excludes: globs }), folderListing),
-    'search.run': method(obj({ runId, cwd: filePath, match: args, pattern: str(MAX_PATH_CHARS), walk: obj({ ignore: walkIgnore, overrides: globs }) }), done),
+    'files.clashes': method(obj({ project, relativeDir: relative, names: arr(fileName, MAX_ITEMS), links }), clashesResult),
+    'files.receiveFile': method(obj({ project, relativeDir: relative, name: fileName, stream: streamId, mode: int(0, 0o7777), mtimeMs: finite, replace: bool, size, links }), transferResult),
+    'files.readFile': method(obj({ project, relativePath: relative, stream: streamId, links }), readResult),
+    'files.readFileRange': method(obj({ project, relativePath: relative, stream: streamId, offset: int(-Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER), length: size, preview: opt(obj({ trusted: bool })) }), readRangeResult),
+    'files.copy': method(obj({ from: project, relativePath: relative, to: project, toDir: relative, name: fileName, replace: bool, links }), transferResult),
+    'files.move': method(obj({ from: project, relativePath: relative, to: project, toDir: relative, name: fileName, replace: bool, links }), moveResult),
+    'files.makeFolder': method(obj({ project, relativeDir: relative, name: fileName, mode: opt(int(0, 0o7777)), links }), transferResult),
+    'files.makeLink': method(obj({ project, relativeDir: relative, name: fileName, target: nonEmpty(MAX_PATH_CHARS), replace: bool, within: opt(relative), links }), transferResult),
+    'files.verifyLink': method(obj({ project, relativePath: relative, within: relative, links }), transferResult),
+    'files.removeFolder': method(obj({ project, relativePath: relative, confirmed: identity, links }), transferResult),
+    'tree.list': method(obj({ project, relativeDir: relative, excludes: globs, links }), folderListing),
+    'search.run': method(obj({ runId, cwd: filePath, match: args, pattern: str(MAX_PATH_CHARS), walk: obj({ ignore: walkIgnore, overrides: globs, followLinks: opt(okTrue) }) }), done),
     'search.kill': method(obj({ runId }), done),
-    'quickOpen.list': method(obj({ runId, root: filePath, ignore: walkIgnore, excludes: globs }), done),
+    'quickOpen.list': method(obj({ runId, root: filePath, ignore: walkIgnore, followLinks: opt(okTrue), excludes: globs }), done),
     'quickOpen.kill': method(obj({ runId }), done),
     'format.resolve': method(obj({ root: filePath, file: filePath, untrusted: arr(filePath, MAX_ITEMS) }), formatResolution),
     'format.format': method(
@@ -379,7 +418,7 @@ export const CLIENT_TO_WORKSPACE: Tables<ClientToWorkspace> = {
     'terminals.detectProfiles': method(nothing, arr(profile, MAX_ITEMS)),
     'terminals.environment': method(obj({ locale: str(256) }), env),
     'terminals.injection': method(obj({ request: injectionRequest }), maybe(obj({ args, env }))),
-    'terminals.linkKind': method(obj({ project, relativePath: relative }), either(oneOf(['file', 'folder'] as const), nul)),
+    'terminals.linkKind': method(obj({ project, relativePath: relative, links }), either(oneOf(['file', 'folder'] as const), nul)),
     'terminals.list': method(nothing, arr(liveTerminal, MAX_ITEMS)),
     'terminals.windowsBuild': method(nothing, either(int(0, Number.MAX_SAFE_INTEGER), nul)),
   },

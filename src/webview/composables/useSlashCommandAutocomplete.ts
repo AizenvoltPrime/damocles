@@ -2,7 +2,7 @@ import { ref, computed, onMounted, onUnmounted, nextTick, type Ref } from 'vue';
 import { Fzf, byLengthAsc } from 'fzf';
 import { usePlatformBridge } from './usePlatformBridge';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
-import type { SlashCommandItem } from '@shared/types/commands';
+import type { AssetWithheld, SlashCommandItem, SlashMenuRow, WithheldRootInfo } from '@shared/types/commands';
 import type { SteerTargetInfo } from '@shared/types/subagents';
 
 const MAX_FILTERED_ITEMS = 50;
@@ -18,16 +18,20 @@ export function useSlashCommandAutocomplete(
   const slashStartIndex = ref(-1);
   const selectedIndex = ref(0);
   const commands = ref<SlashCommandItem[]>([]);
+  const withheldRoots = ref<WithheldRootInfo[]>([]);
   const isLoading = ref(false);
   const commandsLoaded = ref(false);
+  // why the unavailable row Enter, Tab or a click last tried to pick cannot run, until the highlight moves or the menu closes
+  const inactiveReason = ref<AssetWithheld | null>(null);
 
   const mode = ref<'command' | 'agent'>('command');
   const agents = ref<SteerTargetInfo[]>([]);
   const agentsLoading = ref(false);
 
-  const filteredCommands = computed(() => {
+  // A withheld folder is listed only under a bare `/`, after the commands, so no typed word ever lands on its inert row.
+  const filteredCommands = computed((): SlashMenuRow[] => {
     if (!query.value) {
-      return commands.value;
+      return [...commands.value, ...withheldRoots.value];
     }
 
     const fzf = new Fzf(commands.value, {
@@ -58,6 +62,8 @@ export function useSlashCommandAutocomplete(
   function handleMessage(message: ExtensionToWebviewMessage) {
     if (message.type === 'customSlashCommands') {
       commands.value = message.commands;
+      // a core older than the field sends none
+      withheldRoots.value = message.withheldRoots ?? [];
       commandsLoaded.value = true;
       isLoading.value = false;
       clampSelection(filteredCommands.value.length);
@@ -144,6 +150,7 @@ export function useSlashCommandAutocomplete(
     }
 
     mode.value = 'command';
+    inactiveReason.value = null;
 
     const result = detectSlashCommand();
 
@@ -176,6 +183,7 @@ export function useSlashCommandAutocomplete(
     slashStartIndex.value = -1;
     selectedIndex.value = 0;
     mode.value = 'command';
+    inactiveReason.value = null;
   }
 
   function handleKeyDown(event: KeyboardEvent): boolean {
@@ -187,6 +195,7 @@ export function useSlashCommandAutocomplete(
 
     switch (event.key) {
       case 'ArrowUp':
+        inactiveReason.value = null;
         if (selectedIndex.value > 0) {
           selectedIndex.value--;
         } else {
@@ -195,6 +204,7 @@ export function useSlashCommandAutocomplete(
         return true;
 
       case 'ArrowDown':
+        inactiveReason.value = null;
         if (selectedIndex.value < itemCount - 1) {
           selectedIndex.value++;
         } else {
@@ -208,7 +218,7 @@ export function useSlashCommandAutocomplete(
           if (mode.value === 'agent') {
             insertAgent(filteredAgents.value[selectedIndex.value]);
           } else {
-            insertCommand(filteredCommands.value[selectedIndex.value]);
+            activateCommand(filteredCommands.value[selectedIndex.value]);
           }
           return true;
         }
@@ -274,8 +284,27 @@ export function useSlashCommandAutocomplete(
     }
 
     if (index >= 0 && index < filteredCommands.value.length) {
-      insertCommand(filteredCommands.value[index]);
+      activateCommand(filteredCommands.value[index]);
     }
+  }
+
+  /**
+   * A withheld row is never inserted: one a link out of the untrusted project holds back asks for trust instead, and any
+   * other keeps the menu open and names its reason.
+   */
+  function activateCommand(row: SlashMenuRow | undefined) {
+    const withheld = row && 'withheld' in row ? row.withheld : undefined;
+    if (withheld === undefined) {
+      if (row === undefined || 'kind' in row) return;
+      insertCommand(row);
+      return;
+    }
+    if (withheld.reason !== 'linkOutside') {
+      inactiveReason.value = withheld;
+      return;
+    }
+    postMessage({ type: 'setProjectTrusted' });
+    close();
   }
 
   return {
@@ -284,6 +313,7 @@ export function useSlashCommandAutocomplete(
     selectedIndex,
     filteredCommands,
     isLoading,
+    inactiveReason,
     mode,
     agents: filteredAgents,
     agentsLoading,

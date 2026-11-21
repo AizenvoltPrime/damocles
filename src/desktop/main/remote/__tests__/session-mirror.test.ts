@@ -9,8 +9,8 @@ import { createMirrorWatches, syncMirror, syncProject, syncSubcalls, type Mirror
 import type { FileWatcherFactory } from '../../../../platform/file-watcher';
 import type { RemoteConnection } from '../connection';
 import type { MirrorChange, MirrorFile, MirrorHeld, MirrorLedgerChange } from '../../../daemon/control-messages';
-import { MIRROR_CLOCK_FILE, MIRROR_SUBCALLS_FILE, mirrorWorktreeFolder } from '../../../../shared/remote-mirror';
-import { connectionMirrorChannel, followMirrorChanges, frozenMirrorChannel, isMirrorName, MIRROR_CHANGED_FEATURE, MIRROR_QUOTA_BYTES, MIRROR_SUBCALLS_FEATURE, MIRROR_WORKTREE_CHATS_FEATURE, mirrorPath, projectMirrorFolder, SessionMirror, type MirrorChannel } from '../session-mirror';
+import { MIRROR_CLOCK_FILE, MIRROR_SUBCALLS_FILE, mirrorWorktreeFolder, projectMirrorFolder } from '../../../../shared/remote-mirror';
+import { connectionMirrorChannel, followMirrorChanges, frozenMirrorChannel, isMirrorName, MIRROR_CHANGED_FEATURE, MIRROR_QUOTA_BYTES, MIRROR_SUBCALLS_FEATURE, MIRROR_WORKTREE_CHATS_FEATURE, mirrorPath, SessionMirror, type MirrorChannel } from '../session-mirror';
 
 
 // The daemon's own syncMirror, syncProject and syncSubcalls over an in-memory stream hub that delivers like the connection's

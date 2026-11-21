@@ -23,18 +23,66 @@ const H = vi.hoisted(() => {
     stream: vi.fn(),
     streamSimple: vi.fn(),
   };
+  const packageManagerOptions: unknown[] = [];
   const fakePi = {
     createAgentSessionServices: createServicesSpy,
-    SettingsManager: { create: settingsCreateSpy },
-    ModelRuntime: { create: vi.fn(async () => modelRuntime) },
+    createAgentSessionFromServices: vi.fn(async () => ({ session: { getAllTools: () => [], setAutoCompactionEnabled: () => undefined, sessionManager: { getBranch: () => [] }, dispose: () => undefined } })),
+    SettingsManager: { create: settingsCreateSpy, inMemory: () => ({}) },
+    SessionManager: { inMemory: () => ({}) },
+    ModelRuntime: { create: vi.fn(async (_options: object) => modelRuntime) },
     DefaultPackageManager: class {
+      constructor(options: unknown) {
+        packageManagerOptions.push(options);
+      }
+
       getInstalledPath(): string | undefined {
         return undefined;
       }
     },
+    // Asset discovery reads command frontmatter with these; the commands under test carry none.
+    parseFrontmatter: (content: string) => ({ frontmatter: {}, body: content }),
+    createSyntheticSourceInfo: (filePath: string, options: object) => ({ path: filePath, ...options }),
   };
-  return { createServicesSpy, settingsCreateSpy, agentSettings, modelRuntime, fakePi, ctrl: { loadable: true }, home: '', agentDir: '/fake/agent' };
+  return { createServicesSpy, settingsCreateSpy, agentSettings, modelRuntime, fakePi, packageManagerOptions, ctrl: { loadable: true }, home: '', agentDir: '/fake/agent' };
 });
+
+// Every link policy made, with its bases; refused: files a policy refuses, as Windows does for one linked onto another share.
+const linkPolicies = vi.hoisted(() => ({ made: [] as { bases: readonly string[]; policy: (file: string) => boolean }[], refused: new Set<string>() }));
+vi.mock('../../config/local-config-path', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../config/local-config-path')>();
+  return {
+    ...actual,
+    configLinkPolicy: (bases: readonly string[]) => {
+      const judged = actual.configLinkPolicy(bases);
+      const policy = (file: string): boolean => !linkPolicies.refused.has(file) && judged(file);
+      linkPolicies.made.push({ bases, policy });
+      return policy;
+    },
+  };
+});
+
+// Walks the network rule refuses, as `<base>|<segments joined>`, as Windows does for a link onto another share; any other walk
+// runs as written.
+const refusedWalks = vi.hoisted(() => new Set<string>());
+vi.mock('../../local-links', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../local-links')>();
+  const { join } = await import('node:path');
+  return {
+    ...actual,
+    followsLocalLinksOnly: async (base: string, segments: readonly string[], options?: Parameters<typeof actual.followsLocalLinksOnly>[2]) =>
+      !refusedWalks.has(`${base}|${join(...segments)}`) && actual.followsLocalLinksOnly(base, segments, options),
+  };
+});
+
+/** The first link policy made for exactly these bases. */
+function policyFor(...bases: string[]): (file: string) => boolean {
+  const made = linkPolicies.made.find((entry) => entry.bases.length === bases.length && entry.bases.every((base, i) => base === bases[i]));
+  if (!made) throw new Error(`no link policy for ${bases.join(', ')}; made: ${linkPolicies.made.map((entry) => entry.bases.join(', ')).join(' | ')}`);
+  return made.policy;
+}
+
+/** The link policy of the folder runtime of cwd (no chat worktree, so cwd is its own personal config root) under agent folder /agent. */
+const folderPolicy = (cwd: string): ((file: string) => boolean) => policyFor(cwd, H.home, userConfigBase('/agent', H.home), cwd);
 
 // The user-scope asset dirs are resolved through `os.homedir()`. Redirect it to a temp dir so the
 // developer's real `~/.claude` cannot leak into (or decide) an assertion about the loader's paths.
@@ -53,9 +101,9 @@ vi.mock('../pi-loader', () => ({
 
 // Only the fs-touching seed is stubbed; `cacheWarmingSetting` stays real so the mode a test configures
 // travels the production path.
+vi.mock('../agent-dir-setup', () => ({ ensurePiAgentDir: () => undefined }));
 vi.mock('../agent-dir', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../agent-dir')>()),
-  ensurePiAgentDir: () => undefined,
   get PI_AGENT_DIR() {
     return H.agentDir;
   },
@@ -67,6 +115,7 @@ import { installLogSink } from '../../logger';
 import { installFakePlatform, type FakeFileWatcher, type FakePlatform } from '../../../__mocks__/fake-platform';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { initPiLoader } from '../pi-loader';
+import { userConfigBase } from '../../config/local-config-path';
 
 let fake: FakePlatform;
 
@@ -140,6 +189,7 @@ function trackLoader(): LoaderProbe {
     return {
       ...fakeServices(createdTrust(options)),
       resourceLoader: {
+        ...noResources,
         getExtensions: noExtensions,
         reload: vi.fn(async () => {
           probe.skillPaths = [...additional];
@@ -161,6 +211,12 @@ function watcherFor(base: string, glob: string): FakeFileWatcher {
 }
 
 const noExtensions = () => ({ errors: [], runtime: { pendingProviderRegistrations: [] } });
+// A loader's skills, prompts and themes when it loaded none and warned of nothing.
+const noResources = {
+  getSkills: () => ({ skills: [], diagnostics: [] }),
+  getPrompts: () => ({ prompts: [], diagnostics: [] }),
+  getThemes: () => ({ themes: [], diagnostics: [] }),
+};
 
 // The project trust pi's SettingsManager was created with, as createAgentSessionServices receives it.
 const createdTrust = (options: unknown): boolean => (options as { settingsManager?: { options?: { projectTrusted?: boolean } } }).settingsManager?.options?.projectTrusted ?? true;
@@ -170,6 +226,8 @@ function fakeServices(projectTrusted = true) {
   const settingsManager = {
     projectTrusted,
     getPackages: () => [],
+    getGlobalSettings: () => ({}),
+    getProjectSettings: () => ({}),
     setProjectTrusted: vi.fn((trusted: boolean) => { settingsManager.projectTrusted = trusted; }),
     isProjectTrusted: vi.fn(() => settingsManager.projectTrusted),
   };
@@ -178,7 +236,7 @@ function fakeServices(projectTrusted = true) {
     agentDir: '/agent',
     settingsManager,
     modelRuntime: { getAvailableSnapshot: () => [], refresh: vi.fn(async () => undefined) },
-    resourceLoader: { getExtensions: noExtensions, extendResources: vi.fn(), reload: vi.fn(async () => undefined) },
+    resourceLoader: { ...noResources, getExtensions: noExtensions, extendResources: vi.fn(), reload: vi.fn(async () => undefined) },
     diagnostics: [],
   };
 }
@@ -196,6 +254,9 @@ describe('PiRuntime.init lifecycle', () => {
   beforeEach(() => {
     H.ctrl.loadable = true;
     H.agentSettings.loadError = null;
+    linkPolicies.made.length = 0;
+    linkPolicies.refused.clear();
+    refusedWalks.clear();
     H.createServicesSpy.mockReset();
     H.settingsCreateSpy.mockClear();
     H.createServicesSpy.mockImplementation(async (options: unknown) => fakeServices(createdTrust(options)));
@@ -332,7 +393,43 @@ describe('PiRuntime.init lifecycle', () => {
     const runtime = PiRuntime.get('/agent');
     await runtime.init();
 
-    expect(H.settingsCreateSpy).toHaveBeenCalledWith('/agent', '/agent');
+    expect(H.settingsCreateSpy).toHaveBeenCalledWith('/agent', '/agent', { linkPolicy: policyFor(H.home, userConfigBase('/agent', H.home)) });
+  });
+
+  it('hands pi\'s model runtime, user settings and package manager one link policy, judged from home and the agent folder\'s scope root', async () => {
+    const agentDir = path.join(H.home, '.damocles', 'pi', 'agent');
+    const runtime = PiRuntime.get(agentDir);
+    await runtime.init();
+
+    const policy = policyFor(H.home, path.join(H.home, '.damocles'));
+    expect(H.fakePi.ModelRuntime.create.mock.calls.at(-1)?.[0]).toMatchObject({ linkPolicy: policy });
+    expect(H.settingsCreateSpy).toHaveBeenCalledWith(agentDir, agentDir, { linkPolicy: policy });
+    (runtime as unknown as { _packageManager(pi: unknown): unknown })._packageManager(H.fakePi);
+    expect(H.packageManagerOptions.at(-1)).toMatchObject({ linkPolicy: policy });
+  });
+
+  it('reads no models.json the user link policy refuses, keeps what pi loaded, and tells the user once', async () => {
+    const agentDir = path.join(H.home, '.damocles', 'pi', 'agent');
+    const models = path.join(agentDir, 'models.json');
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(models, '{"providers":{}}');
+    linkPolicies.refused.add(models);
+    const lines: string[] = [];
+    installLogSink({ appendLine: (line) => void lines.push(line), show: () => undefined, dispose: () => undefined });
+    const runtime = PiRuntime.get(agentDir);
+    await runtime.init();
+    await runtime.reloadChangedModelsConfig();
+
+    expect(lines.join('\n')).toContain('models.json links to a network share or WSL path, so it is not read');
+    expect(fake.notifications.calls.map((call) => call.text)).toEqual([{ message: '{0} links to a network share or WSL path, so Damocles does not read it.', args: [models] }]);
+  });
+
+  it('names a user settings file pi\'s link policy refuses with the network share wording, not as a file to fix', async () => {
+    const settingsPath = path.join('/agent', 'settings.json');
+    H.agentSettings.loadError = { path: settingsPath, error: Object.assign(new Error(`Not read: the link policy refuses ${settingsPath}`), { code: 'ELINKPOLICY' }) };
+    await PiRuntime.get('/agent').init();
+
+    expect(fake.notifications.calls.map((call) => call.text)).toEqual([{ message: '{0} links to a network share or WSL path, so Damocles does not read it.', args: [settingsPath] }]);
   });
 
   it('clears the cached promise on failure so a later init() retries', async () => {
@@ -773,7 +870,7 @@ describe('PiRuntime.init lifecycle', () => {
     makeSkill(cwd, '.codex/skills', 'demo');
 
     const extendResources = vi.fn();
-    H.createServicesSpy.mockResolvedValue({ ...fakeServices(), resourceLoader: { getExtensions: noExtensions, extendResources, reload: vi.fn(async () => undefined) } });
+    H.createServicesSpy.mockResolvedValue({ ...fakeServices(), resourceLoader: { ...noResources, getExtensions: noExtensions, extendResources, reload: vi.fn(async () => undefined) } });
 
     const runtime = PiRuntime.get('/agent');
     await runtime.folder(cwd);
@@ -789,7 +886,7 @@ describe('PiRuntime.init lifecycle', () => {
     makeSkill(cwd, '.codex/skills', 'demo');
 
     const extendResources = vi.fn();
-    H.createServicesSpy.mockResolvedValue({ ...fakeServices(), resourceLoader: { getExtensions: noExtensions, extendResources, reload: vi.fn(async () => undefined) } });
+    H.createServicesSpy.mockResolvedValue({ ...fakeServices(), resourceLoader: { ...noResources, getExtensions: noExtensions, extendResources, reload: vi.fn(async () => undefined) } });
 
     const runtime = PiRuntime.get('/agent');
     await runtime.folder(cwd);
@@ -815,7 +912,7 @@ describe('PiRuntime.init lifecycle', () => {
     setTrusted(false);
 
     const extendResources = vi.fn();
-    H.createServicesSpy.mockResolvedValue({ ...fakeServices(), resourceLoader: { getExtensions: noExtensions, extendResources, reload: vi.fn(async () => undefined) } });
+    H.createServicesSpy.mockResolvedValue({ ...fakeServices(), resourceLoader: { ...noResources, getExtensions: noExtensions, extendResources, reload: vi.fn(async () => undefined) } });
 
     const runtime = PiRuntime.get('/agent');
     await runtime.folder(cwd);
@@ -826,13 +923,111 @@ describe('PiRuntime.init lifecycle', () => {
     expect(paths).toContain(path.join(H.home, '.claude', 'skills'));
   });
 
+  it('hands pi no skill root that does not resolve, such as one caught in a link loop', async () => {
+    const cwd = tempDir('pi-policy-');
+    makeSkill(H.home, '.damocles/skills', 'userskill');
+    fs.mkdirSync(path.join(H.home, '.claude'), { recursive: true });
+    const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+    fs.symlinkSync(path.join(H.home, '.claude', 'other'), path.join(H.home, '.claude', 'skills'), linkType);
+    fs.symlinkSync(path.join(H.home, '.claude', 'skills'), path.join(H.home, '.claude', 'other'), linkType);
+    const probe = trackLoader();
+
+    const runtime = PiRuntime.get('/agent');
+    await runtime.folder(cwd);
+
+    expect(probe.skillPaths).toEqual([path.join(H.home, '.damocles', 'skills')]);
+  });
+
+  it('hands pi no existing skill root the network rule refuses, judged from the root\'s own scope base', async () => {
+    const cwd = tempDir('pi-policy-');
+    makeSkill(H.home, '.damocles/skills', 'userskill');
+    makeSkill(H.home, '.claude/skills', 'linkedskill');
+    // the walk of the root from home, its scope base; the same root judged from any other base is not refused
+    refusedWalks.add(`${H.home}|${path.join('.claude', 'skills')}`);
+    const probe = trackLoader();
+
+    const runtime = PiRuntime.get('/agent');
+    await runtime.folder(cwd);
+
+    expect(probe.skillPaths).toEqual([path.join(H.home, '.damocles', 'skills')]);
+  });
+
+  // The snapshot scan is async, so a revoke can land between its trust read and the settings manager's.
+  it('reloads a folder whose trust was taken back while its creation scanned the project, leaving its commands out of pi', async () => {
+    const cwd = tempDir('pi-midscan-');
+    fs.mkdirSync(path.join(cwd, '.claude', 'commands'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.claude', 'commands', 'deploy.md'), 'Deploy.\n');
+    grantTrust();
+    trackLoader();
+    const parse = H.fakePi.parseFrontmatter;
+    vi.spyOn(H.fakePi, 'parseFrontmatter').mockImplementationOnce((content: string) => {
+      fake.trust.revokeTrust([cwd]);
+      return parse(content);
+    });
+
+    const folder = await PiRuntime.get('/agent').folder(cwd);
+
+    const loaderOptions = (H.createServicesSpy.mock.calls[0]?.[0] as { resourceLoaderOptions: Record<string, unknown> }).resourceLoaderOptions;
+    const override = loaderOptions['promptsOverride'] as (base: { prompts: { name: string }[]; diagnostics: [] }) => { prompts: { name: string }[] };
+    expect(override({ prompts: [], diagnostics: [] }).prompts.map((prompt) => prompt.name)).toEqual([]);
+    expect(folder.services.settingsManager.isProjectTrusted()).toBe(false);
+  });
+
+  it('hands pi every runnable command through promptsOverride, behind pi-native templates of the same name', async () => {
+    const cwd = tempDir('pi-commands-');
+    fs.mkdirSync(path.join(H.home, '.claude', 'commands', 'gs'), { recursive: true });
+    fs.writeFileSync(path.join(H.home, '.claude', 'commands', 'gs', 'pickup.md'), 'Pick up issue $1.\n');
+    fs.writeFileSync(path.join(H.home, '.claude', 'commands', 'native.md'), 'ours\n');
+
+    const runtime = PiRuntime.get('/agent');
+    await runtime.folder(cwd);
+
+    const loaderOptions = (H.createServicesSpy.mock.calls[0]?.[0] as { resourceLoaderOptions: Record<string, unknown> }).resourceLoaderOptions;
+    expect(loaderOptions['additionalPromptTemplatePaths']).toBeUndefined();
+    const override = loaderOptions['promptsOverride'] as (base: { prompts: { name: string; content: string }[]; diagnostics: [] }) => { prompts: { name: string; content: string }[] };
+    const native = { name: 'native', content: 'pi native' };
+    expect(override({ prompts: [native], diagnostics: [] }).prompts.map((prompt) => [prompt.name, prompt.content])).toEqual([
+      ['native', 'pi native'],
+      ['gs:pickup', 'Pick up issue $1.\n'],
+    ]);
+  });
+
+  it('keeps a command whose name differs from a pi-native template\'s only in case, since pi expands each under its exact name', async () => {
+    const cwd = tempDir('pi-commands-case-');
+    fs.mkdirSync(path.join(H.home, '.claude', 'commands'), { recursive: true });
+    fs.writeFileSync(path.join(H.home, '.claude', 'commands', 'deploy.md'), 'ours\n');
+
+    await PiRuntime.get('/agent').folder(cwd);
+
+    const loaderOptions = (H.createServicesSpy.mock.calls[0]?.[0] as { resourceLoaderOptions: Record<string, unknown> }).resourceLoaderOptions;
+    const override = loaderOptions['promptsOverride'] as (base: { prompts: { name: string; content: string }[]; diagnostics: [] }) => { prompts: { name: string; content: string }[] };
+    expect(override({ prompts: [{ name: 'Deploy', content: 'pi native' }], diagnostics: [] }).prompts.map((prompt) => [prompt.name, prompt.content])).toEqual([
+      ['Deploy', 'pi native'],
+      ['deploy', 'ours\n'],
+    ]);
+    expect(override({ prompts: [{ name: 'deploy', content: 'pi native' }], diagnostics: [] }).prompts.map((prompt) => [prompt.name, prompt.content])).toEqual([
+      ['deploy', 'pi native'],
+    ]);
+  });
+
+  it('hands a folder\'s loader, its settings and its subagents\' loaders one link policy, judged from the folder, home, the agent folder\'s scope root and the personal config root', async () => {
+    const folder = await PiRuntime.get('/agent').folder('/cwd');
+    const policy = folderPolicy('/cwd');
+    const loaderOptions = (call: number): { linkPolicy?: unknown } => (H.createServicesSpy.mock.calls[call]?.[0] as { resourceLoaderOptions: { linkPolicy?: unknown } }).resourceLoaderOptions;
+    expect(loaderOptions(0).linkPolicy).toBe(policy);
+    expect(H.settingsCreateSpy).toHaveBeenCalledWith('/cwd', '/agent', expect.objectContaining({ linkPolicy: policy }));
+
+    await folder.createSubagentSession({ cwd: '/cwd', systemPrompt: 'probe', tools: [], customTools: [], extensionFactory: () => undefined, store: { kind: 'memory' } });
+    expect(loaderOptions(1).linkPolicy).toBe(policy);
+  });
+
   // pi's project layer (`.pi/settings.json` packages, `.pi/extensions`) installs and runs repo code.
   it.each([true, false])('hands pi a settings manager whose project trust matches the window (trusted=%s)', async (trusted) => {
     setTrusted(trusted);
     const runtime = PiRuntime.get('/agent');
     await runtime.folder('/cwd');
 
-    expect(H.settingsCreateSpy).toHaveBeenCalledWith('/cwd', '/agent', { projectTrusted: trusted });
+    expect(H.settingsCreateSpy).toHaveBeenCalledWith('/cwd', '/agent', { projectTrusted: trusted, linkPolicy: folderPolicy('/cwd') });
     const created = H.settingsCreateSpy.mock.results.at(-1)?.value;
     expect((H.createServicesSpy.mock.calls[0]?.[0] as { settingsManager: unknown }).settingsManager).toBe(created);
   });
@@ -903,8 +1098,8 @@ describe('PiRuntime.init lifecycle', () => {
     const runtime = PiRuntime.get('/agent');
     await runtime.folder('/a');
     await runtime.folder('/b');
-    expect(H.settingsCreateSpy).toHaveBeenCalledWith('/a', '/agent', { projectTrusted: false });
-    expect(H.settingsCreateSpy).toHaveBeenCalledWith('/b', '/agent', { projectTrusted: false });
+    expect(H.settingsCreateSpy).toHaveBeenCalledWith('/a', '/agent', { projectTrusted: false, linkPolicy: folderPolicy('/a') });
+    expect(H.settingsCreateSpy).toHaveBeenCalledWith('/b', '/agent', { projectTrusted: false, linkPolicy: folderPolicy('/b') });
 
     grantTrust();
 
@@ -1126,6 +1321,130 @@ describe('PiRuntime.init lifecycle', () => {
     ).toBe(true);
   });
 
+  // A git pull renames over the file behind the link, which no watcher on the user root sees.
+  it('watches the folder a user-scope command folder link leads to, and reloads every folder when a file there changes', async () => {
+    const clone = tempDir('pi-clone-');
+    fs.mkdirSync(path.join(clone, 'commands'), { recursive: true });
+    fs.writeFileSync(path.join(clone, 'commands', 'pickup.md'), 'Pick up issue $1.\n');
+    fs.mkdirSync(path.join(H.home, '.claude', 'commands'), { recursive: true });
+    fs.symlinkSync(path.join(clone, 'commands'), path.join(H.home, '.claude', 'commands', 'gs'), process.platform === 'win32' ? 'junction' : 'dir');
+    const target = fs.realpathSync.native(path.join(clone, 'commands'));
+    trackLoader();
+    const runtime = PiRuntime.get('/agent');
+    const a = await runtime.folder('/a');
+    const reloadA = vi.spyOn(a, 'reloadBare');
+    await vi.waitFor(() => expect(fake.fileWatchers.watchers.filter((w) => w.base === target).map((w) => w.glob)).toEqual(['*.md']));
+
+    vi.useFakeTimers();
+    try {
+      watcherFor(target, '*.md').fireChange(path.join(target, 'pickup.md'));
+      await vi.advanceTimersByTimeAsync(300);
+      expect(reloadA).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Every folder's loader carries the user roots, so one scan of them serves a burst for all of them.
+  it('walks the user roots once for a burst of user asset changes, and gives each folder the snapshot its own full scan gives', async () => {
+    const a = tempDir('pi-a-');
+    const b = tempDir('pi-b-');
+    fs.mkdirSync(path.join(H.home, '.claude', 'commands'), { recursive: true });
+    fs.writeFileSync(path.join(H.home, '.claude', 'commands', 'review.md'), 'Review it.\n');
+    fs.mkdirSync(path.join(a, '.claude', 'commands'), { recursive: true });
+    fs.writeFileSync(path.join(a, '.claude', 'commands', 'review.md'), 'Review this project.\n');
+    makeSkill(a, '.damocles/skills', 'projectskill');
+    makeSkill(H.home, '.damocles/skills', 'userskill');
+    makeSkill(H.home, '.codex/skills', 'codexskill');
+    trackLoader();
+    const runtime = PiRuntime.get('/agent');
+    const folders = [await runtime.folder(a), await runtime.folder(b)];
+    const snapshot = (folder: FolderRuntime) => {
+      const held = folder as unknown as { _assetSnapshot: { prompts: { name: string; filePath: string; content: string }[]; skillRoots: unknown[] }; _additionalSkillPaths: string[] };
+      return { prompts: held._assetSnapshot.prompts.map(({ name, filePath, content }) => ({ name, filePath, content })), skillRoots: held._assetSnapshot.skillRoots, skillPaths: [...held._additionalSkillPaths] };
+    };
+    const fullScans = folders.map(snapshot);
+    expect(fullScans[0]!.prompts.map((prompt) => prompt.content)).toEqual(['Review this project.\n']);
+    const userRoot = path.join(H.home, '.claude', 'commands');
+    const walksOfUserRoot = vi.spyOn(fs.promises, 'stat');
+    const reloads = folders.map((folder) => vi.spyOn(folder, 'reloadBare'));
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const watcher = watcherFor(H.home, '.claude/commands/**');
+      watcher.fireChange(path.join(userRoot, 'review.md'));
+      watcher.fireChange(path.join(userRoot, 'review.md'));
+      await vi.advanceTimersByTimeAsync(300);
+    } finally {
+      vi.useRealTimers();
+    }
+    for (const reload of reloads) {
+      expect(reload).toHaveBeenCalledTimes(1);
+      await reload.mock.results[0]!.value;
+    }
+
+    expect(walksOfUserRoot.mock.calls.filter(([file]) => file === userRoot)).toHaveLength(1);
+    expect(folders.map(snapshot)).toEqual(fullScans);
+  });
+
+  // A git pull renames over the file behind the link, which no watcher on the project root sees.
+  it('watches the folder a project command folder link leads to, reloads the folder when a file there changes, and lets go of it at a revoke', async () => {
+    const cwd = tempDir('pi-proj-');
+    const clone = tempDir('pi-clone-');
+    fs.writeFileSync(path.join(clone, 'pickup.md'), 'Pick up issue $1.\n');
+    fs.mkdirSync(path.join(cwd, '.damocles', 'commands'), { recursive: true });
+    fs.symlinkSync(clone, path.join(cwd, '.damocles', 'commands', 'gs'), process.platform === 'win32' ? 'junction' : 'dir');
+    const target = fs.realpathSync.native(clone);
+    trackLoader();
+    const runtime = PiRuntime.get('/agent');
+    const folder = await runtime.folder(cwd);
+    const outside = fake.fileWatchers.watchers.filter((w) => w.base === target && !w.disposed);
+    expect(outside.map((w) => w.glob)).toEqual(['*.md']);
+    const reload = vi.spyOn(folder, 'reloadBare');
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      outside[0]!.fireChange(path.join(target, 'pickup.md'));
+      await vi.advanceTimersByTimeAsync(300);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(reload).toHaveBeenCalledTimes(1);
+    await reload.mock.results[0]!.value;
+
+    setTrusted(false);
+    fake.trust.revokeTrust([cwd]);
+    expect(reload).toHaveBeenCalledTimes(2);
+    await reload.mock.results[1]!.value;
+    expect(outside[0]!.disposed).toBe(true);
+    expect(fake.fileWatchers.watchers.filter((w) => w.base === target && !w.disposed)).toEqual([]);
+  });
+
+  // The snapshot, pi's skill roots and the watched targets must all be one trust's, whatever changed during the walk.
+  it('scans again when trust changed during the asset scan, and applies and reports the trust that held for the whole scan', async () => {
+    const cwd = tempDir('pi-proj-');
+    const skills = makeSkill(cwd, '.damocles/skills', 'projectskill');
+    const outside = makeSkill(tempDir('pi-outside-'), 'skills', 'linkedskill');
+    fs.symlinkSync(path.join(outside, 'linkedskill'), path.join(skills, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+    const target = fs.realpathSync.native(path.join(outside, 'linkedskill'));
+    trackLoader();
+    const runtime = PiRuntime.get('/agent');
+    const folder = await runtime.folder(cwd);
+    const held = folder as unknown as { _additionalSkillPaths: string[]; _assetSnapshot: { followed: unknown[] }; _refreshAssetSnapshot(): Promise<boolean> };
+    const outsideWatches = () => fake.fileWatchers.watchers.filter((w) => w.base === target && !w.disposed);
+    expect(held._additionalSkillPaths).toEqual([skills]);
+    expect(outsideWatches()).toHaveLength(1);
+    // trusted when the scan starts, revoked by the time it ends
+    let reads = 0;
+    vi.spyOn(fake.trust, 'isTrusted').mockImplementation((folderPath) => folderPath !== cwd || ++reads === 1);
+
+    expect(await held._refreshAssetSnapshot()).toBe(false);
+
+    expect(held._additionalSkillPaths).toEqual([]);
+    expect(held._assetSnapshot.followed).toEqual([]);
+    expect(outsideWatches()).toEqual([]);
+  });
+
   // A login, logout or token refresh in another process lands only in auth.json.
   it('republishes the account state of each live session once per burst of auth.json events, after the key sync', async () => {
     const agentDir = tempDir('pi-agent-');
@@ -1174,6 +1493,14 @@ describe('PiRuntime.init lifecycle', () => {
 
     await PiRuntime.disposeInstance();
     expect(fake.fileWatchers.watchers.find((w) => w.glob === 'auth.json')?.disposed).toBe(true);
+  });
+
+  it('bases the auth.json watch at the home folder when the agent folder lies in it, so the watcher judges a link on its path', () => {
+    H.agentDir = path.join(H.home, '.pi', 'agent');
+    fs.mkdirSync(H.agentDir, { recursive: true });
+    const activation = PiRuntime.watchAuthFile();
+    expect(fake.fileWatchers.watchers.filter((w) => !w.disposed && w.glob.endsWith('auth.json')).map((w) => [w.base, w.glob])).toEqual([[H.home, '.pi/agent/auth.json']]);
+    activation.dispose();
   });
 
   // Activation watches auth.json before pi starts; the runtime takes that watch over instead of adding its own.

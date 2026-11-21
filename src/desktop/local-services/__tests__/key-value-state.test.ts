@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDesktopKeyValueState } from '../key-value-state';
 import { flushAcrossHeldRename } from '../../../__mocks__/held-rename';
+import { fileLinkedOntoDevice, folderOnAdminShare } from '../../../__mocks__/admin-share';
 
 let userData: string;
 
@@ -14,6 +15,28 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(userData, { recursive: true, force: true });
+});
+
+describe.runIf(process.platform === 'win32')('desktop key-value state under the network rule (win32)', () => {
+  it('reads and writes through a state folder linked onto a share, as the user moved it there', async (ctx) => {
+    const real = folderOnAdminShare(ctx, path.join(userData, 'state'));
+    try {
+      await createDesktopKeyValueState(userData, () => undefined).global.update('a', 1);
+      expect(createDesktopKeyValueState(userData, () => undefined).global.get('a')).toBe(1);
+      expect(fs.existsSync(path.join(real, 'global.json'))).toBe(true);
+    } finally {
+      fs.rmSync(real, { recursive: true, force: true });
+    }
+  });
+
+  it('neither reads nor writes a state file that links off its folder', async (ctx) => {
+    const file = path.join(userData, 'state', 'global.json');
+    fileLinkedOntoDevice(ctx, file);
+    const lines: string[] = [];
+    const state = createDesktopKeyValueState(userData, (line) => lines.push(line));
+    expect(lines).toEqual([`[state] ignoring ${file}: it links to a network share or WSL path`]);
+    await expect(state.global.update('a', 1)).rejects.toMatchObject({ name: 'ConfigWriteRefused' });
+  });
 });
 
 describe('desktop key-value state', () => {

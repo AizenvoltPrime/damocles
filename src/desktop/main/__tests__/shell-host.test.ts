@@ -673,6 +673,15 @@ describe('editor, Files, layout and Quick Open channels', () => {
     }
   });
 
+  it('passes on a collapsed folder only as an exact confined folder of the shell page', () => {
+    files['collapsed'] = vi.fn();
+    send(SHELL_CHANNELS.filesCollapsed, { projectKey: 'p', relativePath: 'linked/sub' });
+    for (const payload of [{ projectKey: 'p', relativePath: '' }, { projectKey: 'p', relativePath: '../x' }, { projectKey: 'p', relativePath: 'a', extra: 1 }, 'a']) send(SHELL_CHANNELS.filesCollapsed, payload);
+    send(SHELL_CHANNELS.filesCollapsed, { projectKey: 'p', relativePath: 'a' }, foreign);
+    expect(files['collapsed']!.mock.calls).toEqual([[{ projectKey: 'p', relativePath: 'linked/sub' }]]);
+    expect(lines.filter((line) => line.includes('malformed Files collapse'))).toHaveLength(4);
+  });
+
   it('focuses a tab\'s page only for an exact { tabId } asked while the shell page holds focus, answering whether focus moved', async () => {
     editor['focusPage'] = vi.fn((tabId: string) => tabId === 'shown');
     await expect(call(SHELL_CHANNELS.editorFocusPage, { tabId: 'shown' })).resolves.toBe(false);

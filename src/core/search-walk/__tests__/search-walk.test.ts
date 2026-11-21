@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -7,8 +7,8 @@ import { runProcess } from '../../process-launcher';
 import { ALL_IGNORE_FILES, GlobSyntaxError, insideGitRepo, overrideRules, walkFiles, walkTree, type WalkIgnore } from '..';
 
 // Parity with rg 15's own walk (`rg --files --hidden`), the walk Grep and Glob ran before they walked themselves: each case lists
-// a fixture tree with real rg and with walkFiles and requires the same files. Unless the walk lists `.git` folders, entries
-// inside one are left out of rg's list.
+// a fixture tree with real rg and with walkFiles and requires the same files; under followLinks, `rg --follow`. Unless the walk
+// lists `.git` folders, entries inside one are left out of rg's list.
 
 const noHosts = (): Promise<ReadonlySet<string>> => Promise.resolve(new Set());
 let base: string;
@@ -57,18 +57,20 @@ const insideGitFolder = (file: string): boolean => file.split('/').slice(0, -1).
 interface Switches {
   readonly ignore?: WalkIgnore;
   readonly gitFolders?: 'skip' | 'list';
+  // the walk's followLinks, rg's --follow
+  readonly followLinks?: boolean;
 }
 
-async function rgFiles(root: string, globs: readonly string[] = [], requireGit = true, { ignore = ALL_IGNORE_FILES, gitFolders = 'skip' }: Switches = {}): Promise<string[]> {
-  const args = ['--no-config', '--files', '--hidden', ...(requireGit ? [] : ['--no-require-git']), ...rgIgnoreArgs(ignore), ...globs.flatMap((glob) => ['--glob', glob]), '--', '.'];
+async function rgFiles(root: string, globs: readonly string[] = [], requireGit = true, { ignore = ALL_IGNORE_FILES, gitFolders = 'skip', followLinks = false }: Switches = {}): Promise<string[]> {
+  const args = ['--no-config', '--files', '--hidden', ...(followLinks ? ['--follow'] : []), ...(requireGit ? [] : ['--no-require-git']), ...rgIgnoreArgs(ignore), ...globs.flatMap((glob) => ['--glob', glob]), '--', '.'];
   const { exit, stdout, stderr } = await runProcess({ file: rgPath, args, cwd: root, env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'] });
   if (exit?.code !== 0 && exit?.code !== 1) throw new Error(`rg exited ${exit?.code}: ${stderr.toString()}`);
   return stdout.toString('utf8').split('\n').filter(Boolean).map((line) => line.replace(/^\.[\\/]/, '').replaceAll('\\', '/')).filter((file) => gitFolders === 'list' || !insideGitFolder(file)).sort();
 }
 
-async function walked(root: string, globs: readonly string[] = [], requireGit = true, { ignore = ALL_IGNORE_FILES, gitFolders = 'skip' }: Switches = {}): Promise<string[]> {
+async function walked(root: string, globs: readonly string[] = [], requireGit = true, { ignore = ALL_IGNORE_FILES, gitFolders = 'skip', followLinks = false }: Switches = {}): Promise<string[]> {
   const files: string[] = [];
-  const walk = walkFiles({ root, requireGit, ignore, gitFolders, overrides: overrideRules(globs), allowedHosts: noHosts, signal: undefined });
+  const walk = walkFiles({ root, requireGit, ignore, gitFolders, overrides: overrideRules(globs), allowedHosts: noHosts, signal: undefined, ...(followLinks ? { followLinks: true } : {}) });
   for await (const batch of walk.files) files.push(...batch.map((file) => file.replaceAll('\\', '/')));
   expect(walk.errors).toEqual([]);
   return files.sort();
@@ -407,6 +409,445 @@ describe.runIf(process.platform !== 'win32')('a name ending in a dot (POSIX)', (
       await parity(root, lines);
       await parity(root, lines.map((line) => `!${line}`));
     }
+  });
+});
+
+// A folder link every host can make: a junction on Windows, a symlink elsewhere.
+const folderLink = (target: string, at: string): void => fs.symlinkSync(target, at, process.platform === 'win32' ? 'junction' : 'dir');
+
+describe.runIf(process.platform !== 'win32')('followLinks lists what rg --follow lists (POSIX)', () => {
+  it('a folder link and a file link out of the root, with the ignore rules on the path through each, under every switch', async () => {
+    const outside = tree({ 'c.txt': '', 'skip.log': '', 'deep/d.txt': '', '.gitignore': 'own.txt\n', 'own.txt': '', 'keep.txt': '' });
+    const root = tree({ '.git/': '', '.gitignore': '*.log\nlinked/deep/\n', 'a.txt': '', 'real/b.txt': '' });
+    folderLink(outside, path.join(root, 'linked'));
+    fs.symlinkSync(path.join(outside, 'c.txt'), path.join(root, 'file-link.txt'));
+    expect(await parity(root, [], true, { followLinks: true })).toEqual(['.gitignore', 'a.txt', 'file-link.txt', 'linked/.gitignore', 'linked/c.txt', 'linked/keep.txt', 'real/b.txt']);
+    for (const ignore of SWITCHES) await parity(root, [], true, { ignore, followLinks: true });
+    await parity(root, ['!linked/c.txt', '!file-link.txt'], true, { followLinks: true });
+  });
+
+  it('a link inside a linked folder, followed from the path through both', async () => {
+    const further = tree({ 'f.txt': '' });
+    const outside = tree({ 'c.txt': '' });
+    folderLink(further, path.join(outside, 'further'));
+    const root = tree({ '.git/': '', 'a.txt': '' });
+    folderLink(outside, path.join(root, 'linked'));
+    expect(await parity(root, [], true, { followLinks: true })).toEqual(['a.txt', 'linked/c.txt', 'linked/further/f.txt']);
+  });
+});
+
+describe('followLinks', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('ends at a link to a folder the walk entered, an ancestor included, and lists each file once', async () => {
+    const root = tree({ '.git/': '', 'a.txt': '', 'sub/b.txt': '' });
+    folderLink(root, path.join(root, 'sub', 'back'));
+    folderLink(path.join(root, 'sub'), path.join(root, 'sub', 'self'));
+    expect(await walked(root, [], true, { followLinks: true })).toEqual(['a.txt', 'sub/b.txt']);
+  });
+
+  it('lists a sibling folder by its own path, never through a link beside it, whatever the listing order', async () => {
+    const root = tree({ '.git/': '', 'b/x.txt': '' });
+    folderLink(path.join(root, 'b'), path.join(root, 'a-link'));
+    folderLink(path.join(root, 'b'), path.join(root, 'z-link'));
+    expect(await walked(root, [], true, { followLinks: true })).toEqual(['b/x.txt']);
+  });
+
+  it('ends at a link to the folder above the root, listing the root once more below it, as rg --follow does', async () => {
+    const above = tree({ 'proj/.git/': '', 'proj/a.txt': '', 'sibling.txt': '' });
+    const root = path.join(above, 'proj');
+    folderLink(above, path.join(root, 'up'));
+    expect(await walked(root, [], true, { followLinks: true })).toEqual(['a.txt', 'up/proj/a.txt', 'up/sibling.txt']);
+  });
+
+  it('enters a folder two links lead to once, by the first link it lists', async () => {
+    const outside = tree({ 'c.txt': '' });
+    const root = tree({ '.git/': '', 'a.txt': '' });
+    folderLink(outside, path.join(root, 'one'));
+    folderLink(outside, path.join(root, 'two'));
+    const listed = await walked(root, [], true, { followLinks: true });
+    expect([['a.txt', 'one/c.txt'], ['a.txt', 'two/c.txt']]).toContainEqual(listed);
+  });
+
+  it('leaves out a link whose target is gone, and two links leading to each other, reporting neither', async () => {
+    const root = tree({ '.git/': '', 'a.txt': '' });
+    const gone = tree({});
+    folderLink(gone, path.join(root, 'dangling'));
+    fs.rmSync(gone, { recursive: true });
+    folderLink(path.join(root, 'loop2'), path.join(root, 'loop1'));
+    folderLink(path.join(root, 'loop1'), path.join(root, 'loop2'));
+    expect(await walked(root, [], true, { followLinks: true })).toEqual(['a.txt']);
+  });
+
+  it('reports a link it cannot stat as rg reports an unreadable folder, and goes on', async () => {
+    const outside = tree({ 'c.txt': '' });
+    const root = tree({ '.git/': '', 'a.txt': '' });
+    folderLink(outside, path.join(root, 'locked'));
+    const stat = fs.promises.stat.bind(fs.promises);
+    vi.spyOn(fs.promises, 'stat').mockImplementation((async (file: fs.PathLike, ...rest: unknown[]) => {
+      if (String(file) === path.join(root, 'locked')) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      return stat(file, ...(rest as []));
+    }) as never);
+    const walk = walkFiles({ root, requireGit: true, ignore: ALL_IGNORE_FILES, gitFolders: 'skip', overrides: overrideRules([]), allowedHosts: noHosts, signal: undefined, followLinks: true });
+    const files: string[] = [];
+    for await (const batch of walk.files) files.push(...batch);
+    expect(files).toEqual(['a.txt']);
+    expect(walk.errors).toEqual(['locked: EACCES: permission denied']);
+  });
+
+  it('never reads through a .git that is a link, under either gitFolders, and lists nothing of it', async () => {
+    const outside = tree({ 'HEAD': '', 'info/exclude': 'a.txt\n' });
+    const root = tree({ 'a.txt': '', 'b.txt': '' });
+    folderLink(outside, path.join(root, '.git'));
+    const named: string[] = [];
+    for (const name of ['lstat', 'stat', 'realpath', 'readdir', 'readFile', 'readlink', 'open'] as const) {
+      const original = fs.promises[name].bind(fs.promises) as (...args: unknown[]) => Promise<unknown>;
+      vi.spyOn(fs.promises, name).mockImplementation((async (file: fs.PathLike, ...rest: unknown[]) => {
+        if (String(file).startsWith(path.join(root, '.git'))) named.push(`${name} ${String(file)}`);
+        return original(file, ...rest);
+      }) as never);
+    }
+    for (const gitFolders of ['skip', 'list'] as const) expect(await walked(root, [], true, { gitFolders, followLinks: true })).toEqual(['a.txt', 'b.txt']);
+    expect(named).toEqual([]);
+  });
+
+  it('reads no ignore file that is a link, as without it', async (context) => {
+    const outside = tree({ 'rules': 'hidden.txt\n' });
+    const root = tree({ '.git/': '', 'hidden.txt': '', 'shown.txt': '' });
+    try {
+      fs.symlinkSync(path.join(outside, 'rules'), path.join(root, '.gitignore'), 'file');
+    } catch (err) {
+      // a file symlink on Windows needs Developer Mode or an elevated process
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') context.skip();
+      throw err;
+    }
+    expect(await walked(root, [], true, { followLinks: true })).toEqual(['.gitignore', 'hidden.txt', 'shown.txt']);
+  });
+
+  it('makes no call naming a link the rules ignore both as a file and as a folder', async () => {
+    const outside = tree({ 'c.txt': '' });
+    const root = tree({ '.git/': '', '.gitignore': 'skipped\n', 'a.txt': '' });
+    const link = path.join(root, 'skipped');
+    folderLink(outside, link);
+    const named: string[] = [];
+    for (const name of ['lstat', 'stat', 'realpath', 'readdir', 'readFile', 'readlink', 'open'] as const) {
+      const original = fs.promises[name].bind(fs.promises) as (...args: unknown[]) => Promise<unknown>;
+      vi.spyOn(fs.promises, name).mockImplementation((async (file: fs.PathLike, ...rest: unknown[]) => {
+        if (String(file).startsWith(link)) named.push(`${name} ${String(file)}`);
+        return original(file, ...rest);
+      }) as never);
+    }
+    expect(await walked(root, [], true, { followLinks: true })).toEqual(['.gitignore', 'a.txt']);
+    expect(named).toEqual([]);
+  });
+
+  it('stats and realpaths a link below a followed folder by its path from the root, where an ancestor now leads', async () => {
+    const secret = tree({ 's.txt': '' });
+    const elsewhere = tree({ 'e.txt': '' });
+    const before = tree({});
+    const after = tree({});
+    folderLink(secret, path.join(before, 'b'));
+    folderLink(elsewhere, path.join(after, 'b'));
+    const root = tree({ '.git/': '' });
+    const ancestor = path.join(root, 'a');
+    folderLink(before, ancestor);
+    const named: string[] = [];
+    const stat = fs.promises.stat.bind(fs.promises) as (...args: unknown[]) => Promise<unknown>;
+    const realpath = fs.promises.realpath.bind(fs.promises) as (...args: unknown[]) => Promise<unknown>;
+    vi.spyOn(fs.promises, 'stat').mockImplementation((async (file: fs.PathLike, ...rest: unknown[]) => {
+      named.push(`stat ${String(file)}`);
+      return stat(file, ...rest);
+    }) as never);
+    let repointed = false;
+    vi.spyOn(fs.promises, 'realpath').mockImplementation((async (file: fs.PathLike, ...rest: unknown[]) => {
+      named.push(`realpath ${String(file)}`);
+      const real = await realpath(file, ...rest);
+      // a is queued at this realpath; it leads elsewhere before the link inside it is checked
+      if (String(file) === ancestor && !repointed) {
+        repointed = true;
+        fs.unlinkSync(ancestor);
+        folderLink(after, ancestor);
+      }
+      return real;
+    }) as never);
+    expect(await walked(root, [], true, { followLinks: true })).toEqual(['a/b/e.txt']);
+    const inner = named.filter((call) => call.endsWith(`${path.sep}b`));
+    expect(inner).toEqual([`stat ${path.join(root, 'a', 'b')}`, `realpath ${path.join(root, 'a', 'b')}`]);
+  });
+
+  it('settles every link check of a folder before it fails with one that threw', async () => {
+    const outside = tree({ 'c.txt': '' });
+    const root = tree({ '.git/': '', 'a.txt': '' });
+    folderLink(outside, path.join(root, 'bad'));
+    folderLink(outside, path.join(root, 'slow'));
+    const order: string[] = [];
+    let release = (): void => {};
+    const released = new Promise<void>((resolve) => (release = resolve));
+    let slowSettled = (): void => {};
+    const slowDone = new Promise<void>((resolve) => (slowSettled = resolve));
+    const stat = fs.promises.stat.bind(fs.promises) as (...args: unknown[]) => Promise<unknown>;
+    vi.spyOn(fs.promises, 'stat').mockImplementation((async (file: fs.PathLike, ...rest: unknown[]) => {
+      if (path.basename(String(file)) === 'bad') throw new Error('not an errno failure');
+      if (path.basename(String(file)) === 'slow') {
+        await released;
+        order.push('slow check settled');
+        slowSettled();
+      }
+      return stat(file, ...rest);
+    }) as never);
+    const walk = walkFiles({ root, requireGit: true, ignore: ALL_IGNORE_FILES, gitFolders: 'skip', overrides: overrideRules([]), allowedHosts: noHosts, signal: undefined, followLinks: true });
+    setTimeout(release, 50);
+    await expect(walk.files.next().finally(() => order.push('walk failed'))).rejects.toThrow('not an errno failure');
+    await slowDone;
+    expect(order).toEqual(['slow check settled', 'walk failed']);
+  });
+
+  it('starts no link check of a folder once one threw', async () => {
+    const outside = tree({ 'c.txt': '' });
+    const root = tree({ '.git/': '' });
+    for (let index = 0; index < 9; index++) folderLink(outside, path.join(root, `l${index}`));
+    const checked: string[] = [];
+    const stat = fs.promises.stat.bind(fs.promises) as (...args: unknown[]) => Promise<unknown>;
+    vi.spyOn(fs.promises, 'stat').mockImplementation((async (file: fs.PathLike, ...rest: unknown[]) => {
+      const name = path.basename(String(file));
+      if (!/^l\d$/.test(name)) return stat(file, ...rest);
+      checked.push(name);
+      if (name === 'l0') throw new Error('not an errno failure');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return stat(file, ...rest);
+    }) as never);
+    const walk = walkFiles({ root, requireGit: true, ignore: ALL_IGNORE_FILES, gitFolders: 'skip', overrides: overrideRules([]), allowedHosts: noHosts, signal: undefined, followLinks: true });
+    await expect(walk.files.next()).rejects.toThrow('not an errno failure');
+    expect(checked).not.toContain('l8');
+  });
+
+  it('checks at most eight links of a folder at once, and starts none after an abort', async () => {
+    const outside = tree({ 'c.txt': '' });
+    const root = tree({ '.git/': '' });
+    for (let index = 0; index < 20; index++) folderLink(outside, path.join(root, `l${String(index).padStart(2, '0')}`));
+    let running = 0;
+    let most = 0;
+    let started = 0;
+    let release = (): void => {};
+    const released = new Promise<void>((resolve) => (release = resolve));
+    const stat = fs.promises.stat.bind(fs.promises) as (...args: unknown[]) => Promise<unknown>;
+    vi.spyOn(fs.promises, 'stat').mockImplementation((async (file: fs.PathLike, ...rest: unknown[]) => {
+      if (!/^l\d\d$/.test(path.basename(String(file)))) return stat(file, ...rest);
+      started++;
+      most = Math.max(most, ++running);
+      await released;
+      running--;
+      return stat(file, ...rest);
+    }) as never);
+    const controller = new AbortController();
+    const walk = walkFiles({ root, requireGit: true, ignore: ALL_IGNORE_FILES, gitFolders: 'skip', overrides: overrideRules([]), allowedHosts: noHosts, signal: controller.signal, followLinks: true });
+    const first = walk.files.next();
+    await vi.waitFor(() => expect(started).toBe(8));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect([started, most]).toEqual([8, 8]);
+    controller.abort();
+    release();
+    await expect(first).rejects.toThrow('Operation aborted');
+    expect(started).toBe(8);
+  });
+});
+
+describe.runIf(process.platform === 'win32')('followLinks keys a folder it entered by its realpath as spelled (win32)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // A realpath faked to differ from an entered folder only in case stands for a case-sensitive folder holding a and A.
+  it('enters a link whose realpath differs only in case from a folder it entered', async () => {
+    const root = tree({ '.git/': '', 'A/x.txt': '' });
+    const link = path.join(root, 'l');
+    folderLink(tree({ 'y.txt': '' }), link);
+    const realpath = fs.promises.realpath.bind(fs.promises) as (...args: unknown[]) => Promise<unknown>;
+    vi.spyOn(fs.promises, 'realpath').mockImplementation((async (file: fs.PathLike, ...rest: unknown[]) => (String(file) === link ? path.join(root, 'a') : realpath(file, ...rest))) as never);
+    expect(await walked(root, [], true, { followLinks: true })).toEqual(['A/x.txt', 'l/x.txt']);
+  });
+});
+
+describe('timed files', () => {
+  const PLANS = { extension: '.md', folder: 'plans', word: 'plan' } as const;
+  const at = (day: number): Date => new Date(Date.UTC(2020, 0, day));
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function timedWalk(root: string, followLinks: boolean): Promise<{ files: string[]; modified: Record<string, number>; statted: string[] }> {
+    const statted: string[] = [];
+    const stat = fs.promises.stat.bind(fs.promises) as (...args: unknown[]) => Promise<unknown>;
+    vi.spyOn(fs.promises, 'stat').mockImplementation((async (file: fs.PathLike, ...rest: unknown[]) => {
+      statted.push(path.relative(root, String(file)).replaceAll('\\', '/'));
+      return stat(file, ...rest);
+    }) as never);
+    const walk = walkFiles({ root, requireGit: true, ignore: ALL_IGNORE_FILES, gitFolders: 'skip', overrides: overrideRules([]), allowedHosts: noHosts, signal: undefined, timed: PLANS, ...(followLinks ? { followLinks: true } : {}) });
+    const files: string[] = [];
+    for await (const batch of walk.files) files.push(...batch.map((file) => file.replaceAll('\\', '/')));
+    const modified = Object.fromEntries([...walk.modified].map(([file, time]) => [file.replaceAll('\\', '/'), time]));
+    return { files: files.sort(), modified, statted };
+  }
+
+  it('returns the modified time of each listed file the rule names, below a followed link too, and stats no other file', async () => {
+    const outside = tree({ 'rollout-plan.md': '', 'notes.md': '' });
+    const root = tree({ '.git/': '', '.gitignore': 'ignored-plan.md\n', 'plans/a.md': '', 'b.ts': '', 'PLAN.md': '', 'ignored-plan.md': '' });
+    folderLink(outside, path.join(root, 'linked'));
+    fs.utimesSync(path.join(root, 'plans', 'a.md'), at(2), at(2));
+    fs.utimesSync(path.join(root, 'PLAN.md'), at(3), at(3));
+    fs.utimesSync(path.join(outside, 'rollout-plan.md'), at(4), at(4));
+    const { files, modified, statted } = await timedWalk(root, true);
+    expect(files).toEqual(['.gitignore', 'PLAN.md', 'b.ts', 'linked/notes.md', 'linked/rollout-plan.md', 'plans/a.md']);
+    expect(modified).toEqual({ 'PLAN.md': at(3).getTime(), 'plans/a.md': at(2).getTime(), 'linked/rollout-plan.md': at(4).getTime() });
+    expect(statted.filter((file) => /b\.ts|notes\.md|ignored-plan\.md|\.gitignore/.test(file))).toEqual([]);
+  });
+
+  it('takes a file link\'s time from the one stat of its path through the link', async (context) => {
+    const outside = tree({ 'target.md': '' });
+    fs.utimesSync(path.join(outside, 'target.md'), at(5), at(5));
+    const root = tree({ '.git/': '' });
+    try {
+      fs.symlinkSync(path.join(outside, 'target.md'), path.join(root, 'plan.md'), 'file');
+    } catch (err) {
+      // a file symlink on Windows needs Developer Mode or an elevated process
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') context.skip();
+      throw err;
+    }
+    const { files, modified, statted } = await timedWalk(root, true);
+    expect(files).toEqual(['plan.md']);
+    expect(modified).toEqual({ 'plan.md': at(5).getTime() });
+    expect(statted.filter((file) => file === 'plan.md')).toEqual(['plan.md']);
+  });
+});
+
+describe('skipRealUnder', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function listed(root: string, skipRealUnder?: readonly string[]): Promise<string[]> {
+    const walk = walkFiles({ root, requireGit: true, ignore: ALL_IGNORE_FILES, gitFolders: 'skip', overrides: overrideRules([]), allowedHosts: noHosts, signal: undefined, followLinks: true, ...(skipRealUnder ? { skipRealUnder } : {}) });
+    const files: string[] = [];
+    for await (const batch of walk.files) files.push(...batch.map((file) => file.replaceAll('\\', '/')));
+    expect(walk.errors).toEqual([]);
+    return files.sort();
+  }
+
+  it('lists no file a link leads to under the folders, and lists a link out of them, one inside them included', async () => {
+    const project = tree({ 'docs/d.md': '' });
+    const store = tree({ 'pkg/index.js': '' });
+    const shared = tree({ 's.txt': '' });
+    folderLink(shared, path.join(project, 'docs', 'ext'));
+    const root = tree({ '.git/': '', 'own.txt': '' });
+    folderLink(path.join(project, 'docs'), path.join(root, 'docs'));
+    folderLink(store, path.join(root, 'deps'));
+    expect(await listed(root)).toEqual(['deps/pkg/index.js', 'docs/d.md', 'docs/ext/s.txt', 'own.txt']);
+    expect(await listed(root, [project])).toEqual(['deps/pkg/index.js', 'docs/ext/s.txt', 'own.txt']);
+  });
+
+  it('lists a file reached without a link, also when the walk\'s root lies under the folders', async () => {
+    const project = tree({ 'work/a.txt': '', 'other/o.txt': '' });
+    const root = path.join(project, 'work');
+    folderLink(path.join(project, 'other'), path.join(root, 'back'));
+    expect(await listed(root, [project])).toEqual(['a.txt']);
+  });
+
+  it('lists no file link whose realpath lies under the folders', async (context) => {
+    const project = tree({ '.env': '' });
+    const elsewhere = tree({ 'keep.txt': '' });
+    const root = tree({ '.git/': '' });
+    try {
+      fs.symlinkSync(path.join(project, '.env'), path.join(root, '.env'), 'file');
+      fs.symlinkSync(path.join(elsewhere, 'keep.txt'), path.join(root, 'keep.txt'), 'file');
+    } catch (err) {
+      // a file symlink on Windows needs Developer Mode or an elevated process
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') context.skip();
+      throw err;
+    }
+    expect(await listed(root)).toEqual(['.env', 'keep.txt']);
+    expect(await listed(root, [project])).toEqual(['keep.txt']);
+  });
+});
+
+describe.runIf(process.platform === 'win32')('followLinks through junctions (win32)', () => {
+  it('lists a junction\'s files by the path through it, its own .gitignore and the root\'s rules on that path applying', async () => {
+    const outside = tree({ 'c.txt': '', 'skip.txt': '', '.gitignore': 'own.txt\n', 'own.txt': '', 'deep/d.txt': '' });
+    const root = tree({ '.git/': '', '.gitignore': 'j/skip.txt\n', 'a.txt': '' });
+    folderLink(outside, path.join(root, 'j'));
+    expect(await walked(root, [], true, { followLinks: true })).toEqual(['.gitignore', 'a.txt', 'j/.gitignore', 'j/c.txt', 'j/deep/d.txt']);
+    expect(await walked(root, ['!j/deep/'], true, { followLinks: true })).toEqual(['.gitignore', 'a.txt', 'j/.gitignore', 'j/c.txt']);
+    expect(await walked(root)).toEqual(['.gitignore', 'a.txt']);
+  });
+});
+
+// The network check reads link targets as readlink gives them, so a junction whose readlink is faked onto a share stands for a
+// link Windows would follow there.
+describe.runIf(process.platform === 'win32')('followLinks onto Windows network paths (win32)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Fakes readlink of each junction onto its share target, and records any call naming a UNC path, and every call but lstat
+  // naming a faked link or a path below it: the target behind it, which only lstat and readlink of the link avoid.
+  function fakeShares(fakeTargets: ReadonlyMap<string, string>): { readonly uncCalls: string[]; readonly throughLink: string[] } {
+    const uncCalls: string[] = [];
+    const throughLink: string[] = [];
+    const links = [...fakeTargets.keys()].map((link) => link.toLowerCase());
+    const readlink = fs.promises.readlink.bind(fs.promises);
+    vi.spyOn(fs.promises, 'readlink').mockImplementation((async (file: fs.PathLike) => fakeTargets.get(String(file).toLowerCase()) ?? readlink(file)) as never);
+    for (const name of ['lstat', 'stat', 'realpath', 'open', 'readdir', 'readFile'] as const) {
+      const original = fs.promises[name].bind(fs.promises) as (...args: unknown[]) => Promise<unknown>;
+      vi.spyOn(fs.promises, name).mockImplementation((async (file: fs.PathLike, ...rest: unknown[]) => {
+        if (/^[\\/]{2}/.test(String(file))) {
+          uncCalls.push(String(file));
+          throw new Error(`reached ${String(file)}`);
+        }
+        if (name !== 'lstat' && links.some((link) => String(file).toLowerCase().startsWith(link))) throughLink.push(`${name} ${String(file)}`);
+        return original(file, ...rest);
+      }) as never);
+    }
+    return { uncCalls, throughLink };
+  }
+
+  it('skips a junction onto a share and one onto WSL, contacting neither and naming neither\'s target', async () => {
+    const marker = tree({ 'secret.txt': '' });
+    const root = tree({ '.git/': '', 'a.txt': '' });
+    folderLink(marker, path.join(root, 'nas'));
+    folderLink(marker, path.join(root, 'wsl'));
+    const { uncCalls, throughLink } = fakeShares(new Map([[path.join(root, 'nas').toLowerCase(), '\\\\host\\share\\x'], [path.join(root, 'wsl').toLowerCase(), '\\\\wsl.localhost\\Ubuntu\\x']]));
+    expect(await walked(root, [], true, { followLinks: true })).toEqual(['a.txt']);
+    expect(uncCalls).toEqual([]);
+    expect(throughLink).toEqual([]);
+  });
+
+  it('skips a junction onto a share inside a followed junction, judged from the root through the outer one', async () => {
+    const marker = tree({ 'secret.txt': '' });
+    const outside = tree({ 'c.txt': '' });
+    folderLink(marker, path.join(outside, 'nas'));
+    const root = tree({ '.git/': '', 'a.txt': '' });
+    folderLink(outside, path.join(root, 'j'));
+    // the outer junction's own path, and the path the walk reads the followed folder at
+    const { uncCalls, throughLink } = fakeShares(new Map([[path.join(root, 'j', 'nas').toLowerCase(), '\\\\host\\share\\x'], [path.join(outside, 'nas').toLowerCase(), '\\\\host\\share\\x']]));
+    expect(await walked(root, [], true, { followLinks: true })).toEqual(['a.txt', 'j/c.txt']);
+    expect(uncCalls).toEqual([]);
+    expect(throughLink).toEqual([]);
+  });
+
+  it('skips a junction onto a share whose host the walk\'s allowedHosts names, which place .git pointers only', async () => {
+    const marker = tree({ 'secret.txt': '' });
+    const root = tree({ '.git/': '', 'a.txt': '' });
+    folderLink(marker, path.join(root, 'nas'));
+    const { uncCalls, throughLink } = fakeShares(new Map([[path.join(root, 'nas').toLowerCase(), '\\\\host\\share\\x']]));
+    const walk = walkFiles({ root, requireGit: true, ignore: ALL_IGNORE_FILES, gitFolders: 'skip', overrides: overrideRules([]), allowedHosts: () => Promise.resolve(new Set(['host'])), signal: undefined, followLinks: true });
+    const files: string[] = [];
+    for await (const batch of walk.files) files.push(...batch);
+    expect(files).toEqual(['a.txt']);
+    expect(walk.errors).toEqual([]);
+    expect(uncCalls).toEqual([]);
+    expect(throughLink).toEqual([]);
   });
 });
 

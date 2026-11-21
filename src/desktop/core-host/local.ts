@@ -15,6 +15,7 @@ import { createDesktopFileConfinement } from '../local-services/file-confinement
 import { DesktopFileWatcherFactory } from '../local-services/file-watcher-factory';
 import type { DesktopLogSinkFactory } from '../local-services/log-sink';
 import { DesktopSettingsStore, type DesktopSettingsStoreDeps } from '../local-services/settings-store';
+import { createDesktopWalkSettings } from '../local-services/walk-settings';
 import type { SettingsObject } from '../../core/config/settings-file';
 import type { RemoteHost } from '../../platform/remote-host';
 import { createWorkerTreeHost } from '../local-services/watch-worker-host';
@@ -88,6 +89,7 @@ export function createCoreLocal(shared: CoreShared, logSinks: DesktopLogSinkFact
       return shared.remote ? remoteHostCapabilities(capabilities, currentPin(shared.remote).policy) : { ...capabilities, forgeAccounts: shared.init.paths.forge !== undefined };
     },
     settings,
+    walkSettings: createDesktopWalkSettings(settings),
     fileWatchers,
     confinement: createDesktopFileConfinement(),
     logSinks,

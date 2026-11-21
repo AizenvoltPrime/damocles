@@ -308,7 +308,7 @@ describe('daemon connections inside the grace', () => {
           core = channel;
           coreDrained = link.drained;
           links.push(link);
-          return { attach: () => { throw new Error('no core in this test'); }, dispose: () => undefined };
+          return { attach: () => { throw new Error('no core in this test'); }, clientFeatures: () => new Set(), dispose: () => undefined };
         },
       },
       control: {} as never,

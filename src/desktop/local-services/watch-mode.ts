@@ -3,6 +3,7 @@
 // changes made from Windows (microsoft/WSL#4739).
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { mountRows } from '../../core/mountinfo';
 
 export type WatchMode = 'inotifyTree' | 'poll';
 
@@ -19,9 +20,6 @@ export function isWsl(osrelease: string): boolean {
   return /microsoft/i.test(osrelease);
 }
 
-// mountinfo writes a space, tab, newline or backslash in a path as a three-digit octal escape
-const unescapeMountPath = (text: string): string => text.replace(/\\([0-7]{3})/g, (_match, octal: string) => String.fromCharCode(parseInt(octal, 8)));
-
 const isUnder = (mountPoint: string, target: string): boolean => mountPoint === '/' || target === mountPoint || target.startsWith(`${mountPoint}/`);
 
 /**
@@ -30,13 +28,8 @@ const isUnder = (mountPoint: string, target: string): boolean => mountPoint === 
  */
 export function fileSystemOf(mountinfo: string, target: string): string | undefined {
   let best: { readonly length: number; readonly type: string } | undefined;
-  for (const line of mountinfo.split('\n')) {
-    const separator = line.indexOf(' - ');
-    if (separator < 0) continue;
-    const fields = line.slice(0, separator).split(' ');
-    const type = line.slice(separator + 3).split(' ')[0];
-    const mountPoint = fields[4] === undefined ? undefined : unescapeMountPath(fields[4]);
-    if (mountPoint === undefined || type === undefined || type === '' || !isUnder(mountPoint, target)) continue;
+  for (const { mountPoint, type } of mountRows(mountinfo)) {
+    if (!isUnder(mountPoint, target)) continue;
     if (!best || mountPoint.length >= best.length) best = { length: mountPoint.length, type };
   }
   return best?.type;

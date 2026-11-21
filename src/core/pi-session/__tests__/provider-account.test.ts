@@ -8,7 +8,7 @@ import { InMemoryModelsStore, type Api, type Model } from '@earendil-works/pi-ai
 import { ModelRuntime, SessionManager, SettingsManager, createAgentSession } from '@earendil-works/pi-coding-agent';
 import { accountFailureOf, failureCard, failureText } from '../provider-account';
 import { nestedCallError, nestedCallFailure, nestedRunError } from '../nested-call-failures';
-import { customProviderDef } from '../custom-providers';
+import { customProviderDef } from '../provider-defs';
 import { loadFormatNoApiKeyFoundMessage } from '../../../__mocks__/pi-auth-guidance';
 import { inGreek } from '../../../__mocks__/greek-locale';
 import { englishText, type LocalizedText } from '../../../shared/localized-text';

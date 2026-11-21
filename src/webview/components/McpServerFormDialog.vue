@@ -35,7 +35,7 @@ import {
   type McpServerFormState,
 } from './mcp-server-form-logic';
 
-const { t } = useI18n();
+const { t, te } = useI18n();
 
 const props = defineProps<{
   /** The server being edited, or null when adding. Also the name excluded from collision checks. */
@@ -103,7 +103,9 @@ function errorText(error: McpFormFieldError | undefined): string {
 const writeErrorText = computed(() => {
   const error = props.writeError;
   if (!error) return '';
-  return t(`mcp.form.writeErrors.${error.code}`, error.params ?? {});
+  const key = `mcp.form.writeErrors.${error.code}`;
+  // a newer host's core may send a code this webview has no text for
+  return te(key) ? t(key, error.params ?? {}) : t('mcp.form.writeErrors.writeFailed', { detail: error.code });
 });
 
 function addArg(): void {

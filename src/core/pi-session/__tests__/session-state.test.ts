@@ -107,6 +107,7 @@ const H = vi.hoisted(() => {
         getExtensions: vi.fn(() => ({ extensions: [], errors: [], runtime: {} })),
         getPrompts: vi.fn(() => ({ prompts: [], diagnostics: [] })),
         getSkills: vi.fn(() => ({ skills: [], diagnostics: [] })),
+        getThemes: vi.fn(() => ({ themes: [], diagnostics: [] })),
         getAgentsFiles: vi.fn(() => ({ agentsFiles: [] })),
       },
       diagnostics: [],
@@ -180,9 +181,9 @@ vi.mock('../folder-presence', async (importOriginal) => ({
 
 // Only the fs-touching seed is stubbed; `cacheWarmingSetting` stays real so the mode a test configures
 // travels the production path.
+vi.mock('../agent-dir-setup', () => ({ ensurePiAgentDir: () => undefined }));
 vi.mock('../agent-dir', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../agent-dir')>()),
-  ensurePiAgentDir: () => undefined,
   PI_AGENT_DIR: '/fake/agent',
 }));
 

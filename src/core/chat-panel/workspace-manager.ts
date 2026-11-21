@@ -2,7 +2,7 @@ import * as fs from "fs";
 import { homedir } from "os";
 import type { Platform } from "../../platform/platform";
 import * as path from "path";
-import { SlashCommandService } from "./slash-command-service";
+import { SlashCommandService, type SlashMenu } from "./slash-command-service";
 import { BUILTIN_SLASH_COMMANDS } from "../../shared/slashCommands";
 import { listWorkspaceFiles, type FileResult } from "./workspace-files";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
@@ -22,6 +22,21 @@ import { isInsideFolder, isUncOrDevicePath } from "../../shared/project-location
 import { LocalizedError } from "../../shared/localized-text";
 import { relocatedPath } from "../project-relocation/aliases";
 import { currentRelocations } from "../project-relocation/current";
+
+/**
+ * The full menu, with one row per name. Precedence is builtin, then `.damocles`, then `.claude`/`.codex`, and project before
+ * user within a source. A builtin always runs, so a custom asset that collides with one would otherwise show a row that
+ * resolves to something else.
+ */
+function menuItems(menu: SlashMenu): SlashCommandItem[] {
+  const builtinNames = new Set(BUILTIN_SLASH_COMMANDS.map((c) => c.name.toLowerCase()));
+  const allCommands = [
+    ...BUILTIN_SLASH_COMMANDS,
+    ...menu.commands.filter((c) => !builtinNames.has(c.name.toLowerCase())),
+    ...menu.skills.filter((s) => !builtinNames.has(s.name.toLowerCase())),
+  ];
+  return allCommands.sort((a, b) => a.name.localeCompare(b.name));
+}
 
 /** `~`, `~/…` (and `~\…` on Windows) name this machine's home, as pi's `normalizePath` reads them. */
 function expandHome(filePath: string): string {
@@ -70,8 +85,7 @@ export class WorkspaceManager {
 
   private async broadcastSlashCommands(folder: FolderTarget): Promise<void> {
     try {
-      const commands = await this.getCustomSlashCommands(folder);
-      this.broadcastToFolder(folder.key, { type: "customSlashCommands", commands });
+      this.broadcastToFolder(folder.key, await this.slashMenuMessage(folder));
     } catch (err) {
       log("[WorkspaceManager] Error broadcasting slash commands:", err);
     }
@@ -85,27 +99,23 @@ export class WorkspaceManager {
     return this.slashCommandService(folder).findCommand(name);
   }
 
-  /**
-   * The full menu, with one row per name. Precedence is builtin, then `.damocles`, then
-   * `.claude`/`.codex`, and project before user within a source. A builtin always runs, so a custom
-   * asset that collides with one would otherwise show a row that resolves to something else.
-   */
+  async describeSkill(name: string, folder: FolderTarget): Promise<string | undefined> {
+    return this.slashCommandService(folder).describeSkill(name);
+  }
+
   async getCustomSlashCommands(folder: FolderTarget): Promise<SlashCommandItem[]> {
-    const service = this.slashCommandService(folder);
-    const customCommands = await service.getCommands();
-    const skills = await service.getSkills();
-    const builtinNames = new Set(BUILTIN_SLASH_COMMANDS.map((c) => c.name.toLowerCase()));
-    const allCommands = [
-      ...BUILTIN_SLASH_COMMANDS,
-      ...customCommands.filter((c) => !builtinNames.has(c.name.toLowerCase())),
-      ...skills.filter((s) => !builtinNames.has(s.name.toLowerCase())),
-    ];
-    return allCommands.sort((a, b) => a.name.localeCompare(b.name));
+    return menuItems(await this.slashCommandService(folder).getMenu());
+  }
+
+  /** The menu's rows, and one row for each commands or skills folder a link withholds whole, from one scan of each kind. */
+  private async slashMenuMessage(folder: FolderTarget): Promise<ExtensionToWebviewMessage> {
+    const menu = await this.slashCommandService(folder).getMenu();
+    return { type: "customSlashCommands", commands: menuItems(menu), withheldRoots: menu.withheldRoots };
   }
 
   async customSlashCommandsMessage(folder: FolderTarget): Promise<ExtensionToWebviewMessage> {
     try {
-      return { type: "customSlashCommands", commands: await this.getCustomSlashCommands(folder) };
+      return await this.slashMenuMessage(folder);
     } catch (err) {
       log("[WorkspaceManager] Error fetching custom slash commands:", err);
       return { type: "customSlashCommands", commands: BUILTIN_SLASH_COMMANDS };
@@ -126,8 +136,9 @@ export class WorkspaceManager {
   }
 
   /**
-   * What the panel's @ list walks of folder run under: aborted once the panel closes or lists another folder, and already
-   * aborted when the panel closed or left folder. Every folder change asks for the new folder's first (`sendFolderState`).
+   * What the panel's @ list walks of folder run under: aborted once the panel closes, lists another folder or is listed again
+   * (relistWorkspaceFiles), and already aborted when the panel closed or left folder. Every folder change asks for the new
+   * folder's first (`sendFolderState`).
    */
   listingSignal(instance: HostInstance, folder: FolderTarget): AbortSignal {
     if (instance.folder.key !== folder.key || ![...this.getPanels().values()].includes(instance)) return AbortSignal.abort();
@@ -138,6 +149,22 @@ export class WorkspaceManager {
     const controller = new AbortController();
     this.folderListings.set(instance, { folderKey: folder.key, controller });
     return controller.signal;
+  }
+
+  /**
+   * Lists each panel's project folder again once what its walk may follow changed (trust, the walk settings): the running walks
+   * of the panel's listing stop, later ones get a fresh listingSignal, and the fresh list is posted.
+   */
+  relistWorkspaceFiles(): void {
+    for (const instance of this.getPanels().values()) {
+      if (!instance.folder.projectScope) continue;
+      const current = this.folderListings.get(instance);
+      if (current !== undefined) {
+        current.controller.abort();
+        this.folderListings.set(instance, { folderKey: current.folderKey, controller: new AbortController() });
+      }
+      this.sendWorkspaceFiles(instance).catch((err: unknown) => log("[WorkspaceManager] Posting a fresh @ list failed:", err));
+    }
   }
 
   async getWorkspaceFiles(folder: FolderTarget, signal: AbortSignal): Promise<WorkspaceFileInfo[]> {
@@ -152,11 +179,13 @@ export class WorkspaceManager {
     }));
   }
 
-  /** The panel's @ list of folder; undefined once the panel closed or left folder, which stops the walk. */
+  /** The panel's @ list of folder; undefined once the panel closed, left folder or listed it again, which stops the walk. */
   async workspaceFilesMessage(instance: HostInstance, folder: FolderTarget): Promise<ExtensionToWebviewMessage | undefined> {
     const signal = this.listingSignal(instance, folder);
     try {
-      return { type: "workspaceFiles", files: await this.getWorkspaceFiles(folder, signal) };
+      const files = await this.getWorkspaceFiles(folder, signal);
+      // a walk that ended before its abort lists what may no longer be followed
+      return signal.aborted ? undefined : { type: "workspaceFiles", files };
     } catch (err) {
       if (signal.aborted) return undefined;
       log("[WorkspaceManager] Error fetching workspace files:", err);
@@ -193,7 +222,7 @@ export class WorkspaceManager {
     // The host's confinement resolves the path before the stat (desktop's walks it first, so no stat follows a link on it to a
     // share); a path it does not confine there, a link leading out or a realpath that fails, is the host's editor's to decide.
     const walkedFrom = holder?.fsPath ?? path.parse(absolute).root;
-    const confined = await this.platform.confinement.confineExisting(walkedFrom, path.relative(walkedFrom, absolute).split(path.sep).join("/"));
+    const confined = await this.platform.confinement.confineExisting(walkedFrom, path.relative(walkedFrom, absolute).split(path.sep).join("/"), "withinProject");
     if (!confined.ok) {
       if (confined.reason === "missing") {
         // A tool card of a chat whose project folder moved names the file where it was (docs/invariants.md "Project relocation").

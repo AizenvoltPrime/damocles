@@ -2,6 +2,7 @@ import type { ExtensionFactory, ExtensionAPI, ExtensionContext } from '@earendil
 import type { PanelGateContext, PreToolUseHookGate } from './permission-gate';
 import { runPermissionGate, gateErrorFallback } from './permission-gate';
 import { buildAgentStartResult, buildPlanModeNoticeResult } from './agent-start';
+import { agentChangeNoteAtPromptStart } from './agent-change-note';
 import { log } from '../logger';
 import { l } from '../l10n';
 import type { CheckpointService } from './checkpoint-service';
@@ -237,6 +238,18 @@ export function createDamoclesExtensionFactory(
         return await buildAgentStartResult(event, panel, sessionId, ctx.sessionManager, () => registry.get(sessionId) !== undefined);
       } catch (err) {
         log('[DamoclesExtension] before_agent_start failed: %O', err);
+        return undefined;
+      }
+    });
+
+    pi.on('before_agent_start', (_event, ctx) => {
+      const agentTypes = registry.get(ctx.sessionManager.getSessionId())?.agentTypes;
+      if (!agentTypes) return undefined;
+      try {
+        const message = agentChangeNoteAtPromptStart(agentTypes(), ctx.sessionManager);
+        return message ? { message } : undefined;
+      } catch (err) {
+        log('[DamoclesExtension] agent change note failed: %O', err);
         return undefined;
       }
     });

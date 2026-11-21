@@ -20,8 +20,10 @@ export type SessionFileWrite =
   | { readonly kind: 'written'; readonly mtimeMs: number }
   // the file's bytes no longer hash to the ones the caller last read
   | { readonly kind: 'changed' }
-  // the path no longer is its own canonical path, or no longer names a session file
+  // the path names a session file of this engine but is no longer that file's canonical path
   | { readonly kind: 'outside' }
+  // the path names no session file of this engine: another machine's store, a lease, a team log or a file pi did not name
+  | { readonly kind: 'notOwned' }
   | { readonly kind: 'refused'; readonly reason: SessionFileRefusal };
 
 /** The session file `filePath` names, classified by its canonical path against this engine's canonical sessions root. */
@@ -38,8 +40,9 @@ export function sessionFileOf(filePath: string): SessionFile | undefined {
  */
 export async function writeSessionFile(filePath: string, bytes: Uint8Array, expectedSha256: string | null): Promise<SessionFileWrite> {
   const file = sessionFileOf(filePath);
+  if (!file) return { kind: 'notOwned' };
   // the caller names the file by its canonical path; another answer means the path leads elsewhere now
-  if (!file || folderKey(file.canonicalPath) !== folderKey(filePath)) return { kind: 'outside' };
+  if (folderKey(file.canonicalPath) !== folderKey(filePath)) return { kind: 'outside' };
   if (file.kind === 'agent') return writeAgentFile(file, bytes, expectedSha256);
   let written: SessionFileWrite = { kind: 'outside' };
   const refusal = await writeUnderSessionLease(file.sessionId, async () => {

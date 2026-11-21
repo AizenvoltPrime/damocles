@@ -8,6 +8,7 @@ import { pathToFileURL } from 'url';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { ModelsError } from '@earendil-works/pi-ai';
 import { PiRuntime, type LiveSessionMutator } from '../pi-runtime';
+import { RuleFileNotWritable } from '../../permission-handler/permission-settings';
 import { piModelNetworkEnabled, savedCatalogCheckedAt } from '../pi-model-catalog';
 import { FolderRuntime } from '../folder-runtime';
 import { serializeSettingWrite } from '../../settings-write-chain';
@@ -15,7 +16,8 @@ import { McpClientManager } from '../mcp/mcp-client-manager';
 import type { PersonalToolLists } from '../mcp/tool-name-migration';
 import { initPiLoader, loadPiAi, nodeSupportsPi, PI_MIN_NODE_MAJOR, type PiCodingAgentModule } from '../pi-loader';
 import type { SecretResolver } from '../custom-providers';
-import { LEGACY_SUBSCRIPTION_REPOS, SUBSCRIPTION_SOURCE, classifySubscriptionSource } from '../subscription';
+import { LEGACY_SUBSCRIPTION_REPOS, classifySubscriptionSource } from '../subscription';
+import { SUBSCRIPTION_SOURCE } from '../subscription-source';
 import { SUBCALL_USAGE_LEDGER_PATH } from '../../paths';
 import { SUBCALL_THINKING, type StructuredSubCallPurpose } from '../subcall-model';
 import { installPlatform } from '../../platform-host';
@@ -405,6 +407,8 @@ describe('subscription plugin migration', () => {
     /** pi's loads of the user settings file fail, as for invalid JSON: each records a load error, keeps the
      *  previous in-memory settings, and pi drops every write until a load succeeds. */
     unloadable: boolean;
+    /** Each failed load is pi's link policy refusing the file (ELINKPOLICY) rather than a parse error. */
+    refusedByLinkPolicy: boolean;
     /** Resolves when the install may proceed; lets a case act while a swap is in flight. */
     installGate: Promise<void>;
     folders: FolderRuntime[];
@@ -499,6 +503,9 @@ describe('subscription plugin migration', () => {
           },
           extendResources: () => undefined,
           getExtensions: () => ({ runtime: runtimeState, errors: reloadErrors ?? h.startupErrors }),
+          getSkills: () => ({ skills: [], diagnostics: [] }),
+          getPrompts: () => ({ prompts: [], diagnostics: [] }),
+          getThemes: () => ({ themes: [], diagnostics: [] }),
         },
       };
     }
@@ -522,6 +529,7 @@ describe('subscription plugin migration', () => {
       failNextReload: false,
       queuedWrite: false,
       unloadable: false,
+      refusedByLinkPolicy: false,
       installGate: Promise.resolve(),
       folders: [],
       addFolder: (label) => {
@@ -542,6 +550,7 @@ describe('subscription plugin migration', () => {
           resourceExposureSetting: () => ({}),
           trust: testPlatform.trust,
           fileWatchers: testPlatform.fileWatchers,
+          notifications: testPlatform.notifications,
         });
         attachLoader(folder, label);
         h.folders.push(folder);
@@ -564,8 +573,11 @@ describe('subscription plugin migration', () => {
         if (loadFailed) return;
         if (h.failNextFlush) {
           h.failNextFlush = false;
-          // pi's write parses the file as it is now, which another program may have broken since the load.
-          settingsErrors.push({ scope: 'global', error: new SyntaxError(QUOTING_PARSE_MESSAGE) });
+          // pi's write parses the file as it is now, which another program may have broken, or relinked, since the load.
+          const file = path.join(root, 'settings.json');
+          settingsErrors.push(h.refusedByLinkPolicy
+            ? { scope: 'global', path: file, error: Object.assign(new Error(`Not written: the link policy refuses ${file}`), { code: 'ELINKPOLICY' }) }
+            : { scope: 'global', error: new SyntaxError(QUOTING_PARSE_MESSAGE) });
           return;
         }
         h.disk = [...h.memory];
@@ -576,7 +588,9 @@ describe('subscription plugin migration', () => {
         await userSettings.flush();
         loadFailed = h.unloadable;
         if (loadFailed) {
-          settingsErrors.push({ scope: 'global', path: path.join(root, 'settings.json'), error: new SyntaxError(QUOTING_PARSE_MESSAGE) });
+          const file = path.join(root, 'settings.json');
+          const error = h.refusedByLinkPolicy ? Object.assign(new Error(`Not read: the link policy refuses ${file}`), { code: 'ELINKPOLICY' }) : new SyntaxError(QUOTING_PARSE_MESSAGE);
+          settingsErrors.push({ scope: 'global', path: file, error });
           return;
         }
         h.memory = [...h.disk];
@@ -904,6 +918,29 @@ describe('subscription plugin migration', () => {
     h.unloadable = false;
     await toggle(h, false);
     expect(diskSources(h)).toEqual([]);
+  });
+
+  it('(l4) every settings step over a user settings file pi\'s link policy refuses fails with the network share wording, not as a file to fix', async () => {
+    const h = legacyInstall();
+    h.unloadable = true;
+    h.refusedByLinkPolicy = true;
+    const file = path.join(h.runtime.agentDir, 'settings.json');
+
+    const failure = await toggle(h, true).then(() => null, (err: unknown) => err);
+    expect(failure).toMatchObject({ name: 'ConfigWriteRefused', text: { message: '{0} links to a network share or WSL path, so Damocles does not write it.', args: [file] } });
+    expect(diskSources(h)).toEqual([LEGACY]);
+  });
+
+  it('(l5) a save pi\'s link policy refuses after a good load fails with the network share wording', async () => {
+    const h = legacyInstall();
+    h.failNextFlush = true;
+    h.refusedByLinkPolicy = true;
+    const file = path.join(h.runtime.agentDir, 'settings.json');
+
+    const failure = await toggle(h, true).then(() => null, (err: unknown) => err);
+    expect(failure).toMatchObject({ name: 'ConfigWriteRefused', text: { message: '{0} links to a network share or WSL path, so Damocles does not write it.', args: [file] } });
+    expect(reloads(h)).toEqual([]);
+    expect(diskSources(h)).toEqual([LEGACY]);
   });
 
   it('(m) a verify reload that throws rolls back to the legacy plugin', async () => {
@@ -2221,13 +2258,27 @@ describe('PiRuntime.syncCustomProviders', () => {
         const piStore = (await import(
           /* @vite-ignore */ pathToFileURL(path.resolve('node_modules/@earendil-works/pi-coding-agent/dist/core/models-store.js')).href
         )) as { FileModelsStore: new (path: string) => { write(provider: string, entry: unknown): Promise<void> } };
-        expect(await savedCatalogCheckedAt(storePath, 'openrouter')).toBeUndefined();
+        const admits = (): boolean => true;
+        expect(await savedCatalogCheckedAt(storePath, 'openrouter', admits)).toBeUndefined();
 
         await new piStore.FileModelsStore(storePath).write('stepfun', { models: [], checkedAt: 1 });
-        expect(await savedCatalogCheckedAt(storePath, 'openrouter')).toBeUndefined();
+        expect(await savedCatalogCheckedAt(storePath, 'openrouter', admits)).toBeUndefined();
 
         await new piStore.FileModelsStore(storePath).write('openrouter', { models: [], checkedAt: 1_760_000_000_000 });
-        expect(await savedCatalogCheckedAt(storePath, 'openrouter')).toBe(1_760_000_000_000);
+        expect(await savedCatalogCheckedAt(storePath, 'openrouter', admits)).toBe(1_760_000_000_000);
+      } finally {
+        fs.rmSync(agentDir, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses a models store the link policy refuses, as pi does, without reading it', async () => {
+      const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-models-store-'));
+      const storePath = path.join(agentDir, 'models-store.json');
+      try {
+        fs.writeFileSync(storePath, JSON.stringify({ openrouter: { models: [], checkedAt: 1 } }));
+        const asked: string[] = [];
+        await expect(savedCatalogCheckedAt(storePath, 'openrouter', (file) => (asked.push(file), false))).rejects.toMatchObject({ name: 'ConfigReadRefused', code: 'ELINKPOLICY', file: storePath });
+        expect(asked).toEqual([storePath]);
       } finally {
         fs.rmSync(agentDir, { recursive: true, force: true });
       }
@@ -2287,8 +2338,8 @@ describe('PiRuntime sub-call model', () => {
 describe("PiRuntime: the retired-tool migration's damocles.tools.disabled lists", () => {
   const KEY = 'damocles.tools.disabled';
   type Internals = {
-    rewriteDisabledToolLists(scopes: readonly ('user' | 'local')[], rename: (name: string) => string): Promise<void>;
-    personalDisabledToolLists(scopes: readonly ('user' | 'local')[]): PersonalToolLists;
+    rewriteDisabledToolLists(scopes: readonly ('user' | 'local')[], rename: (name: string) => string, localTrusted: () => boolean): Promise<void>;
+    personalDisabledToolLists(scopes: readonly ('user' | 'local')[], localTrusted: () => boolean): PersonalToolLists;
     projectDisabledToolList(): unknown;
   };
   const rename = (name: string) => (name === 'mcp__s__get_a' ? 'mcp__s__read_mcp_resource(s://a)' : name);
@@ -2301,16 +2352,27 @@ describe("PiRuntime: the retired-tool migration's damocles.tools.disabled lists"
     const update = vi.spyOn(platform.settings, 'update');
     const runtime = PiRuntime.get() as unknown as Internals;
 
-    await runtime.rewriteDisabledToolLists(['user', 'local'], rename);
+    await runtime.rewriteDisabledToolLists(['user', 'local'], rename, () => true);
 
     expect(platform.settings.inspect(KEY).userValue).toEqual(['x', 'mcp__s__read_mcp_resource(s://a)', 7, 'x']);
     expect(platform.settings.inspect(KEY).localValue).toEqual(['y', 'y']);
     expect(update).toHaveBeenCalledExactlyOnceWith(KEY, ['x', 'mcp__s__read_mcp_resource(s://a)', 7, 'x'], 'user');
   });
 
+  // The local scope's list lives in the folder's own settings file, which a folder whose trust was taken back must not get written.
+  it('writes the user scope but not the local one once the folder is no longer trusted at the write, and fails the rewrite', async () => {
+    const platform = installFakePlatform({ settings: { user: { [KEY]: ['mcp__s__get_a'] }, local: { [KEY]: ['mcp__s__get_a'] } } });
+    const runtime = PiRuntime.get() as unknown as Internals;
+
+    await expect(runtime.personalDisabledToolLists(['user', 'local'], () => false).rewrite(rename)).rejects.toBeInstanceOf(RuleFileNotWritable);
+
+    expect(platform.settings.inspect(KEY).userValue).toEqual(['mcp__s__read_mcp_resource(s://a)']);
+    expect(platform.settings.inspect(KEY).localValue).toEqual(['mcp__s__get_a']);
+  });
+
   it("names the personal lists by their scope's file, or the user scope by the setting where the host keeps no file", () => {
     installFakePlatform({ settings: { user: { [KEY]: ['a', 3] }, local: { [KEY]: ['b'] }, scopeFiles: { local: '/repo/.damocles/settings.local.json' } } });
-    const lists = (PiRuntime.get() as unknown as Internals).personalDisabledToolLists(['user', 'local']).lists();
+    const lists = (PiRuntime.get() as unknown as Internals).personalDisabledToolLists(['user', 'local'], () => true).lists();
     expect(lists).toEqual([{ setting: KEY, scope: 'user', names: ['a'] }, { path: '/repo/.damocles/settings.local.json', names: ['b'] }]);
   });
 
@@ -2344,7 +2406,7 @@ describe("PiRuntime: the retired-tool migration's damocles.tools.disabled lists"
       await platform.settings.update(KEY, [...current, 'mcp__git__push'], 'user');
     });
 
-    await Promise.all([runtime.rewriteDisabledToolLists(['user'], rename), toggle]);
+    await Promise.all([runtime.rewriteDisabledToolLists(['user'], rename, () => true), toggle]);
 
     expect(platform.settings.inspect(KEY).userValue).toEqual(['mcp__s__read_mcp_resource(s://a)', 'mcp__git__push']);
   });

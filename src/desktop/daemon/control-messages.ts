@@ -110,8 +110,8 @@ export interface CoreAttach {
   readonly appInfo: { readonly version: string; readonly host: 'desktop' };
   readonly secretsPersistent: boolean;
   readonly chatBrowserPane: boolean;
-  // the app's own FEATURES (feature core.attachFeatures): the daemon sends this client only the requests and events whose
-  // feature it lists (core-routes.ts `needs`); absent, it lists none
+  // the app's own FEATURES: the daemon sends this client only the requests and events whose feature it lists
+  // (core-routes.ts `needs`); absent, it lists none
   readonly features?: readonly string[];
   // version-0 values of the mirrors the daemon takes from clients; clientAuth and clientUser carry `pending` (feature
   // client.pending) while the app has not read them yet, and a later delta without it makes them known

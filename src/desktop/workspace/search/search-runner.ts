@@ -21,7 +21,7 @@ export type SearchRunEnd = { readonly code: number | null; readonly stderr: stri
 export interface SearchRequest {
   readonly match: readonly string[];
   readonly pattern: string;
-  readonly walk: { readonly ignore: WalkIgnore; readonly overrides: readonly string[] };
+  readonly walk: { readonly ignore: WalkIgnore; readonly overrides: readonly string[]; readonly followLinks?: true };
 }
 
 export interface SearchRunSink {
@@ -53,7 +53,8 @@ export interface SearchRunnerDeps {
 const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /**
- * Search's runs: the walk lists the files below cwd, never through a link, and rg only matches them, in batches (runWalkedRg).
+ * Search's runs: the walk lists the files below cwd, through links only under walk.followLinks, and rg only matches them, in
+ * batches (runWalkedRg).
  * The end's code is rg's own over the whole search: 2 once any rg run or the walk failed, else 0 when anything matched, else 1.
  */
 export function createSearchRunner(deps: SearchRunnerDeps): SearchRunner {
@@ -93,7 +94,7 @@ export function createSearchRunner(deps: SearchRunnerDeps): SearchRunner {
             flags,
             pattern,
             // .git is walked as any folder; only the excludes keep it out
-            batches: (listing) => (walk = deps.walks.walk({ root: cwd, requireGit: true, ignore: request.walk.ignore, gitFolders: 'list', overrides: request.walk.overrides, lineBudget: Math.max(1, batchLineBudget(rgPath, flags, pattern)) }, listing)),
+            batches: (listing) => (walk = deps.walks.walk({ root: cwd, requireGit: true, ignore: request.walk.ignore, gitFolders: 'list', overrides: request.walk.overrides, lineBudget: Math.max(1, batchLineBudget(rgPath, flags, pattern)), ...(request.walk.followLinks ? { followLinks: true } : {}) }, listing)),
             signal,
             mustRelease: (held) => held.bytes > holdBytes,
             onEvent: (event) => {

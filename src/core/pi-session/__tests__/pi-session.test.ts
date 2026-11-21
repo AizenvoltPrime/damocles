@@ -231,6 +231,7 @@ const H = vi.hoisted(() => {
           ],
           diagnostics: [],
         })),
+        getThemes: vi.fn(() => ({ themes: [], diagnostics: [] })),
         getAgentsFiles: vi.fn(() => ({ agentsFiles: [] })),
       },
       diagnostics: [],
@@ -387,9 +388,9 @@ vi.mock('../tools', async (importOriginal) => {
 
 // Only the fs-touching seed is stubbed; `cacheWarmingSetting` stays real so the mode a test configures
 // travels the production path.
+vi.mock('../agent-dir-setup', () => ({ ensurePiAgentDir: () => undefined }));
 vi.mock('../agent-dir', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../agent-dir')>()),
-  ensurePiAgentDir: () => undefined,
   PI_AGENT_DIR: '/fake/agent',
 }));
 
@@ -400,6 +401,14 @@ vi.mock('../agent-dir', async (importOriginal) => ({
 vi.mock('../session-store/session-dir', () => ({
   piSessionDir: (cwd: string) => `/fake/agent/sessions/${cwd}`,
   ensurePiSessionDir: (cwd: string) => `/fake/agent/sessions/${cwd}`,
+}));
+
+// Each services creation and reload discovers commands and skills; the real walk reads this computer's home folder, and
+// its file I/O would land a replacement after a test's fake-timer advance.
+vi.mock('../../assets', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../assets')>()),
+  discoverCommands: async () => ({ commands: [], followed: { project: [], user: [] } }),
+  skillLinkTargets: async () => ({ roots: [], followed: { project: [], user: [] } }),
 }));
 
 // The chats here work in folders no test creates.
@@ -443,6 +452,10 @@ import { formatMcpResourceAttachmentBlock, formatTerminalAttachmentBlock } from 
 import { getPiCodingAgent } from '../pi-loader';
 import { resolveAgentToolset } from '../subagents/agent-toolset';
 import { DEFAULT_AGENTS } from '../subagents/default-agents';
+import { AgentRegistry } from '../subagents/agent-types';
+import type { WorkspaceAgentRegistry } from '../subagents/workspace-agent-registry';
+import type { AgentConfig } from '../subagents/types';
+import { agentChangeNoteAtPromptStart } from '../agent-change-note';
 import { computePlanFilePath, DAMOCLES_DESIGNS_DIR } from '../../paths';
 import { updateDesignLink } from '../../design/design-state';
 import { stampDesignVersion } from '../../design/__tests__/design-harness';
@@ -1144,6 +1157,22 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
     expect(reload).toHaveBeenCalledTimes(1);
     expect(setActive.mock.calls.at(-1)?.[0] as string[]).toContain('mcp__ctx7__query_docs');
+    await session.dispose();
+  });
+
+  it('MCP orphan reload: logs the warnings of the folder load it reloaded', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    seedMcpNames(['mcp__ctx7__query_docs']);
+    const live = H.getLastSession()!;
+    (live.reload as ReturnType<typeof vi.fn>).mockImplementation(async () => { (live.registryToolNames as Set<string>).add('mcp__ctx7__query_docs'); });
+    const logged = vi.spyOn(cwdFolder()!, 'logPiWarnings');
+
+    session.reloadForMcpToolChange();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(live.reload).toHaveBeenCalledTimes(1);
+    expect(logged).toHaveBeenCalledTimes(1);
     await session.dispose();
   });
 
@@ -4386,7 +4415,7 @@ describe('PiSession subagent records', () => {
 
   type RecordsEngine = { recordInvocation: (d: unknown) => void; subagentStoreDir: () => string };
   const engineOf = (session: PiSession): RecordsEngine =>
-    (session as unknown as { buildSubagentEngine: (pi: unknown) => RecordsEngine }).buildSubagentEngine(getPiCodingAgent());
+    (session as unknown as { buildSubagentEngine: (pi: unknown, folder: unknown, agents: unknown) => RecordsEngine }).buildSubagentEngine(getPiCodingAgent(), cwdFolder(), cwdFolder()!.getWorkspaceAgentRegistry());
 
   it('appends the invocation entry to the live parent session', async () => {
     const session = new PiSession(makeOptions([]));
@@ -4405,7 +4434,7 @@ describe('PiSession subagent records', () => {
   it('disposes a settled agent\'s browser scope on the client showing the chat on a daemon\'s core, and in its own browser here', async () => {
     type ScopeEngine = { disposeBrowserScope: (scopeId: string, closeTabs: boolean) => void };
     const scopeEngineOf = (session: PiSession): ScopeEngine =>
-      (session as unknown as { buildSubagentEngine: (pi: unknown) => ScopeEngine }).buildSubagentEngine(getPiCodingAgent());
+      (session as unknown as { buildSubagentEngine: (pi: unknown, folder: unknown, agents: unknown) => ScopeEngine }).buildSubagentEngine(getPiCodingAgent(), cwdFolder(), cwdFolder()!.getWorkspaceAgentRegistry());
     const browserService = { disposeScope: vi.fn(), bindServedPages: () => ({ dispose: () => undefined }) } as unknown as SessionBrowser['service'];
     const browserChat = {} as SessionBrowser['chat'];
     const fake = createFakeRemoteHost();
@@ -4465,6 +4494,97 @@ describe('PiSession subagent records', () => {
   });
 });
 
+describe('PiSession: the Agent tool lists the folder\'s agents, and later changes reach the model as notes', () => {
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await PiRuntime.disposeInstance();
+  });
+
+  /** The folder's agent registry, its load in flight until `land` registers `agents`. */
+  function heldAgentLoad() {
+    const registry = new AgentRegistry();
+    let settle!: () => void;
+    const loaded = new Promise<void>((resolve) => { settle = resolve; });
+    const agents = { getRegistry: () => registry, whenLoaded: vi.fn(() => loaded), onChange: () => () => undefined };
+    const lookups = vi.spyOn(FolderRuntime.prototype, 'getWorkspaceAgentRegistry').mockReturnValue(agents as unknown as WorkspaceAgentRegistry);
+    return { registry, lookups, waits: agents.whenLoaded, land: (found: Map<string, AgentConfig>) => { registry.register(found); settle(); } };
+  }
+  const reviewer: AgentConfig = { name: 'Reviewer', description: 'Reviews code', extensions: true, skills: true, systemPrompt: '', promptMode: 'append', source: 'project-damocles' };
+  const defaultTypes = [...DEFAULT_AGENTS.keys()];
+  const agentDescription = (): string => (H.captured.customTools.find((tool) => tool.name === 'Agent') as unknown as { description: string }).description;
+  /** The gate the live session registered, whose `agentTypes` the folder's extension reads at each prompt start. */
+  const liveGate = (): PanelGateContext => (cwdFolder() as unknown as { _panelRegistry: Map<string, PanelGateContext> })._panelRegistry.get(H.getLastSession()!.sessionId)!;
+  const projection = (messages: unknown[]) => ({ buildSessionProjection: () => ({ messages }) }) as unknown as ProjectionReader;
+
+  it('lists a custom agent in the first session\'s Agent description when the folder\'s first load lands after the start began', async () => {
+    const load = heldAgentLoad();
+    const runtimes = H.fakePi.createAgentSessionRuntime.mock.calls.length;
+    const session = new PiSession(makeOptions([]));
+    const starting = session.initializeEarly();
+    await vi.waitFor(() => expect(H.fakePi.createAgentSessionRuntime.mock.calls.length).toBe(runtimes + 1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    load.land(new Map([['Reviewer', reviewer]]));
+    await starting;
+
+    expect(agentDescription()).toContain('- Reviewer: Reviews code');
+    expect(liveGate().agentTypes!().described).toContain('Reviewer');
+    await session.dispose();
+  });
+
+  // A lookup per wait would build a fresh registry on a disposed folder and wait on another object than the one spawns read.
+  it('waits for the load of the very registry its subagents read, looked up once', async () => {
+    const load = heldAgentLoad();
+    load.land(new Map());
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const lookups = load.lookups.mock.calls.length;
+    const waits = load.waits.mock.calls.length;
+
+    await (session as unknown as { subagentManager: AgentManager }).subagentManager.whenAgentsLoaded();
+
+    expect(load.lookups.mock.calls.length).toBe(lookups);
+    expect(load.waits.mock.calls.length).toBe(waits + 1);
+    await session.dispose();
+  });
+
+  it('notes an agent added after the start once, before the next prompt, and nothing at a prompt with no change', async () => {
+    const load = heldAgentLoad();
+    load.land(new Map());
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const history: unknown[] = [{ role: 'user', content: [] }];
+    const note = () => agentChangeNoteAtPromptStart(liveGate().agentTypes!(), projection(history));
+
+    expect(note()).toBeUndefined();
+    load.registry.register(new Map([['Reviewer', reviewer]]));
+    const added = note();
+    expect(added?.details).toEqual({ v: 1, types: [...defaultTypes, 'Reviewer'].sort(), added: ['Reviewer'], removed: [] });
+    history.push({ role: 'custom', ...added, timestamp: 1 }, { role: 'assistant', content: [] }, { role: 'user', content: [] });
+    expect(note()).toBeUndefined();
+    expect(agentDescription()).not.toContain('Reviewer');
+    await session.dispose();
+  });
+
+  it('emits no duplicate for a resumed conversation whose last note listed the agent, and tells its removal later', async () => {
+    const load = heldAgentLoad();
+    load.land(new Map());
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const history: unknown[] = [
+      { role: 'user', content: [] },
+      { role: 'custom', customType: 'damocles-agent-change', content: '', display: false, details: { v: 1, types: [...defaultTypes, 'Reviewer'].sort(), added: ['Reviewer'], removed: [] } },
+    ];
+    const note = () => agentChangeNoteAtPromptStart(liveGate().agentTypes!(), projection(history));
+
+    load.registry.register(new Map([['Reviewer', reviewer]]));
+    expect(note()).toBeUndefined();
+    load.registry.register(new Map());
+    expect(note()?.details).toEqual({ v: 1, types: [...defaultTypes].sort(), added: [], removed: ['Reviewer'] });
+    await session.dispose();
+  });
+});
+
 describe('PiSession unpersisted tool result images', () => {
   afterEach(async () => {
     vi.restoreAllMocks();
@@ -4493,7 +4613,7 @@ describe('PiSession unpersisted tool result images', () => {
   type NestedEngine = { createSession: (opts: unknown) => Promise<unknown>; forgetSession: (s: unknown) => void };
   it.each<[string, (session: PiSession) => NestedEngine]>([
     ['subagent', (session) =>
-      (session as unknown as { buildSubagentEngine: (pi: unknown, folder: unknown) => NestedEngine }).buildSubagentEngine(getPiCodingAgent(), cwdFolder())],
+      (session as unknown as { buildSubagentEngine: (pi: unknown, folder: unknown, agents: unknown) => NestedEngine }).buildSubagentEngine(getPiCodingAgent(), cwdFolder(), cwdFolder()!.getWorkspaceAgentRegistry())],
     ['team', (session) => session.buildTeamEngine() as unknown as NestedEngine],
   ])('the %s engine tracks a nested session from createSession until forgetSession', async (_label, engineOf) => {
     const session = new PiSession(makeOptions([]));
@@ -6200,10 +6320,10 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     const { session, cfg } = await teamSessionWithMcp([direct, MCP_DESCRIPTORS[1]!]);
     const teamEngine = session.buildTeamEngine();
     const subagentEngine = (session as unknown as {
-      buildSubagentEngine: (pi: unknown) => {
+      buildSubagentEngine: (pi: unknown, folder: unknown, agents: unknown) => {
         buildAgentToolset: (i: { agentId: string; agentName: string; mcpDisallowed: ReadonlySet<string> }) => { mcp: NestedMcpToolset };
       };
-    }).buildSubagentEngine(getPiCodingAgent() as never);
+    }).buildSubagentEngine(getPiCodingAgent() as never, cwdFolder(), cwdFolder()!.getWorkspaceAgentRegistry());
 
     const snapshots = [
       teamEngine.buildAgentToolset(teamCtx('agent-1')).mcp,
@@ -6241,10 +6361,10 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
       const { session, cfg } = await teamSessionWithMcp(MCP_DESCRIPTORS, { browser: false, team: true }, [], [{ serverName: 'docs', serverId: 'm/docs', exposure }]);
       const teamEngine = session.buildTeamEngine();
       const subagentEngine = (session as unknown as {
-        buildSubagentEngine: (pi: unknown) => {
+        buildSubagentEngine: (pi: unknown, folder: unknown, agents: unknown) => {
           buildAgentToolset: (i: { agentId: string; agentName: string; mcpDisallowed: ReadonlySet<string> }) => { customTools: { name: string }[]; mcp: NestedMcpToolset };
         };
-      }).buildSubagentEngine(getPiCodingAgent() as never);
+      }).buildSubagentEngine(getPiCodingAgent() as never, cwdFolder(), cwdFolder()!.getWorkspaceAgentRegistry());
 
       const team = teamEngine.buildAgentToolset(teamCtx('agent-1'));
       const sub = subagentEngine.buildAgentToolset({ agentId: 'a1', agentName: 'general-purpose', mcpDisallowed: new Set() });
@@ -6269,10 +6389,10 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     const { session, cfg } = await teamSessionWithMcp([...allDirect, docs]);
     const teamEngine = session.buildTeamEngine();
     const subagentEngine = (session as unknown as {
-      buildSubagentEngine: (pi: unknown) => {
+      buildSubagentEngine: (pi: unknown, folder: unknown, agents: unknown) => {
         buildAgentToolset: (i: { agentId: string; agentName: string; mcpDisallowed: ReadonlySet<string> }) => { mcp: NestedMcpToolset };
       };
-    }).buildSubagentEngine(getPiCodingAgent() as never);
+    }).buildSubagentEngine(getPiCodingAgent() as never, cwdFolder(), cwdFolder()!.getWorkspaceAgentRegistry());
     const subagentMcp = subagentEngine.buildAgentToolset({ agentId: 'a1', agentName: 'general-purpose', mcpDisallowed: new Set() }).mcp;
     expect([...subagentMcp.directGroups]).toEqual(['git']);
 
@@ -6517,8 +6637,8 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     const { session, cfg } = await teamSessionWithMcp();
     const teamEngine = session.buildTeamEngine();
     const subagentEngine = (session as unknown as {
-      buildSubagentEngine: (pi: unknown) => { buildAgentToolset: (i: { agentId: string; agentName: string; mcpDisallowed: ReadonlySet<string> }) => { mcp: { names: string[] } } };
-    }).buildSubagentEngine(getPiCodingAgent() as never);
+      buildSubagentEngine: (pi: unknown, folder: unknown, agents: unknown) => { buildAgentToolset: (i: { agentId: string; agentName: string; mcpDisallowed: ReadonlySet<string> }) => { mcp: { names: string[] } } };
+    }).buildSubagentEngine(getPiCodingAgent() as never, cwdFolder(), cwdFolder()!.getWorkspaceAgentRegistry());
 
     const parent = (session as unknown as { fullActiveToolNames: () => string[] }).fullActiveToolNames();
     const explore = resolveAgentToolset(DEFAULT_AGENTS.get('Explore')!, parent);
@@ -6548,10 +6668,10 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     const { session, cfg } = await teamSessionWithMcp();
     const main = H.fakePi.createAgentSessionFromServices.mock.calls.at(-1)![0] as unknown as { customTools: Array<{ name: string }>; excludeTools: string[] };
     const subagentEngine = (session as unknown as {
-      buildSubagentEngine: (pi: unknown) => {
+      buildSubagentEngine: (pi: unknown, folder: unknown, agents: unknown) => {
         buildAgentToolset: (i: { agentId: string; agentName: string; mcpDisallowed: ReadonlySet<string> }) => { customTools: { name: string }[] };
       };
-    }).buildSubagentEngine(getPiCodingAgent() as never);
+    }).buildSubagentEngine(getPiCodingAgent() as never, cwdFolder(), cwdFolder()!.getWorkspaceAgentRegistry());
     const toolsets = {
       main: main.customTools.map((t) => t.name),
       subagent: subagentEngine.buildAgentToolset({ agentId: 'a1', agentName: 'general-purpose', mcpDisallowed: new Set<string>() }).customTools.map((t) => t.name),
@@ -6579,13 +6699,13 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     // site, because that is the expression that can regress. (The team path has the same assertion.)
     const { session, cfg } = await teamSessionWithMcp();
     const subagentEngine = (session as unknown as {
-      buildSubagentEngine: (pi: unknown) => {
+      buildSubagentEngine: (pi: unknown, folder: unknown, agents: unknown) => {
         buildAgentToolset: (i: { agentId: string; agentName: string; mcpDisallowed: ReadonlySet<string> }) => {
           customTools: { name: string }[];
           mcp: { names: readonly string[] };
         };
       };
-    }).buildSubagentEngine(getPiCodingAgent() as never);
+    }).buildSubagentEngine(getPiCodingAgent() as never, cwdFolder(), cwdFolder()!.getWorkspaceAgentRegistry());
 
     const { customTools, mcp } = subagentEngine.buildAgentToolset({
       agentId: 'a1',
@@ -10298,10 +10418,10 @@ describe('the shell session job is scoped to the panel', () => {
     expect(JOB.created).toHaveLength(1);
 
     const internals = session as unknown as {
-      buildSubagentEngine: (pi: unknown) => { buildAgentToolset: (i: { agentId: string; agentName: string; mcpDisallowed: ReadonlySet<string> }) => unknown };
+      buildSubagentEngine: (pi: unknown, folder: unknown, agents: unknown) => { buildAgentToolset: (i: { agentId: string; agentName: string; mcpDisallowed: ReadonlySet<string> }) => unknown };
       buildTeamAgentCustomTools: (pi: unknown, ctx: unknown) => unknown;
     };
-    internals.buildSubagentEngine(getPiCodingAgent() as never).buildAgentToolset({
+    internals.buildSubagentEngine(getPiCodingAgent() as never, cwdFolder(), cwdFolder()!.getWorkspaceAgentRegistry()).buildAgentToolset({
       agentId: 'a1',
       agentName: 'general-purpose',
       mcpDisallowed: new Set<string>(),
@@ -12843,7 +12963,7 @@ describe('PiSession with no project folder takes no checkpoints', () => {
     expect(registries._checkpointRegistry.has(live.sessionId)).toBe(false);
     const gate = registries._panelRegistry.get(live.sessionId)!;
     expect(gate).not.toHaveProperty('checkpointBaseline');
-    const subagentEngine = (session as unknown as { buildSubagentEngine(pi: unknown, folder: unknown): object }).buildSubagentEngine(getPiCodingAgent(), folder);
+    const subagentEngine = (session as unknown as { buildSubagentEngine(pi: unknown, folder: unknown, agents: unknown): object }).buildSubagentEngine(getPiCodingAgent(), folder, folder.getWorkspaceAgentRegistry());
     expect(subagentEngine).not.toHaveProperty('checkpointBaseline');
     await session.dispose();
   });

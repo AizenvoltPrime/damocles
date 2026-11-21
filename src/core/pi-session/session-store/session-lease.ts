@@ -7,9 +7,10 @@ import { DAMOCLES_HOME_DIR } from '../../paths';
 import { log } from '../../logger';
 import { isSafeAgentPathId } from '../../../shared/agent-path-id';
 import { isUuid } from '../../../shared/uuid';
+import { sessionLeaseDirIn } from './session-file-path';
 
 /** Outside every session dir, so pi's session listing, the session watcher and the list cache never see a lease. */
-export const SESSION_LEASE_DIR: string = path.join(DAMOCLES_HOME_DIR, 'locks', 'sessions');
+export const SESSION_LEASE_DIR: string = sessionLeaseDirIn(DAMOCLES_HOME_DIR);
 // A lease whose heartbeat stopped this long ago belongs to a dead process and is taken over.
 export const SESSION_LEASE_STALE_MS = 20_000;
 // Also the release-request poll: proper-lockfile itself polls mtimes because watchers are unreliable on network filesystems.

@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
+import { MAX_FEATURES } from '../../src/remote/handshake';
 import { type CheckResult, type Contract, type Snapshot, checkSnapshots, run, snapshot } from '../protocol-compat.ts';
 
 interface Version {
@@ -16,6 +17,7 @@ const CONTRACTS: readonly Contract[] = [
   { file: 'contract.ts', type: 'Events' },
   { file: 'contract.ts', type: 'Init' },
   { file: 'contract.ts', type: 'Hello', frozen: true },
+  { file: 'contract.ts', type: 'Posts', dropsUnknown: true },
 ];
 
 const check = (previous: Snapshot, next: Snapshot): CheckResult => checkSnapshots(previous, next, CONTRACTS);
@@ -38,6 +40,9 @@ export interface Init {
 export interface Hello {
   readonly version: number;
 }
+export type Posts =
+  | { readonly type: 'shown'; readonly code: 'near' | 'far' }
+  | { readonly type: 'hidden' };
 `;
 
 const OTHER = `
@@ -93,37 +98,67 @@ describe('protocol-compat', () => {
     expect(check(base, fixture(removed, 2)).ok).toBe(true);
   });
 
-  it('fails a changed field and a new closed-enum value without a bump', () => {
+  it('fails a value added to a closed list without a new FEATURES name, passes it once one names it, and breaks on a removed value', () => {
+    const widened = BASE.replace("'bytes' | 'missing'", "'bytes' | 'missing' | 'tooLarge'");
+    expect(check(base, fixture(widened)).errors).toEqual(['an older peer cannot take this addition and no new FEATURES name gates it: Requests.files.read.result.kind gained "tooLarge"']);
+    expect(check(base, fixture(widened, 1, ['files.tooLarge']))).toMatchObject({ ok: true, errors: [] });
+    expect(check(fixture(widened), fixture(BASE.replace("'bytes' | 'missing'", "'bytes' | 'tooLarge'")))).toMatchObject({
+      breaking: ['Requests.files.read.result.kind lost "missing"'],
+      additive: [],
+    });
+  });
+
+  it('passes a variant or value added to a contract whose reader drops what it does not know with no new FEATURES name, and breaks on a removed one', () => {
+    const grown = BASE
+      .replace("readonly code: 'near' | 'far' }", "readonly code: 'near' | 'far' | 'away' }")
+      .replace("  | { readonly type: 'hidden' };", "  | { readonly type: 'hidden' }\n  | { readonly type: 'moved'; readonly to: string };");
+    const result = check(base, fixture(grown));
+    expect(result).toMatchObject({ ok: true, errors: [], breaking: [], additive: [] });
+    expect(result.optional).toEqual(['Posts[type="shown"].code gained "away"', 'Posts[type="moved"] was added']);
+    expect(check(base, fixture(BASE.replace("\n  | { readonly type: 'hidden' }", ''))).ok).toBe(false);
+  });
+
+  it('fails a changed field without a bump', () => {
     expect(check(base, fixture(BASE.replace('readonly size: number', 'readonly size: string'))).errors).toEqual([
       'breaking without a protocolVersion bump: Requests.files.read.result.size changed from "number" to "string"',
     ]);
-    const widened = check(base, fixture(BASE.replace("'bytes' | 'missing'", "'bytes' | 'missing' | 'tooLarge'")));
-    expect(widened.ok).toBe(false);
-    expect(widened.errors[0]).toMatch(/^breaking without a protocolVersion bump: Requests\.files\.read\.result\.kind changed/);
     expect(check(base, fixture(BASE.replace('readonly path: string }; readonly result: boolean', 'readonly path: string; readonly deep: boolean }; readonly result: boolean'))).errors).toEqual([
       'breaking without a protocolVersion bump: Requests.files.stat.params.deep was added as required',
     ]);
   });
 
-  it('passes additive changes once a new welcome feature names them', () => {
-    const additive = BASE
-      .replace("  'files.stat':", "  'files.list': { readonly params: { readonly path: string }; readonly result: readonly string[] };\n  'files.stat':")
+  it('passes an optional field added to a request, a result, an event or a plain contract with no new FEATURES name', () => {
+    const optional = BASE
       .replace('readonly path: string; readonly limit?: number', 'readonly path: string; readonly limit?: number; readonly offset?: number')
-      .replace("  | { readonly type: 'deleted'; readonly path: string };", "  | { readonly type: 'deleted'; readonly path: string }\n  | { readonly type: 'renamed'; readonly from: string; readonly to: string };");
-    const unnamed = check(base, fixture(additive));
-    expect(unnamed.ok).toBe(false);
-    expect(unnamed.errors).toEqual([
-      'additive change no new welcome feature names: Requests.files.read.params.offset was added (optional)',
-      'additive change no new welcome feature names: Requests.files.list was added',
-      'additive change no new welcome feature names: Events[type="renamed"] was added',
+      .replace("readonly kind: 'bytes' | 'missing'; readonly size: number", "readonly kind: 'bytes' | 'missing'; readonly size: number; readonly mtime?: number")
+      .replace("{ readonly type: 'changed'; readonly path: string }", "{ readonly type: 'changed'; readonly path: string; readonly size?: number }")
+      .replace('readonly limit?: number;\n}', 'readonly limit?: number;\n  readonly epoch?: string;\n}');
+    const result = check(base, fixture(optional));
+    expect(result).toMatchObject({ ok: true, errors: [], breaking: [], additive: [] });
+    expect(result.optional).toEqual([
+      'Requests.files.read.params.offset was added (optional)',
+      'Requests.files.read.result.mtime was added (optional)',
+      'Events[type="changed"].size was added (optional)',
+      'Init.epoch was added (optional)',
     ]);
-    expect(check(base, fixture(additive, 1, ['files.list']))).toMatchObject({ ok: true, errors: [] });
+  });
+
+  it('fails a new request without a new FEATURES name, and passes it once one names it', () => {
+    const listed = BASE.replace("  'files.stat':", "  'files.list': { readonly params: { readonly path: string }; readonly result: readonly string[] };\n  'files.stat':");
+    expect(check(base, fixture(listed)).errors).toEqual(['an older peer cannot take this addition and no new FEATURES name gates it: Requests.files.list was added']);
+    expect(check(base, fixture(listed, 1, ['files.list']))).toMatchObject({ ok: true, errors: [] });
+  });
+
+  it('fails a new variant of a tagged union without a new FEATURES name, and passes it once one names it', () => {
+    const renamed = BASE.replace("  | { readonly type: 'deleted'; readonly path: string };", "  | { readonly type: 'deleted'; readonly path: string }\n  | { readonly type: 'renamed'; readonly from: string; readonly to: string };");
+    expect(check(base, fixture(renamed)).errors).toEqual(['an older peer cannot take this addition and no new FEATURES name gates it: Events[type="renamed"] was added']);
+    expect(check(base, fixture(renamed, 1, ['files.renamed']))).toMatchObject({ ok: true, errors: [] });
   });
 
   it('compares an array\'s elements, so an optional field added inside one is additive and a required one breaks', () => {
     const listed = BASE.replace("  'files.stat':", "  'files.find': { readonly params: { readonly path: string }; readonly result: readonly { readonly name: string }[] };\n  'files.stat':");
     const before = fixture(listed);
-    const optional = fixture(listed.replace('readonly { readonly name: string }[]', 'readonly { readonly name: string; readonly size?: number }[]'), 1, ['files.find.size']);
+    const optional = fixture(listed.replace('readonly { readonly name: string }[]', 'readonly { readonly name: string; readonly size?: number }[]'));
     expect(check(before, optional)).toMatchObject({ ok: true, errors: [] });
     expect(check(before, fixture(listed.replace('readonly { readonly name: string }[]', 'readonly { readonly name: string; readonly size: number }[]'))).errors).toEqual([
       'breaking without a protocolVersion bump: Requests.files.find.result[].size was added as required',
@@ -133,7 +168,7 @@ describe('protocol-compat', () => {
   it('compares the members of a plain union in order, so an optional field added inside one is additive and a changed member breaks', () => {
     const united = BASE.replace("  'files.stat':", "  'files.send': { readonly params: { readonly content: string | readonly { readonly data: string }[] }; readonly result: boolean };\n  'files.stat':");
     const before = fixture(united);
-    expect(check(before, fixture(united.replace('readonly { readonly data: string }[]', 'readonly { readonly data: string; readonly origin?: \'preview\' }[]'), 1, ['files.send.origin']))).toMatchObject({ ok: true, errors: [] });
+    expect(check(before, fixture(united.replace('readonly { readonly data: string }[]', 'readonly { readonly data: string; readonly origin?: \'preview\' }[]')))).toMatchObject({ ok: true, errors: [] });
     expect(check(before, fixture(united.replace('content: string |', 'content: number |'))).ok).toBe(false);
   });
 
@@ -146,11 +181,10 @@ describe('protocol-compat', () => {
     expect(check(base, fixture(BASE.replace("  'files.stat':", "  'files.stat'?:"))).errors).toEqual(['breaking without a protocolVersion bump: Requests.files.stat became optional']);
   });
 
-  it('fails a required field added to a contract that is not a table, and passes an optional one once named', () => {
-    expect(check(base, fixture(BASE.replace('readonly folder: string;', 'readonly folder: string;\n  readonly epoch: string;'))).errors).toEqual([
-      'breaking without a protocolVersion bump: Init.epoch was added as required',
-    ]);
-    expect(check(base, fixture(BASE.replace('readonly folder: string;', 'readonly folder: string;\n  readonly epoch?: string;'), 1, ['init.epoch'])).ok).toBe(true);
+  it('fails a required field added to a contract that is not a table, even once named', () => {
+    const required = BASE.replace('readonly folder: string;', 'readonly folder: string;\n  readonly epoch: string;');
+    expect(check(base, fixture(required)).errors).toEqual(['breaking without a protocolVersion bump: Init.epoch was added as required']);
+    expect(check(base, fixture(required, 1, ['init.epoch'])).errors).toEqual(['breaking without a protocolVersion bump: Init.epoch was added as required']);
   });
 
   it('fails any change to a frozen contract, with or without a bump', () => {
@@ -162,8 +196,15 @@ describe('protocol-compat', () => {
   it('describes a lib alias by its members, so a change inside the type it holds is seen', () => {
     const changed = fixture(BASE, 1, [], OTHER.replace('readonly size: number;', 'readonly size: string;'));
     expect(check(base, changed).errors).toEqual([
-      'breaking without a protocolVersion bump: Requests.files.entries.result changed its index signature',
+      'breaking without a protocolVersion bump: Requests.files.entries.result[string].size changed from "number" to "string"',
     ]);
+  });
+
+  it('compares an index signature\'s values, so an optional field added inside one needs no FEATURES name', () => {
+    const grown = fixture(BASE, 1, [], OTHER.replace('readonly size: number;', 'readonly size: number;\n  readonly mode?: string;'));
+    expect(check(base, grown)).toMatchObject({ ok: true, errors: [] });
+    const required = fixture(BASE, 1, [], OTHER.replace('readonly size: number;', 'readonly size: number;\n  readonly mode: string;'));
+    expect(check(base, required).errors).toEqual(['breaking without a protocolVersion bump: Requests.files.entries.result[string].mode was added as required']);
   });
 
   it('names another module by its path relative to the root, never an absolute one', () => {
@@ -183,7 +224,7 @@ describe('protocol-compat', () => {
 
   it('names the design preview\'s requests and event in the features and the committed contracts', () => {
     const committed = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'remote', 'protocol-snapshot.json'), 'utf8')) as { features: string[]; contracts: Record<string, Record<string, unknown>> };
-    expect(committed.features).toEqual(expect.arrayContaining(['design.read', 'design.info', 'design.openPreview', 'design.changed', 'chat.designOpenPreview']));
+    expect(committed.features).toEqual(expect.arrayContaining(['design.read', 'design.info', 'design.openPreview', 'design.changed']));
     expect(Object.keys(committed.contracts['MainRequests']!['object'] as object)).toEqual(expect.arrayContaining(['design.read', 'design.info']));
     expect(Object.keys(committed.contracts['CoreRequests']!['object'] as object)).toContain('design.openPreview');
     expect(Object.keys(committed.contracts['CoreEvents']!['object'] as object)).toContain('design.changed');
@@ -226,18 +267,43 @@ describe('the command line', () => {
   });
 
   // a fixture whose committed snapshot is BASE's under `committed`, with `source` as the contracts now
-  function repository(source: string, committed: Version, now: Version = committed): { argv: (...args: string[]) => number; snapshotPath: string; written: () => string } {
+  function repository(source: string, committed: Version, now: Version = committed): { argv: (...args: string[]) => number; snapshotPath: string; written: () => string; current: () => Snapshot } {
     const { root, versionFile } = project(source, now);
     const old = project(BASE, committed);
     const snapshotPath = path.join(root, 'protocol-snapshot.json');
     fs.writeFileSync(snapshotPath, JSON.stringify(snapshot(old.root, CONTRACTS, old.versionFile)));
-    return { argv: (...args) => run(args, { root, contracts: CONTRACTS, versionFile, snapshotPath }), snapshotPath, written: () => fs.readFileSync(snapshotPath, 'utf8') };
+    return { argv: (...args) => run(args, { root, contracts: CONTRACTS, versionFile, snapshotPath }), snapshotPath, written: () => fs.readFileSync(snapshotPath, 'utf8'), current: () => snapshot(root, CONTRACTS, versionFile) };
   }
 
   it('writes a compatible change', () => {
-    const repo = repository(BASE.replace('readonly limit?: number }', 'readonly limit?: number; readonly offset?: number }'), { features: [] }, { features: ['files.offset'] });
+    const repo = repository(BASE.replace('readonly limit?: number }', 'readonly limit?: number; readonly offset?: number }'), { features: [] });
+    expect(repo.argv('--check')).toBe(1);
     expect(repo.argv()).toBe(0);
     expect(repo.argv('--check')).toBe(0);
+  });
+
+  const names = (count: number): string[] => Array.from({ length: count }, (_, index) => `feature.n${index}`);
+
+  it('takes a FEATURES list of exactly MAX_FEATURES names', () => {
+    const repo = repository(BASE, { features: [] }, { features: names(MAX_FEATURES) });
+    expect(repo.argv()).toBe(0);
+    expect(repo.argv('--check')).toBe(0);
+  });
+
+  it.each([
+    ['past MAX_FEATURES names', names(MAX_FEATURES + 1), `FEATURES holds ${MAX_FEATURES + 1} names, past MAX_FEATURES (${MAX_FEATURES}), so every welcome and core attach would be refused`],
+    ['naming a name twice', ['files.list', 'files.stat', 'files.list'], 'FEATURES names files.list more than once'],
+  ])('refuses a FEATURES list %s in every mode, even with --allow-breaking while pre-release', (_name, features, error) => {
+    const repo = repository(BASE, { features: [] }, { features });
+    const before = repo.written();
+    expect(repo.argv('--allow-breaking')).toBe(1);
+    expect(repo.written()).toBe(before);
+    expect(repo.argv('--check')).toBe(1);
+    expect(repo.argv('--against', repo.snapshotPath)).toBe(1);
+    expect(console.error).toHaveBeenCalledWith(error);
+    // a committed snapshot that already matches such a list still fails --check
+    fs.writeFileSync(repo.snapshotPath, JSON.stringify(repo.current()));
+    expect(repo.argv('--check')).toBe(1);
   });
 
   it('refuses to write a breaking change without --allow-breaking, so --check still fails', () => {

@@ -12,9 +12,11 @@ import { serializeSettingWrite } from '../settings-write-chain';
 import { userSettingWriteError } from '../config/user-settings-write';
 import { timed } from '../perf';
 import { initPiLoader, getPiCodingAgent, loadPiAi, loadedPiAi, type PiCodingAgentModule } from './pi-loader';
-import { cacheWarmingSetting, ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir';
+import { cacheWarmingSetting, PI_AGENT_DIR } from './agent-dir';
+import { ensurePiAgentDir } from './agent-dir-setup';
 import { CONTEXT_FILE_CANDIDATES } from './context-files';
 import { ASSET_SOURCE_PRECEDENCE_SETTING, assetSources } from '../asset-sources';
+import { discoverCommands, LinkTargetWatchers, skillLinkTargets } from '../assets';
 import { renamePiSession, type LiveSessionMetaSource } from './session-store';
 import { writeUnderSessionLease } from './session-store/session-lease';
 import { McpClientManager } from './mcp/mcp-client-manager';
@@ -24,9 +26,12 @@ import { removeSavedMcpOutputs } from './mcp/content';
 import type { AdditionMemory, NoticeMemory, PersonalToolLists, RenamedRuleNoticeEntry, ToolNameList } from './mcp/tool-name-migration';
 import type { DesignPreviewOpening } from '../design/session-design';
 import { inertToolListEntry } from '../permission-handler/mcp-resource-rule';
+import { RuleFileNotWritable } from '../permission-handler/permission-settings';
+import { agentConfigBases, ConfigWriteRefused, configLinkPolicy, isWithin, noticeRefusedConfigRead, userConfigBase, type ConfigNotices } from '../config/local-config-path';
 import { piSupportedModels, stripServerSideFallbacks, type ModelLookup } from './pi-models';
 import { piModelDollarBilled } from './account-billing';
-import { flatFeeKeyProviders, keyProviderOfSecret, syncCustomProviders, type SecretResolver } from './custom-providers';
+import { flatFeeKeyProviders, syncCustomProviders, type SecretResolver } from './custom-providers';
+import { keyProviderOfSecret } from './provider-defs';
 import {
   resolveAutomaticModel,
   resolveBackgroundModel,
@@ -57,12 +62,12 @@ import { MEMORY_JUDGE_EFFORT_SETTING, MEMORY_JUDGE_SETTING, forcedClassifierOf, 
 import { migrateLegacyModelValue } from '../../shared/types/constants';
 import {
   LEGACY_SUBSCRIPTION_REPOS,
-  SUBSCRIPTION_SOURCE,
   classifySubscriptionSource,
   listedSubscriptionKinds,
   readClaudeAuthFromDisk,
   type ClaudeAuthStatus,
 } from './subscription';
+import { SUBSCRIPTION_SOURCE } from './subscription-source';
 import { forceRemoveDir } from './fs-remove';
 import { createApplyRetry } from './apply-retry';
 import {
@@ -81,7 +86,7 @@ import { syncOpenAIRuntimeKey } from './openai-runtime-key';
 import { migrateOpenAIApiKey } from './openai-key-migration';
 import { OPENAI_KEY_MOVED_MARKER_PATH, PROVIDER_KEY_SWEEP_MARKER_PATH } from '../paths';
 import { planModelsOf, preferApiKeySetting, readPreferProviderApiKey, readProviderSignIns, type ProviderSignIns } from './provider-auth';
-import { FolderRuntime, type ExtensionLoadError } from './folder-runtime';
+import { FolderRuntime, type ExtensionLoadError, type UserAssets } from './folder-runtime';
 import { MCP_RESOURCE_EXPOSURE_SETTING, MCP_TOOL_EXPOSURE_SETTING, renamedRuleNoticeKey, type McpRenamedToolRuleLocation } from '../../shared/types/mcp';
 import { folderKey } from '../workspace-folders/folder-key';
 import { KEY_PROVIDER_IDS, isKeyProviderId, type ExternalKeySource, type KeyProviderId, type SignInProviderId } from '../../shared/settings-sections';
@@ -358,6 +363,11 @@ function settingsErrorName(error: Error): string {
   return (error as NodeJS.ErrnoException).code ?? error.name;
 }
 
+// pi's refusal of a file its link policy refuses (patch 007), which no fix of the file's text answers.
+function refusedByLinkPolicy(err: PiSettingsError): boolean {
+  return (err.error as NodeJS.ErrnoException).code === 'ELINKPOLICY';
+}
+
 /** Logs the load errors pi recorded and returns the user settings file's (its global scope). */
 function userSettingsLoadError(errors: readonly PiSettingsError[]): PiSettingsError | null {
   for (const err of errors) log('[PiRuntime] pi could not load the %s settings file %s (%s)', err.scope, err.path ?? '', settingsErrorName(err.error));
@@ -399,8 +409,16 @@ export type MemoryJudgeResolution =
   | { kind: 'model'; model: Model<Api>; effort?: EffortLevel }
   | { kind: 'none'; forced?: { choice: string; reason: MemoryJudgeUnavailable } };
 
-/** models.json's text, null when it is absent, undefined (logged) when it exists but could not be read. */
-async function readModelsConfig(file: string): Promise<string | null | undefined> {
+/**
+ * models.json's text, null when it is absent, undefined (logged) when it exists but could not be read or `linkPolicy`, pi's own
+ * for the file, refuses it (told to the user once).
+ */
+async function readModelsConfig(file: string, linkPolicy: (file: string) => boolean, notifications: ConfigNotices): Promise<string | null | undefined> {
+  if (!linkPolicy(file)) {
+    log('[PiRuntime] models.json links to a network share or WSL path, so it is not read');
+    noticeRefusedConfigRead(file, notifications);
+    return undefined;
+  }
   try {
     return await readFile(file, 'utf8');
   } catch (err) {
@@ -427,6 +445,8 @@ export class PiRuntime {
 
   private _initPromise: Promise<void> | null = null;
   private readonly _agentDir: string;
+  /** pi's link policy for the user-scope files under the agent dir, which Damocles' own reads of them follow too. */
+  private readonly _linkPolicy: (file: string) => boolean;
   private _modelRuntime: ModelRuntime | null = null;
   /** models.json's text as last read before pi loaded it, null while absent, undefined when that read failed. */
   private _modelsConfigRead: string | null | undefined = null;
@@ -457,6 +477,12 @@ export class PiRuntime {
   private _userMcp: McpClientManager | null = null;
   /** Watchers on the user-scope skill/command roots and the global instructions file. */
   private readonly _userWatchers: FileWatcher[] = [];
+  /** The user-scope link targets behind those roots, which the root watchers do not see. */
+  private _userTargets: LinkTargetWatchers | null = null;
+  /** Bumped by each user-target scan, so an older scan finishing later does not overwrite a newer one's targets. */
+  private _userTargetScan = 0;
+  /** What the latest user-target scan found, so a retry reloads the folders only when it found something else. */
+  private _userScanKey: string | undefined;
   private _userDebounce: NodeJS.Timeout | null = null;
   /** This runtime's hold on the shared auth.json watch; set once init has applied the OpenAI key, so changes route here. */
   private _authWatch: Disposable | null = null;
@@ -558,6 +584,7 @@ export class PiRuntime {
       throw new Error('PiRuntime already constructed — there must be exactly one per process (B1)');
     }
     this._agentDir = agentDir;
+    this._linkPolicy = configLinkPolicy(agentConfigBases(agentDir, os.homedir()));
     this._platform = platform();
     this._classifierBreakers.onChange(() => notifyMemoryJudgeListeners());
     this._clientsListener = this._platform.remote ? this._watchClients(this._platform.remote) : null;
@@ -644,7 +671,13 @@ export class PiRuntime {
     const watches = byDir;
     let watch = watches.get(agentDir);
     if (!watch) {
-      const watcher = factory.watch(agentDir, 'auth.json');
+      // based at auth.json's D10 base when agentDir lies in the home folder (the Damocles data folder for the default agent
+      // folder, else home), so the desktop watcher judges a link on its path; the watcher delivers only paths inside its base,
+      // so an agentDir elsewhere stays its own base
+      const home = os.homedir();
+      const base = isWithin(home, agentDir) ? userConfigBase(path.join(agentDir, 'auth.json'), home) : agentDir;
+      const below = path.relative(base, agentDir).split(path.sep).join('/');
+      const watcher = factory.watch(base, below === '' ? 'auth.json' : `${below}/auth.json`);
       // read once the watch runs, so a write after this read always reaches the comparison as an event
       const created: AuthFileWatch = { watcher, holders: 0, debounce: null, published: authEntryDigests(agentDir) };
       const onChange = (): void => {
@@ -980,11 +1013,12 @@ export class PiRuntime {
       noticeMemory: renamedRuleNoticeMemory(this._platform.state, cwd),
       additionMemory: appliedRuleAdditionMemory(this._platform.state, cwd),
       projectDisabledTools: () => this.projectDisabledToolList(),
-      personalDisabledTools: (trusted) => this.personalDisabledToolLists(trusted ? ['user', 'local'] : ['user']),
+      personalDisabledTools: (trusted, stillTrusted) => this.personalDisabledToolLists(trusted ? ['user', 'local'] : ['user'], stillTrusted),
       toolExposureSetting: () => this._platform.settings.inspect<unknown>(MCP_TOOL_EXPOSURE_SETTING),
       resourceExposureSetting: () => this._platform.settings.inspect<unknown>(MCP_RESOURCE_EXPOSURE_SETTING),
       trust: this._platform.trust,
       fileWatchers: this._platform.fileWatchers,
+      notifications: this._platform.notifications,
     });
     try {
       await folder.createServices();
@@ -1019,20 +1053,32 @@ export class PiRuntime {
   }
 
   /**
-   * Watch the user-scope skill + command roots and the user-global instructions file
+   * Watch the user-scope skill + command roots, the link targets behind them, and the user-global instructions file
    * (`~/.damocles/AGENTS.md` and its siblings), and reload every folder's loader when they change: each
    * loader carries the user dirs and re-runs the context-file override on reload. A full reload, not
    * `extendResources`, because only a reload can drop a deleted resource.
    *
    * The user dirs sit outside every workspace folder, and a workspace glob reports no event from
-   * there. Anchoring the watcher on the dir itself is what makes these fire.
+   * there, so each has a watcher of its own, based at its D10 base with the dir in the glob.
    */
   private _setupUserWatchers(): void {
     for (const watcher of this._userWatchers.splice(0)) watcher.dispose();
+    this._userTargets?.dispose();
     const onChange = () => this._scheduleFolderReloads();
+    // a drive that did not answer is asked again by the probed scan alone; pi's synchronous walk would block on it
+    this._userTargets = new LinkTargetWatchers(this._platform.fileWatchers, onChange, () => {
+      void this._syncUserTargets().then((scan) => {
+        if (scan?.changed) this._scheduleFolderReloads();
+      });
+    });
+    void this._syncUserTargets();
+    const home = os.homedir();
     for (const source of assetSources()) {
       for (const sub of [source.skills, source.commands]) {
-        this._userWatchers.push(this._platform.fileWatchers.watch(path.join(os.homedir(), sub), '**'));
+        // based at the dir's network-rule base (D10: the home folder or the Damocles data folder), so the watcher judges a link on its path
+        const dir = path.join(home, sub);
+        const base = userConfigBase(dir, home);
+        this._userWatchers.push(this._platform.fileWatchers.watch(base, `${path.relative(base, dir).split(path.sep).join('/')}/**`));
       }
     }
     this._userWatchers.push(
@@ -1045,12 +1091,48 @@ export class PiRuntime {
     }
   }
 
-  /** Reloads every folder's loader once a burst of user asset or precedence changes settles. */
+  /**
+   * Walks the user roots for their link targets and for the user part of every folder's snapshot; changed when the scan found
+   * other commands, skill roots or targets than the last. Null when the scan did not run, failed, or a later one replaced it.
+   */
+  private async _syncUserTargets(): Promise<{ assets: UserAssets; changed: boolean } | null> {
+    const targets = this._userTargets;
+    if (targets === null) return null;
+    const scan = ++this._userTargetScan;
+    const pi = await initPiLoader();
+    if (pi === null) {
+      log('[PiRuntime] pi failed to load, so user-scope asset links are not watched');
+      return null;
+    }
+    const scopes = { workspacePath: null, homeDir: os.homedir(), trusted: true, log: (line: string) => log('%s', line) };
+    try {
+      const [commands, skills] = await Promise.all([discoverCommands({ ...scopes, parseFrontmatter: pi.parseFrontmatter }), skillLinkTargets(scopes)]);
+      // a disposed or replaced set ignores this sync
+      if (scan !== this._userTargetScan) return null;
+      const followed = [...commands.followed.user, ...skills.followed.user];
+      targets.sync(followed);
+      const key = JSON.stringify([
+        commands.commands.map((command) => [command.name, command.filePath, command.withheld ?? null, command.frontmatter ?? null, command.body ?? null]),
+        skills.roots.map((root) => root.dir),
+        followed,
+      ]);
+      const changed = key !== this._userScanKey;
+      this._userScanKey = key;
+      return { assets: { commands: commands.commands, skillRoots: skills.roots }, changed };
+    } catch (err) {
+      log('[PiRuntime] user-scope asset link scan failed: %O', err);
+      return null;
+    }
+  }
+
+  /** Reloads every folder's loader once a burst of user asset or precedence changes settles, walking the user roots once for
+   *  their link targets, since a change may have added, moved or removed a link, and for every folder's user assets. */
   private _scheduleFolderReloads(): void {
     if (this._userDebounce) clearTimeout(this._userDebounce);
     this._userDebounce = setTimeout(() => {
+      const user = this._syncUserTargets().then((scan) => scan?.assets ?? null);
       for (const folder of this.folders()) {
-        folder.reloadBare().catch((err) => log('[PiRuntime] user asset reload failed (%s): %O', folder.cwd, err));
+        folder.reloadBare(user).catch((err) => log('[PiRuntime] user asset reload failed (%s): %O', folder.cwd, err));
       }
     }, 300);
   }
@@ -1316,12 +1398,13 @@ export class PiRuntime {
           },
         })
       : null;
-    this._modelsConfigRead = await readModelsConfig(this._modelsPath());
+    this._modelsConfigRead = await readModelsConfig(this._modelsPath(), this._linkPolicy, this._platform.notifications);
     // pi's availability checks read every provider's credential, so they must never run inside a turn's pin
     const modelRuntime = await outsidePins(() => pi.ModelRuntime.create({
       ...(this._broker ? { credentials: this._broker } : { authPath: path.join(this._agentDir, 'auth.json') }),
       modelsPath: this._modelsPath(),
       modelsStorePath: this._modelsStorePath(),
+      linkPolicy: this._linkPolicy,
     }));
     if (remote) {
       // pi also starts this pass itself, from every provider (un)registration and session bind, in its caller's context
@@ -1336,14 +1419,14 @@ export class PiRuntime {
     this._adoptModelRuntime(modelRuntime);
     for (const resolve of this._modelRuntimeWaiters) resolve(modelRuntime);
     this._modelRuntimeWaiters.clear();
-    const userSettings = withSettingsPolicy(pi.SettingsManager.create(this._agentDir, this._agentDir));
+    const userSettings = withSettingsPolicy(pi.SettingsManager.create(this._agentDir, this._agentDir, { linkPolicy: this._linkPolicy }));
     this._userSettings = userSettings;
     // A new manager has written nothing, so every error it holds is from its load.
     this._userSettingsLoadError = userSettingsLoadError(userSettings.drainErrors());
     if (this._userSettingsLoadError) {
-      void this._platform.notifications.warn(
-        l('Damocles could not read {0}, so pi runs without the settings and packages it holds. Fix or delete the file; Damocles reads it again the next time it starts.', this._userSettingsPath(this._userSettingsLoadError)),
-      );
+      const file = this._userSettingsPath(this._userSettingsLoadError);
+      if (refusedByLinkPolicy(this._userSettingsLoadError)) noticeRefusedConfigRead(file, this._platform.notifications);
+      else void this._platform.notifications.warn(l('Damocles could not read {0}, so pi runs without the settings and packages it holds. Fix or delete the file; Damocles reads it again the next time it starts.', file));
     }
     // Before the first key sync, so a change between its secret read and init's end is not missed.
     this._secretsListener?.dispose();
@@ -1460,9 +1543,9 @@ export class PiRuntime {
    * every folder of the window shares them: the user scope everywhere, the local one on desktop (the default
    * project's local file; VS Code reports no local value for a window-level key).
    */
-  private personalDisabledToolLists(scopes: readonly ('user' | 'local')[]): PersonalToolLists {
+  private personalDisabledToolLists(scopes: readonly ('user' | 'local')[], localTrusted: () => boolean): PersonalToolLists {
     return {
-      rewrite: (rename) => this.rewriteDisabledToolLists(scopes, rename),
+      rewrite: (rename) => this.rewriteDisabledToolLists(scopes, rename, localTrusted),
       lists: () => {
         const inspection = this._platform.settings.inspect<unknown>(TOOLS_DISABLED_SETTING);
         return scopes.flatMap((scope): ToolNameList[] => {
@@ -1480,11 +1563,12 @@ export class PiRuntime {
   /**
    * Rewrites `damocles.tools.disabled` at each of `scopes` entry by entry, in place, from what it holds when the
    * write runs, on the process-wide settings write chain the settings panel's setters share. A list `rename`
-   * leaves unchanged is not written.
+   * leaves unchanged is not written. The local scope's write throws RuleFileNotWritable once `localTrusted` answers false.
    */
-  private async rewriteDisabledToolLists(scopes: readonly ('user' | 'local')[], rename: (name: string) => string): Promise<void> {
+  private async rewriteDisabledToolLists(scopes: readonly ('user' | 'local')[], rename: (name: string) => string, localTrusted: () => boolean): Promise<void> {
     for (const scope of scopes) {
       await serializeSettingWrite(async () => {
+        if (scope === 'local' && !localTrusted()) throw new RuleFileNotWritable(`${TOOLS_DISABLED_SETTING} at the local scope`);
         const inspection = this._platform.settings.inspect<unknown>(TOOLS_DISABLED_SETTING);
         const list = scope === 'user' ? inspection.userValue : inspection.localValue;
         if (!Array.isArray(list)) return;
@@ -1690,7 +1774,7 @@ export class PiRuntime {
       }
       let checkedAt: number | undefined;
       try {
-        checkedAt = await savedCatalogCheckedAt(this._modelsStorePath(), 'openrouter');
+        checkedAt = await savedCatalogCheckedAt(this._modelsStorePath(), 'openrouter', this._linkPolicy);
       } catch (err) {
         log('[PiRuntime] OpenRouter catalog refresh ended, but its saved catalog could not be read: %s', describeCatalogError(err));
         return;
@@ -1736,7 +1820,7 @@ export class PiRuntime {
   private async _reloadChangedModelsConfig(): Promise<void> {
     const modelRuntime = this._modelRuntime;
     if (!modelRuntime || this._disposed) return;
-    const text = await readModelsConfig(this._modelsPath());
+    const text = await readModelsConfig(this._modelsPath(), this._linkPolicy, this._platform.notifications);
     // an unreadable file keeps what pi loaded, since pi's own read of it would fail too
     if (text === undefined || text === this._modelsConfigRead) return;
     this._modelsConfigRead = text;
@@ -2434,6 +2518,7 @@ export class PiRuntime {
       cwd: this._agentDir,
       agentDir: this._agentDir,
       settingsManager: this._settings(),
+      linkPolicy: this._linkPolicy,
     });
   }
 
@@ -2466,9 +2551,9 @@ export class PiRuntime {
   // (settings-manager.js:474-478), so this refuses first: no step may change, reload or delete on top of a dropped write.
   private async _writeUserSettings(write: () => void): Promise<void> {
     if (this._userSettingsLoadError) {
-      throw new LocalizedError(
-        l('Damocles could not read {0}, so pi cannot save this change to it. Fix or delete the file, then try again.', this._userSettingsPath(this._userSettingsLoadError)),
-      );
+      const file = this._userSettingsPath(this._userSettingsLoadError);
+      if (refusedByLinkPolicy(this._userSettingsLoadError)) throw new ConfigWriteRefused(file);
+      throw new LocalizedError(l('Damocles could not read {0}, so pi cannot save this change to it. Fix or delete the file, then try again.', file));
     }
     const settings = this._settings();
     write();
@@ -2476,6 +2561,8 @@ export class PiRuntime {
     const errors = settings.drainErrors();
     for (const err of errors) log('[PiRuntime] settings write failed (%s): %s', err.scope, settingsErrorName(err.error));
     const userErrors = errors.filter((e) => e.scope === 'global');
+    const refused = userErrors.find(refusedByLinkPolicy);
+    if (refused) throw new ConfigWriteRefused(this._userSettingsPath(refused));
     if (userErrors.length > 0) throw new Error(`settings write failed (${userErrors.map((e) => settingsErrorName(e.error)).join('; ')})`);
   }
 
@@ -3070,6 +3157,8 @@ export class PiRuntime {
     }
     for (const watcher of this._userWatchers) watcher.dispose();
     this._userWatchers.length = 0;
+    this._userTargets?.dispose();
+    this._userTargets = null;
     this._authWatch?.dispose();
     this._authWatch = null;
     this._classifierBreakers.dispose();

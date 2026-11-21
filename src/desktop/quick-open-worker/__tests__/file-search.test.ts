@@ -4,7 +4,8 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fuzzy from '../../../core/quick-open/fuzzy-match';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
-import { ALL_IGNORE_FILES, type WalkIgnore } from '../../../core/search-walk';
+import { ALL_IGNORE_FILES } from '../../../core/search-walk';
+import type { WalkSwitches } from '../../../platform/walk-settings';
 import { createWalkHost } from '../../../core/search-walk';
 import { InThreadWalkChild } from '../../../__mocks__/in-thread-walk-child';
 import { createQuickOpenListing } from '../../workspace/quick-open-listing';
@@ -38,17 +39,17 @@ const listing = createQuickOpenListing({ walks: createWalkHost(() => new InThrea
 /** Main's side of a listing, as QuickOpenIndex runs it: the walk's batches relayed to the worker, then the listing's end. */
 function serveListing(receive: (request: WorkerRequest) => void, listingId: number, projectKey: string): void {
   const project = [alpha, beta].find((candidate) => candidate.key === projectKey)!;
-  listing.list(project.fsPath, ALL_IGNORE_FILES, ['**/.git'], {
+  listing.list(project.fsPath, { ignore: ALL_IGNORE_FILES, followLinks: false }, ['**/.git'], {
     files: (files) => receive({ kind: 'listFiles', listing: listingId, files }),
     end: (error) => receive(error === undefined ? { kind: 'listEnd', listing: listingId } : { kind: 'listEnd', listing: listingId, error }),
   });
 }
 
 /** The listing of root, read as the worker reads what main relays. */
-function listed(root: string, excludes: readonly string[], progress: () => void = () => undefined, ignore: WalkIgnore = ALL_IGNORE_FILES): Promise<string[]> {
+function listed(root: string, excludes: readonly string[], progress: () => void = () => undefined, walk: WalkSwitches = { ignore: ALL_IGNORE_FILES, followLinks: false }): Promise<string[]> {
   const builder = fileListBuilder(progress);
   return new Promise((resolve, reject) => {
-    listing.list(root, ignore, excludes, { files: (files) => builder.add(files), end: (error) => (error === undefined ? resolve(builder.end()) : reject(new Error(error))) });
+    listing.list(root, walk, excludes, { files: (files) => builder.add(files), end: (error) => (error === undefined ? resolve(builder.end()) : reject(new Error(error))) });
   });
 }
 
@@ -114,7 +115,7 @@ describe('the walked file list', () => {
     touch(alpha, 'ignored.log');
     fs.writeFileSync(path.join(alpha.fsPath, '.gitignore'), '*.log\n');
     expect(await listed(alpha.fsPath, [])).toEqual(['.git/HEAD', '.gitignore', 'a.ts']);
-    expect(await listed(alpha.fsPath, ['**/.git'], undefined, { files: false, global: true, parents: true })).toEqual(['.gitignore', 'a.ts', 'ignored.log']);
+    expect(await listed(alpha.fsPath, ['**/.git'], undefined, { ignore: { files: false, global: true, parents: true }, followLinks: false })).toEqual(['.gitignore', 'a.ts', 'ignored.log']);
   });
 
   it('reports progress for every batch, so main sees a slow listing still moving', async () => {
@@ -124,11 +125,12 @@ describe('the walked file list', () => {
     expect(progress).toHaveBeenCalledTimes(1);
   });
 
-  it('never follows a junction out of the project, nor lists the junction', async () => {
+  it('follows a junction out of the project only with the follow setting on, listing its files through it', async () => {
     touch(beta, 'secret.ts');
     fs.symlinkSync(beta.fsPath, path.join(alpha.fsPath, 'link'), 'junction');
     touch(alpha, 'mine.ts');
     expect(await listed(alpha.fsPath, [])).toEqual(['mine.ts']);
+    expect(await listed(alpha.fsPath, [], undefined, { ignore: ALL_IGNORE_FILES, followLinks: true })).toEqual(['link/secret.ts', 'mine.ts']);
   });
 
   it('never reads a .gitignore that is a link, which ripgrep follows', async (context) => {

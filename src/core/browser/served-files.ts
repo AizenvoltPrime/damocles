@@ -3,6 +3,8 @@
 import * as os from 'node:os';
 import { folderIndexPath, hasUnsafeWindowsSegment, isRelativeFilePath, isUnsafeWindowsName } from '../../shared/relative-path';
 import { fileUrlPath, MAX_SERVED_FOLDERS_PER_CHAT, servedToFile, withAddressParts, type RelayedServedFile, type ServedFile, type ServedFileAnswer } from '../../shared/served-file-url';
+import { dataStoreOf, dataStoresOf, storeHeldBy, wslDriveAlias, type DataStores, type StoreHost } from '../served-pages/data-stores';
+import { hostDataStoresSync, warmHostDataStores } from '../served-pages/host-data-stores';
 import { loadedFileUrl, UNPARSED_FILE_URL } from './loaded-file-url';
 
 export interface ServedFileRoots {
@@ -69,11 +71,14 @@ function within(inner: string, outer: string, windows: boolean): boolean {
 
 /**
  * Why `folder` is never granted to a chat's browser, or undefined: a page there could read every file below it, so a root, the
- * home folder and any folder holding it, a folder Windows reads as another one, and a hidden folder (settings and keys: ~/.ssh,
- * ~/.aws, ~/.damocles) are refused, telling the agent to move the page. `allowShortNames`: the path is canonical, so an 8.3
- * segment is a real name; otherwise any 8.3 segment is refused, since it may alias a hidden folder.
+ * home folder and any folder holding it, a folder inside or holding one of `stores` (dataStoreOf, storeHeldBy), a folder
+ * Windows reads as another one, and a hidden folder (settings and keys: ~/.ssh, ~/.aws, ~/.damocles) are refused, telling the
+ * agent to move the page. `allowShortNames`: the path is canonical, so an 8.3 segment is a real name; otherwise, and always on a
+ * Windows drive WSL mounts (on WSL or through `\\wsl$`), whose realpath keeps a short name as spelled, any 8.3 segment is
+ * refused, since it may alias a hidden folder. A Windows host judges a path into a WSL drive mount as that drive's path too.
  */
-export function folderGrantRefusal(folder: string, allowShortNames = false, home: string = os.homedir()): string | undefined {
+// eslint-disable-next-line damocles/no-sync -- the permission gate decides a page's folder synchronously; hostDataStoresSync resolves nothing on this call
+export function folderGrantRefusal(folder: string, allowShortNames = false, home: string = os.homedir(), stores: DataStores = hostDataStoresSync()): string | undefined {
   const path = slashed(folder);
   const unc = /^\/\/([^/]+)(?:\/([^/]+))?(\/.*)?$/.exec(path);
   const drive = /^([A-Za-z]:)(\/.*)?$/.exec(path);
@@ -82,16 +87,22 @@ export function folderGrantRefusal(folder: string, allowShortNames = false, home
   if (unc && (unc[1] === '?' || unc[1] === '.')) return `${folder} is a device path, which Damocles never serves.`;
   const rest = unc ? (unc[2] === undefined ? undefined : unc[3]) : drive ? drive[2] : path;
   const segments = (rest ?? '').split('/').filter((segment) => segment !== '');
-  if (segments.length === 0) return `${folder} is the root of a drive, share or file system, and a page there could read every file on it. ${move}`;
+  const wslDrive = stores.platform === 'win32' ? wslDriveAlias(folder) : undefined;
+  if (segments.length === 0 || (wslDrive !== undefined && slashed(wslDrive).length === 2)) return `${folder} is the root of a drive, share or file system, and a page there could read every file on it. ${move}`;
   if (windows) {
     const unsafe = segments.find(isUnsafeWindowsName);
     if (unsafe !== undefined) return `${folder} has a name Windows reads as another folder (${unsafe}), so it is not served. Move the page into a folder with plain names and open it there.`;
   }
-  const hidden = segments.find((segment) => (segment.startsWith('.') && segment.toLowerCase() !== '.well-known') || (!allowShortNames && SHORT_NAME.test(segment)));
+  const onDrive = wslDrive !== undefined || (!windows && stores.drives.some((mount) => within(path, slashed(mount.mountPoint), false)));
+  const hidden = segments.find((segment) => (segment.startsWith('.') && segment.toLowerCase() !== '.well-known') || ((!allowShortNames || onDrive) && SHORT_NAME.test(segment)));
   if (hidden !== undefined) return `${folder} is or lies inside a hidden folder (${hidden}), where settings and keys are kept, so it is not served. Move the page into another folder and open it there.`;
-  const held = [home, ...(windows ? [process.env['APPDATA'], process.env['LOCALAPPDATA']] : [])].filter((kept): kept is string => kept !== undefined && kept !== '');
-  if (held.some((kept) => within(slashed(kept), path, windows))) return `${folder} is the user's home folder or holds it, and a page there could read every file in it. ${move}`;
-  return undefined;
+  if ([path, wslDrive].some((spelled) => spelled !== undefined && within(slashed(home), slashed(spelled), windows))) return `${folder} is the user's home folder or holds it, and a page there could read every file in it. ${move}`;
+  const inside = dataStoreOf(folder, stores);
+  if (inside !== undefined) return `${folder} is or lies inside ${inside}, where applications or the system keep their data, so it is not served. Move the page into a folder outside it and open it there.`;
+  const held = storeHeldBy(folder, stores);
+  if (held === undefined) return undefined;
+  const kept = stores.stores.includes(held) ? 'where applications or the system keep their data' : 'a folder where Windows keeps application or system data';
+  return `${folder} holds ${held}, ${kept}, and a page there could read every file in it. ${move}`;
 }
 
 // a native spelling of a slashed path on the machine whose files it names
@@ -127,8 +138,8 @@ export interface ChatServedFilesDeps {
   readonly serve?: (file: ServedFile, root: string) => Promise<ServedFileAnswer>;
   // a remote chat, whose BrowserOpen and BrowserNavigate the client showing it serves (relayed)
   readonly relayed?: true;
-  // the home folder of the machine whose files the chat's pages are; os.homedir() of this core when absent
-  readonly home?: string;
+  // the machine whose home folder and data stores a grant is judged against; this core's own (hostDataStoresSync) when absent
+  readonly host?: StoreHost;
 }
 
 /** A chat's roots, the folders the user allowed, and the served origins its pages were given, kept for the chat's life. */
@@ -141,6 +152,8 @@ export class ChatServedFiles {
 
   constructor(deps: ChatServedFilesDeps) {
     this.deps = deps;
+    // a grant judged before this core's data stores resolve compares them only as spelled
+    if (deps.host === undefined) warmHostDataStores();
   }
 
   /**
@@ -206,9 +219,10 @@ export class ChatServedFiles {
     return held === undefined ? undefined : native(`${slashed(held.grant.root)}/${held.relPath}`);
   }
 
-  /** Why `folder` is never granted to this chat (`folderGrantRefusal` against the chat's machine's home folder). */
+  /** Why `folder` is never granted to this chat (`folderGrantRefusal` against the host's home folder and data stores). */
   grantRefusal(folder: string, allowShortNames: boolean): string | undefined {
-    return folderGrantRefusal(folder, allowShortNames, this.deps.home);
+    const { host } = this.deps;
+    return host === undefined ? folderGrantRefusal(folder, allowShortNames) : folderGrantRefusal(folder, allowShortNames, host.home, dataStoresOf(host));
   }
 
   /** The permission gate let a call run whose page lies in `spelled`, the folder its card named: `root`, its canonical path, is served to this chat. */

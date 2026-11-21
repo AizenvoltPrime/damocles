@@ -1769,7 +1769,7 @@ export class ScmHost {
     if (projectCopy === undefined) return notWorktree();
     const name = path.basename(absolute);
     // a copy confinement refuses (a link out of the project folder) or one that is missing shows as an empty side
-    const confined = await confineExisting(projectCopy.project, projectCopy.relativePath);
+    const confined = await confineExisting(projectCopy.project, projectCopy.relativePath, 'withinProject');
     const file = confined.ok && (await fs.promises.stat(confined.path)).isFile() ? confined.path : undefined;
     await this.deps.editorPane.showDiff(
       title,
@@ -2116,8 +2116,8 @@ export class ScmHost {
       return;
     }
     const ref = this.remoteRef(repo, absolute);
-    const opened = await this.deps.editorPane.openFromUser(ref.projectKey, ref.relativePath);
-    if (!opened.ok) throw this.notOpened(ref.relativePath, opened.reason);
+    // a refusal or failure is the user open's own notice
+    await this.deps.editorPane.openFromUser(ref.projectKey, ref.relativePath);
   }
 
   projectOfRepo(repoId: string): ScmView | undefined {
@@ -2142,8 +2142,7 @@ export class ScmHost {
   async openAbsolute(absolute: string): Promise<void> {
     const ref = this.fileRefOf(absolute);
     if (ref) {
-      const opened = await this.deps.editorPane.openFromUser(ref.projectKey, ref.relativePath);
-      if (!opened.ok) throw this.notOpened(ref.relativePath, opened.reason);
+      await this.deps.editorPane.openFromUser(ref.projectKey, ref.relativePath);
       return;
     }
     await this.deps.editorPane.openNamedPath('local', absolute, { focus: true });

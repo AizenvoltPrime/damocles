@@ -13,6 +13,7 @@ import type {
   MessageHandler,
 } from '../message-router/types';
 import { englishText } from '../../../shared/localized-text';
+import { findAsset } from '../../assets';
 
 function skill(name: string, untrusted: boolean): SkillInfo {
   return {
@@ -47,9 +48,12 @@ interface Harness {
 function makeHarness(opts: {
   skills?: SkillInfo[];
   commands?: CustomSlashCommandInfo[];
+  // the names of the templates pi loaded, its own and Damocles' runnable commands
+  piTemplates?: string[];
 }): Harness {
   const skills = opts.skills ?? [];
   const commands = opts.commands ?? [];
+  const piTemplates = opts.piTemplates ?? [];
   const posted: ExtensionToWebviewMessage[] = [];
   const sessionSend = vi.fn(async () => undefined);
   const queueInput = vi.fn(() => 'queued');
@@ -63,8 +67,8 @@ function makeHarness(opts: {
     storageManager: { broadcastPromptHistoryEntry: vi.fn() },
     settingsManager: { sendCurrentSettings: vi.fn(async () => undefined) },
     workspaceManager: {
-      findSkill: async (name: string) => skills.find((s) => s.name === name),
-      findCommand: async (name: string) => commands.find((c) => c.name === name),
+      findSkill: async (name: string) => skills.find((s) => s.name.toLowerCase() === name.toLowerCase()),
+      findCommand: async (name: string) => findAsset(commands, name),
     },
     memoryService: { isEnabled: false, ensureInitialized: vi.fn(async () => undefined) },
     markUserTypedDuringTurn: vi.fn(),
@@ -80,6 +84,7 @@ function makeHarness(opts: {
       beginSend: () => ({ signal: new AbortController().signal, end: () => undefined }),
       queueInput,
       compact: vi.fn(async () => undefined),
+      hasPromptTemplate: vi.fn(async (name: string) => piTemplates.includes(name)),
     },
     permissionHandler: { preApproveSkill, revokeSkillPreApproval: vi.fn() },
     ideContextManager: { buildContentBlocks: vi.fn() },
@@ -347,6 +352,79 @@ describe('slash-command invocation in a trusted workspace', () => {
 
     expect(h.sessionSend.mock.calls[0]?.[0]).toBe('/nothing.here');
     expect(notifications(h.posted)).toEqual([]);
+  });
+});
+
+describe('slash-command invocation of a withheld command or skill', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    [{ reason: 'share' }, '/gs:pickup links to a network share or WSL path, so it is not loaded.'],
+    [{ reason: 'broken', target: '/clone/pickup.md' }, '/gs:pickup is a broken link to /clone/pickup.md.'],
+    [{ reason: 'loop' }, '/gs:pickup is reached through a link loop, so it is not loaded.'],
+    [{ reason: 'unreachable' }, '/gs:pickup links to a drive that did not answer, so it is not loaded.'],
+    [{ reason: 'tooLarge' }, '/gs:pickup is larger than 1 MiB, so it is not loaded.'],
+    [{ reason: 'reservedNamespace' }, '/gs:pickup is in a folder named skill, which the /skill: prefix claims, so it cannot run.'],
+    [{ reason: 'invalidFrontmatter', detail: 'bad indentation' }, 'The frontmatter of /gs:pickup does not parse: bad indentation'],
+    [{ reason: 'linkOutside' }, 'This workspace is not trusted, so project skills and commands are not loaded. Trust the workspace to run them.'],
+  ] as const)('refuses a command withheld as %j with its own notice and sends no turn', async (withheld, notice) => {
+    const h = makeHarness({ commands: [{ ...command('gs:pickup', false), withheld }] });
+    await invoke(h, '/gs:pickup 42');
+
+    expect(h.sessionSend).not.toHaveBeenCalled();
+    expect(notifications(h.posted)).toEqual([notice]);
+  });
+
+  it('refuses a skill without a description on the queue path, queueing nothing and pre-approving nothing', async () => {
+    const h = makeHarness({ skills: [{ ...skill('tidy', false), withheld: { reason: 'missingDescription' } }] });
+    await enqueue(h, '/tidy');
+
+    expect(h.queueInput).not.toHaveBeenCalled();
+    expect(h.preApproveSkill).not.toHaveBeenCalled();
+    expect(notifications(h.posted)).toEqual(['The skill /tidy has no description, which it needs to load.']);
+  });
+
+  // pi's `_expandSkillCommand` claims `/skill:<name>` before any template, so a reserved row must not refuse it.
+  it('hands /skill:x to pi when a command under commands/skill is withheld as reserved', async () => {
+    const h = makeHarness({
+      skills: [skill('x', false)],
+      commands: [{ ...command('skill:x', false), namespace: 'skill', withheld: { reason: 'reservedNamespace' } }],
+    });
+    await invoke(h, '/skill:x');
+
+    expect(notifications(h.posted)).toEqual([]);
+    expect(h.sessionSend).toHaveBeenCalledTimes(1);
+    expect(h.sessionSend.mock.calls[0]?.[0]).toBe('/skill:x');
+  });
+
+  it('hands /x to pi when pi has its own template x beside a withheld command x', async () => {
+    const h = makeHarness({ commands: [{ ...command('x', false), withheld: { reason: 'broken', target: '/gone/x.md' } }], piTemplates: ['x'] });
+    await invoke(h, '/x 1');
+
+    expect(notifications(h.posted)).toEqual([]);
+    expect(h.sessionSend.mock.calls[0]?.[0]).toBe('/x 1');
+  });
+
+  // pi's expandPromptTemplate matches a name case-sensitively.
+  it('refuses /x when pi has only a template X of another case', async () => {
+    const h = makeHarness({ commands: [{ ...command('x', false), withheld: { reason: 'broken', target: '/gone/x.md' } }], piTemplates: ['X'] });
+    await invoke(h, '/x');
+
+    expect(h.sessionSend).not.toHaveBeenCalled();
+    expect(notifications(h.posted)).toEqual(['/x is a broken link to /gone/x.md.']);
+  });
+
+  it('names trust when the command is untrusted and the skill of the same name is withheld', async () => {
+    const h = makeHarness({
+      skills: [{ ...skill('commit', false), withheld: { reason: 'missingDescription' } }],
+      commands: [command('commit', true)],
+    });
+    await invoke(h, '/commit');
+
+    expect(h.sessionSend).not.toHaveBeenCalled();
+    expect(notifications(h.posted)).toEqual(['This workspace is not trusted, so project skills and commands are not loaded. Trust the workspace to run them.']);
   });
 });
 

@@ -9,6 +9,7 @@ import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../..
 import { englishText, type LocalizedText } from "../../../../../shared/localized-text";
 import type { McpUserResourcePort } from "../../../../pi-session/mcp/tool-source";
 import type { McpResourceRuleFilter } from "../../../../permission-handler/mcp-resource-rule";
+import { PermissionRulesUnreadable } from "../../../../permission-handler/permission-settings";
 import { MAX_PENDING_TERMINAL_ATTACHMENTS, TerminalAttachmentManager } from "../../../terminal-attachment-manager";
 
 const DENY = "mcp__docs__read_mcp_resource(docs://secret*)";
@@ -262,6 +263,15 @@ describe("attachMcpResource", () => {
     expect(t.posted).toEqual([{ type: "mcpResourceAttached", requestId: "a1" }]);
     expect(t.terminalAttachments.displayInfo()).toEqual([{ id: expect.any(String), kind: "mcpResource", server: "docs", uri: "docs://guide", name: "Guide line", mimeType: "text/markdown" }]);
     expect(t.port.readResource).not.toHaveBeenCalled();
+  });
+
+  it("refuses with their reason while the permission rules cannot be read, so the picker gets its reply", async () => {
+    const t = setup();
+    const unreadable = new PermissionRulesUnreadable({ file: "/p/.damocles/settings.json", reason: { message: "its drive did not answer" } });
+    (t.ctx.permissionHandler.mcpResourceRuleFilter as ReturnType<typeof vi.fn>).mockRejectedValueOnce(unreadable);
+    await attach(t, {});
+    expect(t.posted).toEqual([{ type: "mcpResourceAttached", requestId: "a1", refused: unreadable.text }]);
+    expect(t.terminalAttachments.displayInfo()).toEqual([]);
   });
 
   it("records the identity of the server it was attached from, which the read at send must still match", async () => {

@@ -7,6 +7,11 @@ export function piAgentDirIn(damoclesHome: string): string {
   return path.join(damoclesHome, 'pi', 'agent');
 }
 
+/** The folder a Damocles home keeps its session leases in, outside every session dir. */
+export function sessionLeaseDirIn(damoclesHome: string): string {
+  return path.join(damoclesHome, 'locks', 'sessions');
+}
+
 /** The folder every pi session dir lies directly in. */
 export function sessionsRootIn(agentDir: string): string {
   return path.join(path.resolve(agentDir), 'sessions');

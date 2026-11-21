@@ -72,6 +72,7 @@ it('relays a 28 MB conversation as JSON text that main forwards without parsing'
   const core = createCorePlatform(loopback.core, init, () => ({
     capabilities: () => main.capabilities,
     settings: main.settings,
+    walkSettings: main.walkSettings,
     fileWatchers: main.fileWatchers,
     confinement: main.confinement,
     logSinks: main.logSinks,
@@ -123,6 +124,7 @@ it('drops a post type this core may not send, and relays the rest', () => {
   const core = createCorePlatform(loopback.core, init, () => ({
     capabilities: () => main.capabilities,
     settings: main.settings,
+    walkSettings: main.walkSettings,
     fileWatchers: main.fileWatchers,
     confinement: main.confinement,
     logSinks: main.logSinks,
@@ -328,6 +330,7 @@ it('serves design.openPreview with a tab of the chat and never opens a URL', asy
   const core = createCorePlatform(loopback.core, init, () => ({
     capabilities: () => main.capabilities,
     settings: main.settings,
+    walkSettings: main.walkSettings,
     fileWatchers: main.fileWatchers,
     confinement: main.confinement,
     logSinks: main.logSinks,

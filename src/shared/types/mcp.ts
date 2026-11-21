@@ -210,6 +210,7 @@ export type McpWriteErrorCode =
   | "fileNotObject"
   | "fileServersNotObject"
   | "fileUnreadable"
+  | "fileLinksToShare"
   | "writeFailed"
   | "invalidDefinition";
 

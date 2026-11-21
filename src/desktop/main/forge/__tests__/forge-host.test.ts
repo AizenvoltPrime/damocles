@@ -125,7 +125,7 @@ describe('forge host', () => {
   });
 
   it('reads an older daemon\'s endpoints from remotes, aliases as written', async () => {
-    const w = world({ features: ['askpass.credential'] });
+    const w = world({ features: ['askpass.credential.origin'] });
     await w.host.repoAccounts({ repoId: 'remote-repo' });
     expect(w.scm.remoteEndpoints).not.toHaveBeenCalled();
     expect(w.client.forgeRepoAccounts).toHaveBeenCalledWith(expect.objectContaining({

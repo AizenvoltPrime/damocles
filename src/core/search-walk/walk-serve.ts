@@ -21,6 +21,7 @@ async function run(request: Extract<WalkRequest, { kind: 'walk' }>, running: Run
   const { signal } = running.controller;
   let walk: Walk | undefined;
   let batch: string[] = [];
+  let times: Array<readonly [number, number]> = [];
   let size = 0;
   let units = 0;
   let firstAt = 0;
@@ -29,8 +30,9 @@ async function run(request: Extract<WalkRequest, { kind: 'walk' }>, running: Run
     while (running.credit === 0 && !signal.aborted) await new Promise<void>((resolve) => (running.wake = resolve));
     if (signal.aborted) throw new Error('Operation aborted');
     running.credit--;
-    post({ kind: 'files', id, files: batch });
+    post({ kind: 'files', id, files: batch, ...(times.length > 0 ? { times } : {}) });
     batch = [];
+    times = [];
     size = 0;
     units = 0;
   };
@@ -40,7 +42,13 @@ async function run(request: Extract<WalkRequest, { kind: 'walk' }>, running: Run
     // without the caller's hosts, the walk's own: a root on a share reads that share and no other host
     const allowedHosts = allowed === undefined ? rootHosts(request.root) : () => Promise.resolve(new Set(allowed));
     if (signal.aborted) throw new Error('Operation aborted');
-    walk = running.walk = walkFiles({ root: request.root, requireGit, ignore: request.ignore, gitFolders: request.gitFolders, overrides: overrideRules(request.overrides), allowedHosts, signal });
+    walk = running.walk = walkFiles({
+      root: request.root, requireGit, ignore: request.ignore, gitFolders: request.gitFolders, overrides: overrideRules(request.overrides), allowedHosts, signal,
+      ...(request.followLinks ? { followLinks: true } : {}),
+      ...(request.timed !== undefined ? { timed: request.timed } : {}),
+      ...(request.skipRealUnder !== undefined ? { skipRealUnder: request.skipRealUnder } : {}),
+    });
+    const { modified } = walk;
     // a folder's files are found at once, so a batch's wait is read as each folder is listed
     walking: for await (const folder of walk.files) {
       if (batch.length > 0 && Date.now() - firstAt >= WALK_FLUSH_MS) await send();
@@ -49,6 +57,11 @@ async function run(request: Extract<WalkRequest, { kind: 'walk' }>, running: Run
         const cost = lineBudget === undefined ? 1 : commandLineCost(file);
         if (batch.length > 0 && (size + cost > (lineBudget ?? WALK_BATCH_FILES) || units + file.length > WALK_BATCH_UNITS)) await send();
         batch.push(file);
+        const modifiedAt = modified.get(found);
+        if (modifiedAt !== undefined) {
+          times.push([batch.length - 1, modifiedAt]);
+          modified.delete(found);
+        }
         size += cost;
         units += file.length;
         if (batch.length === 1) firstAt = Date.now();

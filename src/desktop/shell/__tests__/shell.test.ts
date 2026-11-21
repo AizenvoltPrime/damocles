@@ -240,6 +240,19 @@ describe('a remote host that is not connected', () => {
     expect(api.reconnectHost).toHaveBeenCalledWith('h1');
   });
 
+  it('says in the placeholder of a file a link carries out of its project that the host\'s server needs updating, offering no Reconnect', async () => {
+    const api = fakeShellApi([], {
+      getState: vi.fn(async () => REMOTE),
+      getEditorState: vi.fn(async () => ({ ...EDITOR_STATE, tabs: [TAB], activeTabId: TAB.id })),
+      getDocument: vi.fn(async (documentId: string) => ({ kind: 'offline' as const, documentId, hostId: 'h1', hostName: 'prod-1', updateServer: true as const })),
+    });
+    const wrapper = track(mount(App, { props: { api }, global: { plugins: [shellI18n], stubs: { CodeEditor: true, Breadcrumbs: true } }, attachTo: document.body }));
+    await flushPromises();
+    const placeholder = wrapper.get('[data-testid="editor-offline"]');
+    expect(placeholder.text()).toBe('Update the Damocles server on prod-1 to open links that lead outside the project.');
+    expect(placeholder.find('button').exists()).toBe(false);
+  });
+
   it('says in its file tab that the file could not be opened when main cannot read it', async () => {
     const api = fakeShellApi([], {
       getState: vi.fn(async () => REMOTE),

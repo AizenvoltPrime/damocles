@@ -11,7 +11,7 @@ import type {
   McpToolExposureSetting,
   McpWriteErrorInfo,
 } from './mcp';
-import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, WorkspaceFileInfo } from './commands';
+import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, WithheldRootInfo, WorkspaceFileInfo } from './commands';
 import type { Question, PermissionUpdate, QuestionAnnotations, PromptOwner, PendingPromptOwner, PromptApprover, PermissionDetail } from './permissions';
 import type { FormSchema, FormValues } from './forms';
 import type { PermissionMode, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, AssetSourcePrecedence, CacheWarmingMode, EffortLevel, PanelThinkingState, TeamRole, MemoryJudge, ClassifierProvider, ClassifierCredential, ImageGenerationSettings, ProviderSignInState } from './settings';
@@ -821,7 +821,7 @@ export type ExtensionToWebviewMessage =
    * it no longer asks under, approved it. The tool's own lifecycle sets the card's status.
    */
   | { type: "permissionAutoResolved"; toolUseId: string; parentToolUseId?: string | null; approvedBy?: PromptApprover }
-  | { type: "customSlashCommands"; commands: SlashCommandItem[] }
+  | { type: "customSlashCommands"; commands: SlashCommandItem[]; withheldRoots?: WithheldRootInfo[] }
   | { type: "steerTargets"; agents: SteerTargetInfo[] }
   | { type: "customAgents"; agents: CustomAgentInfo[] }
   | { type: "messageQueued"; message: QueuedMessage }
@@ -1057,8 +1057,8 @@ export type ExtensionToWebviewMessage =
   | { type: "noWorktreeState" }
   // One publisher, PiSession.publishDesignState(): `design` only in a design chat, `link` only in a parent with its own link.
   // `openInBrowser`: the host's rule set opens designs in the browser from a chat's buttons (`openInBrowserFromChat`); a core
-  // that predates it (feature `chat.designOpenInBrowser`) omits it, which hides them. `openPreview`: the host has the preview
-  // tab (the rule set's `preview`); a core that predates it (feature `chat.designOpenPreview`) omits it, which hides Open preview.
+  // that predates it omits it, which hides them. `openPreview`: the host has the preview tab (the rule set's `preview`); a core
+  // that predates it omits it, which hides Open preview.
   | { type: "designState"; design: DesignChatStateView | null; link: DesignLinkStateView | null; openInBrowser?: boolean; openPreview?: boolean }
   // Posted when the `damocles-design-result` entry commits, and by the history replay at its place (`replayed`).
   | { type: "designResult"; entryId: string; result: DesignResultView; replayed?: true }
@@ -1088,7 +1088,7 @@ export type ExtensionToWebviewMessage =
       decisions: DesignResultDecision[];
       screens: DesignApprovalScreen[];
       hasParent: boolean;
-      /** Decisions the conflict check could not check, grouped by cause, which the user approves knowingly (feature `chat.designDecisionChecks`). */
+      /** Decisions the conflict check could not check, grouped by cause, which the user approves knowingly. */
       uncheckedDecisions?: UncheckedDecisionGroup[];
       owner: PromptOwner;
     }

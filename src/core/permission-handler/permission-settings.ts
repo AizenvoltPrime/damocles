@@ -1,14 +1,18 @@
 import * as path from "path";
-import * as fs from "fs";
 import * as os from "os";
 import { log } from "../logger";
 import { writeJsonConfig } from "../config/json-config-write";
 import { personalConfigRoot } from "../worktrees/personal-config";
 import { parseSettingsText } from "../config/settings-file";
+import { userConfigBase, type ConfigNotices } from "../config/local-config-path";
+import { folderKey } from "../workspace-folders/folder-key";
+import { englishText, LocalizedError, type LocalizedText } from "../../shared/localized-text";
 import { TOOL_EDIT, TOOL_GENERATE_IMAGE, TOOL_READ, TOOL_WEB_FETCH, TOOL_WRITE } from "../../shared/tool-names";
 import { inertMcpSpecifierRule } from "./mcp-resource-rule";
 import { inertWebFetchAllowSpecifier } from "./web-fetch-rule";
-import type { PermissionRuleLists } from "../../shared/remote-user";
+import { keptRulesText, readRuleFileText, unreadableRulesText } from "./rule-file-read";
+import type { ClientUser } from "../../shared/remote-user";
+import type { UnreadableRuleFile } from "../../shared/types/permissions";
 
 export interface FilePermissions {
   allow: string[];
@@ -22,6 +26,36 @@ export interface FilePermissions {
 export interface PermissionWorkspace {
   readonly path: string;
   readonly personalFiles: boolean;
+}
+
+/** A settings file whose rules are read: root anchors its `/path` rules, baseFolder is its scope root (checkConfigPath). */
+interface RuleSource {
+  readonly file: string;
+  readonly root: string;
+  readonly baseFolder: string;
+}
+
+/** What one rules file's reads gave: the rules of its last successful read (a missing file has none), and whether its latest read failed. */
+export interface RuleFileRecord {
+  readonly lastGood: FilePermissions | undefined;
+  readonly failing: boolean;
+}
+
+/** Each rules file's record, by `folderKey` of its path; one EvaluatorManager owns it for its lifetime. */
+export type RuleFileRecords = Map<string, RuleFileRecord>;
+
+/** The rules that apply, or the first rules file, by precedence, whose rules cannot be known. */
+export type LoadedPermissions = { readonly files: FilePermissions[] } | { readonly unreadable: UnreadableRuleFile };
+
+/** Which settings rules apply cannot be known, so no rule lookup answers: the gate blocks the call with this text. */
+export class PermissionRulesUnreadable extends LocalizedError {
+  readonly file: string;
+
+  constructor({ file, reason }: UnreadableRuleFile) {
+    super(unreadableRulesText(file, reason));
+    this.name = "PermissionRulesUnreadable";
+    this.file = file;
+  }
 }
 
 const RULE_KEYS = ["allow", "ask", "deny"] as const;
@@ -135,26 +169,44 @@ function ruleList(filePath: string, key: (typeof RULE_KEYS)[number], value: unkn
 }
 
 /**
- * One settings file's permission rules, or none if it is absent, empty or unusable.
+ * One settings file's permission rules, or none if it is absent, empty or unusable; a file that cannot be checked or read gives
+ * the rules of its last successful read in `records`, else its unreadable outcome. The user gets a notice each time the file
+ * starts failing.
+ */
+async function readPermissionsFromPath(source: RuleSource, records: RuleFileRecords, notifications: ConfigNotices | undefined): Promise<FilePermissions | UnreadableRuleFile> {
+  const { file: filePath, root } = source;
+  const read = await readRuleFileText(filePath, source.baseFolder);
+  if ("unreadable" in read) return failedRead(source, read.unreadable, records, notifications);
+  const rules = "missing" in read ? { allow: [], deny: [], ask: [], root } : permissionsOf(filePath, read.text, root);
+  records.set(folderKey(filePath), { lastGood: rules, failing: false });
+  return rules;
+}
+
+// The record is read and written with no await between, so concurrent loads give one notice per failing spell.
+function failedRead(source: RuleSource, reason: LocalizedText, records: RuleFileRecords, notifications: ConfigNotices | undefined): FilePermissions | UnreadableRuleFile {
+  const { file, root } = source;
+  const key = folderKey(file);
+  const record = records.get(key);
+  // A personal file is one path for a project and its worktrees, so its `/path` rules anchor at this load's folder.
+  const lastGood = record?.lastGood && { ...record.lastGood, root };
+  log(`[PermissionSettings] ${file} could not be read (${englishText(reason)}); ${lastGood ? "the rules it last read apply" : "it was never read, so the rules cannot be known"}`);
+  if (record?.failing !== true) {
+    void notifications?.warn(lastGood ? keptRulesText(file, reason) : unreadableRulesText(file, reason));
+  }
+  records.set(key, { lastGood, failing: true });
+  return lastGood ?? { file, reason };
+}
+
+/**
+ * The permission rules in a settings file's text.
  *
  * A malformed file is logged rather than silently treated as absent. This fails OPEN — a trailing
  * comma makes every `deny` in that file vanish and the agent proceeds to ask or allow — so the one
  * signal the user gets must not be nothing. The path is logged and never the parser's message, which
  * quotes the offending source line.
  */
-async function readPermissionsFromPath(filePath: string, root: string): Promise<FilePermissions> {
+function permissionsOf(filePath: string, content: string, root: string): FilePermissions {
   const none: FilePermissions = { allow: [], deny: [], ask: [], root };
-  let content: string;
-  try {
-    content = await fs.promises.readFile(filePath, "utf-8");
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT") {
-      log(`[PermissionSettings] ${filePath} could not be read (${code ?? "unknown error"}); its rules were skipped`);
-    }
-    return none;
-  }
-
   let settings: Record<string, unknown>;
   try {
     settings = parseSettingsText(content, filePath);
@@ -185,25 +237,30 @@ async function readPermissionsFromPath(filePath: string, root: string): Promise<
  * A `/path` rule is relative to the project folder in a project file and to the file's own directory in
  * a home file, as Claude Code resolves it to `~/.claude/path` for `~/.claude/settings.json`.
  *
- * On a daemon's core the home files are its host's (machine scope), and `clientRules`, the pinned client's user files'
- * rules from its clientUser (one entry per file), come last; rules combine as deny > ask > allow, so a host file never
+ * On a daemon's core the home files are its host's (machine scope), and `client`, the pinned client's clientUser, gives
+ * its user files' rules (one entry per file), which come last; rules combine as deny > ask > allow, so a host file never
  * lifts a client's deny.
+ *
+ * `records` keeps each file's last successful read; a file that cannot be checked or read and has none makes the whole result
+ * unreadable, since its deny and ask rules may be the ones that apply, and so does a client file the client marks so.
  */
 export async function loadPermissionsByPriority(
   workspace: PermissionWorkspace | null,
-  clientRules?: readonly PermissionRuleLists[],
-): Promise<FilePermissions[]> {
+  records: RuleFileRecords,
+  client?: Pick<ClientUser, "permissionRules" | "unreadable">,
+  notifications?: ConfigNotices,
+): Promise<LoadedPermissions> {
   const result: FilePermissions[] = [];
   const home = os.homedir();
   const workspacePath = workspace?.path ?? null;
 
-  const project = (dir: string, file: string): { file: string; root: string } | null =>
-    workspacePath ? { file: path.join(workspacePath, dir, file), root: workspacePath } : null;
+  const project = (dir: string, file: string): RuleSource | null =>
+    workspacePath ? { file: path.join(workspacePath, dir, file), root: workspacePath, baseFolder: workspacePath } : null;
   // D34: a worktree chat's personal files are its project's, live; relative rule paths still match the working folder.
   const personalRoot = workspacePath && workspace?.personalFiles === true ? personalConfigRoot(workspacePath) : null;
-  const personal = (dir: string, file: string): { file: string; root: string } | null =>
-    personalRoot && workspacePath ? { file: path.join(personalRoot, dir, file), root: workspacePath } : null;
-  const user = (dir: string, file: string): { file: string; root: string } => ({ file: path.join(home, dir, file), root: path.join(home, dir) });
+  const personal = (dir: string, file: string): RuleSource | null =>
+    personalRoot && workspacePath ? { file: path.join(personalRoot, dir, file), root: workspacePath, baseFolder: personalRoot } : null;
+  const user = (dir: string, file: string): RuleSource => ({ file: path.join(home, dir, file), root: path.join(home, dir), baseFolder: userConfigBase(path.join(home, dir, file)) });
   const sources = [
     personal(".damocles", "settings.local.json"),
     personal(".claude", "settings.local.json"),
@@ -213,14 +270,17 @@ export async function loadPermissionsByPriority(
     user(".claude", "settings.local.json"),
     user(".damocles", "settings.json"),
     user(".claude", "settings.json"),
-  ].filter((source): source is { file: string; root: string } => source !== null);
+  ].filter((source): source is RuleSource => source !== null);
 
   // Read concurrently: precedence comes from the array index below, not from completion order, so
   // eight serial round-trips on every cache miss buy nothing.
-  const all = await Promise.all(sources.map((source) => readPermissionsFromPath(source.file, source.root)));
+  const read = await Promise.all(sources.map((source) => readPermissionsFromPath(source, records, notifications)));
+  const unreadable = read.find((perms): perms is UnreadableRuleFile => "reason" in perms) ?? client?.unreadable;
+  if (unreadable !== undefined) return { unreadable };
+  const all = read.filter((perms): perms is FilePermissions => !("reason" in perms));
 
   // a client file's `/path` rules name a folder of the client's home, which this host lacks, so they anchor at this host's same folder
-  clientRules?.forEach((rules, index) => {
+  client?.permissionRules.forEach((rules, index) => {
     const label = `the client's user settings file ${index + 1}`;
     all.push({ allow: ruleList(label, "allow", rules.allow), deny: ruleList(label, "deny", rules.deny), ask: ruleList(label, "ask", rules.ask), root: path.join(home, rules.dir) });
   });
@@ -230,7 +290,7 @@ export async function loadPermissionsByPriority(
     }
   }
 
-  return result;
+  return { files: result };
 }
 
 /** A permission rule naming a renamed tool, and the same rule under the new name. */
@@ -303,23 +363,35 @@ function ruleRenamesIn(settings: unknown, renames: ReadonlyMap<string, string>, 
   return found;
 }
 
-/** The rules in one settings file that name a renamed tool or take an addition. An absent or unusable file has none. */
+/** A settings file that exists but could not be checked or read (readRuleFileText), so its rules are not known. */
+export class RuleFileUnreadable extends Error {
+  readonly file: string;
+  readonly reason: LocalizedText;
+
+  constructor(file: string, reason: LocalizedText) {
+    super(`${file} could not be read (${englishText(reason)})`);
+    this.name = "RuleFileUnreadable";
+    this.file = file;
+    this.reason = reason;
+  }
+}
+
+/**
+ * The rules in one settings file that name a renamed tool or take an addition. An absent or unusable file has none; one that
+ * cannot be checked or read, a link off its scope root's share (baseFolder) included, throws RuleFileUnreadable.
+ */
 export async function findPermissionRuleRenames(
   filePath: string,
+  baseFolder: string,
   renames: ReadonlyMap<string, string>,
   additions?: PermissionRuleAdditions,
 ): Promise<PermissionRuleRename[]> {
-  let content: string;
-  try {
-    content = await fs.promises.readFile(filePath, "utf-8");
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT") log(`[PermissionSettings] ${filePath} could not be read (${code ?? "unknown error"}); its rules were not checked for renamed tools`);
-    return [];
-  }
+  const read = await readRuleFileText(filePath, baseFolder);
+  if ("missing" in read) return [];
+  if ("unreadable" in read) throw new RuleFileUnreadable(filePath, read.unreadable);
   let settings: unknown;
   try {
-    settings = parseSettingsText(content, filePath);
+    settings = parseSettingsText(read.text, filePath);
   } catch {
     log(`[PermissionSettings] ${filePath} is not valid JSON; its rules were not checked for renamed tools`);
     return [];
@@ -330,24 +402,34 @@ export async function findPermissionRuleRenames(
 /** Aborts a write whose re-read under the lock found nothing left to rename. */
 class NothingToRewrite extends Error {}
 
+/** A write its trust re-check refused inside the write's critical section; nothing was changed. */
+export class RuleFileNotWritable extends Error {
+  constructor(file: string) {
+    super(`${file} may no longer be written`);
+    this.name = "RuleFileNotWritable";
+  }
+}
+
 /**
  * Rename tools in one Damocles-owned settings file's `allow`/`ask`/`deny` rules, keeping each rule's
  * `(…)` argument part, and insert each rule's `additions` after it. Runs inside the file's write
  * critical section, re-reading it there, so it cannot interleave with a rule being saved. Idempotent.
  * Returns the rules changed. `confineTo` is the repository's own `.damocles` directory for a folder
- * file, which a symlink must not lead out of.
+ * file, which a symlink must not lead out of; `baseFolder` is the file's scope root (checkConfigPath).
+ * `writable`, read inside the critical section, throws RuleFileNotWritable with nothing changed when it answers false.
  */
 export async function rewritePermissionRuleToolNames(
   filePath: string,
   renames: ReadonlyMap<string, string>,
-  options: { confineTo?: string; additions?: PermissionRuleAdditions } = {},
+  options: { baseFolder: string; confineTo?: string; additions?: PermissionRuleAdditions; writable?: () => boolean },
 ): Promise<PermissionRuleRename[]> {
-  const { additions } = options;
-  if ((await findPermissionRuleRenames(filePath, renames, additions)).length === 0) return [];
+  const { additions, baseFolder } = options;
+  if ((await findPermissionRuleRenames(filePath, baseFolder, renames, additions)).length === 0) return [];
   let rewritten: PermissionRuleRename[] = [];
   try {
     await writeJsonConfig(filePath, (current) => {
       if (current === undefined) throw new NothingToRewrite();
+      if (options.writable?.() === false) throw new RuleFileNotWritable(filePath);
       let settings: Record<string, unknown>;
       try {
         settings = parseSettingsText(current, filePath);
@@ -365,7 +447,7 @@ export async function rewritePermissionRuleToolNames(
         perms[key] = updatedRuleList(list, key, renames, additions).list;
       }
       return `${JSON.stringify(settings, null, 2)}\n`;
-    }, options.confineTo !== undefined ? { confineTo: options.confineTo } : {});
+    }, options.confineTo !== undefined ? { confineTo: options.confineTo, baseFolder } : { baseFolder });
   } catch (err) {
     if (err instanceof NothingToRewrite) return [];
     throw err;

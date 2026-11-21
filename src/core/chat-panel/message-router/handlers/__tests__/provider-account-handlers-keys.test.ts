@@ -8,7 +8,7 @@ import type { HandlerDependencies, HandlerContext } from "../../types";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../../../../shared/types/messages";
 import { installFakePlatform } from "../../../../../__mocks__/fake-platform";
 import { PiRuntime } from "../../../../pi-session/pi-runtime";
-import { customProviderDef } from "../../../../pi-session/custom-providers";
+import { customProviderDef } from "../../../../pi-session/provider-defs";
 import { KEY_PROVIDER_IDS } from "../../../../../shared/settings-sections";
 
 /** The key provider handlers: what they store, what they acknowledge, what card they clear, and what they leave alone. */

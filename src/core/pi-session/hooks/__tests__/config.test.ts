@@ -50,13 +50,13 @@ describe('stripJsonComments', () => {
 
 describe('parseHooksFile', () => {
   it('returns {} for a missing file', () => {
-    expect(parseHooksFile(path.join(workspaceRoot, 'nope.json'))).toEqual({});
+    expect(parseHooksFile(path.join(workspaceRoot, 'nope.json'), workspaceRoot)).toEqual({});
   });
 
   it('returns {} for malformed JSON', () => {
     const p = path.join(workspaceRoot, 'bad.json');
     fs.writeFileSync(p, '{ not json', 'utf-8');
-    expect(parseHooksFile(p)).toEqual({});
+    expect(parseHooksFile(p, workspaceRoot)).toEqual({});
   });
 
   it('parses JSONC and drops invalid entries while keeping valid ones', () => {
@@ -74,7 +74,7 @@ describe('parseHooksFile', () => {
       }),
       'utf-8',
     );
-    const result = parseHooksFile(p);
+    const result = parseHooksFile(p, workspaceRoot);
     expect(result['tool_call']).toHaveLength(1);
     expect(result['tool_call']![0]!.command).toBe('echo ok');
     expect(result['input']).toBeUndefined();
@@ -83,7 +83,7 @@ describe('parseHooksFile', () => {
   it('parses a JSONC file that starts with a BOM', () => {
     const p = path.join(workspaceRoot, 'bom.json');
     fs.writeFileSync(p, '\uFEFF// comment\n{ "hooks": { "tool_call": [{ "command": "echo ok" }] } }', 'utf-8');
-    expect(parseHooksFile(p)['tool_call']![0]!.command).toBe('echo ok');
+    expect(parseHooksFile(p, workspaceRoot)['tool_call']![0]!.command).toBe('echo ok');
   });
 });
 
@@ -134,7 +134,7 @@ describe('HooksConfigService', () => {
     const svc = new HooksConfigService(workspaceRoot, fake.trust, fake.fileWatchers);
     expect(fake.fileWatchers.watchers.map((w) => [w.base, w.glob])).toEqual([
       [tmpHome, 'hooks.json'],
-      [path.join(workspaceRoot, '.damocles'), 'hooks.json'],
+      [workspaceRoot, '.damocles/hooks.json'],
     ]);
     svc.dispose();
   });

@@ -44,15 +44,10 @@ export function getAssetSourcePrecedence(): AssetSourcePrecedence {
  * permission tier. Source precedence is the primary sort; within each source, callers scan project
  * before user.
  *
- * Both discovery systems (the pi resource loader and the `SlashCommandService` menu) iterate this same
- * root ordering with first-wins de-dup, so a name contested ACROSS roots resolves the same way in both.
- * What they find INSIDE a root differs, and the menu is deliberately the narrower of the two:
- *   - pi loads prompt templates from the top level of a commands dir only, while the menu also descends
- *     one level and lists `ns:name`, which pi has no template for.
- *   - pi walks a skills tree to any depth, follows a symlinked dir, and takes a root-level `*.md` as a
- *     skill; the menu lists only an immediate non-symlink subdir holding a `SKILL.md`.
- * A skill's name is the frontmatter `name:` when present in both systems, so pre-approval and
- * invocation cannot disagree.
+ * Commands are discovered once (`src/core/assets/`) for both the menu and pi, in this root ordering with first-wins de-dup.
+ * Skills: the menu lists each immediate subfolder (real or linked) holding a `SKILL.md`, while pi walks each admitted skills
+ * root to any depth and also takes a root-level `*.md`; both iterate this ordering, and a skill's name is the frontmatter
+ * `name:` when present in both, so pre-approval and invocation cannot disagree.
  */
 export function assetSources(
   precedence: AssetSourcePrecedence = getAssetSourcePrecedence(),
@@ -73,7 +68,7 @@ export interface AssetSourceDir {
 /**
  * Every candidate directory for `kind`, source-major and project before user within each source. The
  * project entry is skipped when `workspacePath` is null. Neither existence nor workspace trust is
- * filtered here: the resource loader drops untrusted project dirs while the menu keeps and badges them,
+ * filtered here: pi's snapshot drops untrusted project rows while the menu keeps and badges them,
  * so a filter at this layer would force one of them to reconstruct what the other discarded.
  */
 export function assetSourceDirs(

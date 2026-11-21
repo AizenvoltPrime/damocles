@@ -109,7 +109,7 @@ import {
   refusalNames,
   type ModelResolution,
 } from "./pi-models";
-import { providerPickedOnly } from "./custom-providers";
+import { providerPickedOnly } from "./provider-defs";
 import { accountOfModel, accountOfProvider, failureCard, failureText } from "./provider-account";
 import { failedCallError } from "./nested-call-failures";
 import type { SettingsAccountId } from "../../shared/settings-sections";
@@ -155,6 +155,7 @@ import {
   type AgentConfig,
 } from "./subagents";
 import type { AgentRegistry } from "./subagents/agent-types";
+import type { WorkspaceAgentRegistry } from "./subagents/workspace-agent-registry";
 import { nestedDesignGrantOf, type NestedDesignGrant } from "./subagents/agent-toolset";
 import { AGENT_SCOPE_BY_SOURCE } from "./subagents/types";
 import { readExploreSetting, resolveCheapModelFor } from "./subagents/cheap-model";
@@ -868,6 +869,8 @@ export class PiSession implements ChatSession {
   /** The native subagent engine (Phase 5): the shared workspace registry + a per-PiSession manager. */
   private agentRegistry: AgentRegistry | null = null;
   private subagentManager: AgentManager | null = null;
+  /** The spawnable subagent types each session's Agent tool description lists, from the factory that built it. */
+  private readonly describedAgentTypes = new WeakMap<AgentSession, readonly string[]>();
   /** Unsubscribe from the shared workspace registry's change notifications (re-emits availability). */
   private _agentsUnsub: (() => void) | null = null;
   /** `SettingsStore` listener that re-applies the subagent concurrency cap when it changes mid-session. */
@@ -1136,6 +1139,10 @@ export class PiSession implements ChatSession {
       const sessionManager = reopen !== null ? await pi.SessionManager.openAsync(reopen, ensurePiSessionDir(this.cwd), this.cwd) : opts.sessionManager;
       // A recorded model that cannot run is still the chat's, and its sends are refused until it can.
       const built = this.recordedSelectionOf(sessionManager.getBranch());
+      const subagents = this.subagentManager;
+      // The Agent tool's description lists the agents once per session, so it waits for the folder's load in flight.
+      await subagents?.whenAgentsLoaded();
+      const describedAgentTypes = subagents?.getSpawnableAgents().map((agent) => agent.name);
       // Built per session so per-session tool state (the task list) resets on reset/newSession.
       const customTools = buildCustomTools({
         pi,
@@ -1149,7 +1156,7 @@ export class PiSession implements ChatSession {
         ...(this.forgeTools ? { forgeTools: this.forgeTools } : {}),
         getSessionId: () => this.memorySessionId,
         getPlanFilePath: () => this.getPlanFilePath(),
-        ...(this.subagentManager ? { subagentManager: this.subagentManager, userInput: this.userInput } : {}),
+        ...(subagents ? { subagentManager: subagents, userInput: this.userInput } : {}),
         ...(this.options.teamService ? { teamService: this.options.teamService } : {}),
         imageGeneration: {
           getRuntime: () => this.imageRuntime(),
@@ -1186,6 +1193,7 @@ export class PiSession implements ChatSession {
       });
       this.pinRunStarts(result.session);
       if (built) this.builtSelections.set(result.session, built);
+      if (describedAgentTypes) this.describedAgentTypes.set(result.session, describedAgentTypes);
       bound.session = result.session;
       return { ...result, services: shared, diagnostics: shared.diagnostics ?? [] };
     };
@@ -1443,6 +1451,8 @@ export class PiSession implements ChatSession {
     }
     // Before the first registration, so the release after a throw below unregisters whatever this bind registered.
     this.registeredSessionId = sessionId;
+    const described = this.describedAgentTypes.get(session);
+    const subagents = this.subagentManager;
     const gate: PanelGateContext = {
       permissionHandler: this.options.permissionHandler,
       isPlanMode: () => this.options.permissionHandler.turnPermissionMode() === "plan",
@@ -1473,6 +1483,7 @@ export class PiSession implements ChatSession {
       browserFiles: this.browserServedFiles(),
       ...(this.forgeTools ? { forgeTools: this.forgeTools } : {}),
       designPrompt: () => this.design.promptInputs(),
+      ...(described && subagents ? { agentTypes: () => ({ described, live: subagents.getSpawnableAgents() }) } : {}),
     };
     folder.registerPanel(sessionId, gate);
     this.registeredGate = gate;
@@ -2319,6 +2330,11 @@ export class PiSession implements ChatSession {
     const session = this.runtime?.session;
     const pi = getPiCodingAgent();
     return session && pi ? resolveSlashInvocation(session, text, pi.stripFrontmatter) : { kind: "text" };
+  }
+
+  async hasPromptTemplate(name: string): Promise<boolean> {
+    await this.ensureStarted().catch(() => undefined);
+    return this.runtime?.session.resourceLoader.getPrompts().prompts.some((prompt) => prompt.name === name) ?? false;
   }
 
   /** pi opened a run on `session` and dropped the restored names that did not register (agent-session.js:1509-1511), so this panel drops them too. */
@@ -5343,6 +5359,8 @@ export class PiSession implements ChatSession {
           // pi's session reload re-reads the settings manager (agent-session.js:3109) before work that can still throw.
           this.reapplyPiSettings();
         }
+        // pi's session reload reloads the folder's shared resource loader
+        this.folder?.logPiWarnings();
         this.applyActiveToolsForMode(this.permissionMode);
       } while (this.mcpReloadRerunRequested && !this._disposed);
     })().catch((err) => log("[PiSession] MCP reload failed: %O", err));
@@ -5450,7 +5468,7 @@ export class PiSession implements ChatSession {
     if (this.subagentManager) return;
     const wsAgents = folder.getWorkspaceAgentRegistry();
     this.agentRegistry = wsAgents.getRegistry();
-    this.subagentManager = new AgentManager(this.buildSubagentEngine(pi, folder), this.maxConcurrentSetting());
+    this.subagentManager = new AgentManager(this.buildSubagentEngine(pi, folder, wsAgents), this.maxConcurrentSetting());
     this.emitCustomAgents();
     this.emit({ type: "projectTrust", trusted: this.projectScopeTrusted() });
     this._agentsUnsub = wsAgents.onChange(() => {
@@ -5502,11 +5520,12 @@ export class PiSession implements ChatSession {
   }
 
   /** Build the deps the AgentManager needs to run one subagent (model policy + budget owned here). */
-  private buildSubagentEngine(pi: PiCodingAgentModule, folder: FolderRuntime): SubagentEngine {
+  private buildSubagentEngine(pi: PiCodingAgentModule, folder: FolderRuntime, agents: WorkspaceAgentRegistry): SubagentEngine {
     return {
       cwd: this.cwd,
       trust: this.options.platform.trust,
-      registry: this.agentRegistry!,
+      registry: agents.getRegistry(),
+      registryLoaded: () => agents.whenLoaded(),
       ...this.trackedNestedSessions(folder),
       permissionHandler: this.options.permissionHandler,
       isPlanMode: () => this.options.permissionHandler.turnPermissionMode() === "plan",

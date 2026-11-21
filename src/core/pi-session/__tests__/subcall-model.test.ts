@@ -11,7 +11,7 @@ import {
   subCallReasoning,
   type StructuredSubCallPurpose,
 } from '../subcall-model';
-import { customProviderDef } from '../custom-providers';
+import { customProviderDef } from '../provider-defs';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { OpenAIAuthStatus } from '../openai-auth';
 

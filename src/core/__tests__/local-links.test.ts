@@ -3,7 +3,20 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi, type TestContext } from 'vitest';
-import { followsLocalLinksOnly, networkHostsOf, networkReach } from '../local-links';
+import { followsLocalLinksOnly, linkStaysLocalSync, networkHostsOf, networkReach, realpathOnOwnShare } from '../local-links';
+
+// linkStaysLocalSync's lstatSync, readlinkSync and realpathSync.native go to these sync twins of the promise spies below.
+const syncFs = vi.hoisted(() => ({ fake: undefined as undefined | { lstat(file: string): { isSymbolicLink(): boolean }; readlink(file: string): string; realpath(file: string): string } }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const lstatSync = ((...args: Parameters<typeof actual.lstatSync>) => (syncFs.fake ? syncFs.fake.lstat(String(args[0])) : actual.lstatSync(...args))) as typeof actual.lstatSync;
+  const readlinkSync = ((...args: Parameters<typeof actual.readlinkSync>) => (syncFs.fake ? syncFs.fake.readlink(String(args[0])) : actual.readlinkSync(...args))) as typeof actual.readlinkSync;
+  const native = ((...args: Parameters<typeof actual.realpathSync.native>) => (syncFs.fake ? syncFs.fake.realpath(String(args[0])) : actual.realpathSync.native(...args))) as typeof actual.realpathSync.native;
+  const realpathSync = Object.assign(((...args: Parameters<typeof actual.realpathSync>) => actual.realpathSync(...args)) as typeof actual.realpathSync, { native });
+  const overrides = { lstatSync, readlinkSync, realpathSync };
+  return { ...actual, ...overrides, default: { ...actual, ...overrides } };
+});
+const actualFs = await vi.importActual<typeof import('node:fs')>('node:fs');
 
 // The QueryDosDeviceW answer for a drive a test maps, by name (`Q:`); a thrown Error for a failing call; any other asks Windows.
 const dosDevices = vi.hoisted(() => new Map<string, string | Error>());
@@ -59,9 +72,19 @@ beforeEach(() => {
       return original(file);
     }) as never);
   }
+  const reached = (file: string): never => {
+    uncCalls.push(file);
+    throw new Error(`reached ${file}`);
+  };
+  syncFs.fake = {
+    lstat: (file) => (isUnc(file) ? reached(file) : actualFs.lstatSync(file)),
+    readlink: (file) => fakeTargets.get(identity(file)) ?? actualFs.readlinkSync(file),
+    realpath: (file) => (isUnc(file) ? reached(file) : actualFs.realpathSync.native(file)),
+  };
 });
 
 afterEach(() => {
+  syncFs.fake = undefined;
   dosDevices.clear();
   vi.restoreAllMocks();
   fs.rmSync(root, { recursive: true, force: true });
@@ -291,12 +314,13 @@ describe.runIf(process.platform === 'win32')('shares and drives (win32)', () => 
     expect(await followsLocalLinksOnly(project, ['m'])).toBe(true);
   });
 
-  it('rejects with ETIMEDOUT when a drive a link leads onto does not answer, asking it once at a time', async () => {
+  it('rejects with ETIMEDOUT when a network drive a link leads onto does not answer, asking it once at a time', async () => {
     vi.resetModules();
     const { followsLocalLinksOnly: walk } = await import('../local-links');
     const project = folder('p');
     junction(path.join(project, 'mapped'), marker);
     fakeTargets.set(identity(path.join(project, 'mapped')), 'Q:\\data');
+    dosDevices.set('Q:', String.raw`\Device\LanmanRedirector\;Q:000000000004111a\nas\data`);
     const lstat = vi.mocked(fs.promises.lstat);
     const original = lstat.getMockImplementation()!;
     const asked: string[] = [];
@@ -308,6 +332,75 @@ describe.runIf(process.platform === 'win32')('shares and drives (win32)', () => 
     await expect(walk(project, ['mapped', 'a.ts'])).rejects.toMatchObject({ code: 'ETIMEDOUT', text: { message: 'The drive {0} did not answer within a second.', args: ['Q:\\'] } });
     await expect(walk(project, ['mapped', 'b.ts'])).rejects.toMatchObject({ code: 'ETIMEDOUT' });
     expect(asked).toEqual(['Q:\\']);
+  });
+
+  it('probes a drive a link leads onto only when Windows maps it off this computer\'s volumes, or cannot say where', async () => {
+    vi.resetModules();
+    const { followsLocalLinksOnly: walk } = await import('../local-links');
+    const project = folder('p');
+    const drives: [string, string | Error][] = [
+      ['K', String.raw`\Device\HarddiskVolume9`],
+      ['L', `\\??\\${marker}`],
+      ['N', String.raw`\Device\LanmanRedirector\;N:000000000004111a\nas\data`],
+      ['O', String.raw`\??\N:\deeper`],
+      ['U', new Error('QueryDosDeviceW(U:) failed with Win32 error 5')],
+    ];
+    for (const [letter, mapping] of drives) {
+      junction(path.join(project, letter), marker);
+      fakeTargets.set(identity(path.join(project, letter)), `${letter}:\\data`);
+      dosDevices.set(`${letter}:`, mapping);
+    }
+    fakeDisk(new Map(drives.flatMap(([letter]) => [[`${letter}:\\data`, undefined], [`${letter}:\\data\\a.ts`, undefined]] as const)));
+    const probed: string[] = [];
+    const lstat = vi.mocked(fs.promises.lstat);
+    const original = lstat.getMockImplementation()!;
+    // a drive root that never answers: a probe of it costs the walk its second and rejects ETIMEDOUT
+    lstat.mockImplementation((async (file: fs.PathLike) => {
+      if (!/^[A-Z]:\\$/.test(String(file))) return original(file);
+      probed.push(String(file));
+      return new Promise(() => undefined);
+    }) as never);
+    // a local volume, and a subst onto a local path, are followed as the user's own mapping
+    expect(await walk(project, ['K', 'a.ts'])).toBe(true);
+    expect(await walk(project, ['L', 'a.ts'])).toBe(true);
+    expect(probed).toEqual([]);
+    // a network drive, a subst onto one, and a drive Windows cannot place must answer
+    await expect(walk(project, ['N', 'a.ts'])).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+    await expect(walk(project, ['O', 'a.ts'])).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+    await expect(walk(project, ['U', 'a.ts'])).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+    expect(probed.filter((root) => !['N:\\', 'O:\\', 'U:\\'].includes(root))).toEqual([]);
+  });
+
+  it('owns only its own host and share for a base spelled as a device path, and no other device root', async () => {
+    const owner = '\\\\?\\UNC\\hostA\\s\\p';
+    const mupOwner = '\\\\?\\GLOBALROOT\\Device\\Mup\\hostA\\s';
+    fakeDisk(new Map([
+      [`${owner}\\other`, '\\\\?\\UNC\\hostB\\s\\x'],
+      [`${owner}\\same`, '\\\\?\\UNC\\hostA\\s\\shared'],
+      ['\\\\?\\UNC\\hostA', undefined],
+      ['\\\\?\\UNC\\hostA\\s', undefined],
+      ['\\\\?\\UNC\\hostA\\s\\shared', undefined],
+      ['\\\\?\\UNC\\hostA\\s\\shared\\a.ts', undefined],
+      [`${mupOwner}\\mup`, '\\\\?\\GLOBALROOT\\Device\\Mup\\hostB\\s'],
+    ]), new Map([[owner.toUpperCase(), owner]]));
+    expect(await followsLocalLinksOnly(owner, ['other', 'a.ts'])).toBe(false);
+    expect(await followsLocalLinksOnly(owner, ['same', 'a.ts'])).toBe(true);
+    expect(await followsLocalLinksOnly(mupOwner, ['mup', 'a.ts'])).toBe(false);
+    expect(vi.mocked(fs.promises.lstat).mock.calls.map(([file]) => String(file)).filter((file) => /hostb/i.test(file))).toEqual([]);
+  });
+
+  it('counts the share Windows maps a base\'s drive to as the base\'s own, though its realpath names another server', async () => {
+    dosDevices.set('M:', String.raw`\Device\LanmanRedirector\;M:000000000004111a\corp\users`);
+    fakeDisk(new Map([
+      ['M:\\u', undefined],
+      ['M:\\u\\link', '\\\\corp\\users\\shared'],
+      ['M:\\u\\fqdn', '\\\\corp.example.com\\users\\shared'],
+      ['\\\\corp\\users\\shared', undefined],
+      ['\\\\corp\\users\\shared\\a.ts', undefined],
+    ]), new Map([['M:\\U', '\\\\fs01\\users$\\u']]));
+    expect(await followsLocalLinksOnly('M:\\u', ['link', 'a.ts'])).toBe(true);
+    // one server under its NetBIOS and its FQDN name is two shares to the walk
+    expect(await followsLocalLinksOnly('M:\\u', ['fqdn', 'a.ts'])).toBe(false);
   });
 
   it('follows a link onto a share of an allowed host, or WSL\'s, only when the walk is given its hosts', async () => {
@@ -323,6 +416,98 @@ describe.runIf(process.platform === 'win32')('shares and drives (win32)', () => 
     expect(await followsLocalLinksOnly(project, ['nas', 'a.ts'], { allowedHosts: new Set(['nas']) })).toBe(true);
     expect(await followsLocalLinksOnly(project, ['wsl', 'a.ts'])).toBe(false);
     expect(await followsLocalLinksOnly(project, ['wsl', 'a.ts'], { allowedHosts: new Set() })).toBe(true);
+  });
+
+  // fakeDisk for linkStaysLocalSync, which walks from the drive root: paths on the drives and shares fake names answer as
+  // there, any other path from the disk.
+  function fakeSyncDisk(fake: Map<string, string | undefined>, realpaths: Map<string, string> = new Map()): void {
+    const fakeRoots = new Set([...fake.keys()].map((known) => path.parse(path.resolve(known)).root.toLowerCase()));
+    const local = syncFs.fake!;
+    syncFs.fake = {
+      ...local,
+      lstat: (file) => {
+        if (!fakeRoots.has(path.parse(path.resolve(file)).root.toLowerCase())) return local.lstat(file);
+        const entry = [...fake.entries()].find(([known]) => known.toLowerCase() === file.toLowerCase());
+        if (entry === undefined) throw Object.assign(new Error(`ENOENT ${file}`), { code: 'ENOENT' });
+        return { isSymbolicLink: () => entry[1] !== undefined };
+      },
+      realpath: (file) => realpaths.get(file.toUpperCase()) ?? local.realpath(file),
+    };
+  }
+
+  // The sync twin answers as the walk does for the path the walk's base and segments name.
+  async function expectParity(base: string, segments: string[], expected: boolean): Promise<void> {
+    expect(await followsLocalLinksOnly(base, segments)).toBe(expected);
+    expect(linkStaysLocalSync(path.join(base, ...segments))).toBe(expected);
+  }
+
+  describe('linkStaysLocalSync', () => {
+    it('follows a link to its own share as the walk does', async () => {
+      const fake = new Map([['\\\\server\\share\\link', '\\\\server\\share\\real'], ['\\\\server\\share\\real', undefined], ['\\\\server\\share\\real\\a.ts', undefined]]);
+      fakeDisk(fake);
+      fakeSyncDisk(fake);
+      await expectParity('\\\\server\\share', ['link', 'a.ts'], true);
+    });
+
+    it('reads a target climbing above a mapped drive\'s root on its share as the walk does', async () => {
+      const project = folder('p');
+      junction(path.join(project, 'm'), marker);
+      fakeTargets.set(identity(path.join(project, 'm')), 'M:\\proj\\a');
+      const fake = new Map([['M:\\', undefined], ['M:\\proj', undefined], ['M:\\proj\\a', '..\\..\\..\\up'], ['M:\\up', undefined], ['\\\\nas\\data\\', undefined], ['\\\\nas\\data\\up', undefined]]);
+      const realpaths = new Map([['M:\\', '\\\\nas\\data\\']]);
+      fakeDisk(fake, realpaths);
+      fakeSyncDisk(fake, realpaths);
+      const asked: string[] = [];
+      const { lstat } = syncFs.fake!;
+      syncFs.fake = { ...syncFs.fake!, lstat: (file) => (asked.push(file), lstat(file)) };
+      await expectParity(project, ['m'], true);
+      expect(asked).toEqual(expect.arrayContaining(['M:\\up', '\\\\nas\\data\\up']));
+    });
+
+    it('refuses a link onto a share of another host, and onto WSL, as the walk without allowedHosts does, never reaching either', async () => {
+      const project = folder('p');
+      junction(path.join(project, 'nas'), marker);
+      fakeTargets.set(identity(path.join(project, 'nas')), '\\\\NAS\\data\\x');
+      junction(path.join(project, 'wsl'), marker);
+      fakeTargets.set(identity(path.join(project, 'wsl')), '\\\\wsl.localhost\\Ubuntu\\home');
+      evil(path.join(project, 'unc'));
+      await expectParity(project, ['nas', 'a.ts'], false);
+      await expectParity(project, ['wsl', 'a.ts'], false);
+      await expectParity(project, ['unc', 'a.ts'], false);
+      expect(uncCalls).toEqual([]);
+    });
+
+    it('follows a link onto another drive without asking whether the drive answers', () => {
+      const project = folder('p');
+      junction(path.join(project, 'mapped'), marker);
+      fakeTargets.set(identity(path.join(project, 'mapped')), 'Q:\\data');
+      const asked: string[] = [];
+      fakeSyncDisk(new Map([['Q:\\data', undefined], ['Q:\\data\\a.ts', undefined]]));
+      const { lstat } = syncFs.fake!;
+      syncFs.fake = { ...syncFs.fake!, lstat: (file) => (asked.push(file), lstat(file)) };
+      expect(linkStaysLocalSync(path.join(project, 'mapped', 'a.ts'))).toBe(true);
+      expect(asked.filter((file) => file.toUpperCase().startsWith('Q:'))).toEqual(['Q:\\data', 'Q:\\data\\a.ts']);
+    });
+
+    it('reads a relative symlink below a junction against the junction\'s own name, as the walk does', async (ctx) => {
+      const project = folder('p');
+      folder('p', 'packages', 'group', 'lib');
+      fs.mkdirSync(path.join(project, 'packages', 'a'));
+      junction(path.join(project, 'node_modules', 'lib'), path.join(project, 'packages', 'group', 'lib'));
+      symlink(ctx, path.join(project, 'packages', 'group', 'lib', 'cfg'), '..\\..\\a\\evil');
+      evil(path.join(project, 'a', 'evil'));
+      await expectParity(project, ['node_modules', 'lib', 'cfg'], false);
+      expect(uncCalls).toEqual([]);
+    });
+
+    it('answers true for a broken link, which the caller\'s stat reports, and false for a loop', () => {
+      const project = folder('p');
+      junction(path.join(project, 'gone'), path.join(root, 'nowhere'));
+      junction(path.join(project, 'a'), path.join(project, 'b'));
+      junction(path.join(project, 'b'), path.join(project, 'a'));
+      expect(linkStaysLocalSync(path.join(project, 'gone', 'a.ts'))).toBe(true);
+      expect(linkStaysLocalSync(path.join(project, 'a', 'x.ts'))).toBe(false);
+    });
   });
 
   it('places a path off this computer\'s drives by its spelling without reaching it, or by a link on its walk', async () => {
@@ -469,5 +654,47 @@ describe.runIf(process.platform === 'win32')('shares and drives (win32)', () => 
     fakeDisk(new Map([['M:\\proj', undefined]]), new Map([['M:\\PROJ', '\\\\nas\\data\\proj']]));
     expect([...await networkHostsOf(['\\\\Files.Corp\\proj', 'M:\\proj', root, path.join(root, 'missing')])].sort()).toEqual(['files.corp', 'nas']);
     expect([...await networkHostsOf([root], ['//Other/share', 'N:\\x'])]).toEqual(['other']);
+  });
+});
+
+describe.runIf(process.platform === 'win32')('a confinement\'s realpath on a share (win32)', () => {
+  // every letter a local volume, so only the mappings a test sets name a share
+  beforeEach(() => {
+    for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') dosDevices.set(`${letter}:`, String.raw`\Device\HarddiskVolume9`);
+  });
+
+  it('accepts a drive realpath, and a share realpath on the base\'s own share by its spelling, its realpath or its drive\'s mapping', () => {
+    expect(realpathOnOwnShare('C:\\proj', 'C:\\proj', 'D:\\x\\a.ts')).toBe(true);
+    expect(realpathOnOwnShare('\\\\nas\\data\\proj', '\\\\nas\\data\\proj', '\\\\NAS\\Data\\other\\a.ts')).toBe(true);
+    expect(realpathOnOwnShare('C:\\link', '\\\\nas\\data\\proj', '\\\\nas\\data\\other\\a.ts')).toBe(true);
+    dosDevices.set('P:', String.raw`\Device\LanmanRedirector\;P:000000000004111a\nas\data`);
+    expect(realpathOnOwnShare('P:\\proj', 'P:\\proj', '\\\\nas\\data\\proj\\a.ts')).toBe(true);
+    expect(uncCalls).toEqual([]);
+  });
+
+  it('accepts a share any drive letter maps now, since a link to that letter is followed as the user\'s own mapping', () => {
+    dosDevices.set('Z:', String.raw`\Device\LanmanRedirector\;Z:000000000004111a\nas\home`);
+    expect(realpathOnOwnShare('C:\\proj', 'C:\\proj', '\\\\nas\\home\\notes\\a.md')).toBe(true);
+    dosDevices.set('Y:', String.raw`\??\UNC\files\team`);
+    expect(realpathOnOwnShare('C:\\proj', 'C:\\proj', '\\\\files\\team\\a.md')).toBe(true);
+    expect(uncCalls).toEqual([]);
+  });
+
+  it('refuses a realpath on any other share, and a device path that names no share, touching neither', () => {
+    dosDevices.set('Z:', String.raw`\Device\LanmanRedirector\;Z:000000000004111a\nas\home`);
+    expect(realpathOnOwnShare('C:\\proj', 'C:\\proj', '\\\\evil\\share\\a.ts')).toBe(false);
+    expect(realpathOnOwnShare('C:\\proj', 'C:\\proj', '\\\\nas\\other\\a.ts')).toBe(false);
+    expect(realpathOnOwnShare('\\\\nas\\data\\proj', '\\\\nas\\data\\proj', '\\\\nas\\other\\a.ts')).toBe(false);
+    expect(realpathOnOwnShare('C:\\proj', 'C:\\proj', '\\\\?\\GLOBALROOT\\Device\\Mup\\evil\\s\\a.ts')).toBe(false);
+    expect(realpathOnOwnShare('C:\\proj', 'C:\\proj', '\\\\.\\pipe\\x')).toBe(false);
+    // another name of one server is another path, which Damocles cannot match without contacting the server
+    expect(realpathOnOwnShare('\\\\nas\\data\\proj', '\\\\nas\\data\\proj', '\\\\nas.corp.example\\data\\a.ts')).toBe(false);
+    expect(realpathOnOwnShare('C:\\proj', 'C:\\proj', '\\\\nas.corp.example\\home\\a.md')).toBe(false);
+    expect(uncCalls).toEqual([]);
+  });
+
+  it('adds no share for a letter Windows cannot place, which refuses more, never less', () => {
+    dosDevices.set('Z:', new Error('QueryDosDeviceW(Z:) failed with Win32 error 5'));
+    expect(realpathOnOwnShare('C:\\proj', 'C:\\proj', '\\\\nas\\home\\a.md')).toBe(false);
   });
 });

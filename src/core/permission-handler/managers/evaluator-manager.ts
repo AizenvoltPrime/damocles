@@ -6,7 +6,7 @@ import type { Platform } from '../../../platform/platform';
 import type { PermissionState } from '../state';
 import type { MatchRuleOptions, McpToolIdentity } from '../types';
 import type { PermissionBehavior } from '../../../shared/types/permissions';
-import { fileRulePattern, loadPermissionsByPriority, usableGitignorePattern, type FilePermissions, type PermissionWorkspace } from '../permission-settings';
+import { fileRulePattern, loadPermissionsByPriority, PermissionRulesUnreadable, usableGitignorePattern, type FilePermissions, type LoadedPermissions, type PermissionWorkspace, type RuleFileRecords } from '../permission-settings';
 import { personalFilesTrusted } from '../../worktrees/personal-config';
 import { READ_ONLY_TOOLS, ORCHESTRATION_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_READ, TOOL_GENERATE_IMAGE, TOOL_GREP, TOOL_GLOB, TOOL_LS, TOOL_WEB_FETCH, SHELL_TOOLS, FORGE_READ_TOOLS, FORGE_WRITE_TOOLS } from '../../../shared/tool-names';
 import { isPlanFilePath } from '../../paths';
@@ -18,7 +18,7 @@ import { READ_MCP_RESOURCE, uriRuleCovers, type McpResourceRuleFilter } from '..
 import { matchesWebFetchSpecifier } from '../web-fetch-rule';
 import { bypassAllowed, currentPin, hostDefaultMode } from '../../client-snapshots';
 import type { PermissionMode } from '../../../shared/types/settings';
-import type { PermissionRuleLists } from '../../../shared/remote-user';
+import type { ClientUser } from '../../../shared/remote-user';
 
 /** Every built-in tool that edits a file; an `Edit` rule covers each of them. */
 const EDIT_RULE_TOOLS: ReadonlySet<string> = new Set([TOOL_EDIT, TOOL_WRITE, TOOL_GENERATE_IMAGE]);
@@ -32,8 +32,11 @@ const SEARCH_TOOLS: ReadonlySet<string> = new Set([TOOL_GREP, TOOL_GLOB, TOOL_LS
 /** `Tool` or `Tool(specifier)`, where the tool name may hold `*` wildcards. */
 const RULE_SHAPE = /^([\w*-]+)(?:\((.+)\))?$/;
 
-/** A pin with no client user rules; one shared value, since the permissions cache compares rule lists by identity. */
-const NO_CLIENT_RULES: readonly PermissionRuleLists[] = Object.freeze([]);
+/** A pinned client's user rules, and the client file whose rules cannot be known. */
+type ClientRules = Pick<ClientUser, 'permissionRules' | 'unreadable'>;
+
+/** A pin with no client user rules; one shared value, since the permissions cache compares the client's rules by identity. */
+const NO_CLIENT_RULES: ClientRules = Object.freeze({ permissionRules: [] });
 
 /** Whether a rule's tool name, in which `*` matches any run of characters, names the whole of `name`; linear, since `name` can be a model-written server. */
 function namesTool(ruleName: string, name: string): boolean {
@@ -105,21 +108,22 @@ const pathResolvers = (targetAsWritten = false): PathResolvers => {
 
 export class EvaluatorManager {
   private state: PermissionState;
-  private cachedPermissions: FilePermissions[] | null = null;
+  private cachedPermissions: LoadedPermissions | null = null;
+  private readonly ruleFiles: RuleFileRecords = new Map();
   private cachedFor: PermissionWorkspace | null = null;
-  private cachedClientRules: readonly PermissionRuleLists[] | undefined;
+  private cachedClient: ClientRules | undefined;
   private cacheTime = 0;
   private readonly CACHE_TTL_MS = 5000;
   private ruleSaves: Promise<void> = Promise.resolve();
   private settingsWatchers: FileWatcher[] = [];
-  private readonly platform: Pick<Platform, 'trust' | 'fileWatchers' | 'remote'>;
+  private readonly platform: Pick<Platform, 'trust' | 'fileWatchers' | 'remote' | 'notifications'>;
 
   /** Windows path rules for file rules: case-insensitive names and NTFS stream syntax. */
   private readonly windowsPaths: boolean;
 
   constructor(
     state: PermissionState,
-    platform: Pick<Platform, 'trust' | 'fileWatchers' | 'remote'>,
+    platform: Pick<Platform, 'trust' | 'fileWatchers' | 'remote' | 'notifications'>,
     windowsPaths: boolean = process.platform === 'win32',
   ) {
     this.state = state;
@@ -215,7 +219,8 @@ export class EvaluatorManager {
    * The behavior of the settings rule the call matches, or null when none does or YOLO is on. A deny in
    * any settings file wins, then an ask in any file, then an allow, so a repository's allow never
    * overrides the user's own deny or ask. `ignoreBypass` matches under YOLO too, for a call `decide`
-   * gets with `requiresUser`, which YOLO does not approve and a deny rule denies.
+   * gets with `requiresUser`, which YOLO does not approve and a deny rule denies. Like every rule lookup here, it throws
+   * PermissionRulesUnreadable when which rules apply cannot be known.
    */
   async matchRule(toolName: string, input: Record<string, unknown>, workspacePath: string | null, mcpTool?: McpToolIdentity, options: MatchRuleOptions = {}): Promise<PermissionBehavior | null> {
     if (this.bypassing() && options.ignoreBypass !== true) {
@@ -342,27 +347,30 @@ export class EvaluatorManager {
   /**
    * Cached per workspace, not just per age: the eight paths this resolves are half workspace-relative,
    * and a panel's handler moves to another workspace when the panel switches folder, so a hit for the
-   * previous workspace would answer with another project's rules.
+   * previous workspace would answer with another project's rules. Throws PermissionRulesUnreadable while
+   * the load it answers from found a rules file it cannot read and never read.
    */
   private async getPermissions(workspace: PermissionWorkspace | null): Promise<FilePermissions[]> {
     // the turn's pinned client's user rules on a daemon's core
-    const clientRules = this.platform.remote ? (currentPin(this.platform.remote).user?.permissionRules ?? NO_CLIENT_RULES) : undefined;
+    const client = this.platform.remote ? (currentPin(this.platform.remote).user ?? NO_CLIENT_RULES) : undefined;
     await this.ruleSaves;
     const now = Date.now();
+    let loaded = this.cachedPermissions;
     if (
-      this.cachedPermissions &&
-      this.cachedFor?.path === workspace?.path &&
-      this.cachedFor?.personalFiles === workspace?.personalFiles &&
-      this.cachedClientRules === clientRules &&
-      (now - this.cacheTime) < this.CACHE_TTL_MS
+      loaded === null ||
+      this.cachedFor?.path !== workspace?.path ||
+      this.cachedFor?.personalFiles !== workspace?.personalFiles ||
+      this.cachedClient !== client ||
+      (now - this.cacheTime) >= this.CACHE_TTL_MS
     ) {
-      return this.cachedPermissions;
+      loaded = await loadPermissionsByPriority(workspace, this.ruleFiles, client, this.platform.notifications);
+      this.cachedPermissions = loaded;
+      this.cachedFor = workspace;
+      this.cachedClient = client;
+      this.cacheTime = now;
     }
-    this.cachedPermissions = await loadPermissionsByPriority(workspace, clientRules);
-    this.cachedFor = workspace;
-    this.cachedClientRules = clientRules;
-    this.cacheTime = now;
-    return this.cachedPermissions;
+    if ('unreadable' in loaded) throw new PermissionRulesUnreadable(loaded.unreadable);
+    return loaded.files;
   }
 
   private matchAgainstPatterns(

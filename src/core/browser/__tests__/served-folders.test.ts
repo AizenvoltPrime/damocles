@@ -1,9 +1,11 @@
+import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { DAMOCLES_HOME_DIR } from '../../paths';
 import { fileUrlOfRoot, UNMAPPED_SERVED_PAGE } from '../../../shared/served-file-url';
+import { dataStoresOf, type StoreHost } from '../../served-pages/data-stores';
 import { ChatServedFiles, folderGrantRefusal, outsideRootsRefusal, type ServedFileRoots } from '../served-files';
 
 // A file page outside a chat's project and design folders asks the user (the permission gate's outside-folder fact); the
@@ -75,6 +77,107 @@ describe('ChatServedFiles granted folders', () => {
     expect(folderGrantRefusal(home, true)).toContain('subfolder');
     expect(folderGrantRefusal(path.join(home, 'Downloads'), true)).toBeUndefined();
     expect(folderGrantRefusal(OUTSIDE, true)).toBeUndefined();
+  });
+
+  it('refuses a folder holding a data store this host\'s env names, the list the preview deny rule reads', () => {
+    const holder = path.join(os.tmpdir(), 'dm-served-folders', 'stores');
+    const store = path.join(holder, 'data');
+    vi.stubEnv(process.platform === 'win32' ? 'ProgramData' : 'XDG_CONFIG_HOME', store);
+    try {
+      expect(folderGrantRefusal(holder, true)).toBe(`${holder} holds ${store}, where applications or the system keep their data, and a page there could read every file in it. Move the page into a subfolder and open it there.`);
+      expect(folderGrantRefusal(path.join(holder, 'other'), true)).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('starts resolving this core\'s data stores when a chat\'s served files are built, before any grant is judged', async () => {
+    const store = path.join(os.tmpdir(), 'dm-served-folders', 'stores', 'warmed');
+    vi.stubEnv(process.platform === 'win32' ? 'ProgramData' : 'XDG_CONFIG_HOME', store);
+    const realpath = vi.spyOn(fs, 'realpath');
+    try {
+      new ChatServedFiles({ roots: () => ROOTS, serve: vi.fn() });
+      await vi.waitFor(() => expect(realpath).toHaveBeenCalledWith(store));
+    } finally {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('refuses a folder inside a data store this host\'s env names, unasked', () => {
+    const store = path.join(os.tmpdir(), 'dm-served-folders', 'stores', 'data');
+    vi.stubEnv(process.platform === 'win32' ? 'ProgramData' : 'XDG_CONFIG_HOME', store);
+    try {
+      const files = new ChatServedFiles({ roots: () => ROOTS, serve: vi.fn() });
+      const inside = path.join(store, 'Damocles');
+      const refused = `${inside} is or lies inside ${store}, where applications or the system keep their data, so it is not served. Move the page into a folder outside it and open it there.`;
+      expect(files.folderAsk('BrowserOpen', fileUrl(path.join(inside, 'a.html')))).toEqual({ refused });
+      expect(folderGrantRefusal(inside, true)).toBe(refused);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('refuses a folder inside a Windows host\'s application data, and grants its temp folder and pnpm store', () => {
+    const windows: StoreHost = {
+      platform: 'win32',
+      home: 'C:\\Users\\me',
+      env: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming', LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local', TEMP: 'C:\\Users\\me\\AppData\\Local\\Temp' },
+      drives: [],
+    };
+    expect(folderGrantRefusal('C:\\Users\\me\\AppData\\Roaming\\Damocles', true, windows.home, dataStoresOf(windows))).toBe('C:\\Users\\me\\AppData\\Roaming\\Damocles is or lies inside C:\\Users\\me\\AppData\\Roaming, where applications or the system keep their data, so it is not served. Move the page into a folder outside it and open it there.');
+    expect(folderGrantRefusal('c:\\users\\me\\appdata\\local\\Google', true, windows.home, dataStoresOf(windows))).toContain('lies inside C:\\Users\\me\\AppData\\Local,');
+    expect(folderGrantRefusal('C:\\Users\\me\\AppData\\LocalLow\\x', true, windows.home, dataStoresOf(windows))).toContain('lies inside C:\\Users\\me\\AppData,');
+    expect(folderGrantRefusal('C:\\Users\\me\\AppData\\Local\\Temp\\build', true, windows.home, dataStoresOf(windows))).toBeUndefined();
+    expect(folderGrantRefusal('C:\\Users\\me\\AppData\\Local\\pnpm\\store\\v10', true, windows.home, dataStoresOf(windows))).toBeUndefined();
+    expect(folderGrantRefusal('C:\\Users\\me\\src\\site', true, windows.home, dataStoresOf(windows))).toBeUndefined();
+  });
+
+  it('refuses a folder inside macOS\'s ~/Library, and grants its cloud folders', () => {
+    const mac: StoreHost = { platform: 'darwin', home: '/Users/me', env: {}, drives: [] };
+    expect(folderGrantRefusal('/Users/me/Library/Keychains', true, mac.home, dataStoresOf(mac))).toContain('lies inside /Users/me/Library,');
+    expect(folderGrantRefusal('/Users/me/Library/CloudStorage/Dropbox/site', true, mac.home, dataStoresOf(mac))).toBeUndefined();
+  });
+
+  it('judges a WSL distro\'s Windows drives by their stores, with every 8.3 name refused there', () => {
+    const wsl: StoreHost = { platform: 'linux', home: '/home/me', env: {}, drives: [{ mountPoint: '/mnt/c', prefix: [] }] };
+    // drvfs answers a short name for any folder, and a Linux realpath leaves it as spelled
+    expect(folderGrantRefusal('/mnt/c/Users/me/SSH~1', true, wsl.home, dataStoresOf(wsl))).toContain('hidden folder (SSH~1)');
+    expect(folderGrantRefusal('/home/me/src/A~1', true, wsl.home, dataStoresOf(wsl))).toBeUndefined();
+    expect(folderGrantRefusal('/mnt/c/Users/me/AppData/Roaming/x', true, wsl.home, dataStoresOf(wsl))).toContain('lies inside /mnt/c/Users/me/AppData,');
+    expect(folderGrantRefusal('/mnt/c/WINDOWS/Temp', true, wsl.home, dataStoresOf(wsl))).toContain('lies inside /mnt/c/WINDOWS,');
+    expect(folderGrantRefusal('/mnt/c/Users', true, wsl.home, dataStoresOf(wsl))).toBe('/mnt/c/Users holds /mnt/c/Users/<user>/AppData, a folder where Windows keeps application or system data, and a page there could read every file in it. Move the page into a subfolder and open it there.');
+    expect(folderGrantRefusal('/mnt/c/users/me', true, wsl.home, dataStoresOf(wsl))).toContain('holds /mnt/c/users/me/AppData,');
+    expect(folderGrantRefusal('/mnt/c', true, wsl.home, dataStoresOf(wsl))).toContain('holds /mnt/c/Windows,');
+    expect(folderGrantRefusal('/mnt', true, wsl.home, dataStoresOf(wsl))).toContain('holds /mnt/c/Windows,');
+    expect(folderGrantRefusal('/mnt/c/Users/me/AppData/Local/Temp/site', true, wsl.home, dataStoresOf(wsl))).toBeUndefined();
+    expect(folderGrantRefusal('/mnt/c/Users/me/src/site', true, wsl.home, dataStoresOf(wsl))).toBeUndefined();
+  });
+
+  it('refuses a Windows host\'s fixed store names on every drive, and a drive\'s Users folder and profiles as holding them', () => {
+    const windows: StoreHost = { platform: 'win32', home: 'C:\\Users\\me', env: {}, drives: [] };
+    const refusal = (folder: string): string | undefined => folderGrantRefusal(folder, true, windows.home, dataStoresOf(windows));
+    expect(refusal('C:\\Users\\me\\AppData')).toBe('C:\\Users\\me\\AppData is or lies inside C:\\Users\\me\\AppData, where applications or the system keep their data, so it is not served. Move the page into a folder outside it and open it there.');
+    for (const [folder, store] of [['C:\\Users\\Other\\AppData\\Roaming\\x', 'C:\\Users\\Other\\AppData'], ['D:\\Windows\\System32', 'D:\\Windows'], ['D:\\ProgramData\\x', 'D:\\ProgramData'], ['E:\\data\\AppData\\z', 'E:\\data\\AppData']] as const) {
+      expect(refusal(folder), folder).toContain(`is or lies inside ${store},`);
+    }
+    expect(refusal('D:\\Users')).toBe('D:\\Users holds D:\\Users\\<user>\\AppData, a folder where Windows keeps application or system data, and a page there could read every file in it. Move the page into a subfolder and open it there.');
+    expect(refusal('D:\\Users\\x')).toContain('holds D:\\Users\\x\\AppData,');
+    expect(refusal('D:\\Users\\x\\src')).toBeUndefined();
+    expect(refusal('E:\\data\\AppData\\Local\\Temp\\site')).toBeUndefined();
+  });
+
+  it('judges a Windows host\'s path into a WSL drive mount as that drive\'s, with every 8.3 name refused there', () => {
+    const windows: StoreHost = { platform: 'win32', home: 'C:\\Users\\me', env: {}, drives: [] };
+    const refusal = (folder: string): string | undefined => folderGrantRefusal(folder, true, windows.home, dataStoresOf(windows));
+    expect(refusal('\\\\wsl$\\Ubuntu\\mnt\\c\\Users\\me\\AppData\\Roaming\\x')).toContain('is or lies inside C:\\Users\\me\\AppData,');
+    expect(refusal('\\\\wsl.localhost\\Ubuntu\\mnt\\c\\Users\\me\\SSH~1')).toContain('hidden folder (SSH~1)');
+    expect(refusal('\\\\wsl$\\Ubuntu\\home\\me\\A~1')).toBeUndefined();
+    expect(refusal('\\\\wsl$\\Ubuntu\\mnt\\c')).toContain('is the root of a drive');
+    expect(refusal('\\\\wsl$\\Ubuntu\\mnt\\c\\Users\\me')).toContain('is the user\'s home folder or holds it');
+    expect(refusal('\\\\wsl$\\Ubuntu\\mnt\\d\\Users')).toContain('holds \\\\wsl$\\Ubuntu\\mnt\\d\\Users\\<user>\\AppData,');
+    expect(refusal('\\\\wsl$\\Ubuntu\\mnt')).toContain('holds \\\\wsl$\\Ubuntu\\mnt\\<drive>\\Windows,');
+    expect(refusal('\\\\wsl$\\Ubuntu\\mnt\\c\\Users\\me\\src\\site')).toBeUndefined();
   });
 
   it('refuses a share\'s root and a drive\'s root by their spelling on Windows', () => {

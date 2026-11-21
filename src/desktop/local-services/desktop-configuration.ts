@@ -63,6 +63,10 @@ export const SEARCH_SHOW_LINE_NUMBERS_SETTING = 'damocles.desktop.search.showLin
 export const SEARCH_SEED_ON_FOCUS_SETTING = 'damocles.desktop.search.seedOnFocus';
 export const SEARCH_SEED_WITH_NEAREST_WORD_SETTING = 'damocles.desktop.search.seedWithNearestWord';
 export const SEARCH_USE_REPLACE_PREVIEW_SETTING = 'damocles.desktop.search.useReplacePreview';
+export const SEARCH_FOLLOW_SYMLINKS_SETTING = 'damocles.desktop.search.followSymlinks';
+export const SEARCH_USE_IGNORE_FILES_SETTING = 'damocles.desktop.search.useIgnoreFiles';
+export const SEARCH_USE_GLOBAL_IGNORE_FILES_SETTING = 'damocles.desktop.search.useGlobalIgnoreFiles';
+export const SEARCH_USE_PARENT_IGNORE_FILES_SETTING = 'damocles.desktop.search.useParentIgnoreFiles';
 export const SEARCH_DEFAULT_VIEW_MODE_SETTING = 'damocles.desktop.search.defaultViewMode';
 export const SEARCH_ACTIONS_POSITION_SETTING = 'damocles.desktop.search.actionsPosition';
 export const SEARCH_MAX_RESULTS_SETTING = 'damocles.desktop.search.maxResults';
@@ -657,6 +661,30 @@ export const DESKTOP_CONFIGURATION: Readonly<Record<string, DesktopSettingProper
     default: true,
     scope: 'application',
     description: 'Controls whether to open Replace Preview when selecting or replacing a match.',
+  },
+  [SEARCH_FOLLOW_SYMLINKS_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: 'Controls whether to follow symlinks while searching.',
+  },
+  [SEARCH_USE_IGNORE_FILES_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: 'Controls whether to use `.gitignore`, `.ignore` and `.rgignore` files when searching for files.',
+  },
+  [SEARCH_USE_GLOBAL_IGNORE_FILES_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: 'Controls whether to use your global gitignore file (for example, from `$HOME/.config/git/ignore`) when searching for files. Requires `damocles.desktop.search.useIgnoreFiles` to be enabled.',
+  },
+  [SEARCH_USE_PARENT_IGNORE_FILES_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: 'Controls whether to use `.gitignore`, `.ignore` and `.rgignore` files in parent directories when searching for files. Requires `damocles.desktop.search.useIgnoreFiles` to be enabled.',
   },
   [SEARCH_DEFAULT_VIEW_MODE_SETTING]: {
     type: 'string',

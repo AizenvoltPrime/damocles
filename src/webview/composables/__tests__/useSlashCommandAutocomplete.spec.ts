@@ -4,6 +4,7 @@ import { ref, defineComponent, h, nextTick } from 'vue';
 import { mount } from '@vue/test-utils';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 import type { SteerTargetInfo } from '@shared/types/subagents';
+import type { RootWithheld } from '@shared/types/commands';
 import { useSlashCommandAutocomplete } from '../useSlashCommandAutocomplete';
 
 const hoisted = vi.hoisted(() => ({
@@ -227,6 +228,132 @@ describe('useSlashCommandAutocomplete — agent mode', () => {
     typeText(inputText.value);
     api.checkAndUpdateSlashCommand();
 
+    expect(api.isOpen.value).toBe(false);
+  });
+});
+
+describe('useSlashCommandAutocomplete — withheld rows', () => {
+  beforeEach(() => {
+    hoisted.postMessage.mockClear();
+    hoisted.handlers = [];
+  });
+
+  async function openWith(withheld: { reason: 'linkOutside' } | { reason: 'broken'; target: string }) {
+    const harness = setup();
+    harness.typeText('/gs');
+    harness.api.checkAndUpdateSlashCommand();
+    harness.dispatch({
+      type: 'customSlashCommands',
+      commands: [{ name: 'gs:', namespace: 'gs', description: '', filePath: '/ws/.claude/commands/gs', source: 'project', withheld }],
+    });
+    await nextTick();
+    hoisted.postMessage.mockClear();
+    return harness;
+  }
+
+  it.each(['Enter', 'Tab'])('never inserts an inert row on %s, and swallows the key', async (key) => {
+    const { api, inputText } = await openWith({ reason: 'broken', target: '/gone' });
+
+    expect(api.handleKeyDown(new KeyboardEvent('keydown', { key }))).toBe(true);
+    api.selectItem(0);
+
+    expect(inputText.value).toBe('/gs');
+    expect(hoisted.postMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(['Enter', 'Tab'])('keeps the menu open on %s over an inert row and names its reason, until the highlight moves', async (key) => {
+    const { api, inputText } = await openWith({ reason: 'broken', target: '/gone' });
+    expect(api.inactiveReason.value).toBeNull();
+
+    expect(api.handleKeyDown(new KeyboardEvent('keydown', { key }))).toBe(true);
+
+    expect(inputText.value).toBe('/gs');
+    expect(api.isOpen.value).toBe(true);
+    expect(api.inactiveReason.value).toEqual({ reason: 'broken', target: '/gone' });
+
+    api.handleKeyDown(new KeyboardEvent('keydown', { key: 'ArrowDown' }));
+    expect(api.inactiveReason.value).toBeNull();
+  });
+
+  it('asks the host to trust the project for a link leading out of it, and inserts nothing', async () => {
+    const { api, inputText } = await openWith({ reason: 'linkOutside' });
+
+    api.handleKeyDown(new KeyboardEvent('keydown', { key: 'Enter' }));
+
+    expect(hoisted.postMessage).toHaveBeenCalledWith({ type: 'setProjectTrusted' });
+    expect(inputText.value).toBe('/gs');
+    expect(api.isOpen.value).toBe(false);
+  });
+
+  it('asks for trust when the row is clicked too', async () => {
+    const { api, inputText } = await openWith({ reason: 'linkOutside' });
+
+    api.selectItem(0);
+
+    expect(hoisted.postMessage).toHaveBeenCalledWith({ type: 'setProjectTrusted' });
+    expect(inputText.value).toBe('/gs');
+  });
+});
+
+describe('useSlashCommandAutocomplete — withheld folders', () => {
+  beforeEach(() => {
+    hoisted.postMessage.mockClear();
+    hoisted.handlers = [];
+  });
+
+  async function openWith(query: string, withheld: RootWithheld) {
+    const harness = setup();
+    harness.typeText(`/${query}`);
+    harness.api.checkAndUpdateSlashCommand();
+    harness.dispatch({
+      type: 'customSlashCommands',
+      commands: [{ name: 'deploy', description: 'ship it', filePath: '/home/.damocles/commands/deploy.md', source: 'user' }],
+      withheldRoots: [{ kind: 'withheldRoot', assets: 'commands', folder: '.claude', source: 'project', filePath: '/ws/.claude/commands', untrusted: true, withheld }],
+    });
+    await nextTick();
+    hoisted.postMessage.mockClear();
+    return harness;
+  }
+
+  const shown = (api: Autocomplete): string[] => api.filteredCommands.value.map((row) => ('kind' in row ? row.folder : row.name));
+
+  it('lists a withheld folder after the commands under a bare slash only', async () => {
+    const { api, typeText } = await openWith('', { reason: 'share' });
+
+    expect(shown(api)).toEqual(['deploy', '.claude']);
+    typeText('/dep');
+    api.checkAndUpdateSlashCommand();
+    expect(shown(api)).toEqual(['deploy']);
+  });
+
+  // A word whose letters occur in `.claude/commands` would otherwise land on the inert row, and Enter would send nothing.
+  it('lets Enter send a typed word no command matches', async () => {
+    const { api, inputText } = await openWith('clean', { reason: 'share' });
+
+    expect(shown(api)).toEqual([]);
+    expect(api.handleKeyDown(new KeyboardEvent('keydown', { key: 'Enter' }))).toBe(false);
+    expect(inputText.value).toBe('/clean');
+  });
+
+  it('never inserts a withheld folder\'s row', async () => {
+    const { api, inputText } = await openWith('', { reason: 'share' });
+    api.selectedIndex.value = 1;
+
+    expect(api.handleKeyDown(new KeyboardEvent('keydown', { key: 'Enter' }))).toBe(true);
+    api.selectItem(1);
+
+    expect(inputText.value).toBe('/');
+    expect(hoisted.postMessage).not.toHaveBeenCalled();
+  });
+
+  it('asks the host to trust the project for a folder linked out of it', async () => {
+    const { api, inputText } = await openWith('', { reason: 'linkOutside' });
+    api.selectedIndex.value = 1;
+
+    api.handleKeyDown(new KeyboardEvent('keydown', { key: 'Enter' }));
+
+    expect(hoisted.postMessage).toHaveBeenCalledWith({ type: 'setProjectTrusted' });
+    expect(inputText.value).toBe('/');
     expect(api.isOpen.value).toBe(false);
   });
 });

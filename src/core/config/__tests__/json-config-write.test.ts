@@ -118,6 +118,17 @@ describe('writeJsonConfig failures', () => {
   });
 });
 
+describe.runIf(process.platform === 'win32')('writeJsonConfig network check (win32)', () => {
+  it('rejects with the check\'s own LocalizedError for a loop, so the caller shows it in the user\'s language', async () => {
+    fs.symlinkSync(path.join(dir, 'b'), path.join(dir, 'a'), 'junction');
+    fs.symlinkSync(path.join(dir, 'a'), path.join(dir, 'b'), 'junction');
+    const file = path.join(dir, 'a', 'settings.json');
+    const rejection = await writeJsonConfig(file, () => '{}', { baseFolder: dir }).then(() => undefined, (err: unknown) => err);
+    expect(rejection).not.toBeInstanceOf(JsonConfigWriteError);
+    expect(rejection).toMatchObject({ code: 'ELOOP', text: { message: 'The path under {0} goes through too many links.', args: [dir] } });
+  });
+});
+
 describe('writeJsonConfig durability', () => {
   it('flushes the temp file to disk before renaming it over the target', async () => {
     const file = path.join(dir, 'settings.json');

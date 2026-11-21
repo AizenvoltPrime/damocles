@@ -704,6 +704,7 @@ describe('Delete with a dirty editor tab of the worktree', () => {
       terminals: () => undefined,
       htmlPreviews: { state: () => ({ status: 'loading', trusted: false }), tabsChanged: () => undefined, focusPage: () => false },
       warn: () => undefined,
+      error: () => undefined,
       hostName: (authority) => authority,
       searchEditorClosed: () => undefined,
       reviewClosed: () => undefined,

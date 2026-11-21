@@ -13,6 +13,7 @@ import type {
 } from "../../../../shared/types/mcp";
 import type { AssetSourcePrecedence } from "../../../../shared/types/settings";
 import { stripBom } from "../../../config/bom";
+import { checkConfigPath, noticeRefusedConfigRead, userConfigBase, type ConfigNotices } from "../../../config/local-config-path";
 import type { McpServerEntry, McpServerEntryError, McpServerScope } from "../types";
 import { validateMcpServerEntry } from "./mcp-config-validate";
 import { log } from "../../../logger";
@@ -228,11 +229,17 @@ interface JsonFileRead {
  * otherwise make every server in it disappear from the panel with no explanation anywhere.
  *
  * The OS message is not carried; only its `code` reaches the log and the webview gets `kind` alone.
- * Same ENOENT-only distinction `readDocument` makes on the write side.
+ * Same ENOENT-only distinction `readDocument` makes on the write side. A file that links off its scope root's share
+ * (baseFolder) is not read: it is unreadable, and notifications tells the user why.
  */
-async function readJsonConfigFile(path: string): Promise<JsonFileRead> {
+async function readJsonConfigFile(path: string, baseFolder: string, notifications: ConfigNotices | undefined): Promise<JsonFileRead> {
   let raw: string;
   try {
+    if ((await checkConfigPath(baseFolder, path)) !== "ok") {
+      log("[McpConfig] %s links to a network share or WSL path; its servers were skipped", path);
+      noticeRefusedConfigRead(path, notifications);
+      return { document: null, error: { path, displayPath: collapseHome(path), kind: "unreadable", line: null, column: null } };
+    }
     raw = stripBom(await fs.readFile(path, "utf-8"));
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
@@ -255,9 +262,9 @@ async function readJsonConfigFile(path: string): Promise<JsonFileRead> {
   return { document: parsed as Record<string, unknown>, error: null };
 }
 
-/** Read the top-level `mcpServers` map of one `{ "mcpServers": {...} }` file. */
-export async function readMcpConfigFile(path: string): Promise<McpFileRead> {
-  const { document, error } = await readJsonConfigFile(path);
+/** Read the top-level `mcpServers` map of one `{ "mcpServers": {...} }` file; baseFolder is its scope root (checkConfigPath). */
+export async function readMcpConfigFile(path: string, baseFolder: string, notifications?: ConfigNotices): Promise<McpFileRead> {
+  const { document, error } = await readJsonConfigFile(path, baseFolder, notifications);
   return { ...coerceServerMap(document ? document["mcpServers"] : undefined), error };
 }
 
@@ -332,10 +339,10 @@ export interface ClaudeMcpScopes {
  * A `~/.claude.json` that fails to parse is logged by the reader and contributes nothing to either
  * scope; it is not surfaced on the panel, because it is another tool's file and theirs to fix.
  */
-export async function readClaudeMcpScopes(workspaceRoots: readonly string[]): Promise<ClaudeMcpScopes> {
+export async function readClaudeMcpScopes(workspaceRoots: readonly string[], notifications?: ConfigNotices): Promise<ClaudeMcpScopes> {
   const [desktop, global] = await Promise.all([
-    readMcpConfigFile(CLAUDE_DESKTOP_CONFIG_PATH),
-    readJsonConfigFile(CLAUDE_GLOBAL_CONFIG_PATH),
+    readMcpConfigFile(CLAUDE_DESKTOP_CONFIG_PATH, userConfigBase(CLAUDE_DESKTOP_CONFIG_PATH), notifications),
+    readJsonConfigFile(CLAUDE_GLOBAL_CONFIG_PATH, userConfigBase(CLAUDE_GLOBAL_CONFIG_PATH), notifications),
   ]);
   const document = global.document;
   const top = coerceServerMap(document ? document["mcpServers"] : undefined);
@@ -358,8 +365,8 @@ function overlayServerMaps(below: McpServerMap, above: McpServerMap): McpServerM
 }
 
 /** The user-global Damocles MCP servers. Same file shape as `.mcp.json`, so the same reader serves it. */
-export async function readDamoclesMcpServers(): Promise<McpFileRead> {
-  return readMcpConfigFile(DAMOCLES_MCP_CONFIG_PATH);
+export async function readDamoclesMcpServers(notifications?: ConfigNotices): Promise<McpFileRead> {
+  return readMcpConfigFile(DAMOCLES_MCP_CONFIG_PATH, userConfigBase(DAMOCLES_MCP_CONFIG_PATH), notifications);
 }
 
 function isTable(value: unknown): value is Record<string, unknown> {
@@ -439,10 +446,15 @@ function mapCodexServer(raw: unknown): McpServerConfig | null {
  * The final `coerceServerMap()` runs the same validator as every other source, so the spawn chokepoint
  * has one validation path regardless of which reader fed it.
  */
-export async function readCodexMcpServers(): Promise<McpServerMap> {
+export async function readCodexMcpServers(notifications?: ConfigNotices): Promise<McpServerMap> {
   const none = coerceServerMap(undefined);
   let text: string;
   try {
+    if ((await checkConfigPath(userConfigBase(CODEX_CONFIG_PATH), CODEX_CONFIG_PATH)) !== "ok") {
+      log("[McpImport] ~/.codex/config.toml links to a network share or WSL path; no Codex MCP servers loaded");
+      noticeRefusedConfigRead(CODEX_CONFIG_PATH, notifications);
+      return none;
+    }
     text = stripBom(await fs.readFile(CODEX_CONFIG_PATH, "utf-8"));
   } catch {
     return none;
@@ -491,12 +503,13 @@ export function orderMcpSources(
  */
 export async function readGlobalMcpSources(
   workspaceRoots: readonly string[],
+  notifications?: ConfigNotices,
 ): Promise<GlobalMcpSources> {
   const [claude, codex, pi, damocles] = await Promise.all([
-    readClaudeMcpScopes(workspaceRoots),
-    readCodexMcpServers(),
-    readMcpConfigFile(PI_MCP_CONFIG_PATH),
-    readDamoclesMcpServers(),
+    readClaudeMcpScopes(workspaceRoots, notifications),
+    readCodexMcpServers(notifications),
+    readMcpConfigFile(PI_MCP_CONFIG_PATH, userConfigBase(PI_MCP_CONFIG_PATH), notifications),
+    readDamoclesMcpServers(notifications),
   ]);
   return {
     sources: [

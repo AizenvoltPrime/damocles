@@ -4,7 +4,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // test never depends on what happens to be in the developer's home directory.
 const readFileMock = vi.hoisted(() => vi.fn());
 const logMock = vi.hoisted(() => vi.fn());
-vi.mock("node:fs", () => ({ promises: { readFile: readFileMock } }));
+// lstat answers the network rule's walk (checkConfigPath) before each read: no path here is a link.
+vi.mock("node:fs", () => ({ promises: { readFile: readFileMock, lstat: async () => ({ isSymbolicLink: () => false }) } }));
 vi.mock("../../../../logger", () => ({ log: logMock }));
 
 import { join, resolve, sep } from "node:path";
@@ -691,9 +692,9 @@ describe("precedence fold order across all nine sources", () => {
   async function foldedSources(precedence: AssetSourcePrecedence): Promise<SourceFixture[]> {
     return orderMcpSources([
       ...withClaudeLocal(await readGlobalMcpSources([WS_ROOT]), WS_ROOT),
-      { source: "workspace", ...(await readMcpConfigFile(join(WS_ROOT, ".mcp.json"))) },
-      { source: "pi-project", ...(await readMcpConfigFile(piProjectMcpConfigPath(WS_ROOT))) },
-      { source: "damocles-local", ...(await readMcpConfigFile(localMcpConfigPath(WS_ROOT))) },
+      { source: "workspace", ...(await readMcpConfigFile(join(WS_ROOT, ".mcp.json"), WS_ROOT)) },
+      { source: "pi-project", ...(await readMcpConfigFile(piProjectMcpConfigPath(WS_ROOT), WS_ROOT)) },
+      { source: "damocles-local", ...(await readMcpConfigFile(localMcpConfigPath(WS_ROOT), WS_ROOT)) },
     ], precedence);
   }
 

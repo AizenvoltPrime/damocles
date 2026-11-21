@@ -3,7 +3,7 @@ import { promises as fs, type Dirent } from 'node:fs';
 import * as path from 'node:path';
 import { renameWithRetry } from '../../../core/config/json-config-write';
 import { isSafeAgentPathId } from '../../../shared/agent-path-id';
-import { isMirrorWorktreeFolder, MIRROR_CLOCK_FILE, MIRROR_SUBCALLS_FILE, type MirrorClock } from '../../../shared/remote-mirror';
+import { isMirrorWorktreeFolder, MIRROR_CLOCK_FILE, MIRROR_SUBCALLS_FILE, projectMirrorFolder, type MirrorClock } from '../../../shared/remote-mirror';
 import type { MirrorChange, MirrorFile, MirrorHeld, MirrorLedgerChange } from '../../daemon/control-messages';
 import type { Disposable } from '../../../platform/disposable';
 import type { OtherProtocolDaemon, RemoteConnection } from './connection';
@@ -81,11 +81,6 @@ export function sessionIdOfFile(name: string): string | undefined {
   const base = name.slice(0, -SESSION_SUFFIX.length);
   const id = base.slice(base.indexOf('_') + 1);
   return isSafeAgentPathId(id) ? id : undefined;
-}
-
-/** The folder of one project's mirror: its target folder key hashed into a single segment. */
-export function projectMirrorFolder(root: string, folderKey: string): string {
-  return path.join(root, createHash('sha256').update(folderKey).digest('hex').slice(0, 32));
 }
 
 /** The local path of a mirrored name under folder, or undefined when the name is unsafe or would leave the folder. */

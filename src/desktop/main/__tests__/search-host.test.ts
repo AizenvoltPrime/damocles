@@ -30,6 +30,8 @@ let dones: SearchDone[];
 let focuses: SearchFocus[];
 let commands: SearchCommandMessage[];
 let copied: string[];
+// the error toasts the pane raised
+let errors: string[];
 
 function write(relativePath: string, text: string, base = projectDir): string {
   const file = path.join(base, ...relativePath.split('/'));
@@ -53,6 +55,7 @@ beforeEach(() => {
   focuses = [];
   commands = [];
   copied = [];
+  errors = [];
   const t = (message: string, ...args: Array<string | number>): string => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)]));
   documents = new DocumentService({
     spellings: unretainedSpellings(),
@@ -102,6 +105,7 @@ beforeEach(() => {
     terminals: () => undefined,
     htmlPreviews: { state: () => ({ status: 'loading', trusted: false }), tabsChanged: () => undefined, focusPage: () => false },
     warn: () => undefined,
+    error: (message) => errors.push(message),
     hostName: (authority) => authority,
     searchEditorClosed: (documentId) => host.searchEditorClosed(documentId),
     reviewClosed: () => undefined,
@@ -119,7 +123,8 @@ beforeEach(() => {
     projects: () => [project, other],
     selectedFolder: () => ({ projectKey: project.key, fsPath: projectDir }),
     workspaces: testWorkspaces({ watchers: platform.fileWatchers, rgPath: () => resolveRgPath({ resourceRoot: process.cwd(), unpackedRoot: process.cwd() }) }),
-    ignore: () => ALL_IGNORE_FILES,
+    walk: () => ({ ignore: ALL_IGNORE_FILES, followLinks: false }),
+    linksNotSearched: () => undefined,
     excludeSettings: () => [],
     ask: async () => 0,
     t,
@@ -193,7 +198,7 @@ describe('the Search Editor', () => {
     expect(document.searchEditor).toMatchObject({ dirty: false, running: false, config: { query: 'needle', contextLines: 1 } });
   });
 
-  it('opens a result through the project only, at the column under the cursor, and refuses a label outside it', async () => {
+  it('opens a result through the project and its links, at the column under the cursor, and refuses a label outside it', async () => {
     write('src/a.ts', 'two needle\n');
     const secret = write('secret.ts', 'x', root);
     const document = documents.openSearchEditor(project.key, { query: 'x', isRegex: false, matchCase: false, wholeWord: false, include: '', exclude: '', useExcludeSettingsAndIgnoreFiles: true, onlyOpenEditors: false, contextLines: 0, showIncludesExcludes: false },
@@ -205,7 +210,8 @@ describe('the Search Editor', () => {
     expect(reveals).toEqual(['beside', `${(opened as { tabId: string }).tabId}:1:5`]);
     expect(await host.openResult({ documentId: document.id, line: 4, column: 6, toSide: false })).toEqual({ ok: false, reason: 'notResult' });
     expect(await host.openResult({ documentId: document.id, line: 6, column: 6, toSide: false })).toEqual({ ok: false, reason: 'notResult' });
-    expect(await host.openResult({ documentId: document.id, line: 8, column: 6, toSide: false })).toEqual({ ok: false, reason: 'outside' });
+    // a file Search lists through a link that leads out of the project opens by that path, as its walk follows links
+    expect(await host.openResult({ documentId: document.id, line: 8, column: 6, toSide: false })).toMatchObject({ ok: true });
     if (process.platform === 'win32') {
       const stream = documents.openSearchEditor(project.key, { query: 'x', isRegex: false, matchCase: false, wholeWord: false, include: '', exclude: '', useExcludeSettingsAndIgnoreFiles: true, onlyOpenEditors: false, contextLines: 0, showIncludesExcludes: false },
         'src/a.ts:stream:\n  1: x\n', { dirty: false });
@@ -214,6 +220,21 @@ describe('the Search Editor', () => {
     }
     const plain = await documents.openProjectFile(project.key, 'src/a.ts');
     await expect(host.openResult({ documentId: plain.ok ? plain.document.id : '', line: 1, column: 1, toSide: false })).rejects.toThrow('Unknown Search Editor');
+  });
+
+  it('tells the user why a result\'s file could not be opened, and says nothing for a line that is no result', async () => {
+    write('src/a.ts', 'two needle\n');
+    const document = documents.openSearchEditor(project.key, { query: 'x', isRegex: false, matchCase: false, wholeWord: false, include: '', exclude: '', useExcludeSettingsAndIgnoreFiles: true, onlyOpenEditors: false, contextLines: 0, showIncludesExcludes: false },
+      '2 results - 2 files\n\nsrc/gone.ts:\n  1: x\n\nlinked/a.ts:\n  1: x\n', { dirty: false });
+    pane.showSearchEditor(document, { focus: true });
+    expect(await host.openResult({ documentId: document.id, line: 4, column: 6, toSide: false })).toEqual({ ok: false, reason: 'missing' });
+    vi.spyOn(documents, 'openProjectFile').mockResolvedValueOnce({ ok: false, reason: 'outside', refusal: 'share' });
+    expect(await host.openResult({ documentId: document.id, line: 7, column: 6, toSide: false })).toEqual({ ok: false, reason: 'outside', refusal: 'share' });
+    expect(await host.openResult({ documentId: document.id, line: 1, column: 1, toSide: false })).toEqual({ ok: false, reason: 'notResult' });
+    expect(errors).toEqual([
+      'Damocles could not open gone.ts: It is no longer there.',
+      'Damocles could not open a.ts: A link on its path leads to a network share or WSL path.',
+    ]);
   });
 
   it('saves as VS Code\'s .code-search file and reopens it as a Search Editor with its header', async () => {

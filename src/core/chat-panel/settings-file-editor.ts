@@ -6,6 +6,7 @@ import type { ExtensionToWebviewMessage, SettingsFileAvailability, SettingsFileS
 import { windowSettingsProject } from '../workspace-folders/folder-registry';
 import { folderKey } from '../workspace-folders/folder-key';
 import { writeJsonConfig } from '../config/json-config-write';
+import { ConfigWriteRefused } from '../config/local-config-path';
 import { parseSettingsText, settingsFileVersion } from '../config/settings-file';
 import { log } from '../logger';
 import { errorTextOf, l } from '../l10n';
@@ -74,6 +75,8 @@ export async function saveSettingsFileText(platform: Platform, scope: SettingsFi
   if (folderKey(located) !== folderKey(filePath)) {
     return { ok: false, error: l('The default project changed since this file was opened. Reload it before saving.'), conflict: false };
   }
+  // a project or local file is <folder>/.damocles/<file>, whose folder is its scope root
+  const options = scope === 'user' ? { baseFolder: path.dirname(located) } : { confineTo: path.dirname(located), baseFolder: path.dirname(path.dirname(located)) };
   try {
     await writeJsonConfig(located, (current) => {
       // A file that does not parse is the user's to fix; overwriting it would lose whatever it holds.
@@ -83,9 +86,11 @@ export async function saveSettingsFileText(platform: Platform, scope: SettingsFi
       const contentError = parseError(content, located);
       if (contentError !== undefined) throw new SaveRefused(l('Not saved: the text is not valid JSON. {0}', contentError), false);
       return content;
-    }, scope === 'user' ? {} : { confineTo: path.dirname(located) });
+    }, options);
   } catch (err) {
     if (err instanceof SaveRefused) return { ok: false, error: err.text, conflict: err.conflict };
+    // no cause: a host words a cause by its errno, and this refusal has none
+    if (err instanceof ConfigWriteRefused) return { ok: false, error: l('Could not save {0}: {1}', located, err.text), conflict: false };
     log('[SettingsFileEditor] saving %s failed: %O', located, err);
     return { ok: false, error: l('Could not save {0}: {1}', located, errorTextOf(err)), conflict: false, cause: err };
   }

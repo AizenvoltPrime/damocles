@@ -311,6 +311,7 @@ describe('a joining view of a running subagent', () => {
       cwd: '/cwd',
       trust: createFakePlatform().trust,
       registry: new AgentRegistry(),
+      registryLoaded: async () => {},
       createSession: async () => nested as unknown as AgentSession,
       forgetSession: () => undefined,
       permissionHandler: {} as never,
@@ -343,7 +344,7 @@ describe('a joining view of a running subagent', () => {
       }
     };
     playParent(parentTurn);
-    manager.spawn({ kind: 'spawn', type: 'general-purpose', prompt: 'Look around.', description: 'Survey', toolCallId: 'a1', runInBackground: background });
+    await manager.spawn({ kind: 'spawn', type: 'general-purpose', prompt: 'Look around.', description: 'Survey', toolCallId: 'a1', runInBackground: background });
     // pi committed the task and asks the model
     await nested.whenModelCalled(1);
     if (background) {
@@ -401,7 +402,7 @@ describe('a joining view of a running subagent', () => {
   it('a view that joins while a subagent waits for a free slot shows it queued, as one that watched', async () => {
     const { watcher, manager, playNested, join } = await runningSubagent(false, 1, PARENT_TWO);
     playNested(NESTED.slice(0, SHELL_RUNNING + 1));
-    manager.spawn({ kind: 'spawn', type: 'general-purpose', prompt: 'And the tests.', description: 'Tests', toolCallId: 'a2', runInBackground: true });
+    await manager.spawn({ kind: 'spawn', type: 'general-purpose', prompt: 'And the tests.', description: 'Tests', toolCallId: 'a2', runInBackground: true });
     const page = chatPage();
     page.deliver(await join());
     expect(page.shown()).toEqual(watcher.shown());

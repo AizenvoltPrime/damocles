@@ -7,7 +7,7 @@ import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { projectKeyOf } from '../../../shared/project-location';
 import type { Project } from '../../local-services/confine';
 import { parseTypedPath, typedInput, typedPathAuthority, typedPathRowsAt, typedPathTarget, type ListingCache, type TypedPath, type TypedPathDeps, type TypedPathRows } from '../quick-open-path';
-import type { ProjectWorkspace } from '../../workspace/project-workspace';
+import type { LocalWorkspace } from '../../workspace/project-workspace';
 import { quickOpenRowKey } from '../../preload/overlay-channels';
 import { ListingUnsupportedError } from '../workspace/remote-workspace';
 import { RootSpellings } from '../workspace/root-spellings';
@@ -202,7 +202,7 @@ describe('typedPathRowsAt', () => {
   };
   const labels = (rows: TypedPathRows | undefined): string[] => (rows?.results ?? []).map((row) => row.label);
   // the local workspace with some of its files' methods replaced
-  const withFiles = (files: Partial<ProjectWorkspace['files']>): TypedPathDeps => {
+  const withFiles = (files: Partial<LocalWorkspace['files']>): TypedPathDeps => {
     const local = { ...deps.workspaces.local, files: { ...deps.workspaces.local.files, ...files } };
     return { ...deps, workspaces: { ...deps.workspaces, local, forAuthority: () => local } };
   };

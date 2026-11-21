@@ -139,7 +139,7 @@ describe('confirmed links', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it('answers only files and folders that exist inside the project after every link is followed', async () => {
+  it('answers files and folders that exist after every link the project holds is followed, and nothing a path names outside it', async () => {
     const links = new TerminalLinks(kindOf);
     const candidates = [
       'src/app.ts',
@@ -153,7 +153,7 @@ describe('confirmed links', () => {
       'out',
       'link.txt',
     ];
-    expect(await links.resolveAll(candidates, base)).toEqual(['file', 'folder', 'file', 'file', null, null, null, null, null, null]);
+    expect(await links.resolveAll(candidates, base)).toEqual(['file', 'folder', 'file', 'file', null, null, null, 'file', 'folder', 'file']);
     expect(lines).toEqual([]);
   });
 

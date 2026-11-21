@@ -307,6 +307,8 @@ export const MAIN_CORE_IMPORTS = [
   'chat-panel/settings-file-editor',
   'config/json-config-write',
   'config/legacy-settings-migrations',
+  // the network rule main's own reads of the user's settings files follow
+  'config/local-config-path',
   'config/read-contributed-configuration',
   'config/retired-secrets',
   'config/settings-file',
@@ -324,6 +326,8 @@ export const MAIN_CORE_IMPORTS = [
   // the error main's workspaces throw for a host that is away, which a served root's reader answers 503
   'not-connected-error',
   'paths',
+  // the user rules files main relays to remote chats are read, and their failures told, as a local chat's
+  'permission-handler/rule-file-read',
   'pi-session/custom-providers',
   'pi-session/explore-providers',
   // the MCP OAuth callback port, which main's forwards never bind
@@ -350,8 +354,6 @@ export const MAIN_CORE_IMPORTS = [
   'scm/settings-keys',
   'scm/stash',
   'scm/worktrees',
-  // the search.use*IgnoreFiles switches Quick Open and Search pass
-  'search-walk/ignore-settings',
   // main's own walk host, whose processes Quick Open and Search of this computer's projects walk on
   'search-walk/walk-host',
   // a served root's loopback server and its policy (Open in Browser, the agent's browser), which core runs for VS Code
@@ -361,6 +363,8 @@ export const MAIN_CORE_IMPORTS = [
   'served-pages/serve-policy',
   'system-tools',
   'volatile-secrets-notice',
+  // literalGlob: the glob of a linked folder's Files watch, which every host's watcher narrows to that folder
+  'watch-root',
   'web-url',
   'workspace-folders/folder-key',
   // the presence rule core shares, with main's own probe

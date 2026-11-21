@@ -495,7 +495,7 @@ test('Delete Permanently removes a folder holding an .asar archive, and a lone a
 });
 
 test('New file in a folder that cannot be listed opens no name box, is one toast naming the folder, and the tree takes keys again', async ({ foreground: _foreground, home, launch }) => {
-  // A junction to a folder outside the project lists as a folder, and main refuses to list what it points to.
+  // A folder link lists as a folder; its target removed after that, the folder cannot be listed.
   const outside = path.join(path.dirname(home.project), 'outside');
   fs.mkdirSync(outside, { recursive: true });
   fs.symlinkSync(outside, path.join(home.project, 'linked'), 'junction');
@@ -505,11 +505,12 @@ test('New file in a folder that cannot be listed opens no name box, is one toast
   const shell = await shellPage(app);
 
   await expect(filesRow(shell, 'linked')).toBeVisible();
+  fs.rmSync(outside, { recursive: true, force: true });
   await filesRow(shell, 'linked').focus();
   await clickSectionAction(shell, 'files-new-file');
   const toast = popupToasts(await popupPage(app)).filter({ hasText: 'Damocles could not open the folder' });
   await expect(toast).toHaveCount(1);
-  await expect(toast).toContainText('Damocles could not open the folder linked: That location is outside the project.');
+  await expect(toast).toContainText('Damocles could not open the folder linked: It is no longer there.');
   await expect(shell.getByTestId('files-edit-input')).toHaveCount(0);
   await filesRow(shell, 'notes.txt').focus();
   await shell.keyboard.press('F2');
@@ -525,14 +526,52 @@ test('expanding a folder that cannot be listed, by click or by key, collapses it
   await openProjectChat(app, home.project);
   const shell = await shellPage(app);
 
+  await expect(filesRow(shell, 'linked')).toBeVisible();
+  fs.rmSync(outside, { recursive: true, force: true });
   await filesRow(shell, 'linked').click();
-  const toast = popupToasts(await popupPage(app)).filter({ hasText: 'Damocles could not open the folder linked: That location is outside the project.' });
+  const toast = popupToasts(await popupPage(app)).filter({ hasText: 'Damocles could not open the folder linked: It is no longer there.' });
   await expect(toast).toHaveCount(1);
   await expect(filesRow(shell, 'linked')).toHaveAttribute('aria-expanded', 'false');
   await filesRow(shell, 'linked').focus();
   await shell.keyboard.press('ArrowRight');
   await expect(toast).toHaveCount(2);
   await expect(filesRow(shell, 'linked')).toHaveAttribute('aria-expanded', 'false');
+});
+
+test('a linked folder outside the project shows its link badge, expands, stays live, and a file opened through it is revealed and its path copied through the link', async ({ clipboard, home, launch }) => {
+  const outside = path.join(path.dirname(home.project), 'shared');
+  fs.mkdirSync(outside, { recursive: true });
+  fs.writeFileSync(path.join(outside, 'first.ts'), 'export const first = 1;\n');
+  fs.symlinkSync(outside, path.join(home.project, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+  fs.writeFileSync(path.join(home.project, 'notes.txt'), 'notes\n');
+  const { app } = await launch();
+  await openProjectChat(app, home.project);
+  const shell = await shellPage(app);
+
+  const linked = filesRow(shell, 'linked');
+  await expect(linked.getByTestId('file-icon-link')).toBeVisible();
+  await expect(linked).toHaveAttribute('title', /^linked\nLink to .*shared/);
+  await expect(linked.getByTestId('files-link')).toHaveText(/^Link to .*shared/);
+  await expect(filesRow(shell, 'notes.txt').getByTestId('file-icon-link')).toHaveCount(0);
+
+  await linked.click();
+  await expect(linked).toHaveAttribute('aria-expanded', 'true');
+  await expect(filesRow(shell, 'linked/first.ts')).toBeVisible();
+  // another process writes into the target: the expanded linked folder shows it
+  fs.writeFileSync(path.join(outside, 'second.ts'), 'export const second = 2;\n');
+  await expect(filesRow(shell, 'linked/second.ts')).toBeVisible();
+
+  await linked.click();
+  await expect(linked).toHaveAttribute('aria-expanded', 'false');
+  await openInEditor(app, { projectKey: await selectedProjectKey(app), relativePath: 'linked/first.ts' });
+  await editorShows(shell, 'export const first = 1;');
+  await expect(linked).toHaveAttribute('aria-expanded', 'true');
+  await expect(filesRow(shell, 'linked/first.ts')).toHaveAttribute('aria-selected', 'true');
+
+  // the tab's Copy Path names the path the file was opened by, as Files' Copy Path does
+  await editorTab(shell, 'first.ts').click({ button: 'right' });
+  await chooseMenuItem(app, 'copyPath');
+  await expect.poll(() => clipboard.readText(app)).toBe(path.join(home.project, 'linked', 'first.ts'));
 });
 
 // VS Code's reveal opens the side bar: the tab menu's Reveal in Files shows a hidden sidebar and leaves the focus overlay.

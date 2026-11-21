@@ -32,7 +32,7 @@ import { PiRuntime } from "../pi-session/pi-runtime";
 import { effortBadgeApplies } from "../pi-session/pi-models";
 import { memoryJudgeStatus } from "./settings-manager/managers/memory-judge-status";
 import { providerAuthStatus } from "./settings-manager/managers/provider-keys";
-import { keyProviderOfSecret, TYPESAFE_SECRET_KEY } from "../pi-session/custom-providers";
+import { keyProviderOfSecret, TYPESAFE_SECRET_KEY } from "../pi-session/provider-defs";
 import { ACCOUNT_PROVIDER_IDS, type AccountProviderId } from "../../shared/settings-sections";
 import { broadcastImageGenerationState } from "./message-router/handlers/settings-handlers";
 import { publishPanelsAccountInfo, publishUnstartedPanelsAccountInfo, republishAccountInfo } from "./message-router/handlers/account-info";
@@ -498,6 +498,7 @@ export class ChatPanelProvider {
       cleanupPanelThinking: (panelId) => this.settingsManager.cleanupPanelThinking(panelId),
       sendThinkingForPanel: (host, panelId, folder) => this.settingsManager.sendThinkingForPanel(host, panelId, folder),
       getInitialMessages: (folder) => this.compassStatusMessages(folder.key),
+      describeSkill: (name, folder) => this.workspaceManager.describeSkill(name, folder),
       onActivePanelChanged: () => this.refreshCompassViews(),
       sendFolderState: async (instance) => {
         // stops the @ list of the folder the panel left before anything here can wait on the new one
@@ -606,6 +607,13 @@ export class ChatPanelProvider {
           .then(() => this.refeedMcpPanels())
           .catch((err: unknown) => log("[ChatPanelProvider] MCP reload after a trust change failed:", err));
       }),
+    );
+    // The @ list follows links only in a trusted folder with the follow switch on, and reads the walk settings' ignore switches.
+    this.subscriptions.push(
+      this.platform.trust.onDidChangeTrust(() => {
+        if (this.platform.walkSettings.read().followLinks) this.workspaceManager.relistWorkspaceFiles();
+      }),
+      this.platform.walkSettings.onDidChange(() => this.workspaceManager.relistWorkspaceFiles()),
     );
 
     this.settingsManager.onDefaultModelChanged((change) => {

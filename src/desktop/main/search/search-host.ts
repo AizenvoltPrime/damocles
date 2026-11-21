@@ -1,4 +1,4 @@
-import type { WalkIgnore } from '../../../core/search-walk';
+import type { WalkSwitches } from '../../../platform/walk-settings';
 import type { SettingsStore } from '../../../platform/settings-store';
 import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import { folderGlob, matchingPattern, MAX_SEARCH_RESULTS, replaceRegExp, type SearchQuery } from '../../../shared/text-search';
@@ -71,7 +71,9 @@ export interface SearchHostDeps {
   readonly workspaces: Workspaces;
   // the OS a project's files are on: this computer's, or its remote host's
   readonly osOf: (projectKey: string) => NodeJS.Platform;
-  readonly ignore: () => WalkIgnore;
+  readonly walk: () => WalkSwitches;
+  // what a search through links shows on a project whose host cannot walk through links, localized; undefined where it can
+  readonly linksNotSearched: (projectKey: string) => string | undefined;
   readonly excludeSettings: () => readonly string[];
   readonly ask: AskMessage;
   readonly t: (message: string, ...args: Array<string | number>) => string;
@@ -174,7 +176,8 @@ export class SearchHost {
       folder: () => deps.selectedFolder(),
       workspaces: deps.workspaces,
       osOf: (projectKey) => deps.osOf(projectKey),
-      ignore: () => deps.ignore(),
+      walk: () => deps.walk(),
+      linksNotSearched: (projectKey) => deps.linksNotSearched(projectKey),
       excludeSettings: () => deps.excludeSettings(),
       settings: () => this.searchSettings(),
       buffers: (projectKey) => searchBuffers(deps.documents, projectKey),
@@ -531,6 +534,7 @@ export class SearchHost {
     if (result.error !== undefined) return { kind: 'error', text: result.error };
     if (result.bufferWarning === 'timedOut') return { kind: 'error', text: this.deps.t('Matching the open editors took too long, so they were not searched.') };
     if (result.bufferWarning === 'unsupportedRegex') return { kind: 'error', text: this.deps.t('The open editors were not searched: this regular expression works only in ripgrep.') };
+    if (result.linksNotSearched !== undefined) return { kind: 'error', text: result.linksNotSearched };
     return undefined;
   }
 

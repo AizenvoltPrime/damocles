@@ -61,7 +61,7 @@ export type ResultRow = TreeRow<ResultFile>;
 export type SearchStatus =
   | { readonly kind: 'idle' }
   | { readonly kind: 'searching' }
-  | { readonly kind: 'done'; readonly limitHit: boolean; readonly cancelled: boolean; readonly error?: string; readonly bufferWarning?: SearchDone['bufferWarning'] }
+  | { readonly kind: 'done'; readonly limitHit: boolean; readonly cancelled: boolean; readonly error?: string; readonly bufferWarning?: SearchDone['bufferWarning']; readonly linksNotSearched?: string }
   | { readonly kind: 'invalidGlob'; readonly glob: string }
   | { readonly kind: 'noProject' };
 
@@ -306,6 +306,7 @@ export function createSearchStore(api: SearchApi, editor: SearchEditor, settings
       cancelled: done.cancelled === true,
       ...(done.error === undefined ? {} : { error: done.error }),
       ...(done.bufferWarning === undefined ? {} : { bufferWarning: done.bufferWarning }),
+      ...(done.linksNotSearched === undefined ? {} : { linksNotSearched: done.linksNotSearched }),
     };
     // VS Code's expandIfSingularResult: a lone file under 50 matches opens.
     const only = fileList.value.length === 1 ? fileList.value[0] : undefined;

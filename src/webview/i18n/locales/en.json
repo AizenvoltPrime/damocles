@@ -742,6 +742,7 @@
         "fileNotObject": "~/.damocles/mcp.json must contain a JSON object. Fix the file, then try again.",
         "fileServersNotObject": "The \"mcpServers\" key in ~/.damocles/mcp.json is not an object. Fix the file, then try again.",
         "fileUnreadable": "~/.damocles/mcp.json could not be read. Check its permissions. Nothing was written.",
+        "fileLinksToShare": "~/.damocles/mcp.json links to a network share or WSL path, so Damocles does not write it. Nothing was written.",
         "writeFailed": "The change could not be saved: {detail}",
         "invalidDefinition": "The server definition was rejected: {detail}",
         "hostTabOnly": "This host's MCP servers change only in Settings, on the host's tab."
@@ -1673,7 +1674,26 @@
     "loading": "Loading commands...",
     "noMatches": "No matching commands",
     "createHint": "Create commands in .damocles/commands/",
-    "untrustedBadge": "untrusted"
+    "untrustedBadge": "untrusted",
+    "scope": {
+      "project": "project",
+      "user": "user"
+    },
+    "withheldRoot": {
+      "commands": "{folder} commands, {scope}",
+      "skills": "{folder} skills, {scope}"
+    },
+    "withheld": {
+      "linkOutside": "trust this project to use it",
+      "share": "links to a network share or WSL path",
+      "broken": "broken link to {target}",
+      "loop": "link loop",
+      "unreachable": "links to a drive that did not answer",
+      "tooLarge": "too large (over 1 MiB)",
+      "missingDescription": "missing description",
+      "invalidFrontmatter": "invalid frontmatter: {detail}",
+      "reservedNamespace": "reserved namespace skill"
+    }
   },
   "subagentIndicator": {
     "active": "Active agents:",

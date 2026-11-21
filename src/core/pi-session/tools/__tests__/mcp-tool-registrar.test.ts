@@ -167,6 +167,7 @@ describe('MCP registration across extension instances (real FolderRuntime)', () 
       resourceExposureSetting: () => ({}),
       trust: platform.trust,
       fileWatchers: platform.fileWatchers,
+      notifications: platform.notifications,
     });
     folder = runtime;
     const instanceWithEvents = () => {
@@ -227,6 +228,7 @@ describe('MCP registration across extension instances (real FolderRuntime)', () 
       resourceExposureSetting: () => ({}),
       trust: platform.trust,
       fileWatchers: platform.fileWatchers,
+      notifications: platform.notifications,
     });
     folder = runtime;
     const instance = fakeInstance();

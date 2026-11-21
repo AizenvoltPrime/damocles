@@ -470,6 +470,9 @@ const api: DamoclesShellApi = {
   designLastFrame: (tabId) => ipcRenderer.invoke(SHELL_CHANNELS.designLastFrame, tabId) as Promise<string | null>,
   onDesignPreviewClosed: (listener) => subscribe<DesignPreviewClosed>(SHELL_CHANNELS.designClosed, (closed) => listener(closed.tabId)),
   listFiles: (request) => ipcRenderer.invoke(SHELL_CHANNELS.filesList, { projectKey: request.projectKey, relativeDir: request.relativeDir, report: request.report === true }) as Promise<FilesListResult>,
+  filesCollapsed: (folder) => {
+    ipcRenderer.send(SHELL_CHANNELS.filesCollapsed, { projectKey: folder.projectKey, relativePath: folder.relativePath });
+  },
   createFile: (request) =>
     ipcRenderer.invoke(SHELL_CHANNELS.filesCreate, { projectKey: request.projectKey, relativeDir: request.relativeDir, name: request.name, kind: request.kind }) as Promise<FilesMutationResult>,
   renameFile: (request) =>

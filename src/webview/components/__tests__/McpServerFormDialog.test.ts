@@ -498,6 +498,15 @@ describe('McpServerFormDialog — write acknowledgement', () => {
 
     expect(bodyText()).toContain('already exists in ~/.damocles/mcp.json');
   });
+
+  // a newer host's core may send a code this webview has no text for
+  it('renders a refusal code it has no text for as the generic save failure, never a raw key', async () => {
+    mountForm({ writeError: { code: 'fileOnTheMoon' } as unknown as McpWriteErrorInfo });
+    await nextTick();
+
+    expect(bodyText()).toContain('The change could not be saved: fileOnTheMoon');
+    expect(bodyText()).not.toContain('mcp.form.writeErrors');
+  });
 });
 
 describe('McpServerFormDialog — discarding work', () => {

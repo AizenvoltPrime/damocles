@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { stripBom } from '../../config/bom';
+import { checkConfigPathSync, noticeRefusedConfigRead, type ConfigNotices } from '../../config/local-config-path';
 import { log } from '../../logger';
 import { DAMOCLES_HOME_DIR } from '../../paths';
 import { hookEntrySchema, type ConfiguredHook, type HookEntry } from './types';
@@ -68,10 +69,17 @@ export function stripJsonComments(text: string): string {
 }
 
 /** Parse + validate one `hooks.json`. Missing → `{}`; malformed → logged once and `{}`; invalid entries
- *  are dropped individually so the rest of the file still loads (US-001). */
-export function parseHooksFile(filePath: string): Record<string, HookEntry[]> {
+ *  are dropped individually so the rest of the file still loads (US-001). One that links off its scope root's share
+ *  (baseFolder) is not read → `{}`, told through notifications. */
+export function parseHooksFile(filePath: string, baseFolder: string, notifications?: ConfigNotices): Record<string, HookEntry[]> {
   let raw: string;
   try {
+    // eslint-disable-next-line damocles/no-sync -- the hooks file is read synchronously already, right after this check
+    if (checkConfigPathSync(baseFolder, filePath) !== 'ok') {
+      log('[Hooks] %s links to a network share or WSL path (ignored)', filePath);
+      noticeRefusedConfigRead(filePath, notifications);
+      return {};
+    }
     raw = fs.readFileSync(filePath, 'utf-8');
   } catch {
     return {};
@@ -122,11 +130,13 @@ export class HooksConfigService {
   private readonly workspaceRoot: string | undefined;
   private readonly trust: TrustService;
   private readonly fileWatchers: FileWatcherFactory;
+  private readonly notifications: ConfigNotices | undefined;
 
-  constructor(workspaceRoot: string | undefined, trust: TrustService, fileWatchers: FileWatcherFactory) {
+  constructor(workspaceRoot: string | undefined, trust: TrustService, fileWatchers: FileWatcherFactory, notifications?: ConfigNotices) {
     this.workspaceRoot = workspaceRoot;
     this.trust = trust;
     this.fileWatchers = fileWatchers;
+    this.notifications = notifications;
     this.loadAll();
     this.setupWatchers();
     this.trustListener = trust.onDidChangeTrust(() => this.loadAll());
@@ -145,9 +155,9 @@ export class HooksConfigService {
   }
 
   private loadAll(): void {
-    this.globalEntries = scoped(parseHooksFile(this.globalPath()), 'user');
+    this.globalEntries = scoped(parseHooksFile(this.globalPath(), DAMOCLES_HOME_DIR, this.notifications), 'user');
     const dir = this.projectDir();
-    this.projectEntries = dir ? scoped(parseHooksFile(path.join(dir, HOOKS_FILE)), 'project') : {};
+    this.projectEntries = dir && this.workspaceRoot ? scoped(parseHooksFile(path.join(dir, HOOKS_FILE), this.workspaceRoot, this.notifications), 'project') : {};
   }
 
   private setupWatchers(): void {
@@ -159,8 +169,9 @@ export class HooksConfigService {
     this.watchers.push(globalWatcher);
 
     const dir = this.projectDir();
-    if (dir) {
-      const projectWatcher = this.fileWatchers.watch(dir, HOOKS_FILE);
+    if (dir && this.workspaceRoot) {
+      // based at the project, so the watcher factory judges a link at .damocles by the network rule (D10)
+      const projectWatcher = this.fileWatchers.watch(this.workspaceRoot, `${path.basename(dir)}/${HOOKS_FILE}`);
       projectWatcher.onDidCreate(reload);
       projectWatcher.onDidChange(reload);
       projectWatcher.onDidDelete(reload);

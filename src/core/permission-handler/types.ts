@@ -203,6 +203,9 @@ export interface PendingDesignApproval {
 
 export type PostMessageFn = (msg: ExtensionToWebviewMessage) => void;
 
+/** The description of the runnable skill named name in the chat's current folder, for its approval prompt; undefined for none. */
+export type SkillDescriber = (name: string) => Promise<string | undefined>;
+
 /**
  * The "agent is blocked waiting for your approval" signal (US-009, the Claude Code Notification
  * analogue). Emitted only at the two real wait points (file Edit/Write, shell Bash/PowerShell); the

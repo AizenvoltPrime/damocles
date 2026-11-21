@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { stripBom } from '../config/bom';
+import { checkConfigPathSync, noticeRefusedConfigRead, type ConfigNotices } from '../config/local-config-path';
 import { folderKey } from '../workspace-folders/folder-key';
 
 /**
@@ -37,15 +38,25 @@ const MAX_CONTEXT_FILE_BYTES = 1024 * 1024;
  * readable. `homeDir` is a parameter rather than the `DAMOCLES_HOME_DIR` constant because that
  * constant freezes the real `os.homedir()` at import time.
  */
-export function resolveGlobalContextFile(homeDir: string): { path: string; content: string } | undefined {
-  return contextFileIn(path.join(homeDir, '.damocles'));
+export function resolveGlobalContextFile(homeDir: string, notifications?: ConfigNotices): { path: string; content: string } | undefined {
+  const dir = path.join(homeDir, '.damocles');
+  // eslint-disable-next-line damocles/no-sync -- pi asks agentsFilesOverride synchronously, and this read is sync already
+  return contextFileIn(dir, (file) => checkConfigPathSync(dir, file) === 'ok', notifications);
 }
 
-/** The first of pi's candidates that is a readable regular file in `dir`, within the size limit. */
-function contextFileIn(dir: string): { path: string; content: string } | undefined {
+/**
+ * The first of pi's candidates that is a readable regular file in `dir`, within the size limit. A candidate `admits` refuses
+ * (the network rule) is skipped as unreadable, told through notifications when given; one it throws for is skipped.
+ */
+function contextFileIn(dir: string, admits: (file: string) => boolean, notifications?: ConfigNotices): { path: string; content: string } | undefined {
   for (const filename of CONTEXT_FILE_CANDIDATES) {
     const filePath = path.join(dir, filename);
     try {
+      if (!admits(filePath)) {
+        console.warn(`[context-files] skipping ${filePath}: it links to a network share or WSL path`);
+        noticeRefusedConfigRead(filePath, notifications);
+        continue;
+      }
       // statSync, not lstatSync: a symlink to a regular file is a legitimate global.
       const stats = fs.statSync(filePath);
       if (!stats.isFile()) continue;
@@ -63,6 +74,13 @@ function contextFileIn(dir: string): { path: string; content: string } | undefin
   return undefined;
 }
 
+/** A chat worktree's walk: its folders, and the link policy pi's loader of that folder has, which judges the ancestors too. */
+export interface ContextWorktree {
+  readonly worktreeRoot: string;
+  readonly repositoryRoot: string;
+  readonly linkPolicy: (file: string) => boolean;
+}
+
 /**
  * Slice 12a rule 21: a chat worktree reads as if it sat where its project does. pi's walk inside the worktree stays; above it,
  * the project's repository root's ancestors replace the worktree's own (`~/.damocles/worktrees/...`), root first, and
@@ -70,7 +88,7 @@ function contextFileIn(dir: string): { path: string; content: string } | undefin
  */
 function worktreeWalk(
   base: Array<{ path: string; content: string }>,
-  worktree: { worktreeRoot: string; repositoryRoot: string },
+  worktree: ContextWorktree,
   homeDir: string,
   agentDir: string,
 ): Array<{ path: string; content: string }> {
@@ -78,7 +96,7 @@ function worktreeWalk(
   const ancestors: Array<{ path: string; content: string }> = [];
   for (let dir = path.dirname(path.resolve(worktree.repositoryRoot)); ; dir = path.dirname(dir)) {
     if (!isUnder(dir, damoclesHome)) {
-      const file = contextFileIn(dir);
+      const file = contextFileIn(dir, worktree.linkPolicy);
       if (file) ancestors.unshift(file);
     }
     if (path.dirname(dir) === dir) break;
@@ -107,9 +125,9 @@ function isUnder(p: string, dir: string): boolean {
  */
 export function overrideGlobalContextFile(
   input: Array<{ path: string; content: string }>,
-  opts: { agentDir: string; homeDir: string; trusted: boolean; worktree?: { worktreeRoot: string; repositoryRoot: string } },
+  opts: { agentDir: string; homeDir: string; trusted: boolean; notifications?: ConfigNotices; worktree?: ContextWorktree },
 ): Array<{ path: string; content: string }> {
-  const global = resolveGlobalContextFile(opts.homeDir);
+  const global = resolveGlobalContextFile(opts.homeDir, opts.notifications);
   const base = opts.worktree ? worktreeWalk(input, opts.worktree, opts.homeDir, opts.agentDir) : input;
   if (!opts.trusted) {
     // With no `~/.damocles/` global, pi's `agentDir` file is the only remaining user-authored source.

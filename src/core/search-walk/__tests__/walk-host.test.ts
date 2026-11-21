@@ -122,7 +122,7 @@ describe('the walk host', () => {
     expect(logged).toEqual([]);
   });
 
-  it('never lists through a junction or under it', async () => {
+  it('lists through a junction and under it only for a walk that follows links', async () => {
     const outside = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dm-walk-outside-')));
     try {
       fs.writeFileSync(path.join(outside, 'secret.ts'), '');
@@ -130,10 +130,31 @@ describe('the walk host', () => {
       fs.symlinkSync(outside, path.join(root, 'link'), 'junction');
       const host = createWalkHost(() => new InThreadWalkChild(), (line) => logged.push(line));
       expect(await all(host.walk(spec({ gitFolders: 'list' })))).toEqual(['mine.ts']);
+      expect(await all(host.walk(spec({ gitFolders: 'list', followLinks: true })))).toEqual(['link/secret.ts', 'mine.ts']);
       await host.close();
     } finally {
       fs.rmSync(outside, { recursive: true, force: true });
     }
+  });
+
+  it('gives each timed file\'s modified time by its / path, and fails a process whose times break the contract', async () => {
+    touch('plans/a.md');
+    touch('b.ts');
+    fs.utimesSync(path.join(root, 'plans', 'a.md'), new Date(Date.UTC(2020, 0, 2)), new Date(Date.UTC(2020, 0, 2)));
+    const host = createWalkHost(() => new InThreadWalkChild(), (line) => logged.push(line));
+    const walk = host.walk(spec({ timed: { extension: '.md', folder: 'plans', word: 'plan' } }));
+    expect(await all(walk)).toEqual(['b.ts', 'plans/a.md']);
+    expect([...walk.modified]).toEqual([['plans/a.md', Date.UTC(2020, 0, 2)]]);
+    await host.close();
+    const broken = Array.from({ length: 3 }, () => new ScriptedChild());
+    const scripted = createWalkHost(() => broken.shift()!, (line) => logged.push(line));
+    for (const times of [[[1, 5]], [[0, 5], [0, 6]], [[0, 'soon']]]) {
+      const child = broken[0]!;
+      const stream = scripted.walk(spec());
+      child.reply({ kind: 'files', id: child.requests[0]!.id, files: ['a.md'], times });
+      await expect(all(stream)).rejects.toThrow('The walk process sent a malformed reply');
+    }
+    await scripted.close();
   });
 
   it('sends WALK_CREDIT batches ahead and one more per batch taken, each batch within the line budget', async () => {
@@ -605,6 +626,9 @@ describe('the built walk process', () => {
       expect(launched.started).toHaveLength(0);
       expect(await all(host.walk(spec()))).toEqual(['a.ts', 'sub/b.ts']);
       expect(await all(host.walk(spec({ root: path.join(root, 'sub') })))).toEqual(['b.ts']);
+      // the follow mode runs in the process too
+      fs.symlinkSync(path.join(root, 'sub'), path.join(root, 'sub', 'loop'), 'junction');
+      expect(await all(host.walk(spec({ followLinks: true })))).toEqual(['a.ts', 'sub/b.ts']);
       expect(launched.started).toHaveLength(1);
       const [call] = vi.mocked(processLauncher().launch).mock.calls;
       expect(call![0]).toMatchObject({ file: process.execPath, args: [built.entry], env: { ELECTRON_RUN_AS_NODE: '1' } });

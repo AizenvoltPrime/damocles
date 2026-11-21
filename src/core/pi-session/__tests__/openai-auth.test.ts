@@ -26,9 +26,9 @@ vi.mock('../pi-loader', () => ({
 
 // Only the fs-touching seed is stubbed; `cacheWarmingSetting` stays real so the mode a test configures
 // travels the production path.
+vi.mock('../agent-dir-setup', () => ({ ensurePiAgentDir: () => undefined }));
 vi.mock('../agent-dir', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../agent-dir')>()),
-  ensurePiAgentDir: () => undefined,
   PI_AGENT_DIR: '/fake/agent',
 }));
 
@@ -194,7 +194,7 @@ describe('PiRuntime OpenAI auth', () => {
     expect([provider, type]).toEqual(['openai', 'oauth']);
     expect(options?.getDeviceId?.()).toBe(DEVICE_ID);
     // Process-wide: one settings manager mints the id, and no folder runtime is built for it.
-    expect(H.fakePi.SettingsManager.create).toHaveBeenCalledWith(agentDir, agentDir);
+    expect(H.fakePi.SettingsManager.create).toHaveBeenCalledWith(agentDir, agentDir, { linkPolicy: (rt as unknown as { _linkPolicy: unknown })._linkPolicy });
     expect(folder).not.toHaveBeenCalled();
     expect(mock.modelRuntime.logout).toHaveBeenCalledWith('openai-codex');
     // pi's login keeps the runtime key; the rule no longer wants it once ChatGPT is signed in.

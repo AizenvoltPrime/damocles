@@ -5,6 +5,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { writeJsonConfig } from '../config/json-config-write';
+import { checkConfigPath } from '../config/local-config-path';
 import { folderKey } from '../workspace-folders/folder-key';
 import { isStoredRemote, MAX_REMOTES, MAX_ROOTS, MAX_SUBPATH_CHARS, type FolderIdentity } from './identity';
 
@@ -40,6 +41,10 @@ export class FolderIdentityStore {
   }
 
   async entries(): Promise<RecordedIdentity[]> {
+    if ((await checkConfigPath(path.dirname(this.file), this.file)) !== 'ok') {
+      this.log(`[FolderIdentities] ${this.file} links to a network share or WSL path, so it is not read`);
+      return [];
+    }
     const handle = await fs.open(this.file, 'r').catch((err: NodeJS.ErrnoException) => (err.code === 'ENOENT' ? undefined : Promise.reject(err)));
     if (!handle) return [];
     try {
@@ -88,7 +93,7 @@ export class FolderIdentityStore {
       const kept = [...byKey.entries()].sort(([, a], [, b]) => b.seenAt - a.seenAt).slice(0, MAX_RECORDED_FOLDERS);
       const folders = Object.fromEntries(kept.map(([key, { path: folderPath, subpath, remotes, roots, seenAt, mount }]) => [key, { path: folderPath, subpath, remotes, roots, seenAt, ...(mount !== undefined ? { mount } : {}) }]));
       return `${JSON.stringify({ version: STORE_VERSION, folders }, null, 2)}\n`;
-    }, { fileMode: STORE_FILE_MODE });
+    }, { fileMode: STORE_FILE_MODE, baseFolder: path.dirname(this.file) });
   }
 }
 

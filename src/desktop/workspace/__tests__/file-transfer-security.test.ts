@@ -6,10 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OPEN_READ_NONBLOCKING } from '../../../core/file-bytes';
 import { folderKey } from '../../../core/workspace-folders/folder-key';
 import type { Project } from '../../local-services/confine';
-import { createTransferOps, isPartName, type TransferEntry, type TransferOps } from '../transfer-ops';
+import { createTransferOps, isPartName, type LinkedTransferOps, type TransferEntry } from '../transfer-ops';
 
-// The host side of copies in and out of Files against a hostile caller or a racing local process: every operation stays
-// inside its project, never writes through a link, and never carries setuid, setgid or sticky bits.
+// The host side of copies in and out of Files against a hostile caller or a racing local process: under withinProject every
+// operation stays inside its project, under throughLinks only inside a folder link's target too, and neither writes through a
+// link it lands on or carries setuid, setgid or sticky bits.
 
 vi.mock('node:crypto', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:crypto')>();
@@ -21,9 +22,11 @@ const MTIME = Date.UTC(2021, 5, 6, 7, 8, 9);
 const OUTSIDE = 'outside, never touched';
 let root: string;
 let project: Project;
-let ops: TransferOps;
+let ops: ReturnType<typeof createTransferOps>;
 const at = (relative: string): string => path.join(project.fsPath, ...relative.split('/'));
 const outside = (): string => path.join(root, 'outside.txt');
+// the host's session store, never made by these tests
+const damoclesHome = (): string => path.join(root, 'home', '.damocles');
 
 // a directory link that needs no privilege on Windows
 const linkFolder = (target: string, link: string): void => fs.symlinkSync(target, link, posix ? 'dir' : 'junction');
@@ -32,12 +35,12 @@ async function* bytes(text: string): AsyncGenerator<Uint8Array> {
   yield Buffer.from(text);
 }
 
-const receive = (relativeDir: string, name: string, text: string, replace: boolean) =>
-  ops.receiveFile(project, relativeDir, name, bytes(text), { mode: 0o644, mtimeMs: MTIME, replace, size: Buffer.byteLength(text) });
+const receive = (relativeDir: string, name: string, text: string, replace: boolean, files: LinkedTransferOps = ops) =>
+  files.receiveFile(project, relativeDir, name, bytes(text), { mode: 0o644, mtimeMs: MTIME, replace, size: Buffer.byteLength(text) });
 
-async function walked(relativePath: string): Promise<TransferEntry[]> {
+async function walked(relativePath: string, files: LinkedTransferOps = ops): Promise<TransferEntry[]> {
   const entries: TransferEntry[] = [];
-  for await (const page of ops.walk(project, relativePath)) entries.push(...page);
+  for await (const page of files.walk(project, relativePath)) entries.push(...page);
   return entries;
 }
 
@@ -51,7 +54,7 @@ beforeEach(() => {
   fs.writeFileSync(outside(), OUTSIDE);
   fs.writeFileSync(path.join(root, 'elsewhere', 'secret.txt'), OUTSIDE);
   project = { key: folderKey(projectDir), fsPath: projectDir, name: 'proj' };
-  ops = createTransferOps({ platform: process.platform, log: () => undefined });
+  ops = createTransferOps({ damoclesHome: damoclesHome(), platform: process.platform, log: () => undefined });
   // a folder link inside the project that leads outside it
   linkFolder(path.join(root, 'elsewhere'), at('escape'));
 });
@@ -70,14 +73,16 @@ function expectOutsideUntouched(): void {
 }
 
 describe('every new operation confines its paths on the host', () => {
+  // a client's request without links, which never follows a link out of the project
+  const strict = (): LinkedTransferOps => ops.under('withinProject');
   const escapes = (): string[] => ['..', '../outside.txt', 'src/../../outside.txt', outside(), 'escape/secret.txt'];
 
   it('copy refuses a source and a destination folder outside the project', async () => {
     for (const source of escapes()) {
-      expect(await ops.copy(project, source, project, 'lib', 'got.txt', false), source).toMatchObject({ ok: false, reason: 'outside' });
+      expect(await strict().copy(project, source, project, 'lib', 'got.txt', false), source).toMatchObject({ ok: false, reason: 'outside' });
     }
     for (const toDir of ['..', path.join(root, 'elsewhere'), 'escape', 'src/../..']) {
-      expect(await ops.copy(project, 'src/a.ts', project, toDir, 'a.ts', false), toDir).toMatchObject({ ok: false, reason: 'outside' });
+      expect(await strict().copy(project, 'src/a.ts', project, toDir, 'a.ts', false), toDir).toMatchObject({ ok: false, reason: 'outside' });
     }
     expect(fs.readdirSync(at('lib'))).toEqual([]);
     expectOutsideUntouched();
@@ -85,10 +90,10 @@ describe('every new operation confines its paths on the host', () => {
 
   it('move refuses a source and a destination folder outside the project, and leaves both where they were', async () => {
     for (const source of escapes()) {
-      expect(await ops.move(project, source, project, 'lib', 'got.txt', false), source).toMatchObject({ ok: false, reason: 'outside' });
+      expect(await strict().move(project, source, project, 'lib', 'got.txt', false), source).toMatchObject({ ok: false, reason: 'outside' });
     }
     for (const toDir of ['..', path.join(root, 'elsewhere'), 'escape', 'src/../..']) {
-      expect(await ops.move(project, 'src/a.ts', project, toDir, 'a.ts', false), toDir).toMatchObject({ ok: false, reason: 'outside' });
+      expect(await strict().move(project, 'src/a.ts', project, toDir, 'a.ts', false), toDir).toMatchObject({ ok: false, reason: 'outside' });
     }
     expect(fs.readFileSync(at('src/a.ts'), 'utf8')).toBe('inside');
     expect(fs.readdirSync(at('lib'))).toEqual([]);
@@ -97,34 +102,56 @@ describe('every new operation confines its paths on the host', () => {
 
   it('receiveFile, makeFolder and clashes refuse a folder outside the project', async () => {
     for (const relativeDir of ['..', path.join(root, 'elsewhere'), 'escape', 'src/../..']) {
-      expect(await receive(relativeDir, 'dropped.txt', 'x', false), relativeDir).toMatchObject({ ok: false, reason: 'outside' });
-      expect(await ops.makeFolder(project, relativeDir, 'made'), relativeDir).toMatchObject({ ok: false, reason: 'outside' });
-      expect(await ops.clashes(project, relativeDir, ['secret.txt']), relativeDir).toMatchObject({ ok: false, reason: 'outside' });
+      expect(await receive(relativeDir, 'dropped.txt', 'x', false, strict()), relativeDir).toMatchObject({ ok: false, reason: 'outside' });
+      expect(await strict().makeFolder(project, relativeDir, 'made'), relativeDir).toMatchObject({ ok: false, reason: 'outside' });
+      expect(await strict().clashes(project, relativeDir, ['secret.txt']), relativeDir).toMatchObject({ ok: false, reason: 'outside' });
     }
     expectOutsideUntouched();
   });
 
   it.runIf(posix)('makeLink refuses a folder outside the project', async () => {
     for (const relativeDir of ['..', path.join(root, 'elsewhere'), 'escape', 'src/../..']) {
-      expect(await ops.makeLink(project, relativeDir, 'made', 'secret.txt', false), relativeDir).toMatchObject({ ok: false, reason: 'outside' });
+      expect(await strict().makeLink(project, relativeDir, 'made', 'secret.txt', false), relativeDir).toMatchObject({ ok: false, reason: 'outside' });
     }
     expectOutsideUntouched();
   });
 
   it('readFile refuses a file outside the project, and a file under a folder link leading out', async () => {
     for (const source of escapes()) {
-      expect(await ops.readFile(project, source), source).toMatchObject({ ok: false, reason: 'outside' });
+      expect(await strict().readFile(project, source), source).toMatchObject({ ok: false, reason: 'outside' });
     }
   });
 
   it('walk refuses a path outside the project, and walking a folder link lists the link and nothing behind it', async () => {
     for (const source of escapes()) {
-      const walk = ops.walk(project, source)[Symbol.asyncIterator]();
+      const walk = strict().walk(project, source)[Symbol.asyncIterator]();
       await expect(walk.next(), source).rejects.toThrow(/outside/);
     }
-    const entries = await walked('escape');
+    const entries = await walked('escape', strict());
     expect(entries.map((entry) => [entry.relativePath, entry.kind])).toEqual([['', 'link']]);
     expect(entries[0]!.size).toBe(0);
+  });
+
+  it('a user view follows a folder link leading out, still refuses a lexical escape, and walks the link as a link', async () => {
+    for (const source of escapes().filter((escape) => escape !== 'escape/secret.txt')) {
+      expect(await ops.copy(project, source, project, 'lib', 'got.txt', false), source).toMatchObject({ ok: false, reason: 'outside' });
+      expect(await ops.readFile(project, source), source).toMatchObject({ ok: false, reason: 'outside' });
+      await expect(ops.walk(project, source)[Symbol.asyncIterator]().next(), source).rejects.toThrow(/outside/);
+    }
+    for (const relativeDir of ['..', path.join(root, 'elsewhere'), 'src/../..']) {
+      expect(await receive(relativeDir, 'dropped.txt', 'x', false), relativeDir).toMatchObject({ ok: false, reason: 'outside' });
+      expect(await ops.makeFolder(project, relativeDir, 'made'), relativeDir).toMatchObject({ ok: false, reason: 'outside' });
+    }
+    expectOutsideUntouched();
+    const read = await ops.readFile(project, 'escape/secret.txt');
+    expect(read).toMatchObject({ ok: true, size: OUTSIDE.length });
+    if (read.ok) for await (const chunk of read.chunks) expect(Buffer.from(chunk).toString()).toBe(OUTSIDE);
+    expect(await ops.copy(project, 'escape/secret.txt', project, 'lib', 'got.txt', false)).toEqual({ ok: true });
+    expect(fs.readFileSync(at('lib/got.txt'), 'utf8')).toBe(OUTSIDE);
+    expect(await receive('escape', 'dropped.txt', 'x', false)).toEqual({ ok: true });
+    expect(await ops.makeFolder(project, 'escape', 'made')).toEqual({ ok: true });
+    expect(fs.readdirSync(path.join(root, 'elsewhere')).sort()).toEqual(['dropped.txt', 'made', 'secret.txt']);
+    expect((await walked('escape')).map((entry) => [entry.relativePath, entry.kind])).toEqual([['', 'link']]);
   });
 
   it('walk lists a link to an outside file as a link of size 0 and never reads it', async () => {
@@ -150,7 +177,7 @@ describe('names are checked on the host for the host\'s platform', () => {
   const windowsOnly = ['CON', 'nul.txt', 'COM1', 'lpt1.log', 'a:b', 'trail.', 'pipe|name'];
 
   it.each([['linux' as const, everywhere], ['darwin' as const, everywhere], ['win32' as const, [...everywhere, ...windowsOnly]]])('a %s host refuses each name for every operation that names an entry', async (platform, names) => {
-    const host = createTransferOps({ platform, log: () => undefined });
+    const host = createTransferOps({ damoclesHome: damoclesHome(), platform, log: () => undefined });
     for (const name of names) {
       expect(await host.receiveFile(project, 'src/deep', name, bytes('x'), { mode: 0o644, mtimeMs: MTIME, replace: true, size: 1 }), name).toEqual({ ok: false, reason: 'invalidName' });
       expect(await host.copy(project, 'src/a.ts', project, 'src/deep', name, true), name).toEqual({ ok: false, reason: 'invalidName' });
@@ -165,7 +192,7 @@ describe('names are checked on the host for the host\'s platform', () => {
   });
 
   it('a POSIX host accepts the names only Windows refuses', async () => {
-    const linux = createTransferOps({ platform: 'linux', log: () => undefined });
+    const linux = createTransferOps({ damoclesHome: damoclesHome(), platform: 'linux', log: () => undefined });
     for (const name of posix ? ['CON', 'a:b', 'trail.'] : ['legit name.txt']) {
       expect(await linux.makeFolder(project, 'src/deep', name), name).toEqual({ ok: true });
     }

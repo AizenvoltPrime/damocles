@@ -75,8 +75,8 @@ describe('folder roots', () => {
     const a = folderKey(alpha);
     const own = roots.resolve(rootKey({ projectKey: a, worktreeId: 'aaaaaaaa' }));
     expect(own?.fsPath).toBe(path.join(dir, 'worktrees', 'aaaaaaaa'));
-    expect(own && (await confineExisting(own, 'file.txt')).ok).toBe(true);
-    expect(own && (await confineExisting(own, '../bbbbbbbb/file.txt'))).toEqual({ ok: false, reason: 'outside' });
+    expect(own && (await confineExisting(own, 'file.txt', 'withinProject')).ok).toBe(true);
+    expect(own && (await confineExisting(own, '../bbbbbbbb/file.txt', 'throughLinks'))).toEqual({ ok: false, reason: 'outside' });
     // another project's worktree named under this project, a deleted one, an adopted one and an unknown id
     for (const id of ['bbbbbbbb', 'cccccccc', 'dddddddd', 'eeeeeeee']) expect(roots.resolve(rootKey({ projectKey: a, worktreeId: id }))).toBeUndefined();
     // a project that is not open

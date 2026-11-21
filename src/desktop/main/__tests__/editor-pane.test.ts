@@ -10,12 +10,13 @@ import type { ActiveEditorContext } from '../../../platform/editor-service';
 import type { FileRef, ShellEditorState, ShellEditorTab } from '../../preload/shell-channels';
 import { rootKey } from '../../preload/folder-root';
 import type { BackupRecord } from '../documents/backups';
-import type { Project } from '../../local-services/confine';
+import type { Confined, LinkRule, Project } from '../../local-services/confine';
 import { DocumentService, type TextDocument } from '../documents/document-service';
 import { EditorPane, revealPathOf, selectionText, settingLine, type BrowserTabSource, type PersistedEditor, type TerminalTabSource } from '../editor-pane';
 import type { MessageQuestion } from '../message-dialog';
 import { projectKeyOf } from '../../../shared/project-location';
 import { englishText, LocalizedError } from '../../../shared/localized-text';
+import { l } from '../../../core/l10n';
 import { visibleText } from '../../../shared/visible-text';
 import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import { worktreeFolderFor } from '../../../core/worktrees/records';
@@ -48,12 +49,15 @@ let shellFormats: (documentIds: readonly string[]) => void;
 let browser: BrowserTabSource | undefined;
 let terminalTabs: TerminalTabSource | undefined;
 let warnings: string[];
+let errors: string[];
 // what the next Reveal rejects with, as a Reveal check that could not run does
 let revealError: Error | undefined;
 // the OS of the loopback host's paths
 let hostOs: NodeJS.Platform;
 // the loopback host's connection; down, its workspace throws NotConnectedError as main's does
 let loopbackUp: boolean;
+// the loopback host's server cannot follow a link out of its projects, which the remote client answers as refusal 'oldDaemon'
+let loopbackOld: boolean;
 // each reconnect's offline saves that met a changed target
 let uploadConflicts: TextDocument[][];
 // runs while a question is up, before it is answered
@@ -87,6 +91,7 @@ beforeEach(() => {
   browser = undefined;
   terminalTabs = undefined;
   warnings = [];
+  errors = [];
   revealError = undefined;
   whileAsking = undefined;
   paneLog = [];
@@ -100,6 +105,7 @@ beforeEach(() => {
   const t = (message: string, ...args: Array<string | number>): string => message.replace(/\{(\d+)\}/g, (_match, index: string) => String(args[Number(index)]));
   hostOs = process.platform;
   loopbackUp = true;
+  loopbackOld = false;
   uploadConflicts = [];
   documents = new DocumentService({
     spellings: unretainedSpellings(),
@@ -116,7 +122,18 @@ beforeEach(() => {
       remote: (authorityKey) => {
         if (authorityKey !== 'loopback') throw new Error(`${authorityKey} is not connected`);
         if (!loopbackUp) throw new NotConnectedError(`${authorityKey} is not connected.`);
-        return testWorkspaces({ watchers: platform.fileWatchers, damoclesHome: path.join(root, 'host', '.damocles') }).local;
+        const workspace = testWorkspaces({ watchers: platform.fileWatchers, damoclesHome: path.join(root, 'host', '.damocles') }).local;
+        if (!loopbackOld) return workspace;
+        const strict = async (confining: Promise<Confined>): Promise<Confined> => {
+          const confined = await confining;
+          return confined.ok && confined.via ? { ok: false, reason: 'outside', refusal: 'oldDaemon' } : confined;
+        };
+        const files = {
+          ...workspace.files,
+          confineExisting: (owner: Project, relativePath: string, rule: LinkRule) => strict(workspace.files.confineExisting(owner, relativePath, rule)),
+          confineMissing: (owner: Project, relativePath: string, rule: LinkRule) => strict(workspace.files.confineMissing(owner, relativePath, rule)),
+        };
+        return { ...workspace, files };
       },
     }),
     ask,
@@ -181,6 +198,7 @@ beforeEach(() => {
       },
     },
     warn: (message) => warnings.push(message),
+    error: (message) => errors.push(message),
     hostName: (authority) => authority,
     searchEditorClosed: (documentId) => events.push(`searchEditorClosed:${documentId}`),
     reviewClosed: (reviewId) => events.push(`reviewClosed:${reviewId}`),
@@ -299,6 +317,18 @@ describe('opens and focus', () => {
     await pane.openFromUser(project.key, 'b.ts');
     await pane.openFromUser(project.key, 'a.ts');
     expect(pane.recentFiles()).toEqual([{ projectKey: project.key, relativePath: 'a.ts' }, { projectKey: project.key, relativePath: 'b.ts' }]);
+  });
+
+  it('tells the user why a user\'s open was refused or failed, naming the file', async () => {
+    expect(await pane.openFromUser(project.key, 'gone.ts')).toEqual({ ok: false, reason: 'missing' });
+    vi.spyOn(documents, 'openProjectFile').mockResolvedValueOnce({ ok: false, reason: 'outside', refusal: 'share' }).mockRejectedValueOnce(new Error('EBUSY: resource busy'));
+    expect(await pane.openFromUser(project.key, 'linked/a.ts')).toEqual({ ok: false, reason: 'outside', refusal: 'share' });
+    expect(await pane.openFromUser(project.key, 'locked.ts')).toEqual({ ok: false, reason: 'failed', message: 'EBUSY: resource busy' });
+    expect(errors).toEqual([
+      'Damocles could not open gone.ts: It is no longer there.',
+      'Damocles could not open a.ts: A link on its path leads to a network share or WSL path.',
+      'Damocles could not open locked.ts: EBUSY: resource busy',
+    ]);
   });
 });
 
@@ -663,15 +693,17 @@ describe('restoring a backup whose file cannot be reopened as it was', () => {
     ];
     await pane.restore({ tabs: [{ kind: 'code', file: { projectKey: 'removed-project', relativePath: 'a.ts' }, backupId: records[0]!.backupId }], active: 0, recent: [] }, records);
     const tabs = pane.state().tabs;
+    // a backup of a file under a link that leaves the project restores into that file, through the link
     expect(tabs.map((tab) => [tab.kind, tab.title, tab.dirty])).toEqual([
-      ['untitled', 'a.ts', true], ['untitled', 'elsewhere.ts', true], ['untitled', 'blob.bin', true], ['untitled', 'settings.json', true], ['untitled', 'logo.svg', true],
+      ['untitled', 'a.ts', true], ['code', 'elsewhere.ts', true], ['untitled', 'blob.bin', true], ['untitled', 'settings.json', true], ['untitled', 'logo.svg', true],
     ]);
+    expect(tabs[1]!.relativePath).toBe('out/elsewhere.ts');
     expect(tabs.map((tab) => textOf(tab.id).text)).toEqual(['removed', 'outside text', 'now text', '{ "a": 1 }', '<svg/>']);
     expect(tabs.map((tab) => textOf(tab.id).backupId)).toEqual(records.map((record) => record.backupId));
     expect(removedOf(records)).toEqual([]);
-    expect(warnings).toHaveLength(5);
-    for (const [index, name] of ['a.ts', 'elsewhere.ts', 'blob.bin', 'settings.json', 'logo.svg'].entries()) expect(warnings[index]).toContain(name);
-    expect(warnings[4]).toBe('The unsaved changes to logo.svg are in an untitled editor: The editor cannot change it as it is on disk now.');
+    expect(warnings).toHaveLength(4);
+    for (const [index, name] of ['a.ts', 'blob.bin', 'settings.json', 'logo.svg'].entries()) expect(warnings[index]).toContain(name);
+    expect(warnings[3]).toBe('The unsaved changes to logo.svg are in an untitled editor: The editor cannot change it as it is on disk now.');
     // blob.bin and logo.svg opened only to be refused; no document is left behind without a tab.
     expect(documents.all().filter((document) => !tabs.some((tab) => tab.documentId === document.id))).toEqual([]);
   });
@@ -886,6 +918,16 @@ describe('restoring settings buffers', () => {
     expect(tabs.map((tab) => [tab.kind, tab.title, tab.dirty])).toEqual([['settings', 'Local daemon: settings.json', true], ['untitled', 'Local daemon: settings.json', true]]);
     expect(warnings).toEqual(['The unsaved changes to Local daemon: settings.json are in an untitled editor: It could not be reopened.']);
   });
+
+  it('names the reason a refused settings file gives in the warning of its backup\'s untitled buffer', async () => {
+    const filePath = path.join(root, 'settings.json');
+    vi.spyOn(documents, 'openSettingsFile').mockRejectedValueOnce(new LocalizedError(l('{0} links to a network share or WSL path, so Damocles does not read it.', filePath)));
+    await pane.restore({ tabs: [], active: null, recent: [] }, [
+      { backupId: '0f8fad5b-d9cb-469f-a165-70867728950e', name: 'settings.json', languageId: 'json', encoding: 'utf8', bom: false, eol: '\n', text: '{ "a": 1 }', target: { kind: 'settings', scope: 'user', path: filePath } },
+    ]);
+    expect(pane.state().tabs.map((tab) => [tab.kind, tab.dirty])).toEqual([['untitled', true]]);
+    expect(warnings).toEqual([`The unsaved changes to settings.json are in an untitled editor: ${filePath} links to a network share or WSL path, so Damocles does not read it.`]);
+  });
 });
 
 describe('a host\'s own settings file', () => {
@@ -966,6 +1008,71 @@ describe('Reveal in File Explorer', () => {
       `Could not show ${path.join(projectDir, 'src', 'a.ts')} in File Explorer: The drive Q:\\ did not answer within a second.`,
     ]);
   });
+
+  it('copies the path of a file opened through a link as the path through the project, and reveals the file where it is, as Files does', async () => {
+    const shared = path.join(root, 'shared');
+    fs.mkdirSync(shared);
+    fs.writeFileSync(path.join(shared, 'first.ts'), 'x');
+    fs.symlinkSync(shared, path.join(projectDir, 'linked'), 'junction');
+    const opened = await pane.openFromUser(project.key, 'linked/first.ts', {});
+    if (!opened.ok) throw new Error(opened.reason);
+    events.length = 0;
+    await pane.tabAction('copyPath', opened.tabId);
+    await pane.tabAction('copyRelativePath', opened.tabId);
+    await pane.tabAction('revealInExplorer', opened.tabId);
+    expect(events).toEqual([`copy:${path.join(projectDir, 'linked', 'first.ts')}`, `copy:${path.join('linked', 'first.ts')}`, `reveal:${path.join(shared, 'first.ts')}`]);
+  });
+
+  it('reveals an HTML preview of a file opened through a link where the file is, as its code tab does, and says why one it cannot place is not shown', async () => {
+    const shared = path.join(root, 'shared');
+    fs.mkdirSync(shared);
+    fs.writeFileSync(path.join(shared, 'index.html'), '<p>hi</p>');
+    fs.symlinkSync(shared, path.join(projectDir, 'linked'), 'junction');
+    const opened = await pane.openFromUser(project.key, 'linked/index.html', { as: 'preview' });
+    if (!opened.ok) throw new Error(opened.reason);
+    events.length = 0;
+    await pane.tabAction('copyPath', opened.tabId);
+    await pane.tabAction('revealInExplorer', opened.tabId);
+    expect(events).toEqual([`copy:${path.join(projectDir, 'linked', 'index.html')}`, `reveal:${path.join(shared, 'index.html')}`]);
+    fs.rmSync(path.join(shared, 'index.html'));
+    events.length = 0;
+    await pane.tabAction('revealInExplorer', opened.tabId);
+    expect(events).toEqual([]);
+    expect(warnings).toEqual(['Damocles could not reveal index.html: It is no longer there.']);
+    // a confinement that cannot run (its host went away) is told the same way
+    vi.spyOn(documents, 'projectFileLocation').mockRejectedValueOnce(new Error('loopback is not connected.'));
+    await pane.tabAction('revealInExplorer', opened.tabId);
+    expect(warnings.at(-1)).toBe('Damocles could not reveal index.html: loopback is not connected.');
+  });
+});
+
+describe.runIf(process.platform === 'win32' || process.platform === 'darwin')('a project file typed in another case', () => {
+  it('names its tab and copies its paths as the folders list it, and opens the one document of the file', async () => {
+    write('src/app.ts', 'x');
+    const typed = await pane.openFromUser(project.key, 'SRC/APP.TS', {});
+    if (!typed.ok) throw new Error(typed.reason);
+    expect(pane.state().tabs.find((tab) => tab.id === typed.tabId)?.title).toBe('app.ts');
+    events.length = 0;
+    await pane.tabAction('copyPath', typed.tabId);
+    await pane.tabAction('copyRelativePath', typed.tabId);
+    expect(events).toEqual([`copy:${path.join(projectDir, 'src', 'app.ts')}`, `copy:${path.join('src', 'app.ts')}`]);
+    const listed = await pane.openFromUser(project.key, 'src/app.ts', {});
+    expect(listed.ok && listed.tabId).toBe(typed.tabId);
+  });
+
+  it('keeps a link\'s own name, never its target\'s, and reveals the target', async () => {
+    const shared = path.join(root, 'Shared');
+    fs.mkdirSync(shared);
+    fs.writeFileSync(path.join(shared, 'Real.ts'), 'x');
+    fs.symlinkSync(shared, path.join(projectDir, 'Out'), 'junction');
+    const opened = await pane.openFromUser(project.key, 'OUT/REAL.TS', {});
+    if (!opened.ok) throw new Error(opened.reason);
+    expect(pane.state().tabs.find((tab) => tab.id === opened.tabId)?.title).toBe('Real.ts');
+    events.length = 0;
+    await pane.tabAction('copyRelativePath', opened.tabId);
+    await pane.tabAction('revealInExplorer', opened.tabId);
+    expect(events).toEqual([`copy:${path.join('Out', 'Real.ts')}`, `reveal:${path.join(shared, 'Real.ts')}`]);
+  });
 });
 
 describe('a file of another host', () => {
@@ -981,6 +1088,8 @@ describe('a file of another host', () => {
     expect(tab.revealable).toBeUndefined();
     await pane.tabAction('copyRelativePath', tab.id);
     expect(events).toContain(`copy:${hostOs === 'win32' ? 'src\\a.ts' : 'src/a.ts'}`);
+    await pane.tabAction('copyPath', tab.id);
+    expect(events).toContain(`copy:${(hostOs === 'win32' ? path.win32 : path.posix).join(projectDir, 'src', 'a.ts')}`);
     await pane.tabAction('revealInExplorer', tab.id);
     await pane.tabAction('openChanges', tab.id);
     expect(warnings).toEqual(['The file is not on this computer.']);
@@ -1379,6 +1488,17 @@ describe('HTML preview tabs', () => {
     expect(pane.state().tabs.map((tab) => tab.kind)).toEqual(['code', 'code', 'htmlPreview']);
   });
 
+  it("names why the preview's Open Source could not open its file", async () => {
+    write('site/index.html', '<p>hi</p>');
+    const opened = await pane.openFromUser(project.key, 'site/index.html', { as: 'preview' });
+    if (!opened.ok) throw new Error('not opened');
+    fs.rmSync(path.join(projectDir, 'site', 'index.html'));
+    await pane.tabAction('openSource', opened.tabId);
+    expect(errors).toEqual(['Damocles could not open index.html: It is no longer there.']);
+    expect(warnings).toEqual([]);
+    expect(pane.state().tabs.map((tab) => tab.kind)).toEqual(['htmlPreview']);
+  });
+
   it("flags a design's screen and sends its Open Preview to the design's own preview, never an HTML preview tab", async () => {
     const screen = fs.realpathSync.native(write('screens/S1-home.html', '<p>hi</p>'));
     write('other.html', '<p>other</p>');
@@ -1755,6 +1875,17 @@ describe('Files renames and deletes', () => {
     const tabs = pane.state().tabs;
     expect(tabs.map((tab) => [tab.kind, tab.title])).toEqual([['code', 'app.ts']]);
     expect(pane.state().activeTabId).toBe(tabs[0]!.id);
+  });
+
+  it('answers Compare on a settings file whose read is refused with the refusal\'s text, opening no tab', async () => {
+    fs.writeFileSync(path.join(root, 'settings.json'), '{}');
+    await pane.openSettingsFile('user');
+    const document = textOf(pane.state().tabs[0]!.id);
+    const refusal = new LocalizedError({ message: '{0} links to a network share or WSL path, so Damocles does not read it.', args: ['settings.json'] });
+    vi.spyOn(documents, 'diskText').mockRejectedValue(refusal);
+    const before = pane.state().tabs.map((tab) => tab.id);
+    expect(await pane.conflict(document.id, 'compare')).toEqual({ ok: false, reason: 'failed', message: 'settings.json links to a network share or WSL path, so Damocles does not read it.' });
+    expect(pane.state().tabs.map((tab) => tab.id)).toEqual(before);
   });
 });
 
@@ -2158,6 +2289,82 @@ describe('remote files while their host is away', () => {
     expect(shown).toHaveLength(1);
     expect(documents.get(shown[0]!.documentId!)).toMatchObject({ kind: 'text', text: 'disk\n' });
     expect(documents.all().map((document) => document.id)).toEqual([shown[0]!.documentId]);
+  });
+
+  describe('a file a link carries out of the project, on a server that cannot follow it', () => {
+    let shared: string;
+
+    beforeEach(() => {
+      shared = path.join(root, 'shared');
+      fs.mkdirSync(shared);
+      fs.writeFileSync(path.join(shared, 'first.md'), '# first\n');
+      fs.writeFileSync(path.join(shared, 'second.md'), '# second\n');
+      fs.symlinkSync(shared, path.join(projectDir, 'linked'), 'junction');
+      loopbackUp = true;
+      loopbackOld = true;
+    });
+
+    it('keeps its saved tab in place saying to update the server, tells the user once per host, and opens the file once a server that can connects', async () => {
+      const saved = [fileTab('code', 'linked/first.md'), fileTab('markdownPreview', 'linked/second.md')];
+      await pane.restore({ tabs: saved, active: 1, recent: [] }, []);
+      const restored = pane.state().tabs;
+      expect(restored.map((tab) => [tab.kind, tab.title])).toEqual([['code', 'first.md'], ['markdownPreview', 'second.md']]);
+      expect(pane.activeTabId()).toBe(restored[1]!.id);
+      const placeholderId = restored[0]!.documentId!;
+      expect(documents.content(placeholderId)).toEqual({ kind: 'offline', documentId: placeholderId, hostId: 'loopback', hostName: 'loopback', updateServer: true });
+      expect(warnings).toEqual(['Update the Damocles server on loopback to open links that lead outside the project.']);
+      await vi.waitFor(() => expect(persisted?.tabs).toEqual(saved));
+      // a connection change that leaves the same server keeps the placeholder
+      const reopens = vi.spyOn(documents, 'openProjectFile');
+      documents.connectionsChanged();
+      await vi.waitFor(() => expect(reopens).toHaveBeenCalledTimes(2));
+      await Promise.all(reopens.mock.results.map((result) => result.value));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(pane.state().tabs.map((tab) => tab.documentId)).toEqual(restored.map((tab) => tab.documentId));
+      loopbackOld = false;
+      documents.connectionsChanged();
+      await vi.waitFor(() => expect(pane.state().tabs.every((tab, index) => tab.documentId !== restored[index]!.documentId)).toBe(true));
+      const tabs = pane.state().tabs;
+      expect(tabs.map((tab) => [tab.id, tab.kind])).toEqual(restored.map((tab) => [tab.id, tab.kind]));
+      expect(textOf(tabs[0]!.id)).toMatchObject({ text: '# first\n', location: { path: path.join(shared, 'first.md'), projectKey: remote.key, relativePath: 'linked/first.md' } });
+      expect(warnings).toHaveLength(1);
+    });
+
+    it('turns an offline placeholder whose host connects with such a server into one saying to update it', async () => {
+      loopbackUp = false;
+      await pane.restore({ tabs: [fileTab('code', 'linked/first.md')], active: 0, recent: [] }, []);
+      const placeholderId = pane.state().tabs[0]!.documentId!;
+      expect(documents.content(placeholderId)).toEqual({ kind: 'offline', documentId: placeholderId, hostId: 'loopback', hostName: 'loopback' });
+      events.length = 0;
+      connect();
+      await vi.waitFor(() => expect(events).toContain(`document:${placeholderId}`));
+      expect(documents.content(placeholderId)).toEqual({ kind: 'offline', documentId: placeholderId, hostId: 'loopback', hostName: 'loopback', updateServer: true });
+      expect(pane.state().tabs[0]!.documentId).toBe(placeholderId);
+    });
+
+    it('tells the user once per host per restore when placeholders\' host connects later with such a server, a reconnect to it included', async () => {
+      loopbackUp = false;
+      await pane.restore({ tabs: [fileTab('code', 'linked/first.md'), fileTab('code', 'linked/second.md')], active: 0, recent: [] }, []);
+      const placeholders = pane.state().tabs.map((tab) => tab.documentId!);
+      const updating = (): boolean => placeholders.every((id) => (documents.content(id) as { updateServer?: true }).updateServer === true);
+      expect(warnings).toEqual([]);
+      connect();
+      await vi.waitFor(() => expect(updating()).toBe(true));
+      expect(warnings).toEqual(['Update the Damocles server on loopback to open links that lead outside the project.']);
+      loopbackUp = false;
+      documents.connectionsChanged();
+      expect(placeholders.some((id) => (documents.content(id) as { updateServer?: true }).updateServer === true)).toBe(false);
+      connect();
+      await vi.waitFor(() => expect(updating()).toBe(true));
+      expect(warnings).toHaveLength(1);
+      expect(pane.state().tabs.map((tab) => tab.documentId)).toEqual(placeholders);
+    });
+
+    it('restores a backup of it as an untitled buffer whose warning says to update the server', async () => {
+      await pane.restore({ tabs: [fileTab('code', 'linked/first.md', BACKUP_A)], active: 0, recent: [] }, [backupOf(BACKUP_A, 'linked/first.md', 'unsaved\n')]);
+      expect(pane.state().tabs.map((tab) => [tab.kind, tab.title, tab.dirty])).toEqual([['untitled', 'first.md', true]]);
+      expect(warnings).toEqual(['The unsaved changes to first.md are in an untitled editor: Update the Damocles server on loopback to open links that lead outside the project.']);
+    });
   });
 });
 

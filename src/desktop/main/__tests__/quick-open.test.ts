@@ -26,6 +26,7 @@ import type { LocalWorkspace, ProjectWorkspace } from '../../workspace/project-w
 import { ListingUnsupportedError, OutsideFilesUnsupportedError } from '../workspace/remote-workspace';
 import { fakeHandleWhileOpen } from './fake-popup-channels';
 import { NO_SCM_MENU_STATE } from '../scm/scm-host';
+import type { WalkSettings, WalkSwitches } from '../../../platform/walk-settings';
 
 vi.mock('../../../core/quick-open/fuzzy-match', async (importOriginal) => {
   const original = await importOriginal<typeof import('../../../core/quick-open/fuzzy-match')>();
@@ -142,11 +143,25 @@ async function settled<T>(promise: Promise<T>): Promise<boolean> {
   return done;
 }
 
+/** A walk settings port whose switches read gives, whose change the test fires, and which counts its listeners. */
+function walkPort(read: () => WalkSwitches): WalkSettings & { fire(): void; listeners(): number } {
+  const listeners = new Set<() => void>();
+  return {
+    read,
+    onDidChange: (listener) => {
+      listeners.add(listener);
+      return { dispose: () => void listeners.delete(listener) };
+    },
+    fire: () => listeners.forEach((listener) => listener()),
+    listeners: () => listeners.size,
+  };
+}
+
 function index(startWorker: () => QuickOpenWorker = () => new InProcessWorker(), walks?: WalkHost): QuickOpenIndex {
   return new QuickOpenIndex({
     projects: () => [alpha, beta],
     workspaces: testWorkspaces({ watchers: createFakePlatform().fileWatchers, log: (line) => logged.push(line), ...(walks ? { walks } : {}) }),
-    ignore: () => ALL_IGNORE_FILES,
+    walk: walkPort(() => ({ ignore: ALL_IGNORE_FILES, followLinks: false })),
     excludes: () => ['**/.git'],
     watch: () => true,
     startWorker: () => {
@@ -205,7 +220,7 @@ function scriptedWalks(): { readonly host: WalkHost; readonly walks: ScriptedWal
         }
       }
       const iterator = listed();
-      return { errors, [Symbol.asyncIterator]: () => iterator };
+      return { errors, modified: new Map(), [Symbol.asyncIterator]: () => iterator };
     },
   };
   return { host, walks };
@@ -426,13 +441,16 @@ describe('Quick Open in its worker', () => {
 });
 
 describe('walk listings main runs for the worker', () => {
-  it('walks the project with its ignore switches, every exclude a ! override and .git left to the excludes', async () => {
+  it.each([
+    [true, { followLinks: true }],
+    [false, {}],
+  ])('walks the project with its ignore switches, follow mode %s, every exclude a ! override and .git left to the excludes', async (followLinks, followed) => {
     const { host, walks } = scriptedWalks();
     const worker = new ScriptedWorker();
     const quickOpen = new QuickOpenIndex({
       projects: () => [alpha, beta],
       workspaces: testWorkspaces({ watchers: createFakePlatform().fileWatchers, walks: host }),
-      ignore: () => ({ files: false, global: true, parents: false }),
+      walk: walkPort(() => ({ ignore: { files: false, global: true, parents: false }, followLinks })),
       excludes: () => ['**/.git', '-x'],
       watch: () => true,
       startWorker: () => worker,
@@ -443,7 +461,7 @@ describe('walk listings main runs for the worker', () => {
     await turnsUntil(() => worker.queries.length === 1);
     worker.emit('message', { kind: 'list', listing: 7, projectKey: alpha.key });
     await turnsUntil(() => walks.length === 1);
-    expect(walks[0]!.spec).toEqual({ root: alpha.fsPath, requireGit: true, ignore: { files: false, global: true, parents: false }, gitFolders: 'list', overrides: ['!**/.git', '!-x'] });
+    expect(walks[0]!.spec).toEqual({ root: alpha.fsPath, requireGit: true, ignore: { files: false, global: true, parents: false }, gitFolders: 'list', overrides: ['!**/.git', '!-x'], ...followed });
     quickOpen.dispose();
   });
 
@@ -493,7 +511,7 @@ describe('walk listings main runs for the worker', () => {
     walks[0]!.end(undefined, ['locked: EACCES: permission denied']);
     await worker.posted((request) => request.kind === 'listEnd');
     expect(worker.received.filter((request) => request.kind === 'listFiles' || request.kind === 'listEnd')).toEqual([{ kind: 'listFiles', listing: 0, files: ['a.ts'] }, { kind: 'listEnd', listing: 0 }]);
-    expect(logged).toEqual([`[quick-open] listing ${alpha.fsPath} skipped folders it could not read: locked: EACCES: permission denied`]);
+    expect(logged).toEqual([`[quick-open] listing ${alpha.fsPath} skipped folders or links it could not read: locked: EACCES: permission denied`]);
     quickOpen.dispose();
   });
 
@@ -561,7 +579,7 @@ describe('walk listings main runs for the worker', () => {
   it('sends neither files nor an end after a kill, as a host\'s listing over the wire sends none', async () => {
     const { host, walks } = scriptedWalks();
     const listed: string[] = [];
-    const listing = testWorkspaces({ watchers: createFakePlatform().fileWatchers, walks: host }).local.quickOpen.list(alpha.fsPath, ALL_IGNORE_FILES, [], { files: () => listed.push('files'), end: (error) => listed.push(`end ${error}`) });
+    const listing = testWorkspaces({ watchers: createFakePlatform().fileWatchers, walks: host }).local.quickOpen.list(alpha.fsPath, { ignore: ALL_IGNORE_FILES, followLinks: false }, [], { files: () => listed.push('files'), end: (error) => listed.push(`end ${error}`) });
     await turnsUntil(() => walks.length === 1);
     listing.kill();
     walks[0]!.push(['a.ts']);
@@ -579,7 +597,7 @@ describe('walk listings main runs for the worker', () => {
     const workspaces = testWorkspaces({ watchers: createFakePlatform().fileWatchers, remote: () => remote.workspace() });
     const fileTree = new FileTree({ projects: () => [alpha, away], exclude: () => ({}), workspaces, ask: async () => undefined, t: (message) => message, log: (line) => logged.push(line), reveal: async () => undefined, copy: async () => undefined, changed: () => undefined, ignored: async () => new Set(), target: () => ({ os: process.platform }) });
     const worker = new InProcessWorker();
-    const quickOpen = new QuickOpenIndex({ projects: () => [alpha, away], workspaces, ignore: () => ALL_IGNORE_FILES, excludes: () => [], watch: (owner) => fileTree.watch(owner), startWorker: () => worker, log: (line) => logged.push(line), ...TYPED_PATHS });
+    const quickOpen = new QuickOpenIndex({ projects: () => [alpha, away], workspaces, walk: walkPort(() => ({ ignore: ALL_IGNORE_FILES, followLinks: false })), excludes: () => [], watch: (owner) => fileTree.watch(owner), startWorker: () => worker, log: (line) => logged.push(line), ...TYPED_PATHS });
     const search = quickOpen.open();
     const answer = await quickOpen.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: search, generation: 0 });
     expect(answer?.failed).toBeUndefined();
@@ -588,7 +606,7 @@ describe('walk listings main runs for the worker', () => {
     quickOpen.dispose();
 
     const scripted = new ScriptedWorker();
-    const asking = new QuickOpenIndex({ projects: () => [alpha, away], workspaces, ignore: () => ALL_IGNORE_FILES, excludes: () => [], watch: (owner) => fileTree.watch(owner), startWorker: () => scripted, log: (line) => logged.push(line), ...TYPED_PATHS });
+    const asking = new QuickOpenIndex({ projects: () => [alpha, away], workspaces, walk: walkPort(() => ({ ignore: ALL_IGNORE_FILES, followLinks: false })), excludes: () => [], watch: (owner) => fileTree.watch(owner), startWorker: () => scripted, log: (line) => logged.push(line), ...TYPED_PATHS });
     void asking.query('a', { currentProjectKey: alpha.key, recent: [] }, { id: asking.open(), generation: 0 });
     await turnsUntil(() => scripted.queries.length === 1);
     expect(scripted.queries[0]!.projects.map((queried) => queried.key)).toEqual([alpha.key]);
@@ -600,17 +618,29 @@ describe('walk listings main runs for the worker', () => {
     fileTree.dispose();
   });
 
-  it('lists a connected host\'s project through the host\'s walk, which never follows a junction there', async () => {
+  it('lists a connected host\'s project through the host\'s walk, which follows a junction there only with the follow setting on', async () => {
     touch(alpha, 'mine.ts');
     touch(beta, 'secret.ts');
     fs.symlinkSync(beta.fsPath, path.join(alpha.fsPath, 'link'), 'junction');
     const remote = testRemote({ watchers: createFakePlatform().fileWatchers });
     const hosted: Project = { key: projectKeyOf({ kind: 'loopback' }, folderKey(alpha.fsPath)), fsPath: alpha.fsPath, name: 'alpha' };
     const workspaces = testWorkspaces({ watchers: createFakePlatform().fileWatchers, remote: () => remote.workspace() });
-    const quickOpen = new QuickOpenIndex({ projects: () => [hosted], workspaces, ignore: () => ALL_IGNORE_FILES, excludes: () => [], watch: () => true, startWorker: () => new InProcessWorker(), log: (line) => logged.push(line), ...TYPED_PATHS });
-    const answer = await quickOpen.query('', { currentProjectKey: hosted.key, recent: [] }, { id: quickOpen.open(), generation: 0 });
-    expect(answer?.results.map((result) => projectRow(result).relativePath)).toEqual(['mine.ts']);
+    let followLinks = false;
+    const walk = walkPort(() => ({ ignore: ALL_IGNORE_FILES, followLinks }));
+    const quickOpen = new QuickOpenIndex({ projects: () => [hosted], workspaces, walk, excludes: () => [], watch: () => true, startWorker: () => new InProcessWorker(), log: (line) => logged.push(line), ...TYPED_PATHS });
+    const listed = async (): Promise<string[] | undefined> =>
+      (await quickOpen.query('', { currentProjectKey: hosted.key, recent: [] }, { id: quickOpen.open(), generation: 0 }))?.results.map((result) => projectRow(result).relativePath).sort();
+    expect(await listed()).toEqual(['mine.ts']);
+    // the walk settings port's change invalidates every list
+    followLinks = true;
+    walk.fire();
+    expect(await listed()).toEqual(['link/secret.ts', 'mine.ts']);
+    followLinks = false;
+    walk.fire();
+    expect(await listed()).toEqual(['mine.ts']);
     quickOpen.dispose();
+    // a disposed index no longer listens
+    expect(walk.listeners()).toBe(0);
     remote.disconnect('done');
   });
 });
@@ -664,13 +694,13 @@ describe('Quick Open of a typed path', () => {
   };
 
   // An index over this computer's workspace whose files' methods the test replaces.
-  const indexWith = (worker: QuickOpenWorker, change: (real: ProjectWorkspace['files']) => Partial<ProjectWorkspace['files']>): QuickOpenIndex => {
+  const indexWith = (worker: QuickOpenWorker, change: (real: LocalWorkspace['files']) => Partial<LocalWorkspace['files']>): QuickOpenIndex => {
     const workspaces = testWorkspaces({ watchers: createFakePlatform().fileWatchers, rgPath: async () => rgPath, log: (line) => logged.push(line) });
     const local: LocalWorkspace = { ...workspaces.local, files: { ...workspaces.local.files, ...change(workspaces.local.files) } };
     return new QuickOpenIndex({
       projects: () => [alpha, beta],
       workspaces: { ...workspaces, local, forAuthority: () => local },
-      ignore: () => ALL_IGNORE_FILES,
+      walk: walkPort(() => ({ ignore: ALL_IGNORE_FILES, followLinks: false })),
       excludes: () => [],
       watch: () => true,
       startWorker: () => worker,

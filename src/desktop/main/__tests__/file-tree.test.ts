@@ -9,6 +9,8 @@ import { DEFAULT_FILES_EXCLUDE } from '../../local-services/desktop-configuratio
 import type { Project } from '../../local-services/confine';
 import { compareEntries, FileTree, type FileTreeDeps } from '../files/file-tree';
 import { testRemote, testWorkspaces } from './test-workspaces';
+import type { Workspaces } from '../workspace/workspaces';
+import type { FolderListing } from '../../workspace/tree-listing';
 import { projectKeyOf } from '../../../shared/project-location';
 import { LocalizedError } from '../../../shared/localized-text';
 import type { FileSystemDeps } from '../../workspace/file-system';
@@ -38,6 +40,8 @@ let removeFailure: string | undefined;
 let exclude: Record<string, unknown>;
 let changed: FilesChanged[];
 let tree: FileTree;
+// the workspaces of the last tree fileTree built
+let workspaces: Workspaces;
 
 beforeEach(() => {
   root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dm-files-')));
@@ -135,7 +139,8 @@ const LIVE = `[files] the watch of`;
 // FileTree over the test's watchers, with the trash and permanent delete its workspace's files use.
 function fileTree(deps: Omit<FileTreeDeps, 'workspaces'> & { readonly trash: FileSystemDeps['trash']; readonly remove: NonNullable<FileSystemDeps['remove']> }): FileTree {
   const { trash, remove, ...rest } = deps;
-  return new FileTree({ ...rest, workspaces: testWorkspaces({ watchers: platform.fileWatchers, trash, remove }) });
+  workspaces = testWorkspaces({ watchers: platform.fileWatchers, trash, remove, damoclesHome: path.join(root, 'home', '.damocles') });
+  return new FileTree({ ...rest, workspaces });
 }
 
 describe('listing', () => {
@@ -183,20 +188,63 @@ describe('listing', () => {
     fs.mkdirSync(path.join(projectDir, '.git'));
     touch('src/gen.ts');
     exclude = { ...DEFAULT_FILES_EXCLUDE, '**/.git': false, '**/gen.ts': true };
-    expect(await tree.list(project.key, '')).toMatchObject({ entries: expect.arrayContaining([{ name: '.git', kind: 'dir' }]) });
+    const listing = await tree.list(project.key, '');
+    expect(listing.ok && listing.entries.find((entry) => entry.name === '.git')).toEqual({ name: '.git', kind: 'dir' });
     expect(await tree.list(project.key, 'src')).toEqual({ ok: true, entries: [] });
   });
 
-  it('lists a link by what it points to, and refuses to list a folder link that leads outside', async () => {
+  it('lists a link by what it points to, and a folder link that leads outside through the link', async () => {
     fs.symlinkSync(outside, path.join(projectDir, 'out'), 'junction');
     fs.writeFileSync(path.join(outside, 'secret.txt'), 'x');
-    expect(await tree.list(project.key, '')).toMatchObject({ entries: expect.arrayContaining([{ name: 'out', kind: 'dir' }]) });
-    expect(await tree.list(project.key, 'out')).toEqual({ ok: false, reason: 'outside' });
+    const listing = await tree.list(project.key, '');
+    expect(listing.ok && listing.entries.find((entry) => entry.name === 'out')).toEqual({ name: 'out', kind: 'dir', link: { target: fs.readlinkSync(path.join(projectDir, 'out')) } });
+    expect(await tree.list(project.key, 'out')).toEqual({ ok: true, entries: [{ name: 'secret.txt', kind: 'file' }] });
   });
 
-  it.runIf(process.platform === 'win32')('lists a link to a UNC share as a file without following it', async () => {
+  it('marks a link whose target is gone as a broken file link, and a plain entry as no link', async () => {
+    const gone = path.join(root, 'gone');
+    fs.mkdirSync(gone);
+    fs.symlinkSync(gone, path.join(projectDir, 'dangling'), 'junction');
+    fs.rmSync(gone, { recursive: true });
+    const listing = await tree.list(project.key, '');
+    expect(listing.ok && listing.entries.find((entry) => entry.name === 'dangling')).toEqual({ name: 'dangling', kind: 'file', link: { target: fs.readlinkSync(path.join(projectDir, 'dangling')), broken: true } });
+    expect(listing.ok && listing.entries.find((entry) => entry.name === 'src')).toEqual({ name: 'src', kind: 'dir' });
+  });
+
+  it('marks a file symlink whose target is gone, or whose target folder is gone, as a broken file link', async (ctx) => {
+    try {
+      fs.symlinkSync(path.join(outside, 'missing.ts'), path.join(projectDir, 'dangling.ts'), 'file');
+      fs.symlinkSync(path.join(root, 'gone', 'missing.ts'), path.join(projectDir, 'orphan.ts'), 'file');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') ctx.skip();
+      throw err;
+    }
+    const listing = await tree.list(project.key, '');
+    for (const name of ['dangling.ts', 'orphan.ts']) {
+      expect(listing.ok && listing.entries.find((entry) => entry.name === name)).toEqual({ name, kind: 'file', link: { target: fs.readlinkSync(path.join(projectDir, name)), broken: true } });
+    }
+  });
+
+  it.each(['EACCES', 'ELOOP'])('lists a link whose target fails with %s as a link, not a broken one', async (code) => {
+    const link = path.join(projectDir, 'guarded');
+    fs.symlinkSync(outside, link, 'junction');
+    const stat = fs.promises.stat.bind(fs.promises);
+    vi.spyOn(fs.promises, 'stat').mockImplementation((async (file: fs.PathLike, options?: fs.StatOptions) => {
+      if (folderKey(String(file)) === folderKey(link)) throw Object.assign(new Error(`${code}: refused, stat '${String(file)}'`), { code });
+      return stat(file, options);
+    }) as typeof fs.promises.stat);
+    try {
+      const listing = await tree.list(project.key, '');
+      expect(listing.ok && listing.entries.find((entry) => entry.name === 'guarded')).toEqual({ name: 'guarded', kind: 'file', link: { target: fs.readlinkSync(link) } });
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it.runIf(process.platform === 'win32')('lists a link to a UNC share as a file without following it, and names the share in every refusal on its path', async () => {
     const link = path.join(projectDir, 'share');
     fs.symlinkSync(outside, link, 'junction');
+    fs.writeFileSync(path.join(outside, 'x.txt'), 'x');
     const readlink = fs.promises.readlink.bind(fs.promises);
     vi.spyOn(fs.promises, 'readlink').mockImplementation((async (file: fs.PathLike) => (folderKey(String(file)) === folderKey(link) ? '\\\\server\\share' : readlink(file))) as typeof fs.promises.readlink);
     const lstatOf = fs.promises.lstat.bind(fs.promises);
@@ -211,8 +259,18 @@ describe('listing', () => {
     const stat = vi.spyOn(fs.promises, 'stat');
     const realpath = vi.spyOn(fs.promises, 'realpath');
     try {
-      expect(await tree.list(project.key, '')).toMatchObject({ entries: expect.arrayContaining([{ name: 'share', kind: 'file' }]) });
-      expect(await tree.list(project.key, 'share')).toEqual({ ok: false, reason: 'outside' });
+      // the badge names the link's own text; the target is never stat'ed for it
+      const listing = await tree.list(project.key, '');
+      expect(listing.ok && listing.entries.find((entry) => entry.name === 'share')).toEqual({ name: 'share', kind: 'file', link: { target: '\\\\server\\share' } });
+      const share = { ok: false, reason: 'outside', refusal: 'share' };
+      expect(await tree.list(project.key, 'share')).toEqual(share);
+      expect(await tree.list(project.key, 'share/deeper')).toEqual(share);
+      expect(await tree.create(project.key, 'share', 'made.txt', 'file')).toEqual(share);
+      expect(await tree.rename(project.key, 'share/x.txt', 'y.txt')).toEqual(share);
+      expect(await tree.delete(project.key, 'share/x.txt')).toEqual(share);
+      expect(await tree.reveal(project.key, 'share/x.txt')).toEqual(share);
+      expect(asked).toEqual([]);
+      expect(fs.readdirSync(outside)).toEqual(['x.txt']);
       expect(remote).toEqual([]);
       expect(stat).not.toHaveBeenCalled();
       expect(realpath.mock.calls.map(([file]) => String(file))).not.toContain(link);
@@ -331,13 +389,17 @@ describe('delete, reveal and copy', () => {
     expect(fs.readFileSync(path.join(outside, 'keep.txt'), 'utf8')).toBe('x');
   });
 
-  it('refuses to delete the project itself or anything outside it', async () => {
+  it('refuses to delete the project itself or a path that names its way outside, and deletes in a linked folder\'s target', async () => {
     expect(await tree.delete(project.key, '')).toEqual({ ok: false, reason: 'outside' });
     expect(await tree.delete(project.key, '../outside')).toEqual({ ok: false, reason: 'outside' });
+    expect(trashed).toEqual([]);
     fs.symlinkSync(outside, path.join(projectDir, 'out'), 'junction');
     fs.writeFileSync(path.join(outside, 'f.txt'), 'x');
-    expect(await tree.delete(project.key, 'out/f.txt')).toEqual({ ok: false, reason: 'outside' });
-    expect(trashed).toEqual([]);
+    expect(await tree.delete(project.key, 'out/f.txt')).toEqual({ ok: true });
+    expect(trashed).toEqual([path.join(outside, 'f.txt')]);
+    // the link row is the link itself
+    expect(await tree.delete(project.key, 'out')).toEqual({ ok: true });
+    expect(trashed).toEqual([path.join(outside, 'f.txt'), path.join(projectDir, 'out')]);
   });
 
   it.runIf(process.platform === 'win32')('refuses names Win32 resolves elsewhere, so a folder named ".. " never trashes its parent', async () => {
@@ -359,6 +421,36 @@ describe('delete, reveal and copy', () => {
       "'a\\u{202E}b.ts' could not be moved to the trash. Do you want to delete it permanently instead?",
     ]);
     expect(asked[1]!.detail).toContain("'a\\u{202E}b.ts'");
+  });
+
+  it('refuses an action that would reach chat session files before asking anything, and changes nothing', async () => {
+    const sessions = path.join(root, 'home', '.damocles', 'pi', 'agent', 'sessions', '--work--');
+    const chat = path.join(sessions, '2026-11-04T10-00-00-000Z_s1.jsonl');
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.writeFileSync(chat, 'chat\n');
+    fs.symlinkSync(path.dirname(sessions), path.join(projectDir, 'store'), 'junction');
+    const inStore = `store/--work--/${path.basename(chat)}`;
+    answers = [0];
+    expect(await tree.delete(project.key, inStore)).toEqual({ ok: false, reason: 'sessionFile' });
+    host = 'Local daemon';
+    answers = [0];
+    expect(await tree.delete(project.key, 'store/--work--')).toEqual({ ok: false, reason: 'sessionFile' });
+    host = undefined;
+    expect(asked).toEqual([]);
+    // the store reached only once the question was answered: the trash refuses, and no permanent delete is offered
+    const { files } = workspaces.local;
+    const entryOf = files.entry.bind(files);
+    const unflagged = vi.spyOn(files, 'entry').mockImplementation(async (of, relativePath) => {
+      const found = await entryOf(of, relativePath);
+      return found.ok ? { ok: true, path: found.path, folder: found.folder, identity: found.identity } : found;
+    });
+    answers = [0];
+    expect(await tree.delete(project.key, inStore)).toEqual({ ok: false, reason: 'sessionFile' });
+    expect(asked).toHaveLength(1);
+    unflagged.mockRestore();
+    expect(await tree.rename(project.key, inStore, 'renamed.jsonl')).toEqual({ ok: false, reason: 'sessionFile' });
+    expect(await tree.create(project.key, 'store/--work--', 'new.txt', 'file')).toEqual({ ok: false, reason: 'sessionFile' });
+    expect([trashed, removed, fs.readdirSync(sessions), fs.readFileSync(chat, 'utf8')]).toEqual([[], [], [path.basename(chat)], 'chat\n']);
   });
 
   it('offers Delete Permanently when the trash fails, deletes only after that confirmation, and reports a failure of either', async () => {
@@ -588,6 +680,149 @@ describe('watching', () => {
       remoteTree.dispose();
       remote.disconnect('the test ended');
     }
+  });
+
+  describe('a linked folder that leads outside the project', () => {
+    // the live watches other than the project's, by base
+    const linkRootWatches = (): string[] => platform.fileWatchers.watchers.filter((watcher) => !watcher.disposed && watcher.base !== projectDir).map((watcher) => `${watcher.base} ${watcher.glob}`);
+    let target: string;
+
+    beforeEach(async () => {
+      fs.mkdirSync(path.join(outside, 'sub'));
+      fs.symlinkSync(outside, path.join(projectDir, 'out'), 'junction');
+      target = fs.realpathSync.native(outside);
+      await tree.list(project.key, '');
+      await untilWatchReady();
+    });
+
+    it('watches each expanded folder under the link, without recursion, and reports its changes through the link', async () => {
+      expect(linkRootWatches()).toEqual([]);
+      expect((await tree.list(project.key, 'out')).ok).toBe(true);
+      expect(linkRootWatches()).toEqual([`${target} *`]);
+      // the folder's watch is ready: what changed before it was is listed again
+      await vi.waitFor(() => expect(changed).toEqual([{ projectKey: project.key, relativeDirs: ['out'] }]));
+      expect((await tree.list(project.key, 'out/sub')).ok).toBe(true);
+      expect(linkRootWatches()).toEqual([`${target} *`, `${target} sub/*`]);
+      await vi.waitFor(() => expect(changed).toEqual([{ projectKey: project.key, relativeDirs: ['out'] }, { projectKey: project.key, relativeDirs: ['out/sub'] }]));
+      changed.length = 0;
+      let structural = 0;
+      tree.onDidChangeStructure(() => structural++);
+      platform.fileWatchers.watcher(target, '*').fireCreate(path.join(target, 'new.txt'));
+      platform.fileWatchers.watcher(target, '*').fireCreate(path.join(target, '.git'));
+      platform.fileWatchers.watcher(target, 'sub/*').fireDelete(path.join(target, 'sub', 'old.txt'));
+      await vi.waitFor(() => expect(changed).toEqual([{ projectKey: project.key, relativeDirs: ['out', 'out/sub'] }]));
+      expect(structural).toBe(1);
+    });
+
+    it('watches an expanded folder whose name holds glob syntax as that folder only', async () => {
+      fs.mkdirSync(path.join(outside, 'New folder (2)'));
+      await tree.list(project.key, 'out/New folder (2)');
+      expect(linkRootWatches()).toEqual([`${target} New folder [(]2[)]/*`]);
+      await vi.waitFor(() => expect(changed).toEqual([{ projectKey: project.key, relativeDirs: ['out/New folder (2)'] }]));
+      changed.length = 0;
+      platform.fileWatchers.watcher(target, 'New folder [(]2[)]/*').fireCreate(path.join(target, 'New folder (2)', 'a.txt'));
+      await vi.waitFor(() => expect(changed).toEqual([{ projectKey: project.key, relativeDirs: ['out/New folder (2)'] }]));
+    });
+
+    it('ends the watch of a collapsed folder and of every folder under it, and only theirs', async () => {
+      fs.mkdirSync(path.join(outside, 'sub', 'deep'));
+      await tree.list(project.key, 'out');
+      await tree.list(project.key, 'out/sub');
+      await tree.list(project.key, 'out/sub/deep');
+      await tree.list(project.key, 'src');
+      tree.collapsed(project.key, 'src');
+      expect(linkRootWatches()).toEqual([`${target} *`, `${target} sub/*`, `${target} sub/deep/*`]);
+      tree.collapsed(project.key, 'out/sub/deep');
+      expect(linkRootWatches()).toEqual([`${target} *`, `${target} sub/*`]);
+      // the shell reports only the folder it collapses, not the expanded ones under it
+      tree.collapsed(project.key, 'out');
+      expect(linkRootWatches()).toEqual([]);
+      // the project's own watch stays
+      expect(() => platform.fileWatchers.watcher(projectDir, '**')).not.toThrow();
+      // expanded again, it is watched again
+      await tree.list(project.key, 'out');
+      expect(linkRootWatches()).toEqual([`${target} *`]);
+    });
+
+    it('watches nothing for a listing answered after its folder, or a folder above it, collapsed', async () => {
+      const listing = tree.list(project.key, 'out');
+      tree.collapsed(project.key, 'out');
+      expect((await listing).ok).toBe(true);
+      expect(linkRootWatches()).toEqual([]);
+      const below = tree.list(project.key, 'out/sub');
+      tree.collapsed(project.key, 'out');
+      expect((await below).ok).toBe(true);
+      expect(linkRootWatches()).toEqual([]);
+      await tree.list(project.key, 'out');
+      expect(linkRootWatches()).toEqual([`${target} *`]);
+    });
+
+    it('keeps the watch the newest listing of a folder asked for when an older one answers after it', async () => {
+      await tree.list(project.key, 'out');
+      const trees = workspaces.forProject(project.key).tree;
+      const list = trees.list.bind(trees);
+      let answer!: () => void;
+      const held = new Promise<void>((resolve) => (answer = resolve));
+      let read = false;
+      vi.spyOn(trees, 'list').mockImplementationOnce(async (...args): Promise<FolderListing> => {
+        const listing = await list(...args);
+        read = true;
+        await held;
+        return listing;
+      });
+      const older = tree.list(project.key, 'out');
+      // the older listing has read the old target before the link moves
+      await vi.waitFor(() => expect(read).toBe(true));
+      const other = path.join(root, 'other');
+      fs.mkdirSync(other);
+      fs.unlinkSync(path.join(projectDir, 'out'));
+      fs.symlinkSync(other, path.join(projectDir, 'out'), 'junction');
+      await tree.list(project.key, 'out');
+      const watchedBases = (): string[] => linkRootWatches().map((watch) => watch.slice(0, watch.lastIndexOf(' ')));
+      expect(watchedBases()).toEqual([fs.realpathSync.native(other)]);
+      answer();
+      expect((await older).ok).toBe(true);
+      expect(watchedBases()).toEqual([fs.realpathSync.native(other)]);
+    });
+
+    it('keeps a record of a folder only while a listing of it is in flight or a link watch covers it', async () => {
+      const records = (): number => (tree as unknown as { watched: Map<string, { folders: Map<string, unknown> }> }).watched.get(project.key)!.folders.size;
+      for (let index = 0; index < 50; index++) tree.collapsed(project.key, `gone${index}`);
+      await tree.list(project.key, 'src');
+      expect(records()).toBe(0);
+      await tree.list(project.key, 'out');
+      expect(records()).toBe(1);
+      const listing = tree.list(project.key, 'out/sub');
+      tree.collapsed(project.key, 'out');
+      expect(records()).toBe(1);
+      await listing;
+      expect(records()).toBe(0);
+    });
+
+    it('drops the watch when the project leaves', async () => {
+      await tree.list(project.key, 'out');
+      expect(linkRootWatches()).toHaveLength(1);
+      const kept = project;
+      project = { key: folderKey(outside), fsPath: outside, name: 'outside' };
+      tree.projectsChanged();
+      project = kept;
+      expect(linkRootWatches()).toEqual([]);
+    });
+
+    it('moves the watch to the new target when a re-pointed link is listed again', async () => {
+      await tree.list(project.key, 'out');
+      const other = path.join(root, 'other');
+      fs.mkdirSync(other);
+      fs.unlinkSync(path.join(projectDir, 'out'));
+      fs.symlinkSync(other, path.join(projectDir, 'out'), 'junction');
+      await tree.list(project.key, 'out');
+      expect(linkRootWatches()).toEqual([`${fs.realpathSync.native(other)} *`]);
+      // a folder that now lists inside the project needs no watch of its own
+      fs.unlinkSync(path.join(projectDir, 'out'));
+      fs.symlinkSync(path.join(projectDir, 'src'), path.join(projectDir, 'out'), 'junction');
+      await tree.list(project.key, 'out');
+      expect(linkRootWatches()).toEqual([]);
+    });
   });
 
   it('asks every watched project to refetch when files.exclude changes', async () => {

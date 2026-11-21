@@ -9,7 +9,7 @@ import { remPx } from '@/composables/useRemPx';
 import { useDragAutoScroll } from '@/composables/useDragAutoScroll';
 import { FILE_DRAG_MIME, FILES_ROW_DRAG_MIME, parseFileDragPayload, serializeFileDragPayload } from '@shared/file-drag';
 import { visibleText } from '@shared/visible-text';
-import { MAX_FILE_NAME_LENGTH, type DamoclesShellApi, type FileRef, type FilesPasteResult, type FilesTransferStartResult, type ShellPlatform, type ShownFolder } from '../../preload/shell-channels';
+import { MAX_FILE_NAME_LENGTH, type DamoclesShellApi, type FileEntry, type FileRef, type FilesPasteResult, type FilesTransferStartResult, type ShellPlatform, type ShownFolder } from '../../preload/shell-channels';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import type { ScmDecoration, ScmLetter, ScmResource, ScmTone } from '../../preload/scm-channels';
 import { parseRootKey } from '../../preload/folder-root';
@@ -112,6 +112,8 @@ function decorationOf(row: Extract<TreeRow, { kind: 'entry' }>): RowDecoration {
   const dot = row.directory && letter === undefined && !ignored ? scm.folderToneOf(props.projectKey, row.path) : undefined;
   return { own, ignored, letter, dot, title: own?.status ? t(`scm.status.${own.status}`) : own?.submodule ? t('files.decoration.submodule') : undefined };
 }
+const linkText = (link: NonNullable<FileEntry['link']>): string => t(link.broken ? 'files.link.broken' : 'files.link.to', { target: visibleText(link.target) });
+const rowTitle = (row: Extract<TreeRow, { kind: 'entry' }>): string => (row.link ? `${visibleText(row.path)}\n${linkText(row.link)}` : visibleText(row.path));
 // The rendered rows' decorations, worked out once per render.
 const decorations = computed(() => new Map(visibleRows.value.flatMap(({ data }) => (data.kind === 'entry' ? [[data.path, decorationOf(data)] as const] : []))));
 const decoration = (row: Extract<TreeRow, { kind: 'entry' }>): RowDecoration => decorations.value.get(row.path) ?? decorationOf(row);
@@ -136,8 +138,10 @@ function load(dir: string, report = false): Promise<void> {
     if (newest !== request) return newest;
     // The project changed while the listing was on its way.
     if (key !== props.projectKey) return undefined;
+    const before = listings.value.get(dir);
     setListing(dir, result.ok ? { state: 'loaded', entries: result.entries } : { state: 'failed' });
     if (!result.ok && dir !== '') collapse(dir);
+    if (result.ok) childrenChanged(key, dir, before);
     return undefined;
   }).finally(() => {
     if (requests.get(dir) === request) requests.delete(dir);
@@ -146,11 +150,37 @@ function load(dir: string, report = false): Promise<void> {
   return request;
 }
 
+// A folder shows expanded while it and every folder above it are expanded and in their parents' listings; a collapsed folder
+// keeps its expanded folders hidden, and so does one that left its parent's listing (files.exclude, a rename).
+const showsExpanded = (dir: string): boolean => [...ancestorsOf(dir), dir].every((each) => expanded.value.has(each) && listed(each));
+
+// A hidden folder's listing went stale and main stopped watching it, so each one below dir that shows again is listed again.
+function relistShownBelow(dir: string): void {
+  for (const below of expanded.value) if (below.startsWith(`${dir}/`) && showsExpanded(below)) void load(below);
+}
+
+// An expanded folder that leaves dir's listing stops showing, which main is told; one that comes back shows again.
+function childrenChanged(key: string, dir: string, before: Listing | undefined): void {
+  if (dir !== '' && !showsExpanded(dir)) return;
+  const had = new Set(before?.state === 'loaded' ? before.entries.map((entry) => entry.name) : []);
+  for (const child of expanded.value) {
+    if (parentOf(child) !== dir) continue;
+    const shows = listed(child);
+    if (had.has(nameOf(child)) && !shows) collapsedIn(key, [child]);
+    if (!had.has(nameOf(child)) && shows) {
+      void load(child);
+      relistShownBelow(child);
+    }
+  }
+}
+
 function expand(dir: string, report = false): Promise<void> {
   if (expanded.value.has(dir)) return pending.get(dir) ?? Promise.resolve();
   expanded.value.add(dir);
   triggerRef(expanded);
-  return load(dir, report);
+  const loaded = load(dir, report);
+  relistShownBelow(dir);
+  return loaded;
 }
 
 // Whether the folder's loaded listing has the entry; files.exclude keeps some entries out.
@@ -169,19 +199,28 @@ async function expandTo(path: string): Promise<boolean> {
   return listed(path);
 }
 
+// The folder that stops showing expanded is reported, and main ends the watches of it and of every folder under it.
+function collapsedIn(key: string | undefined, dirs: Iterable<string>): void {
+  if (key === undefined) return;
+  for (const dir of dirs) props.api.filesCollapsed({ projectKey: key, relativePath: dir });
+}
+
 function collapse(dir: string): void {
   if (!expanded.value.delete(dir)) return;
   triggerRef(expanded);
+  collapsedIn(props.projectKey, [dir]);
 }
 
 function collapseAll(): void {
+  collapsedIn(props.projectKey, expanded.value);
   expanded.value.clear();
   triggerRef(expanded);
   scrollTo(0);
 }
 
 // Forgets every listing and lists the root again, which lists nothing while the folder is not there.
-function relist(): void {
+function relist(previousKey = props.projectKey): void {
+  collapsedIn(previousKey, expanded.value);
   listings.value = new Map();
   pending = new Map();
   expanded.value = new Set();
@@ -198,16 +237,17 @@ watch(() => props.projectKey, (key, previous) => {
     void tree.offsetWidth;
     tree.classList.add('d-fade-in');
   }
-  relist();
+  relist(previous);
 }, { immediate: true });
 
-watch(() => props.presence, relist);
+watch(() => props.presence, () => relist());
+onBeforeUnmount(() => collapsedIn(props.projectKey, expanded.value));
 
 // No directories named means the exclude settings changed: every listing shown may differ.
 const stopChanges = props.api.onFilesChanged((change) => {
   if (change.projectKey !== props.projectKey) return;
   const dirs = change.relativeDirs.length === 0 ? ['', ...expanded.value] : change.relativeDirs;
-  for (const dir of dirs) if (dir === '' || expanded.value.has(dir)) void load(dir);
+  for (const dir of dirs) if (dir === '' || showsExpanded(dir)) void load(dir);
 });
 onBeforeUnmount(stopChanges);
 
@@ -1083,11 +1123,11 @@ defineExpose({ reveal, startCreate, collapseAll });
               :aria-selected="row.path === selectedPath"
               :aria-busy="row.loading || undefined"
               :tabindex="index === focusedIndex ? 0 : -1"
-              :title="visibleText(row.path)"
+              :title="rowTitle(row)"
               draggable="true"
               :data-cut="isCut(row.path) || undefined"
-              class="files-row relative flex cursor-pointer items-center gap-1.25 pr-2.5 outline-none select-none hover:bg-(--d-hover) focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
-              :class="row.path === selectedPath ? 'bg-(--d-accent-soft) hover:bg-(--d-accent-soft)' : ''"
+              class="files-row relative flex cursor-pointer items-center gap-1.25 bg-(--row-bg) pr-2.5 outline-none select-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
+              :class="row.path === selectedPath || dropTarget === row.path ? '[--row-bg:var(--d-accent-soft)]' : '[--row-bg:transparent] hover:[--row-bg:var(--d-hover)]'"
               :style="{ height: `${remPx(ROW_REM)}px`, paddingLeft: `${INDENT_START_REM + row.depth * INDENT_REM}rem` }"
               @click="activate(row)"
               @focus="focusedPath = row.path"
@@ -1095,12 +1135,12 @@ defineExpose({ reveal, startCreate, collapseAll });
               @dragstart="onDragStart($event, row)"
               @dragend="onRowDragEnd"
             >
-              <!-- The drop highlight: the row's focus outline over the accent tint. -->
+              <!-- The drop highlight: the row's focus outline over the accent tint, which is the row's own (--row-bg) so a link badge matches it. -->
               <span
                 v-if="dropTarget === row.path"
                 aria-hidden="true"
                 data-testid="files-drop-highlight"
-                class="d-fade-in pointer-events-none absolute inset-0 bg-(--d-accent-soft) shadow-[inset_0_0_0_1px_var(--d-accent)]"
+                class="d-fade-in pointer-events-none absolute inset-0 shadow-[inset_0_0_0_1px_var(--d-accent)]"
               />
               <span class="flex w-3.5 shrink-0 text-(--d-faint)">
                 <ChevronRight
@@ -1114,6 +1154,7 @@ defineExpose({ reveal, startCreate, collapseAll });
                 :path="row.path"
                 :directory="row.directory"
                 :open="row.expanded"
+                :link="row.link ? (row.link.broken ? 'broken' : true) : false"
                 class="size-3.5 shrink-0"
               />
               <span
@@ -1142,6 +1183,11 @@ defineExpose({ reveal, startCreate, collapseAll });
                 v-if="decoration(row).title"
                 class="sr-only"
               >{{ decoration(row).title }}</span>
+              <span
+                v-if="row.link"
+                data-testid="files-link"
+                class="sr-only"
+              >{{ linkText(row.link) }}</span>
             </div>
           </template>
         </div>

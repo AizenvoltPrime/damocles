@@ -20,22 +20,26 @@ import { ChatPanelProvider } from "../index";
 import { installLogSink } from "../../logger";
 import { installFakePlatform, type FakePlatform } from "../../../__mocks__/fake-platform";
 import { PiRuntime } from "../../pi-session/pi-runtime";
-import { CUSTOM_PROVIDER_DEFS, KEYED_PROVIDER_DEFS } from "../../pi-session/custom-providers";
+import { CUSTOM_PROVIDER_DEFS, KEYED_PROVIDER_DEFS } from "../../pi-session/provider-defs";
 import { ACCOUNT_PROVIDER_IDS } from "../../../shared/settings-sections";
 import { MODEL_PICKER_SETTING } from "../../../shared/model-vendor";
 import { republishAccountInfo } from "../message-router/handlers/account-info";
 import { folderKey } from "../../workspace-folders/folder-key";
 import { PI_AGENT_DIR } from "../../pi-session/agent-dir";
+import { DAMOCLES_HOME_DIR } from "../../paths";
 import { createFakeRemoteHost } from "../../../__mocks__/fake-remote-host";
 import * as path from "path";
 import type { Disposable } from "../../../platform/disposable";
 import { VSCODE_HOST_CAPABILITIES, type ExtensionToWebviewMessage } from "../../../shared/types/messages";
 import { asClient, bypassAllowed } from "../../client-snapshots";
-import { SUBSCRIPTION_SOURCE } from "../../pi-session/subscription";
+import { SUBSCRIPTION_SOURCE } from "../../pi-session/subscription-source";
 import { initPiLoader } from "../../pi-session/pi-loader";
 
 // auth.json is written and deleted below, so the agent dir must be the temp home's before any test or hook runs
 if (!PI_AGENT_DIR.startsWith(tmpRoot + path.sep)) throw new Error(`${PI_AGENT_DIR} is outside the test's temp home`);
+
+// the runtime watches auth.json from the Damocles data folder, its D10 base
+const AUTH_WATCH = [DAMOCLES_HOME_DIR, "pi/agent/auth.json"] as const;
 
 type Posted = ExtensionToWebviewMessage;
 
@@ -128,7 +132,7 @@ describe("memory judge status in open panels", () => {
 
     fs.mkdirSync(PI_AGENT_DIR, { recursive: true });
     fs.writeFileSync(path.join(PI_AGENT_DIR, "auth.json"), JSON.stringify({ openai: { type: "oauth", access: "a", refresh: "r", expires: 9_999_999_999_999 } }));
-    platform.fileWatchers.watcher(PI_AGENT_DIR, "auth.json").fireChange(path.join(PI_AGENT_DIR, "auth.json"));
+    platform.fileWatchers.watcher(...AUTH_WATCH).fireChange(path.join(PI_AGENT_DIR, "auth.json"));
 
     await vi.waitFor(() => expect(judgeUpdates(posted).at(-1)?.classifierCredentials.openai).toBe("chatgpt-active"));
     expect(posted.some((m) => m.type === "claudeAuthStatusChanged")).toBe(true);
@@ -343,7 +347,7 @@ describe("memory judge status for one account action", () => {
     try {
       expect(await count(async () => {
         fs.writeFileSync(authPath, JSON.stringify({ openrouter: { type: "oauth", access: "a", refresh: "r", expires: 9_999_999_999_999 } }));
-        platform.fileWatchers.watcher(PI_AGENT_DIR, "auth.json").fireChange(authPath);
+        platform.fileWatchers.watcher(...AUTH_WATCH).fireChange(authPath);
         // the watch's debounce
         await new Promise((resolve) => setTimeout(resolve, 300));
       })).toMatchObject({ judges: [expect.anything()], notices: 1, syncs: 1, publishes: [1] });
@@ -374,7 +378,7 @@ describe("account state for one change, by one publisher per audience and row", 
     let held = false;
     const report = (): void => {
       reported++;
-      platform.fileWatchers.watcher(PI_AGENT_DIR, "auth.json").fireChange(authPath);
+      platform.fileWatchers.watcher(...AUTH_WATCH).fireChange(authPath);
     };
     const watcher = fs.watch(PI_AGENT_DIR, (_event, name) => {
       if (name !== "auth.json") return;
@@ -1087,7 +1091,7 @@ describe("account state in panels that have not started", () => {
     addPanel(panels, "p2");
     fs.mkdirSync(PI_AGENT_DIR, { recursive: true });
     fs.writeFileSync(authPath, JSON.stringify({ "github-copilot": { type: "oauth", access: "a", refresh: "r", expires: 9_000 } }));
-    platform.fileWatchers.watcher(PI_AGENT_DIR, "auth.json").fireChange(authPath);
+    platform.fileWatchers.watcher(...AUTH_WATCH).fireChange(authPath);
 
     await vi.waitFor(() => expect(keyStatuses(posted)).toHaveLength(CUSTOM_PROVIDER_DEFS.length));
     expect(keyStatuses(posted).find((status) => status.provider === "github-copilot")).toMatchObject({ signedIn: true, signedInExpiresAt: 9_000, active: "signIn" });
@@ -1113,7 +1117,7 @@ describe("account state in panels that have not started", () => {
     internals._authWatch = (PiRuntime as unknown as { _holdAuthFileWatch: (factory: unknown, dir: string) => Disposable })._holdAuthFileWatch(platform.fileWatchers, PI_AGENT_DIR);
     fs.mkdirSync(PI_AGENT_DIR, { recursive: true });
     fs.writeFileSync(authPath, JSON.stringify({ "github-copilot": { type: "oauth", access: "a", refresh: "r", expires: 9_000 } }));
-    platform.fileWatchers.watcher(PI_AGENT_DIR, "auth.json").fireChange(authPath);
+    platform.fileWatchers.watcher(...AUTH_WATCH).fireChange(authPath);
 
     await vi.waitFor(() => expect(publishes(panels)).toEqual([1, 1]));
     await vi.waitFor(() => expect(keyStatuses(posted).find((status) => status.provider === "github-copilot")).toMatchObject({ signedIn: true }));

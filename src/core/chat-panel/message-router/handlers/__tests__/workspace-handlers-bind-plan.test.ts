@@ -9,7 +9,14 @@ import type { ExtensionToWebviewMessage } from '../../../../../shared/types/mess
 
 const H = vi.hoisted(() => ({ listed: [] as FileResult[], logged: [] as unknown[][] }));
 
-vi.mock('../../../workspace-files', () => ({ listWorkspaceFiles: vi.fn(async () => H.listed) }));
+// As the walk process lists: a time only for a file the listing's timed rule names.
+vi.mock('../../../workspace-files', async () => {
+  const { isTimedFile } = await import('../../../../search-walk');
+  return {
+    listWorkspaceFiles: vi.fn(async (_host: unknown, _folder: string, _signal: AbortSignal, options?: { timed?: Parameters<typeof isTimedFile>[0] }) =>
+      H.listed.map(({ modifiedAt, ...file }) => (options?.timed !== undefined && isTimedFile(options.timed, file.relativePath) ? { ...file, modifiedAt } : file))),
+  };
+});
 vi.mock('../../../../logger', () => ({ log: (...args: unknown[]) => void H.logged.push(args) }));
 
 type Candidates = Extract<ExtensionToWebviewMessage, { type: 'planFileCandidates' }>;
@@ -26,7 +33,7 @@ function workspaceFile(relativePath: string, minutesAgo: number, content = `# ${
   fs.writeFileSync(full, content);
   const when = new Date(Date.now() - minutesAgo * 60_000);
   fs.utimesSync(full, when, when);
-  H.listed.push({ relativePath, isDirectory: false });
+  H.listed.push({ relativePath, isDirectory: false, modifiedAt: fs.statSync(full).mtimeMs });
 }
 
 function fakeSession(sessionId: string | null) {
@@ -37,7 +44,7 @@ function fakeSession(sessionId: string | null) {
   };
 }
 
-function harness(sessionId: string | null = 's1') {
+function harness(sessionId: string | null = 's1', listingSignal: () => AbortSignal = () => new AbortController().signal) {
   const posted: ExtensionToWebviewMessage[] = [];
   const disposables: { dispose(): void }[] = [];
   const panelFolder = { key: folder, fsPath: folder, name: 'ws', label: 'ws', projectScope: true };
@@ -46,7 +53,7 @@ function harness(sessionId: string | null = 's1') {
   const deps = {
     postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => posted.push(message),
     getPanels: () => panels,
-    workspaceManager: { listingSignal: () => new AbortController().signal },
+    workspaceManager: { listingSignal },
     platform,
   } as unknown as Parameters<typeof createWorkspaceHandlers>[0];
   // As the router builds it: a snapshot of the panel at dispatch time.
@@ -172,6 +179,32 @@ describe('requestPlanFileCandidates', () => {
     expect(message.files.map((f) => f.relativePath)).toEqual(['.damocles/plans/new.md', 'src/plans/mid.md', 'docs/plan-old.md']);
     expect(message.files[0]!.modifiedAt).toBe(fs.statSync(path.join(folder, '.damocles/plans/new.md')).mtimeMs);
     expect(message.hasPlan).toBe(false);
+  });
+
+  it('takes each plan\'s time from the walk\'s listing and stats no file itself', async () => {
+    // the listing names a plan Core cannot see, timed by the walk process
+    H.listed.push({ relativePath: 'linked/plans/remote.md', isDirectory: false, modifiedAt: 1234 });
+
+    const message = await harness().list();
+
+    expect(message.files.map((f) => [f.relativePath, f.modifiedAt])).toEqual([['linked/plans/remote.md', 1234]]);
+  });
+
+  it('lists again under the fresh signal when a relist stopped its listing while the panel stays on the folder', async () => {
+    workspaceFile('plans/a.md', 1);
+    const stopped = new AbortController();
+    const signals = [stopped.signal, new AbortController().signal];
+    const h = harness('s1', () => signals.shift() ?? AbortSignal.abort());
+    const { listWorkspaceFiles } = await import('../../../workspace-files');
+    vi.mocked(listWorkspaceFiles).mockImplementationOnce(async () => {
+      stopped.abort();
+      throw new Error('Operation aborted');
+    });
+
+    const message = await h.list();
+
+    expect(message.files.map((f) => f.relativePath)).toEqual(['plans/a.md']);
+    expect(signals).toEqual([]);
   });
 
   it('caps the list at the eight newest', async () => {

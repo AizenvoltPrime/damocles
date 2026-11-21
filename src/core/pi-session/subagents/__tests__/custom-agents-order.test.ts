@@ -47,11 +47,11 @@ afterEach(() => {
 });
 
 describe('loadCustomAgents intra-directory ordering', () => {
-  it('resolves a duplicate name in one directory to the alphabetically last file', () => {
+  it('resolves a duplicate name in one directory to the alphabetically last file', async () => {
     writeAgent('.pi/agents', 'a-first', 'name: Dup\ndescription: from a-first');
     writeAgent('.pi/agents', 'z-last', 'name: Dup\ndescription: from z-last');
 
-    const agents = loadCustomAgents(cwd, parseFrontmatter, {
+    const { agents } = await loadCustomAgents(cwd, parseFrontmatter, {
       includeProjectScope: true,
       homeDir: home,
     });
@@ -59,22 +59,22 @@ describe('loadCustomAgents intra-directory ordering', () => {
     expect(agents.get('Dup')?.filePath).toBe(join(cwd, '.pi/agents', 'z-last.md'));
   });
 
-  it('resolves a duplicate name across sibling subdirectories deterministically', () => {
+  it('resolves a duplicate name across sibling subdirectories deterministically', async () => {
     writeAgent('.pi/agents/aaa', 'one', 'name: Dup\ndescription: from aaa');
     writeAgent('.pi/agents/zzz', 'one', 'name: Dup\ndescription: from zzz');
 
-    const agents = loadCustomAgents(cwd, parseFrontmatter, {
+    const { agents } = await loadCustomAgents(cwd, parseFrontmatter, {
       includeProjectScope: true,
       homeDir: home,
     });
     expect(agents.get('Dup')?.description).toBe('from zzz');
   });
 
-  it('keeps distinct names regardless of enumeration order', () => {
+  it('keeps distinct names regardless of enumeration order', async () => {
     writeAgent('.pi/agents', 'a-first', 'name: Alpha\ndescription: a');
     writeAgent('.pi/agents', 'z-last', 'name: Zulu\ndescription: z');
 
-    const agents = loadCustomAgents(cwd, parseFrontmatter, {
+    const { agents } = await loadCustomAgents(cwd, parseFrontmatter, {
       includeProjectScope: true,
       homeDir: home,
     });

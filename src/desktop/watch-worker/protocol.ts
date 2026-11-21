@@ -3,7 +3,7 @@ import type { RawEventType } from './fs-watch-tree';
 
 /** main → worker. close: stop every watch, wait for the scans still running, then answer closed. */
 export type WatchRequest =
-  | { readonly kind: 'watch'; readonly id: number; readonly dir: string; readonly report: boolean }
+  | { readonly kind: 'watch'; readonly id: number; readonly dir: string; readonly base: string; readonly report: boolean }
   | { readonly kind: 'unwatch'; readonly id: number }
   | { readonly kind: 'close' };
 

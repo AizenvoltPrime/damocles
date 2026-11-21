@@ -9,6 +9,7 @@ import type { McpToolDescriptor } from '../mcp/types';
 import type { ElicitationUI } from '../mcp/elicitation-handler';
 import type { McpToolIdentity } from '../../permission-handler/types';
 import { disabledResourceMatcher, type McpResourceRuleFilter } from '../../permission-handler/mcp-resource-rule';
+import { PermissionRulesUnreadable } from '../../permission-handler/permission-settings';
 import { MCP_RESOURCE_TOOL_NAMES, TOOL_TOOL_SEARCH, type McpResourceToolName } from '../../../shared/tool-names';
 import { NO_RESOURCE_READ, saveMcpOutputToTempFile, transformMcpContent, type ResourceReadReach } from '../mcp/content';
 import { failureForLog } from '../mcp/connect-failure';
@@ -128,7 +129,7 @@ export function buildMcpPiTool(
           details: { isError: true },
         };
       }
-      const reach = result.content.some((block) => block.type === 'resource_link') ? await reachFor(descriptor.serverName) : NO_RESOURCE_READ;
+      const reach = result.content.some((block) => block.type === 'resource_link') ? await readReachAfterCall(reachFor, descriptor.serverName) : NO_RESOURCE_READ;
       const { content, fullOutputPath } = await mcp.limitMcpContent(
         transformMcpContent(result.content, { server: descriptor.serverName, ...reach }),
         saveMcpOutputToTempFile,
@@ -145,6 +146,16 @@ export function buildMcpPiTool(
   });
 
   return abortableTool(tool);
+}
+
+/** How the result's resource links may be read; the call already ran, so rules that cannot be known offer no read and keep the result. */
+async function readReachAfterCall(reachFor: (server: string) => Promise<ResourceReadReach>, server: string): Promise<ResourceReadReach> {
+  try {
+    return await reachFor(server);
+  } catch (err) {
+    if (err instanceof PermissionRulesUnreadable) return NO_RESOURCE_READ;
+    throw err;
+  }
 }
 
 /**

@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const H = vi.hoisted(() => ({
@@ -76,6 +77,64 @@ describe('VS Code watchWorkspace', () => {
     watcher.dispose();
     expect(__watchers.every((w) => w.disposed)).toBe(true);
     expect(H.folderListeners).toEqual([]);
+  });
+});
+
+describe('VS Code watch', () => {
+  // A pattern with `/` or `**` is a recursive watch of its base, so a watch based at the home folder would watch all of it.
+  it('narrows the base to the glob\'s static prefix, as the desktop watcher does', () => {
+    const home = path.resolve('/home/me');
+    const factory = createVsCodeFileWatcherFactory();
+    factory.watch(home, '.claude/agents/**/*.md');
+    factory.watch(home, '.codex/config.toml');
+    factory.watch(home, '{settings.json,settings.local.json}');
+    expect(__watchers.map((w) => w.globPattern)).toEqual([
+      new RelativePattern(vscode.Uri.file(path.join(home, '.claude', 'agents')), '**/*.md'),
+      new RelativePattern(vscode.Uri.file(path.join(home, '.codex')), 'config.toml'),
+      new RelativePattern(vscode.Uri.file(home), '{settings.json,settings.local.json}'),
+    ]);
+  });
+
+  // VS Code's watcher would open the root, so one a link below the base carries off the base's share is never watched (D10).
+  it('refuses a root the check refuses from its base: no VS Code watcher, one that fires nothing, logged once per base and root', async () => {
+    const home = path.resolve('/home/me');
+    const agents = path.join(home, '.claude', 'agents');
+    const judged: Array<[string, string]> = [];
+    const lines: string[] = [];
+    const factory = createVsCodeFileWatcherFactory({
+      checkRoot: (base, root) => {
+        judged.push([base, root]);
+        return root === agents ? { refused: 'share' } : 'ok';
+      },
+      log: (line) => lines.push(line),
+    });
+    const refused = factory.watch(home, '.claude/agents/**/*.md');
+    const again = factory.watch(home, '.claude/agents/*');
+    factory.watch(home, '.claude/settings.json');
+
+    expect(judged).toEqual([[home, agents], [home, agents], [home, path.join(home, '.claude')]]);
+    expect(__watchers.map((w) => w.globPattern)).toEqual([new RelativePattern(vscode.Uri.file(path.join(home, '.claude')), 'settings.json')]);
+    await refused.ready;
+    refused.onDidCreate(() => undefined).dispose();
+    refused.dispose();
+    again.dispose();
+    expect(lines).toEqual([`[watcher] ${agents} is not watched: a link below ${home} leads onto a network share, WSL or device path off its share`]);
+  });
+
+  it('refuses a root whose check fails, a link loop, and logs why once', () => {
+    const home = path.resolve('/home/me');
+    const lines: string[] = [];
+    const factory = createVsCodeFileWatcherFactory({
+      checkRoot: () => {
+        throw Object.assign(new Error('The path under /home/me goes through too many links.'), { code: 'ELOOP' });
+      },
+      log: (line) => lines.push(line),
+    });
+    factory.watch(home, '.claude/agents/**/*.md');
+    factory.watch(home, '.claude/agents/**/*.md');
+
+    expect(__watchers).toEqual([]);
+    expect(lines).toEqual([`[watcher] ${path.join(home, '.claude', 'agents')} is not watched: the network rule's check of the links below ${home} failed: The path under /home/me goes through too many links.`]);
   });
 });
 

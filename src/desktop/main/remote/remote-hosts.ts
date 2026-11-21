@@ -1,5 +1,6 @@
 import { folderKeyOn } from '../../../core/workspace-folders/folder-key';
-import { pathFor, projectKeyOf } from '../../../shared/project-location';
+import { isAbsoluteOn, pathFor, projectKeyOf } from '../../../shared/project-location';
+import { isRelativeFilePath } from '../../../shared/relative-path';
 import {
   CLOCK_SKEW_WARN_MS,
   MAX_DEVICE_NAME_LENGTH,
@@ -198,6 +199,11 @@ export function pickable(name: string, extensions: readonly string[] | undefined
 interface Located {
   readonly project: Project;
   readonly relativePath: string;
+}
+
+// A located path as Files names it: its root joined with the relative path in the host's path flavour, any link on it kept.
+function pathThrough(os: NodeJS.Platform, located: Located): string {
+  return located.relativePath === '' ? located.project.fsPath : pathFor({ os }).join(located.project.fsPath, ...located.relativePath.split('/'));
 }
 
 // A host's run of one operation: the state its snapshot shows, and the call a second start joins while it runs.
@@ -1241,8 +1247,9 @@ export class RemoteHosts implements ConnectActions {
 
   /**
    * A remote core's file or folder picker: the Connect dialog's folder browser alone, over the authority's workspace and
-   * confined to its projects and their live chat worktrees. Resolves the picked target path, confined again on the host, or
-   * undefined on cancel or for a path no root holds.
+   * confined to its projects and their live chat worktrees through links (throughLinks), as Files is. Resolves the picked path
+   * as Files names it, through any link on it, once the host confined it again, or undefined on cancel or for a path no root
+   * holds.
    */
   async pick(authority: string, mode: 'file' | 'folder', options: PickOptions): Promise<string | undefined> {
     const overlay = this.deps.overlay();
@@ -1450,14 +1457,26 @@ export class RemoteHosts implements ConnectActions {
     this.deps.writeClipboard(command);
   }
 
-  // A path inside one of the picker's roots, the deepest holding it; undefined outside them all.
+  // A path inside one of the picker's roots, the deepest holding it as written, so a path through a link keeps its link as
+  // Files names it (the host's throughLinks confinement judges it); else by the host's canonical path, for another spelling of
+  // a root; undefined outside them all.
   private async locate(authority: string, roots: readonly Project[], target: string): Promise<Located | undefined> {
     const connection = this.deps.connection(authority);
     const workspace = this.deps.workspace(authority);
     if (!connection || !workspace) return undefined;
-    const key = folderKeyOn(connection.facts.os, target);
-    const root = roots.find((candidate) => folderKeyOn(connection.facts.os, candidate.fsPath) === key);
-    if (root) return { project: root, relativePath: '' };
+    const { os } = connection.facts;
+    if (!isAbsoluteOn({ os }, target)) return undefined;
+    const flavor = pathFor({ os });
+    let written: Located | undefined;
+    for (const root of roots) {
+      // win32's relative ignores case as folderKeyOn does, and keeps the target's own spelling
+      const relative = flavor.relative(root.fsPath, target);
+      if (relative === '..' || relative.startsWith(`..${flavor.sep}`) || flavor.isAbsolute(relative)) continue;
+      if (written && written.project.fsPath.length >= root.fsPath.length) continue;
+      const below = relative.split(flavor.sep).join('/');
+      if (below === '' || isRelativeFilePath(below)) written = { project: root, relativePath: below };
+    }
+    if (written) return written;
     const found = await workspace.files.projectOfPath(roots, target);
     return found && { project: found.project, relativePath: found.relativePath };
   }
@@ -1467,7 +1486,7 @@ export class RemoteHosts implements ConnectActions {
     const first: Located = { project: roots[0]!, relativePath: '' };
     const located = defaultPath === undefined ? undefined : await this.locate(authority, roots, defaultPath);
     if (!located) return first;
-    const confined = await workspace.files.confineExisting(located.project, located.relativePath);
+    const confined = await workspace.files.confineExisting(located.project, located.relativePath, 'throughLinks');
     if (!confined.ok) return first;
     if (await workspace.files.isDirectory(confined.path)) return located;
     const slash = located.relativePath.lastIndexOf('/');
@@ -1482,10 +1501,10 @@ export class RemoteHosts implements ConnectActions {
     const located = folder === undefined ? pick.start : await this.locate(pick.authority, pick.roots, folder);
     if (!located) return { ok: false, error: 'outside' };
     const listed = await workspace.tree.list(located.project, located.relativePath, []);
-    if (!listed.ok) return { ok: false, error: listed.reason };
+    if (!listed.ok) return listed.refusal !== undefined ? { ok: false, error: 'outside', refusal: listed.refusal } : { ok: false, error: listed.reason };
     const flavor = pathFor({ os: connection.facts.os });
     const root = located.project.fsPath;
-    const at = located.relativePath === '' ? root : flavor.join(root, ...located.relativePath.split('/'));
+    const at = pathThrough(connection.facts.os, located);
     const names = (kind: 'file' | 'dir'): string[] => listed.entries.filter((entry) => entry.kind === kind).map((entry) => entry.name).sort((a, b) => a.localeCompare(b));
     return {
       ok: true,
@@ -1500,17 +1519,19 @@ export class RemoteHosts implements ConnectActions {
   }
 
   // The picked path, confined again on the host and of the picker's kind; anything else is refused.
+  // Answered through any link on it, as Files names the file, so a remote core finds it in its project.
   private async picked(pick: OpenPick, target: string): Promise<string | undefined> {
     const workspace = this.deps.workspace(pick.authority);
+    const os = this.deps.connection(pick.authority)?.facts.os;
     const located = await this.locate(pick.authority, pick.roots, target);
-    const confined = located && workspace ? await workspace.files.confineExisting(located.project, located.relativePath) : undefined;
+    const confined = located && workspace ? await workspace.files.confineExisting(located.project, located.relativePath, 'throughLinks') : undefined;
     // the name the listing filtered by, never the whole path, whose folders may hold a dot
     const fits = pick.mode === 'folder' || pickable(located?.relativePath.split('/').at(-1) ?? '', pick.extensions);
-    if (!workspace || !confined?.ok || !fits || (await workspace.files.isDirectory(confined.path)) !== (pick.mode === 'folder')) {
+    if (!workspace || os === undefined || !located || !confined?.ok || !fits || (await workspace.files.isDirectory(confined.path)) !== (pick.mode === 'folder')) {
       this.deps.log(`[remote] refused the picked path: not a ${pick.mode} inside the projects of ${pick.authority}`);
       return undefined;
     }
-    return confined.path;
+    return pathThrough(os, located);
   }
 
   private connectWatched(hostId: string): string {

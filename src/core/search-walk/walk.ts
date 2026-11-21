@@ -1,14 +1,18 @@
 import { promises as fs, type Dirent } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
-import { networkHostsOf, networkReach, type Reach } from '../local-links';
+import type { WalkIgnore } from '../../shared/walk-ignore';
+import { exact, followsLocalLinksOnly, networkHostsOf, networkReach, type Reach } from '../local-links';
+import { isInsideRealRoot } from '../workspace-folders/real-root';
 import { candidateOf, ignoreFileRules, textLines, matchOverrides, matchRules, NO_RULES, pathBytes, type IgnoreMatch, type IgnoreRules } from './rg-ignore';
 
 /**
- * rg 15's walk with `--hidden` and no `--follow` (docs/invariants.md "Tool overrides"). Every entry's type comes from its folder's
- * listing: a link is never listed, entered, stat'd or opened, and only a regular file is listed. Ignore files are read as rg reads
- * them, unless they are links.
+ * rg 15's walk with `--hidden`, and `--follow` only under followLinks (docs/invariants.md "Tool overrides"). Every entry's type
+ * comes from its folder's listing: without followLinks a link is never listed, entered, stat'd or opened, and only a regular file
+ * is listed. Ignore files are read as rg reads them, unless they are links.
  */
+
+export type { WalkIgnore };
 
 /** A `.git` file's pointer that leads off this computer (`networkReach`), as the file spells it. */
 export interface PointerReach {
@@ -71,18 +75,26 @@ interface Ancestor {
   readonly below: string;
 }
 
-/** rg's ignore switches; the `--glob` overrides apply under every one. */
-export interface WalkIgnore {
-  // false is `--no-ignore`: no ignore file of any kind, above the root or below it, and no global excludes
-  readonly files: boolean;
-  // false is `--no-ignore-global`: no global excludes
-  readonly global: boolean;
-  // false is `--no-ignore-parent`: no rules from the folders above the root, which still mark a repository
-  readonly parents: boolean;
-}
-
 /** rg's defaults, every ignore file read. */
 export const ALL_IGNORE_FILES: WalkIgnore = { files: true, global: true, parents: true };
+
+/** Files whose modified time a walk returns: those ending in `extension` under a `folder` segment or with `word` as a word of the name. */
+export interface TimedFiles {
+  readonly extension: string;
+  readonly folder: string;
+  readonly word: string;
+}
+
+/** Whether rel, '/'-separated, is a file timed names, compared case-blind; a name's words split at non-letters and at camelCase humps. */
+export function isTimedFile(timed: TimedFiles, rel: string): boolean {
+  const segments = rel.split('/');
+  const name = segments.pop() ?? '';
+  const extension = timed.extension.toLowerCase();
+  if (!name.toLowerCase().endsWith(extension)) return false;
+  if (segments.some((segment) => segment.toLowerCase() === timed.folder.toLowerCase())) return true;
+  const words = name.slice(0, -extension.length).split(/[^A-Za-z]+|(?<=[a-z])(?=[A-Z])/);
+  return words.some((word) => word.toLowerCase() === timed.word.toLowerCase());
+}
 
 export interface WalkOptions {
   readonly root: string;
@@ -94,13 +106,23 @@ export interface WalkOptions {
   readonly overrides: IgnoreRules & { readonly includes: boolean };
   readonly allowedHosts: () => Promise<ReadonlySet<string>>;
   readonly signal: AbortSignal | undefined;
+  // follows a link whose every reading stays off other UNC, WSL and device roots (followsLocalLinksOnly of its path from root,
+  // which its stat and realpath then name, as ripgrep later opens it), lists a file by that path, and enters a folder through a
+  // link at most once per realpath, and none it entered already; a link re-pointed after its check is followed
+  readonly followLinks?: true;
+  // the files whose modified time Walk.modified returns, each stat'ed once
+  readonly timed?: TimedFiles;
+  // under followLinks, folders whose realpath (the walk's) holds no file the walk lists through a link
+  readonly skipRealUnder?: readonly string[];
 }
 
 export interface Walk {
   // each folder's listed files, one batch per folder, empty when it lists none: paths below the root, with the platform's separators
   readonly files: AsyncGenerator<readonly string[], void, undefined>;
-  // a folder below the root that could not be read, as rg reports one: the walk goes on
+  // a folder, or a timed file, below the root that could not be read, as rg reports one: the walk goes on
   readonly errors: string[];
+  // under WalkOptions.timed, each such listed file's modified time in ms by its listed path, set before its folder's batch
+  readonly modified: Map<string, number>;
   // folders read ahead whose reads have not settled; a walk left early or ended by a failure leaves them running
   readonly readsAhead: () => number;
   // settles once every folder read ahead so far has been read
@@ -109,6 +131,8 @@ export interface Walk {
 
 // Folders read ahead of the one being listed; libuv's pool runs four file system calls at once.
 const READ_AHEAD = 8;
+// Links of one folder checked at once under followLinks.
+const LINK_CHECKS = 8;
 
 function aborted(): Error {
   return new Error('Operation aborted');
@@ -257,15 +281,52 @@ function matcher(options: WalkOptions, global: IgnoreRules): (rel: string, isDir
   };
 }
 
+// What a followed link leads to: a regular file with the modified time its stat gave, or a folder by its realpath.
+type LinkTarget = { readonly kind: 'file'; readonly modifiedAt: number } | { readonly kind: 'folder'; readonly real: string };
+
+const NO_LINKS: ReadonlyMap<string, LinkTarget> = new Map();
+
+// Promise.all rejects while the rest still run, which no released then waits for: this settles all, then throws the first failure.
+async function settleAll<T>(work: ReadonlyArray<Promise<T>>): Promise<T[]> {
+  const results = await Promise.allSettled(work);
+  const failed = results.find((result) => result.status === 'rejected');
+  if (failed !== undefined) throw failed.reason;
+  return results.map((result) => (result as PromiseFulfilledResult<T>).value);
+}
+
+// The realpaths of folders, a missing one left out.
+async function realpathsOf(folders: readonly string[]): Promise<string[]> {
+  const reals = await settleAll(folders.map(async (folder) => {
+    try {
+      return await fs.realpath(folder);
+    } catch (err) {
+      const code = errnoCode(err);
+      if (code === 'ENOENT' || code === 'ENOTDIR') return undefined;
+      throw err;
+    }
+  }));
+  return reals.filter((real) => real !== undefined);
+}
+
 interface Listing {
   readonly folder: Folder;
   readonly entries: readonly Dirent[];
+  // the path the folder was read at: below a followed link, from the link's realpath, so no read follows the link again
+  readonly abs: string;
+  // under followLinks, the folder's realpath
+  readonly real: string | undefined;
+  // reached through a followed link
+  readonly linked: boolean;
+  // under followLinks, the target of each entry that is a link the walk follows, by name
+  readonly links: ReadonlyMap<string, LinkTarget>;
 }
 
 interface Pending {
   readonly abs: string;
   readonly rel: string;
   readonly parent: Folder;
+  readonly real: string | undefined;
+  readonly linked: boolean;
   // a read ahead settles to its failure, which the walk throws when it reaches the folder, so an abandoned one rejects nothing
   listing?: Promise<Listing | Error | { readonly failed: unknown }>;
 }
@@ -273,14 +334,73 @@ interface Pending {
 /** Walks options.root, a folder, listing the regular files rg 15 would search there, folders read ahead and in listing order. */
 export function walkFiles(options: WalkOptions): Walk {
   const errors: string[] = [];
+  const modified = new Map<string, number>();
   const ahead = new Set<Promise<unknown>>();
   async function* files(): AsyncGenerator<readonly string[], void, undefined> {
-    const { root, signal, ignore } = options;
+    const { root, signal, ignore, followLinks, timed } = options;
     const [entries, canonicalRoot, global] = await Promise.all([fs.readdir(root, { withFileTypes: true }), fs.realpath(root), ignore.files && ignore.global ? globalExcludes() : NO_RULES]);
     const ancestors = ignore.files ? await ancestorsOf(canonicalRoot, options, root) : [];
     const rootRules = await folderRules(root, entries, options, root, false);
     const top = topFolder(rootRules, ancestors, options.requireGit);
     const matched = matcher(options, global);
+    const skipReal = followLinks && options.skipRealUnder !== undefined ? await realpathsOf(options.skipRealUnder) : [];
+    const skipped = (real: string): boolean => skipReal.some((folder) => isInsideRealRoot(folder, real));
+    // under followLinks, the exact realpath of every folder entered; a link to one of them (a loop, or a second path) is not entered
+    const entered = new Set<string>();
+    const relOf = (folder: Folder, name: string): string => (folder.rel === '' ? name : `${folder.rel}/${name}`);
+    // The network check runs before any call names the link's target; a missing target and a loop are left out silently.
+    const linkTarget = async (rel: string, folder: Folder): Promise<LinkTarget | undefined> => {
+      if (matched(rel, false, folder) === 'ignore' && matched(rel, true, folder) === 'ignore') return undefined;
+      const segments = rel.split('/');
+      // the path the check judges, through each link from the root, as ripgrep later opens it
+      const through = path.join(root, ...segments);
+      try {
+        if (!(await followsLocalLinksOnly(root, segments))) return undefined;
+        const stats = await fs.stat(through);
+        if (stats.isFile()) {
+          if (matched(rel, false, folder) === 'ignore') return undefined;
+          return skipReal.length > 0 && skipped(await fs.realpath(through)) ? undefined : { kind: 'file', modifiedAt: stats.mtimeMs };
+        }
+        if (!stats.isDirectory() || matched(rel, true, folder) === 'ignore') return undefined;
+        return { kind: 'folder', real: await fs.realpath(through) };
+      } catch (err) {
+        const code = errnoCode(err);
+        if (code === undefined) throw err;
+        if (code !== 'ENOENT' && code !== 'ENOTDIR' && code !== 'ELOOP') errors.push(`${rel.replaceAll('/', path.sep)}: ${(err as Error).message}`);
+        return undefined;
+      }
+    };
+    // a timed file gone since its folder's listing has no time
+    const timeOf = async (file: string, listedAs: string): Promise<void> => {
+      try {
+        modified.set(listedAs, (await fs.stat(file)).mtimeMs);
+      } catch (err) {
+        const code = errnoCode(err);
+        if (code === undefined) throw err;
+        if (code !== 'ENOENT' && code !== 'ENOTDIR') errors.push(`${listedAs}: ${(err as Error).message}`);
+      }
+    };
+    const linksOf = async (folder: Folder, listed: readonly Dirent[]): Promise<ReadonlyMap<string, LinkTarget>> => {
+      // a .git that is a link marks a repository and is never read through
+      const links = followLinks ? listed.filter((entry) => entry.isSymbolicLink() && entry.name !== '.git') : [];
+      if (links.length === 0) return NO_LINKS;
+      const found = new Map<string, LinkTarget>();
+      let next = 0;
+      let failed = false;
+      // at most LINK_CHECKS at once, none started after an abort or a failed check, so the walk's released waits on few
+      const check = async (): Promise<void> => {
+        for (let index = next++; index < links.length && !signal?.aborted && !failed; index = next++) {
+          const entry = links[index]!;
+          const target = await linkTarget(relOf(folder, entry.name), folder).catch((err: unknown) => {
+            failed = true;
+            throw err;
+          });
+          if (target !== undefined) found.set(entry.name, target);
+        }
+      };
+      await settleAll(Array.from({ length: Math.min(LINK_CHECKS, links.length) }, check));
+      return found;
+    };
     const read = async (pending: Pending): Promise<Listing | Error> => {
       let listed: Dirent[];
       try {
@@ -290,7 +410,12 @@ export function walkFiles(options: WalkOptions): Walk {
         return err as Error;
       }
       const rules = await folderRules(pending.abs, listed, options, root, false);
-      return { folder: childFolder(pending.parent, pending.rel, rules), entries: listed };
+      const folder = childFolder(pending.parent, pending.rel, rules);
+      return { folder, entries: listed, abs: pending.abs, real: pending.real, linked: pending.linked, links: await linksOf(folder, listed) };
+    };
+    const pend = (abs: string, rel: string, parent: Folder, real: string | undefined, linked: boolean): Pending => {
+      if (real !== undefined) entered.add(exact(real));
+      return { abs, rel, parent, real, linked };
     };
     const stack: Pending[] = [];
     const readAhead = (): void => {
@@ -303,20 +428,38 @@ export function walkFiles(options: WalkOptions): Walk {
         void listing.then(() => ahead.delete(listing));
       }
     };
-    let current: Listing = { folder: top, entries };
+    const rootReal = followLinks ? canonicalRoot : undefined;
+    if (rootReal !== undefined) entered.add(exact(rootReal));
+    let current: Listing = { folder: top, entries, abs: root, real: rootReal, linked: false, links: await linksOf(top, entries) };
     for (;;) {
       if (signal?.aborted) throw aborted();
-      const { folder } = current;
+      const { folder, abs, real, linked: throughLink, links } = current;
       const folders: Pending[] = [];
+      const linkedFolders: Array<{ readonly rel: string; readonly real: string }> = [];
       const listed: string[] = [];
+      const timing: Array<Promise<void>> = [];
       for (const entry of current.entries) {
-        const rel = folder.rel === '' ? entry.name : `${folder.rel}/${entry.name}`;
+        const rel = relOf(folder, entry.name);
+        const linked = links.get(entry.name);
         if (entry.isDirectory()) {
-          if ((entry.name !== '.git' || options.gitFolders === 'list') && matched(rel, true, folder) !== 'ignore') folders.push({ abs: path.join(root, rel), rel, parent: folder });
-        } else if (entry.isFile() && matched(rel, false, folder) !== 'ignore') {
-          listed.push(path.sep === '/' ? rel : rel.replaceAll('/', path.sep));
+          if ((entry.name !== '.git' || options.gitFolders === 'list') && matched(rel, true, folder) !== 'ignore') folders.push(pend(path.join(abs, entry.name), rel, folder, real === undefined ? undefined : path.join(real, entry.name), throughLink));
+        } else if (linked?.kind === 'folder') {
+          linkedFolders.push({ rel, real: linked.real });
+        } else if ((entry.isFile() || linked?.kind === 'file') && matched(rel, false, folder) !== 'ignore') {
+          // below a followed link a file's realpath is its folder's and its name
+          if (throughLink && real !== undefined && entry.isFile() && skipped(path.join(real, entry.name))) continue;
+          const file = path.sep === '/' ? rel : rel.replaceAll('/', path.sep);
+          listed.push(file);
+          if (timed === undefined || !isTimedFile(timed, rel)) continue;
+          if (linked?.kind === 'file') modified.set(file, linked.modifiedAt);
+          else timing.push(timeOf(path.join(abs, entry.name), file));
         }
       }
+      // after the listing's own folders, so a link to a sibling is the repeat, never the sibling itself
+      for (const { rel, real: target } of linkedFolders) {
+        if (!entered.has(exact(target))) folders.push(pend(target, rel, folder, target, true));
+      }
+      await settleAll(timing);
       stack.push(...folders.reverse());
       // the reads run while the caller takes the batch
       readAhead();
@@ -333,7 +476,7 @@ export function walkFiles(options: WalkOptions): Walk {
       current = next;
     }
   }
-  return { files: files(), errors, readsAhead: () => ahead.size, readsSettled: () => Promise.all(ahead).then(() => undefined) };
+  return { files: files(), errors, modified, readsAhead: () => ahead.size, readsSettled: () => Promise.all(ahead).then(() => undefined) };
 }
 
 /** The allowed hosts of a walk no chat runs: the root's own, so a project on a share reads its share and no other host. */

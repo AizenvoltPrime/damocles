@@ -9,14 +9,14 @@ import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../shared/types/messages';
 import { pathFor } from '../../shared/project-location';
 import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import type { FileBytes } from '../../core/file-bytes';
-import type { Confined, Project } from '../local-services/confine';
+import type { Confined, LinkRule, Project } from '../local-services/confine';
 import type { OutsideRefusal, OutsideResolution } from '../workspace/file-system';
 import { isRemoteForm, joinPosition } from '../cli/args';
 import { CommandLineRefusal, MAX_CLI_MESSAGE_CHARS, parseCommandLine, WAIT_MARKER_NAME, type CliCommandLine, type CliOpenItem, type CliRelay, type CliRelayAnswer, type CliRequest } from '../cli/cli-protocol';
 import { decodeDocument } from './platform/editor-document';
-import { RefusedPathError } from './documents/document-service';
+import { confirmsConfined, RefusedPathError } from './documents/document-service';
 import { OutsideFilesUnsupportedError } from './workspace/remote-workspace';
-import type { RootSpellings } from './workspace/root-spellings';
+import type { RootSpellings, SpellingMatch } from './workspace/root-spellings';
 import { authorityKeyOfHost, destinationLabel, normalizeHostName, type HostRecord, type SshHostRecord, type WslHostRecord } from './remote/host-store';
 
 export type PatchContent = { readonly kind: 'patch'; readonly patch: string } | { readonly kind: 'binary' } | { readonly kind: 'tooLarge' };
@@ -51,10 +51,10 @@ export interface CliRequestsDeps {
   // a target's name; this computer's messages have their own wording
   readonly hostName: (authorityKey: string) => string;
   readonly isDirectory: (authorityKey: string, folder: string) => Promise<boolean>;
-  // an existing file's real path inside its project, every link followed, or why it has none
-  readonly confineExisting: (authorityKey: string, project: Project, relativePath: string) => Promise<Confined>;
-  // a missing file's path inside its project: its deepest existing folder confined, plus the missing segments
-  readonly confineMissing: (authorityKey: string, project: Project, relativePath: string) => Promise<Confined>;
+  // an existing file's real path by its project's confinement under rule, or why it has none
+  readonly confineExisting: (authorityKey: string, project: Project, relativePath: string, rule: LinkRule) => Promise<Confined>;
+  // a missing file's path by its project: its deepest existing folder confined under rule, plus the missing segments
+  readonly confineMissing: (authorityKey: string, project: Project, relativePath: string, rule: LinkRule) => Promise<Confined>;
   readonly read: (authorityKey: string, file: string) => Promise<FileBytes>;
   // a path outside every project by the authority's own rules (WorkspaceFileSystem.resolveOutside, readOutside); a host's
   // throws OutsideFilesUnsupportedError for a daemon without files.outside
@@ -350,15 +350,16 @@ export class CliRequests {
 
   // What a path that is no folder names on its authority before anything opens, decided as DocumentService.openNamedPath
   // decides it, so a path the open would refuse opens nothing: a path a project holds in any spelling by that project's
-  // confinement, any other by the outside rule, which checks it before any file call. A project path a link leads out of, or
-  // one a remapped drive no longer holds, is the outside rule's. failed: its project could not resolve it.
+  // confinement through links, any other by the outside rule, which checks it before any file call. A project path its project
+  // refuses (a link to a share, an older daemon's link out of it) or one a remapped drive no longer holds is the outside
+  // rule's. failed: its project could not resolve it.
   private async fileState(authorityKey: string, target: string): Promise<'file' | 'missing' | 'other' | 'failed' | { readonly refused: OutsideRefusal }> {
     const os = this.deps.os(authorityKey);
     const held = await this.deps.spellings.match({ authority: authorityKey, os }, this.deps.projects(authorityKey), target);
     if (held) {
-      const existing = await this.deps.confineExisting(authorityKey, held.root, held.relativePath);
-      const confined = !existing.ok && existing.reason === 'missing' ? await this.deps.confineMissing(authorityKey, held.root, held.relativePath) : existing;
-      if (confined.ok && this.deps.spellings.confirms(held, confined.path)) return existing.ok ? 'file' : 'missing';
+      const existing = await this.deps.confineExisting(authorityKey, held.root, held.relativePath, 'throughLinks');
+      const confined = !existing.ok && existing.reason === 'missing' ? await this.deps.confineMissing(authorityKey, held.root, held.relativePath, 'throughLinks') : existing;
+      if (confined.ok && (await this.confirms(authorityKey, held, confined))) return existing.ok ? 'file' : 'missing';
       if (!confined.ok && confined.reason === 'failed') return 'failed';
     }
     const resolved = await this.deps.resolveOutside(authorityKey, target);
@@ -384,8 +385,8 @@ export class CliRequests {
     const { t } = this.deps;
     const held = await this.deps.spellings.match({ authority: authorityKey, os: this.deps.os(authorityKey) }, this.deps.projects(authorityKey), target);
     if (held) {
-      const confined = await this.deps.confineExisting(authorityKey, held.root, held.relativePath);
-      if (confined.ok && this.deps.spellings.confirms(held, confined.path)) return this.deps.read(authorityKey, confined.path);
+      const confined = await this.deps.confineExisting(authorityKey, held.root, held.relativePath, 'throughLinks');
+      if (confined.ok && (await this.confirms(authorityKey, held, confined))) return this.deps.read(authorityKey, confined.path);
       if (!confined.ok && confined.reason === 'missing') throw new CliRefusal(t('damocles: {0} does not exist.', target));
       if (!confined.ok && confined.reason === 'failed') throw new CliRefusal(t('damocles: {0} could not be opened.', target));
     }
@@ -405,9 +406,13 @@ export class CliRequests {
     const os = this.deps.os(authorityKey);
     const held = await this.deps.spellings.match({ authority: authorityKey, os }, this.deps.projects(authorityKey), realPath);
     if (!held) return undefined;
-    const confined = state === 'existing' ? await this.deps.confineExisting(authorityKey, held.root, held.relativePath) : await this.deps.confineMissing(authorityKey, held.root, held.relativePath);
-    if (!confined.ok || !this.deps.spellings.confirms(held, confined.path)) return undefined;
+    const confined = state === 'existing' ? await this.deps.confineExisting(authorityKey, held.root, held.relativePath, 'throughLinks') : await this.deps.confineMissing(authorityKey, held.root, held.relativePath, 'throughLinks');
+    if (!confined.ok || !(await this.confirms(authorityKey, held, confined))) return undefined;
     return state === 'missing' || folderKeyOn(os, confined.path) === folderKeyOn(os, realPath) ? confined.path : undefined;
+  }
+
+  private confirms(authorityKey: string, held: SpellingMatch<Project>, confined: Extract<Confined, { readonly ok: true }>): Promise<boolean> {
+    return confirmsConfined(this.deps.spellings, held, confined, () => this.deps.confineExisting(authorityKey, held.root, '', 'withinProject'));
   }
 
   private async diff(authorityKey: string, left: string, right: string): Promise<Opened> {

@@ -7,9 +7,26 @@ import { pathToFileURL } from 'node:url';
 import * as lockfile from 'proper-lockfile';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installLogSink } from '../../logger';
+import { installFakePlatform } from '../../../__mocks__/fake-platform';
+
+// Files the link policy refuses, as it does on Windows for one linked onto another share; any other file it judges itself.
+const refused = vi.hoisted(() => new Set<string>());
+vi.mock('../../config/local-config-path', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../config/local-config-path')>();
+  return {
+    ...actual,
+    configLinkPolicy: (bases: readonly string[]) => {
+      const judged = actual.configLinkPolicy(bases);
+      return (file: string): boolean => !refused.has(file) && judged(file);
+    },
+  };
+});
+
 import { readAuthFile } from '../auth-file';
 import { readClaudeAuthFromDisk } from '../subscription';
+import { SUBSCRIPTION_SOURCE } from '../subscription-source';
 import { readOpenAIAuthFromDisk } from '../openai-auth';
+import { readProviderSignIns } from '../provider-auth';
 
 // pi's `exports` map has no require condition, so the package dir is found by Node's lookup paths instead.
 const piDir = createRequire(__filename).resolve.paths('@earendil-works/pi-coding-agent')!
@@ -24,6 +41,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  refused.clear();
   fs.rmSync(agentDir, { recursive: true, force: true, maxRetries: 3 });
 });
 
@@ -96,6 +114,30 @@ describe('readAuthFile', () => {
     expect(() => readAuthFile(agentDir)).toThrow(SyntaxError);
     expect(readClaudeAuthFromDisk(agentDir)).toEqual({ mode: 'none' });
     expect(readOpenAIAuthFromDisk(agentDir)).toEqual({ chatgpt: false, codex: false, storedApiKey: false });
+  });
+
+  it('reads no file pi\'s link policy refuses, which the status readers show as signed out, and tells the user once', () => {
+    const fake = installFakePlatform();
+    fs.writeFileSync(authPath(), '{"anthropic":{"type":"api_key"},"openai":{"type":"api_key"},"minimax":{"type":"oauth"}}');
+    refused.add(authPath());
+    expect(() => readAuthFile(agentDir)).toThrow(expect.objectContaining({ name: 'ConfigReadRefused', code: 'ELINKPOLICY', file: authPath() }));
+    // the file holds two API keys and a sign-in, so any reader that read it would show the user signed in
+    expect(readClaudeAuthFromDisk(agentDir)).toEqual({ mode: 'none' });
+    expect(readOpenAIAuthFromDisk(agentDir)).toEqual({ chatgpt: false, codex: false, storedApiKey: false });
+    expect(readProviderSignIns(agentDir)).toBeUndefined();
+    expect(fake.notifications.calls).toEqual([
+      expect.objectContaining({ level: 'warn', text: { message: '{0} links to a network share or WSL path, so Damocles does not read it.', args: [authPath()] } }),
+    ]);
+  });
+
+  it('lists no subscription plugin from a settings.json pi\'s link policy refuses, as pi loads none from it', () => {
+    installFakePlatform();
+    fs.writeFileSync(authPath(), '{"anthropic":{"type":"oauth"}}');
+    const settings = path.join(agentDir, 'settings.json');
+    fs.writeFileSync(settings, JSON.stringify({ packages: [SUBSCRIPTION_SOURCE] }));
+    expect(readClaudeAuthFromDisk(agentDir)).toEqual({ mode: 'allowance' });
+    refused.add(settings);
+    expect(readClaudeAuthFromDisk(agentDir)).toEqual({ mode: 'extra' });
   });
 
   // A JSON.parse message quotes the text it failed on, and auth.json holds tokens.

@@ -10,7 +10,6 @@ import { LocalizedError, type LocalizedText } from '../../shared/localized-text'
 import {
   type EditorCommand,
   type EditorConflictResult,
-  type EditorOpenResult,
   type EditorSaveResult,
   type EditorSelectionRange,
   type EditorTabAction,
@@ -57,6 +56,7 @@ import {
   isDesktopSettingValue,
 } from '../local-services/desktop-configuration';
 import type { BackupRecord } from './documents/backups';
+import { filesFailureMessage, settleFilesAction, type FilesFailed, type FilesOpenResult } from './files/files-failure';
 import { isDocumentDirty, movedPath, RefusedPathError, uploadMergeLabels, type Document, type DocumentService, type Location, type ShellEdit, type TextDocument } from './documents/document-service';
 import type { FormatTarget } from './formatting/format-service';
 import { DEFAULT_SEARCH_EDITOR_CONFIG, resultLocation } from './search/search-editor-format';
@@ -280,6 +280,14 @@ export interface PersistedEditor {
   readonly recent: readonly FileRef[];
 }
 
+interface UserOpenOptions {
+  readonly line?: number;
+  readonly column?: number;
+  readonly as?: 'preview' | 'source';
+  readonly preserveFocus?: boolean;
+  readonly toSide?: boolean;
+}
+
 // The selected chat's browser pages and design previews, which the pane shows as tabs after its file tabs (D14, PD-33).
 export interface BrowserTabSource {
   tabs(): readonly ShellEditorTab[];
@@ -363,6 +371,8 @@ export interface EditorPaneDeps {
   readonly htmlPreviews: HtmlPreviewSource;
   // a warning toast
   readonly warn: (message: string) => void;
+  // an error toast: a user's open main refused or that failed
+  readonly error: (message: string) => void;
   // a remote authority's host as this computer names it
   readonly hostName: (authority: string) => string;
   // a Search Editor's document left with its last tab
@@ -487,6 +497,8 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   private awaiting: AwaitingRestore[] = [];
   // the saved active tab while it waits, and the tab restore activated instead, which it takes over from when it comes back
   private awaitingActive: { readonly entryId: string; readonly standIn: string | null } | undefined;
+  // the hosts this restore told to update their server (DocumentService.onServerOutdated)
+  private toldUpdateServer = new Set<string>();
   private selection: { readonly documentId: string; readonly range: EditorSelectionRange | null } | undefined;
   private readonly contextListeners = new Set<(context: ActiveEditorContext | undefined) => void>();
   private readonly flushes = new Map<string, () => void>();
@@ -526,6 +538,12 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
           tab.kind = this.kindFor(document, tab.kind);
         }
         this.stateChanged();
+      }),
+      // a placeholder waits for a server that can follow the link on its path: told once per host per restore
+      deps.documents.onServerOutdated((authority) => {
+        if (this.toldUpdateServer.has(authority)) return;
+        this.toldUpdateServer.add(authority);
+        this.deps.warn(this.deps.t('Update the Damocles server on {0} to open links that lead outside the project.', visibleText(this.deps.hostName(authority))));
       }),
     ];
   }
@@ -605,15 +623,24 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
   }
 
   /**
-   * A user's open (Files, Quick Open, a Files drop, Search, a terminal link): confined, activated and focused, unless
-   * preserveFocus (Search's single click); toSide shows the pane beside a maximized part too, since the editor pane is
-   * Damocles' only side group. column places the caret on line, 1-based.
+   * A user's open (Files, Quick Open, a Files drop, Search, the markdown preview, a terminal link): confined through links,
+   * activated and focused, unless preserveFocus (Search's single click); toSide shows the pane beside a maximized part too,
+   * since the editor pane is Damocles' only side group. column places the caret on line, 1-based. A refusal or failure is
+   * one error toast naming the file and the reason (files-failure 'open'), and resolves as that result.
    */
-  async openFromUser(
-    projectKey: string,
-    relativePath: string,
-    opts: { readonly line?: number; readonly column?: number; readonly as?: 'preview' | 'source'; readonly preserveFocus?: boolean; readonly toSide?: boolean } = {},
-  ): Promise<EditorOpenResult> {
+  openFromUser(projectKey: string, relativePath: string, opts: UserOpenOptions = {}): Promise<FilesOpenResult | FilesFailed> {
+    return this.reportedOpen(projectKey, relativePath, () => this.openUserFile(projectKey, relativePath, opts));
+  }
+
+  private async reportedOpen(projectKey: string | undefined, relativePath: string, open: () => Promise<FilesOpenResult>): Promise<FilesOpenResult | FilesFailed> {
+    const result = await settleFilesAction(open, this.deps.log, this.deps.render);
+    const authority = projectKey === undefined ? 'local' : authorityKeyOfProject(projectKey);
+    const message = filesFailureMessage(this.deps.t, this.deps.render, 'open', path.posix.basename(relativePath), () => this.deps.hostName(authority), result);
+    if (message !== undefined) this.deps.error(message);
+    return result;
+  }
+
+  private async openUserFile(projectKey: string, relativePath: string, opts: UserOpenOptions): Promise<FilesOpenResult> {
     if (opts.as === 'preview' && isHtmlPath(relativePath)) {
       if (this.liveProjectKey(projectKey) === undefined || !isServablePreviewPath(relativePath)) return { ok: false, reason: 'outside' };
       const preview = this.showHtmlPreview({ projectKey, relativePath });
@@ -671,16 +698,8 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     const projectKey = document.searchEditor.projectKey;
     const location = resultLocation(document.text, line, column);
     if (!location) return { ok: false, reason: 'notResult' };
-    if (projectKey === undefined) return { ok: false, reason: 'outside' };
-    const opened = await this.deps.documents.openProjectFile(projectKey, location.relativePath);
-    if (!opened.ok) return opened;
-    const tab = this.showDocument(opened.document);
-    if (toSide) this.deps.showPaneBeside();
-    this.afterOpen(tab, { focus: true });
-    if (location.kind === 'match') {
-      this.deps.revealLine(tab.id, location.line, { startLine: location.line, startColumn: location.column, endLine: location.line, endColumn: location.column });
-    }
-    return { ok: true, tabId: tab.id };
+    const at = location.kind === 'match' ? { line: location.line, column: location.column } : {};
+    return this.reportedOpen(projectKey, location.relativePath, async () => (projectKey === undefined ? { ok: false, reason: 'outside' } : this.openUserFile(projectKey, location.relativePath, { ...at, toSide })));
   }
 
   /**
@@ -1325,17 +1344,19 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
         const location = tab.htmlPreview ? this.placeOfFile(tab.htmlPreview) : document?.location;
         if (!location) return;
         const relative = action === 'copyRelativePath' && location.relativePath !== undefined;
-        await this.deps.copy(relative ? location.relativePath!.split('/').join(this.flavorOf(location).sep) : location.path);
+        await this.deps.copy(relative ? location.relativePath!.split('/').join(this.flavorOf(location).sep) : this.openedPath(location));
         return;
       }
       case 'revealInExplorer': {
-        const location = tab.htmlPreview ? this.placeOfFile(tab.htmlPreview) : document?.location;
-        if (!location) return;
-        const shown = revealPathOf(location, this.deps.wslDistro);
-        if (shown === undefined) {
+        const place = tab.htmlPreview ? this.placeOfFile(tab.htmlPreview) : document?.location;
+        if (!place) return;
+        if (revealPathOf(place, this.deps.wslDistro) === undefined) {
           this.deps.warn(this.deps.t('The file is not on this computer.'));
           return;
         }
+        const location = tab.htmlPreview ? await this.previewFileLocation(tab.htmlPreview) : place;
+        const shown = location && revealPathOf(location, this.deps.wslDistro);
+        if (shown === undefined) return;
         // a refusal tells the user itself; a check that could not run rejects
         await this.deps.reveal(shown).catch((err: unknown) => {
           const reason = err instanceof LocalizedError ? this.deps.render(err.text) : err instanceof Error ? err.message : String(err);
@@ -1372,7 +1393,15 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     }
     const document = this.deps.documents.get(documentId);
     if (document?.kind !== 'text') return { ok: false, reason: 'failed' };
-    const disk = this.deps.documents.openMemory(document.name, await this.deps.documents.diskText(documentId), { untitled: false, languageId: document.languageId });
+    let diskText: string;
+    try {
+      diskText = await this.deps.documents.diskText(documentId);
+    } catch (err) {
+      // a settings file's read refuses with the text the user sees (readSettingsFile), as Revert answers it
+      if (document.settingsScope === undefined || !(err instanceof LocalizedError)) throw err;
+      return { ok: false, reason: 'failed', message: this.deps.render(err.text) };
+    }
+    const disk = this.deps.documents.openMemory(document.name, diskText, { untitled: false, languageId: document.languageId });
     const tab = this.openDiffTab((fileName) => this.deps.t('{0} (On disk ↔ Yours)', fileName), disk, document, { documentId: document.id }, { conflictCompare: true });
     this.afterOpen(tab, { focus: true });
     return { ok: true };
@@ -1597,10 +1626,12 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
 
   /**
    * Reopens the persisted tabs and every hot-exit backup. A tab without a backup whose file is gone or no longer confined is
-   * dropped and logged; a backup's text always comes back (restoreBackup). One of a chat worktree whose core has not published
+   * dropped and logged, except one whose host's server cannot follow the link on its path, which waits for one that can
+   * (OfflineDocument.updateServer); a backup's text always comes back (restoreBackup). One of a chat worktree whose core has not published
    * its registry yet waits for it in its saved place (registriesChanged), since only that registry tells whether it is a root.
    */
   async restore(saved: PersistedEditor, backups: readonly BackupRecord[]): Promise<void> {
+    this.toldUpdateServer = new Set();
     const byId = new Map(backups.map((record) => [record.backupId, record]));
     const restored: Array<Tab | AwaitingRestore | undefined> = [];
     const before = (): string[] => restored.flatMap((item) => (item ? [item.id] : []));
@@ -1704,6 +1735,9 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       return this.placeholderTab(this.deps.documents.openOffline(persisted.file, acceptLarge), persisted.kind);
     } else if ('file' in persisted) {
       const opened = await this.deps.documents.openProjectFile(persisted.file.projectKey, persisted.file.relativePath, { acceptLarge });
+      // its host's server cannot follow the link that carries the file out of its project: its placeholder keeps its place
+      // and opens the file once a connection's server can
+      if (!opened.ok && opened.refusal === 'oldDaemon') return this.placeholderTab(this.deps.documents.openOffline(persisted.file, acceptLarge, true), persisted.kind);
       if (!opened.ok) throw new Error(`${persisted.file.relativePath} is ${opened.reason}`);
       document = opened.document;
     } else if ('authority' in persisted && this.deps.documents.awaitsHost({ host: persisted.authority })) {
@@ -1734,7 +1768,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       placed = await this.placeBackup(backup, preferred);
     } catch (err) {
       this.deps.log(`[editor] backup ${backup.backupId} could not be reopened in place: ${err instanceof Error ? err.message : String(err)}`);
-      placed = this.deps.t('It could not be reopened.');
+      placed = err instanceof LocalizedError ? visibleText(this.deps.render(err.text)) : this.deps.t('It could not be reopened.');
     }
     if (typeof placed !== 'string') return placed;
     this.deps.warn(this.deps.t('The unsaved changes to {0} are in an untitled editor: {1}', visibleText(backup.name), placed));
@@ -1780,7 +1814,7 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
       } else {
         const opened = await this.deps.documents.openProjectFile(target.projectKey, target.relativePath, { missing: backup, acceptLarge: true });
         if (!opened.ok) {
-          if (opened.reason === 'outside') return this.deps.t('It is now outside its project.');
+          if (opened.reason === 'outside') return this.deps.documents.outsideReason(opened.refusal, target);
           return opened.reason === 'missing' ? this.deps.t('Its project folder is missing.') : this.deps.t('It cannot be read.');
         }
         document = opened.document;
@@ -1842,9 +1876,30 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     return inProject ? { path: inProject.path, projectKey: inProject.project.key, relativePath: inProject.relativePath } : { path: absolute };
   }
 
+  // A preview's file where a code tab of it reveals it, at its realpath; a refusal or a failure (a host away) is told as Files
+  // tells a failed Reveal.
+  private async previewFileLocation(file: FileRef): Promise<Place | undefined> {
+    const located = await settleFilesAction(async () => {
+      const answer = await this.deps.documents.projectFileLocation(file.projectKey, file.relativePath);
+      return answer.ok ? { ok: true as const, location: answer.location } : answer;
+    }, this.deps.log, this.deps.render);
+    if (located.ok) return located.location;
+    const failure = filesFailureMessage(this.deps.t, this.deps.render, 'reveal', path.posix.basename(file.relativePath), () => this.deps.hostName(authorityKeyOfProject(file.projectKey)), located);
+    if (failure !== undefined) this.deps.warn(failure);
+    return undefined;
+  }
+
   private placeOfFile(file: FileRef): Place {
     const project = this.deps.projects().find((candidate) => candidate.key === file.projectKey);
     return { path: this.flavorOf(file).join(project?.fsPath ?? '', ...file.relativePath.split('/')), projectKey: file.projectKey, relativePath: file.relativePath };
+  }
+
+  // The path the user opened, through any link on it, as Files' Copy Path names it; a file outside every project, or of a root
+  // no longer open, by its own path.
+  private openedPath(location: { readonly path: string; readonly projectKey?: string; readonly relativePath?: string }): string {
+    const { projectKey, relativePath } = location;
+    if (projectKey === undefined || relativePath === undefined || this.liveProjectKey(projectKey) === undefined) return location.path;
+    return this.placeOfFile({ projectKey, relativePath }).path;
   }
 
   private subjectName(subject: DiffSubject): string {
@@ -1916,10 +1971,9 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     return tab.htmlPreview?.projectKey === file.projectKey && tab.htmlPreview.relativePath === file.relativePath;
   }
 
-  // A preview's Open Source: its file's code tab, focused; a file that cannot be opened is a warning.
+  // A preview's Open Source: its file's code tab, focused.
   private async openHtmlSource(file: FileRef): Promise<void> {
-    const opened = await this.openFromUser(file.projectKey, file.relativePath, { as: 'source' });
-    if (!opened.ok) this.deps.warn(this.deps.t('{0} could not be opened.', visibleText(path.posix.basename(file.relativePath))));
+    await this.openFromUser(file.projectKey, file.relativePath, { as: 'source' });
   }
 
   private addTab(tab: Tab, afterActive = true): Tab {

@@ -84,6 +84,7 @@ const {
   selectedIndex: slashCommandSelectedIndex,
   filteredCommands: slashCommandCommands,
   isLoading: slashCommandLoading,
+  inactiveReason: slashCommandInactiveReason,
   mode: slashCommandMode,
   agents: slashCommandAgents,
   agentsLoading: slashCommandAgentsLoading,
@@ -673,6 +674,7 @@ onUnmounted(() => {
       :is-loading="slashCommandMode === 'agent' ? slashCommandAgentsLoading : slashCommandLoading"
       :mode="slashCommandMode"
       :agents="slashCommandAgents"
+      :inactive-reason="slashCommandInactiveReason"
       @select="selectSlashCommandItem($event)"
       @close="closeSlashCommand"
     />

@@ -29,6 +29,12 @@ export type PromptOwner =
   | { readonly kind: 'subagent'; readonly agentId: string }
   | { readonly kind: 'team'; readonly teamId: string; readonly agentId: string; readonly teamTitle?: string; readonly agentName?: string };
 
+/** A permission rules file that cannot be checked or read and has no successful read in this session, and why. */
+export interface UnreadableRuleFile {
+  readonly file: string;
+  readonly reason: LocalizedText;
+}
+
 /** The permission state that approved an open prompt because it no longer asks for that call: a mode, or YOLO. */
 export type PromptApprover = 'default' | 'acceptEdits' | 'plan' | 'yolo';
 

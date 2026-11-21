@@ -7,21 +7,23 @@ import { installLogSink } from '../../logger';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import type { AuthOperationOptions } from '@earendil-works/pi-ai';
 import {
-  CUSTOM_PROVIDER_DEFS,
-  KEYED_PROVIDER_DEFS,
-  accountProviderDef,
   cheapModelValueForProvider,
-  customProviderDef,
   flatFeeKeyProviders,
-  providerLimitsModelsByPlan,
-  providerPickedOnly,
-  providerSignInDef,
-  keyProviderOfSecret,
   providerKeyStored,
   syncCustomProviders,
   type SyncCustomProvidersDeps,
   type SyncCustomProvidersResult,
 } from '../custom-providers';
+import {
+  CUSTOM_PROVIDER_DEFS,
+  KEYED_PROVIDER_DEFS,
+  accountProviderDef,
+  customProviderDef,
+  providerLimitsModelsByPlan,
+  providerPickedOnly,
+  providerSignInDef,
+  keyProviderOfSecret,
+} from '../provider-defs';
 import { providerCredentialActive } from '../provider-auth';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { runPinnedTurn } from '../../client-snapshots';

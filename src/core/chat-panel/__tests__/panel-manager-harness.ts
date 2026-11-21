@@ -292,6 +292,7 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[], options
     loadHistory: options.loadHistory ?? (async () => []),
     storedSessionsOf: async () => [],
     completeStoredSessionsOf: async () => [],
+    describeSkill: async () => undefined,
     sendFolderState: async (instance) => {
       folderStatePushes.push(instance);
       if (holdFolderState.gate) await holdFolderState.gate;

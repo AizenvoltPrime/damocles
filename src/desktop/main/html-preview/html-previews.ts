@@ -255,7 +255,8 @@ export class HtmlPreviews implements HtmlPreviewSource, Disposable {
     if (!root) return previewResponse({ status: 404, headers: previewHeaders(false, 'view') });
     const range = request.headers.get('range') ?? undefined;
     const ifRange = request.headers.get('if-range') ?? undefined;
-    return previewResponse(await answerPreview({ method: request.method, pathname: url.pathname, trusted: root.trusted, target: 'view', range, ifRange }, this.reads(root), this.deps.log));
+    const trusted = root.trusted;
+    return previewResponse(await answerPreview({ method: request.method, pathname: url.pathname, trusted, target: 'view', range, ifRange }, this.reads(root, trusted), this.deps.log));
   }
 
   dispose(): void {
@@ -303,13 +304,13 @@ export class HtmlPreviews implements HtmlPreviewSource, Disposable {
     }
   }
 
-  // The root's files, read only through its workspace's confinement.
-  private reads(root: Root): PreviewFileReads {
+  // every read of one request takes the trust its CSP was built with (docs/invariants.md "HTML previews")
+  private reads(root: Root, trusted: boolean): PreviewFileReads {
     return {
       range: async (relativePath, offset, length) => {
         const project = this.projectOf(root.key);
         if (!project) return { ok: false, reason: 'missing' };
-        return this.deps.files(root.key).readFileRange(project, relativePath, offset, length);
+        return this.deps.files(root.key).readFileRange(project, relativePath, offset, length, { trusted });
       },
     };
   }

@@ -2,29 +2,33 @@
 // connection names is looked up among its own, so one connection can never kill or unwatch another's.
 import { createEndpoint, type CoreProtocolError, type CoreTransport } from '../core-protocol/endpoint';
 import { ERROR_CODEC } from '../core-protocol/errors';
+import { l } from '../../core/l10n';
 import { folderKey } from '../../core/workspace-folders/folder-key';
 import type { Disposable } from '../../platform/disposable';
 import type { StreamChannel } from '../../remote/mux';
 import { streamBytes, writeBytes } from '../../remote/tunnel-pipe';
-import type { EntryIdentity, WorkspaceFileSystem } from '../workspace/file-system';
-import type { ReadRangeResult, ReadResult, TransferEntry } from '../workspace/transfer-ops';
+import { englishText } from '../../shared/localized-text';
+import type { HostLinkRefusal, LinkRule } from '../local-services/confine';
+import type { DeleteResult, EntryIdentity, EntryResult, LocalFileSystem, WorkspaceFileSystem } from '../workspace/file-system';
+import type { MoveResult, ReadRangeResult, ReadResult, TransferEntry, TransferResult } from '../workspace/transfer-ops';
 import type { Formatter } from '../workspace/format/formatter';
 import { CLIENT_TO_WORKSPACE, WORKSPACE_TO_CLIENT, type ClientToWorkspace, type WalkPage, type WireConfinedEntry, type WireReadRangeResult, type WireReadResult, type WireIdentity, type WireTransferEntry, type WorkspaceToClient } from '../workspace/messages';
 import type { QuickOpenListing } from '../workspace/quick-open-listing';
 import type { SearchRunner } from '../workspace/search/search-runner';
-import type { TerminalBackend } from '../workspace/terminal/terminal-backend';
-import type { TreeListing } from '../workspace/tree-listing';
+import type { HostTerminalBackend } from '../workspace/terminal/terminal-backend';
+import type { HostTreeListing } from '../workspace/tree-listing';
 import type { CliServer } from './cli-server';
 import type { HubClient, TerminalHub } from './terminal-hub';
 
+// under: the module's project-path methods under the rule a request names
 export interface WorkspaceModules {
-  readonly files: WorkspaceFileSystem;
-  readonly tree: TreeListing;
+  readonly files: WorkspaceFileSystem<HostLinkRefusal> & Pick<LocalFileSystem, 'under'>;
+  readonly tree: HostTreeListing;
   readonly search: SearchRunner;
   readonly quickOpen: QuickOpenListing;
   readonly format: Formatter;
   // detection, environment, injection and links; its own pty host is never started, the hub's is
-  readonly terminals: Omit<TerminalBackend, 'startHost' | 'list'>;
+  readonly terminals: Omit<HostTerminalBackend, 'startHost' | 'list'>;
   readonly hub: TerminalHub;
   // the terminals' damocles command sockets, which relay to the connection that most recently attached a terminal's view
   readonly cli: Pick<CliServer, 'connected'>;
@@ -41,16 +45,28 @@ export interface WorkspaceModules {
 
 export interface WorkspaceHost {
   // serves one connection of clientId (its hello's) until the returned disposable or onViolation ends it; claimStream takes a
-  // stream the client opened on this connection, once; lost: the connection dropped and waits inside its grace
-  serve(connectionId: string, clientId: string, transport: CoreTransport, onViolation: (reason: string) => void, claimStream: (id: number) => StreamChannel | undefined, lost: () => boolean): Disposable;
+  // stream the client opened on this connection, once; lost: the connection dropped and waits inside its grace;
+  // clientFeatures: the FEATURES of the connection's latest control.attachCore, none before it
+  serve(connectionId: string, clientId: string, transport: CoreTransport, onViolation: (reason: string) => void, claimStream: (id: number) => StreamChannel | undefined, lost: () => boolean, clientFeatures: () => ReadonlySet<string>): Disposable;
 }
 
 // walks one connection holds open: each is a client's transfer, which ends or returns its walk
 export const MAX_WALKS = 64;
 
+// a client that lists it parses sessionFile as an entry's or a transfer's reason, and notOwned as sessionFiles.write's answer
+// (core-routes.ts)
+export const SESSION_FILE_REFUSAL_FEATURE = 'files.sessionFileRefusal';
+
+// sessionFile as a client without SESSION_FILE_REFUSAL_FEATURE reads it: an existing reason with the refusal's words
+const SESSION_FILE_FAILED = { ok: false, reason: 'failed', message: englishText(l('Chat session files are kept there, and only Damocles changes them.')) } as const;
+
+type SessionFileRefusable = EntryResult<HostLinkRefusal> | DeleteResult<HostLinkRefusal> | TransferResult<HostLinkRefusal> | MoveResult<HostLinkRefusal>;
+
 const wireIdentity = (identity: EntryIdentity): WireIdentity => ({ dev: identity.dev.toString(), ino: identity.ino.toString(), birthtimeNs: identity.birthtimeNs.toString() });
 const fromWireIdentity = (identity: WireIdentity): EntryIdentity => ({ dev: BigInt(identity.dev), ino: BigInt(identity.ino), birthtimeNs: BigInt(identity.birthtimeNs) });
 const wireEntry = (entry: TransferEntry): WireTransferEntry => ({ ...entry, identity: wireIdentity(entry.identity) });
+// A request that does not ask to follow links out of the project never does.
+const ruleOf = (links: 'follow' | undefined): LinkRule => (links === 'follow' ? 'throughLinks' : 'withinProject');
 
 export function createWorkspaceHost(modules: WorkspaceModules, log: (line: string) => void): WorkspaceHost {
   // each connection's format.retain; the formatter keeps the union
@@ -58,7 +74,7 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
   const retain = (): void => modules.format.retain([...new Set([...retained.values()].flat())]);
 
   return {
-    serve(connectionId, clientId, transport, onViolation, claimStream, lost) {
+    serve(connectionId, clientId, transport, onViolation, claimStream, lost, clientFeatures) {
       const endpoint = createEndpoint<WorkspaceToClient, ClientToWorkspace>({
         transport,
         outgoing: WORKSPACE_TO_CLIENT,
@@ -89,6 +105,11 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
         if (next.done) walks.delete(walkId);
         return { entries: next.done ? [] : next.value.map(wireEntry), done: next.done === true };
       };
+      // read at the answer, so an attach that lands while the action runs counts
+      const told = async <R extends SessionFileRefusable>(answer: Promise<R>): Promise<R | typeof SESSION_FILE_FAILED> => {
+        const result = await answer;
+        return !result.ok && result.reason === 'sessionFile' && !clientFeatures().has(SESSION_FILE_REFUSAL_FEATURE) ? SESSION_FILE_FAILED : result;
+      };
       const fresh = <T>(map: Map<number, T>, id: number, what: string): void => {
         if (map.has(id)) throw new Error(`${what} ${id} is already running on this connection`);
       };
@@ -99,27 +120,27 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
         hostExit: (end) => endpoint.emit('terminals.hostExit', end),
       };
 
-      endpoint.serve('files.confineExisting', ({ project, relativePath }) => files.confineExisting(project, relativePath));
-      endpoint.serve('files.confineMissing', ({ project, relativePath }) => files.confineMissing(project, relativePath));
-      endpoint.serve('files.entry', async ({ project, relativePath }): Promise<WireConfinedEntry> => {
-        const entry = await files.entry(project, relativePath);
-        return entry.ok ? { ok: true, path: entry.path, folder: entry.folder, identity: wireIdentity(entry.identity) } : entry;
+      endpoint.serve('files.confineExisting', ({ project, relativePath, links, spell }) => files.confineExisting(project, relativePath, ruleOf(links), spell ? { spell } : {}));
+      endpoint.serve('files.confineMissing', ({ project, relativePath, links }) => files.confineMissing(project, relativePath, ruleOf(links)));
+      endpoint.serve('files.entry', async ({ project, relativePath, links }): Promise<WireConfinedEntry> => {
+        const entry = await files.under(ruleOf(links)).entry(project, relativePath);
+        return entry.ok ? { ok: true, path: entry.path, folder: entry.folder, identity: wireIdentity(entry.identity), ...(entry.sessionStore ? { sessionStore: true } : {}) } : entry;
       });
       endpoint.serve('files.projectOfPath', ({ projects, target }) => files.projectOfPath(projects, target));
       endpoint.serve('files.realpath', ({ target }) => files.realpath(target));
       endpoint.serve('files.folderKey', ({ path }) => folderKey(path));
       endpoint.serve('files.read', ({ path, limitBytes }) => files.read(path, limitBytes));
-      endpoint.serve('files.writeInPlace', ({ project, location, bytes }) => files.writeInPlace(project, location, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)));
+      endpoint.serve('files.writeInPlace', ({ project, location, bytes, links }) => files.under(ruleOf(links)).writeInPlace(project, location, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)));
       endpoint.serve('files.readHostSettings', () => files.readHostSettings());
       endpoint.serve('files.writeHostSettings', ({ bytes }) => files.writeHostSettings(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)));
       endpoint.serve('files.resolveOutside', ({ target }) => files.resolveOutside(target));
       endpoint.serve('files.readOutside', ({ path, limitBytes }) => files.readOutside(path, limitBytes));
       endpoint.serve('files.writeOutside', ({ path, bytes }) => files.writeOutside(path, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)));
       endpoint.serve('files.listOutside', ({ folder, prefix }) => files.listOutside(folder, prefix));
-      endpoint.serve('files.createEntry', ({ project, relativeDir, name, kind }) => files.createEntry(project, relativeDir, name, kind));
-      endpoint.serve('files.renameEntry', ({ project, relativePath, newName }) => files.renameEntry(project, relativePath, newName));
-      endpoint.serve('files.deleteEntry', ({ project, relativePath, confirmed }) =>
-        files.deleteEntry(project, relativePath, { dev: BigInt(confirmed.dev), ino: BigInt(confirmed.ino), birthtimeNs: BigInt(confirmed.birthtimeNs) }));
+      endpoint.serve('files.createEntry', ({ project, relativeDir, name, kind, links }) => told(files.under(ruleOf(links)).createEntry(project, relativeDir, name, kind)));
+      endpoint.serve('files.renameEntry', ({ project, relativePath, newName, links }) => told(files.under(ruleOf(links)).renameEntry(project, relativePath, newName)));
+      endpoint.serve('files.deleteEntry', ({ project, relativePath, confirmed, links }) =>
+        told(files.under(ruleOf(links)).deleteEntry(project, relativePath, { dev: BigInt(confirmed.dev), ino: BigInt(confirmed.ino), birthtimeNs: BigInt(confirmed.birthtimeNs) })));
       endpoint.serve('files.trash', ({ path }) => files.trash(path));
       endpoint.serve('files.isDirectory', ({ target }) => files.isDirectory(target));
       endpoint.serve('files.mtimes', ({ folder, relativePaths }) => files.mtimes(folder, relativePaths));
@@ -136,10 +157,10 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
         watches.delete(watchId);
       });
       endpoint.serve('files.watchLimits', async () => ({ roots: modules.watchLimits.roots(), limit: await modules.watchLimits.limit() }));
-      endpoint.serve('files.walk', ({ walkId, project, relativePath }) => {
+      endpoint.serve('files.walk', ({ walkId, project, relativePath, links }) => {
         fresh(walks, walkId, 'walk');
         if (walks.size >= MAX_WALKS) throw new Error(`${MAX_WALKS} walks are already running on this connection`);
-        const walk = files.walk(project, relativePath)[Symbol.asyncIterator]();
+        const walk = files.under(ruleOf(links)).walk(project, relativePath)[Symbol.asyncIterator]();
         walks.set(walkId, walk);
         return page(walkId, walk);
       });
@@ -153,11 +174,11 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
         walks.delete(walkId);
         await walk?.return?.();
       });
-      endpoint.serve('files.clashes', ({ project, relativeDir, names }) => files.clashes(project, relativeDir, names));
-      endpoint.serve('files.receiveFile', async ({ project, relativeDir, name, stream, mode, mtimeMs, replace, size }) => {
+      endpoint.serve('files.clashes', ({ project, relativeDir, names, links }) => files.under(ruleOf(links)).clashes(project, relativeDir, names));
+      endpoint.serve('files.receiveFile', async ({ project, relativeDir, name, stream, mode, mtimeMs, replace, size, links }) => {
         const bytes = claim(stream);
         try {
-          return await files.receiveFile(project, relativeDir, name, streamBytes(bytes), { mode, mtimeMs, replace, size });
+          return await told(files.under(ruleOf(links)).receiveFile(project, relativeDir, name, streamBytes(bytes), { mode, mtimeMs, replace, size }));
         } finally {
           // a refusal before the first byte, or a failure, still closes this side
           bytes.end();
@@ -180,22 +201,22 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
         });
         return read;
       };
-      endpoint.serve('files.readFile', async ({ project, relativePath, stream }): Promise<WireReadResult> => {
-        const read = await streamRead(stream, relativePath, () => files.readFile(project, relativePath));
+      endpoint.serve('files.readFile', async ({ project, relativePath, stream, links }): Promise<WireReadResult> => {
+        const read = await streamRead(stream, relativePath, () => files.under(ruleOf(links)).readFile(project, relativePath));
         return read.ok ? { ok: true, size: read.size } : read;
       });
-      endpoint.serve('files.readFileRange', async ({ project, relativePath, stream, offset, length }): Promise<WireReadRangeResult> => {
-        const read = await streamRead(stream, relativePath, () => files.readFileRange(project, relativePath, offset, length));
+      endpoint.serve('files.readFileRange', async ({ project, relativePath, stream, offset, length, preview }): Promise<WireReadRangeResult> => {
+        const read = await streamRead(stream, relativePath, () => files.readFileRange(project, relativePath, offset, length, preview));
         return read.ok ? { ok: true, size: read.size, offset: read.offset, length: read.length, resolvedPath: read.resolvedPath } : read;
       });
-      // the client's cancel of either stops it between files and removes the part being written (feature files.cancel)
-      endpoint.serve('files.copy', ({ from, relativePath, to, toDir, name, replace }, signal) => files.copy(from, relativePath, to, toDir, name, replace, signal));
-      endpoint.serve('files.move', ({ from, relativePath, to, toDir, name, replace }, signal) => files.move(from, relativePath, to, toDir, name, replace, signal));
-      endpoint.serve('files.makeFolder', ({ project, relativeDir, name, mode }) => files.makeFolder(project, relativeDir, name, mode));
-      endpoint.serve('files.makeLink', ({ project, relativeDir, name, target, replace, within }) => files.makeLink(project, relativeDir, name, target, replace, within));
-      endpoint.serve('files.verifyLink', ({ project, relativePath, within }) => files.verifyLink(project, relativePath, within));
-      endpoint.serve('files.removeFolder', ({ project, relativePath, confirmed }) => files.removeFolder(project, relativePath, fromWireIdentity(confirmed)));
-      endpoint.serve('tree.list', ({ project, relativeDir, excludes }) => tree.list(project, relativeDir, excludes));
+      // the client's cancel of either stops it between files and removes the part being written
+      endpoint.serve('files.copy', ({ from, relativePath, to, toDir, name, replace, links }, signal) => told(files.under(ruleOf(links)).copy(from, relativePath, to, toDir, name, replace, signal)));
+      endpoint.serve('files.move', ({ from, relativePath, to, toDir, name, replace, links }, signal) => told(files.under(ruleOf(links)).move(from, relativePath, to, toDir, name, replace, signal)));
+      endpoint.serve('files.makeFolder', ({ project, relativeDir, name, mode, links }) => told(files.under(ruleOf(links)).makeFolder(project, relativeDir, name, mode)));
+      endpoint.serve('files.makeLink', ({ project, relativeDir, name, target, replace, within, links }) => told(files.under(ruleOf(links)).makeLink(project, relativeDir, name, target, replace, within)));
+      endpoint.serve('files.verifyLink', ({ project, relativePath, within, links }) => told(files.under(ruleOf(links)).verifyLink(project, relativePath, within)));
+      endpoint.serve('files.removeFolder', ({ project, relativePath, confirmed, links }) => told(files.under(ruleOf(links)).removeFolder(project, relativePath, fromWireIdentity(confirmed))));
+      endpoint.serve('tree.list', ({ project, relativeDir, excludes, links }) => tree.under(ruleOf(links)).list(project, relativeDir, excludes));
       endpoint.serve('search.run', ({ runId, cwd, match, pattern, walk }) => {
         fresh(searches, runId, 'search');
         searches.set(runId, search.run(cwd, { match, pattern, walk }, {
@@ -211,9 +232,9 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
         searches.get(runId)?.kill();
         searches.delete(runId);
       });
-      endpoint.serve('quickOpen.list', ({ runId, root, ignore, excludes }) => {
+      endpoint.serve('quickOpen.list', ({ runId, root, ignore, followLinks, excludes }) => {
         fresh(listings, runId, 'listing');
-        listings.set(runId, quickOpen.list(root, ignore, excludes, {
+        listings.set(runId, quickOpen.list(root, { ignore, followLinks: followLinks === true }, excludes, {
           files: (files) => endpoint.emit('quickOpen.files', { runId, files }),
           end: (error) => {
             listings.delete(runId);
@@ -243,7 +264,7 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
         return env;
       });
       endpoint.serve('terminals.injection', ({ request }) => terminals.injection(request));
-      endpoint.serve('terminals.linkKind', ({ project, relativePath }) => terminals.linkKind(project, relativePath));
+      endpoint.serve('terminals.linkKind', ({ project, relativePath, links }) => terminals.under(ruleOf(links)).linkKind(project, relativePath));
       endpoint.serve('terminals.list', () => hub.list());
       endpoint.serve('terminals.windowsBuild', () => terminals.windowsBuild());
       const subscriptions = [

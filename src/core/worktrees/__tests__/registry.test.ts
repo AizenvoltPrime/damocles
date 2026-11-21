@@ -7,6 +7,7 @@ import { branchBaseName, branchSlug } from '../slug';
 import { newWorktreeId, recordsListedUnder, WorktreeRegistry, type ChatWorktreeRecord } from '../registry';
 import { worktreeFolderFor } from '../records';
 import { scanLeftovers } from '../leftovers';
+import { fileLinkedOntoDevice, folderOnAdminShare } from '../../../__mocks__/admin-share';
 
 // The bytes newWorktreeId draws, when a test sets them.
 const R = vi.hoisted(() => ({ draws: [] as Buffer[] }));
@@ -54,6 +55,32 @@ function chat(id: string, overrides: Partial<ChatWorktreeRecord> = {}): Omit<Cha
   const worktreeRoot = worktreeFolderFor(root, project, id);
   return { id, kind: 'chat', projectPath: project, repositoryRoot: project, worktreeRoot, workingFolder: worktreeRoot, branch: `damocles/${id}`, baseCommit: 'a'.repeat(40), createdAt: 1, ...overrides };
 }
+
+describe.runIf(process.platform === 'win32')('WorktreeRegistry under the network rule (win32)', () => {
+  it('reads and writes through a registry folder linked onto a share, as the user moved it there', async (ctx) => {
+    const real = folderOnAdminShare(ctx, root);
+    try {
+      await registry().addChat(chat('aaaaaaaa'));
+      expect(registry().get('aaaaaaaa')?.kind).toBe('chat');
+      expect(fs.existsSync(path.join(real, 'registry.json'))).toBe(true);
+    } finally {
+      for (const r of open.splice(0)) r.dispose();
+      fs.rmSync(real, { recursive: true, force: true });
+    }
+  });
+
+  it('neither reads nor writes a registry.json that links off the registry folder', async (ctx) => {
+    const file = path.join(root, 'registry.json');
+    fileLinkedOntoDevice(ctx, file);
+    const lines: string[] = [];
+    const r = new WorktreeRegistry({ rootDir: root, watcherFactory: watchers, log: (line) => lines.push(line) });
+    open.push(r);
+    expect(lines).toEqual([`[WorktreeRegistry] ${file} links to a network share or WSL path, so it is not read`]);
+    // its records cannot be known, so whoever reads them (a relocation's preflight) refuses as for a file that does not parse
+    expect(r.unreadable()).toBe('it links to a network share or WSL path');
+    await expect(r.addChat(chat('aaaaaaaa'))).rejects.toMatchObject({ name: 'ConfigWriteRefused' });
+  });
+});
 
 describe('WorktreeRegistry', () => {
   it('maps a working folder and its subfolders to the project, and nothing else', async () => {
@@ -380,7 +407,9 @@ describe('personal files of a worktree chat (D34)', () => {
     fs.writeFileSync(path.join(record.workingFolder, '.damocles', 'settings.json'), JSON.stringify({ permissions: { allow: ['Read'] } }));
     const installed = installWorktreeProjectLookup(r);
     try {
-      const files = await loadPermissionsByPriority({ path: record.workingFolder, personalFiles: true });
+      const loaded = await loadPermissionsByPriority({ path: record.workingFolder, personalFiles: true }, new Map());
+      if (!('files' in loaded)) throw new Error('the rules were unreadable');
+      const files = loaded.files;
       expect(files[0]!.deny).toEqual(['Bash(rm:*)']);
       expect(files.every((f) => f.root !== project)).toBe(true);
       expect(files.some((f) => f.allow.includes('Read'))).toBe(true);
@@ -388,7 +417,7 @@ describe('personal files of a worktree chat (D34)', () => {
       expect(fs.readFileSync(path.join(project, '.damocles', 'settings.local.json'), 'utf8')).toContain('Bash(ls:*)');
       expect(fs.existsSync(path.join(record.workingFolder, '.damocles', 'settings.local.json'))).toBe(false);
       expect(localMcpConfigPath(record.workingFolder)).toBe(path.join(project, '.damocles', 'mcp.local.json'));
-      expect(ownedRuleFiles({ path: record.workingFolder, personalFiles: true }).at(-1)?.path).toBe(path.join(project, '.damocles', 'settings.local.json'));
+      expect(ownedRuleFiles({ path: record.workingFolder, personalFiles: true, trusted: () => true }).at(-1)?.path).toBe(path.join(project, '.damocles', 'settings.local.json'));
       const target = { key: record.workingFolder, fsPath: record.workingFolder, name: 'x', label: 'x', projectScope: true };
       expect(settingsFolderOf(target)).toEqual({ path: record.workingFolder, personalPath: project });
     } finally {

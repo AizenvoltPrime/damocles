@@ -1,0 +1,2433 @@
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-services.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-services.js
+index 71a876d..4a65ac3 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-services.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-services.js
+@@ -53,13 +53,16 @@ function applyExtensionFlagValues(resourceLoader, extensionFlagValues) {
+ export async function createAgentSessionServices(options) {
+     const cwd = resolvePath(options.cwd);
+     const agentDir = options.agentDir ? resolvePath(options.agentDir) : getAgentDir();
++    // The loader's link policy also guards the config files of the services created here.
++    const linkPolicy = options.resourceLoaderOptions?.linkPolicy;
+     const modelRuntime = options.modelRuntime ??
+         (await ModelRuntime.create({
+             authPath: join(agentDir, "auth.json"),
+             modelsPath: join(agentDir, "models.json"),
+             signal: options.modelRuntimeSignal,
++            linkPolicy,
+         }));
+-    const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
++    const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir, { linkPolicy });
+     const resourceLoader = new DefaultResourceLoader({
+         ...(options.resourceLoaderOptions ?? {}),
+         cwd,
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/auth-storage.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/auth-storage.d.ts
+index 6fffeba..c2b599e 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/auth-storage.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/auth-storage.d.ts
+@@ -3,6 +3,7 @@
+  * Provider auth orchestration belongs to ModelRuntime and pi-ai Models.
+  */
+ import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
++import { type LinkPolicy } from "./link-policy.ts";
+ type AuthStorageData = Record<string, Credential>;
+ type LockResult<T> = {
+     result: T;
+@@ -12,9 +13,18 @@ export interface AuthStorageBackend {
+     withLock<T>(fn: (current: string | undefined) => LockResult<T>): T;
+     withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>, options?: AuthOperationOptions): Promise<T>;
+ }
++/** Options of a file-backed credential store. */
++export interface FileAuthStorageOptions {
++    /**
++     * Consulted with the file's path before it is read or written (see `LinkPolicy`); a refused file fails each access
++     * with the refusal error, as a file that does not parse fails it.
++     */
++    linkPolicy?: LinkPolicy;
++}
+ export declare class FileAuthStorageBackend implements AuthStorageBackend {
+     private authPath;
+-    constructor(authPath?: string);
++    private linkPolicy;
++    constructor(authPath?: string, options?: FileAuthStorageOptions);
+     private ensureParentDir;
+     private ensureFileExists;
+     private acquireLockSyncWithRetry;
+@@ -44,12 +54,17 @@ export declare class InMemoryAuthStorageBackend implements AuthStorageBackend {
+ export declare class AuthStorage implements CredentialStore {
+     private storage;
+     private authPath;
++    private linkPolicy;
+     private readState;
+     private constructor();
+-    static create(authPath?: string): AuthStorage;
++    static create(authPath?: string, options?: FileAuthStorageOptions): AuthStorage;
+     static fromStorage(storage: AuthStorageBackend): AuthStorage;
+     static inMemory(data?: AuthStorageData): AuthStorage;
+     private parseStorageData;
++    /** The auth file's revision, undefined for a store without a file or a file the link policy refuses. */
++    private fileRevision;
++    /** Throws the write refusal for an auth file the link policy refuses. */
++    private assertWriteAdmitted;
+     private updateReadState;
+     /**
+      * Reload credentials from storage.
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/auth-storage.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/auth-storage.js
+index c5f31f5..c134e42 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/auth-storage.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/auth-storage.js
+@@ -10,6 +10,7 @@ import { getAgentDir } from "../config.js";
+ import { raceWithAbortSignal } from "../utils/abort.js";
+ import { getFileRevision, normalizePath } from "../utils/paths.js";
+ import { stripBom } from "../utils/text.js";
++import { admitsPath, assertPathAdmitted } from "./link-policy.js";
+ import { isCommandConfigValue, resolveConfigValue, resolveConfigValueAsync } from "./resolve-config-value.js";
+ // On Windows, a just-removed lock directory can stay "delete pending" while another process
+ // (antivirus, indexer, another pi checking the lock) still has it open. mkdir then fails with
+@@ -28,8 +29,10 @@ const AUTH_FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 };
+ let sharedAuthFileReadState;
+ export class FileAuthStorageBackend {
+     authPath;
+-    constructor(authPath = join(getAgentDir(), "auth.json")) {
++    linkPolicy;
++    constructor(authPath = join(getAgentDir(), "auth.json"), options = {}) {
+         this.authPath = normalizePath(authPath);
++        this.linkPolicy = options.linkPolicy;
+     }
+     ensureParentDir() {
+         const dir = dirname(this.authPath);
+@@ -61,6 +64,7 @@ export class FileAuthStorageBackend {
+         }
+     }
+     withLock(fn) {
++        assertPathAdmitted(this.linkPolicy, this.authPath, "read");
+         this.ensureParentDir();
+         this.ensureFileExists();
+         let release;
+@@ -123,6 +127,7 @@ export class FileAuthStorageBackend {
+     }
+     async withLockAsync(fn, options) {
+         options?.signal?.throwIfAborted();
++        assertPathAdmitted(this.linkPolicy, this.authPath, "read");
+         this.ensureParentDir();
+         this.ensureFileExists();
+         let release;
+@@ -271,25 +276,25 @@ export class InMemoryAuthStorageBackend {
+ export class AuthStorage {
+     storage;
+     authPath;
++    linkPolicy;
+     readState;
+-    constructor(storage, authPath) {
++    constructor(storage, authPath, linkPolicy) {
+         this.storage = storage;
+         this.authPath = authPath;
++        this.linkPolicy = linkPolicy;
+         this.readState =
+             authPath && sharedAuthFileReadState?.authPath === authPath ? sharedAuthFileReadState.readState : { data: {} };
+         if (authPath && !sharedAuthFileReadState) {
+             sharedAuthFileReadState = { authPath, readState: this.readState };
+         }
+-        if (authPath) {
+-            const revision = getFileRevision(authPath);
+-            if (revision !== undefined && revision === this.readState.revision)
+-                return;
+-        }
++        const revision = this.fileRevision();
++        if (revision !== undefined && revision === this.readState.revision)
++            return;
+         this.reload();
+     }
+-    static create(authPath = join(getAgentDir(), "auth.json")) {
++    static create(authPath = join(getAgentDir(), "auth.json"), options = {}) {
+         const normalizedAuthPath = normalizePath(authPath);
+-        return new AuthStorage(new FileAuthStorageBackend(normalizedAuthPath), normalizedAuthPath);
++        return new AuthStorage(new FileAuthStorageBackend(normalizedAuthPath, options), normalizedAuthPath, options.linkPolicy);
+     }
+     static fromStorage(storage) {
+         return new AuthStorage(storage);
+@@ -305,6 +310,15 @@ export class AuthStorage {
+         }
+         return JSON.parse(stripBom(content));
+     }
++    /** The auth file's revision, undefined for a store without a file or a file the link policy refuses. */
++    fileRevision() {
++        return this.authPath && admitsPath(this.linkPolicy, this.authPath) ? getFileRevision(this.authPath) : undefined;
++    }
++    /** Throws the write refusal for an auth file the link policy refuses. */
++    assertWriteAdmitted() {
++        if (this.authPath)
++            assertPathAdmitted(this.linkPolicy, this.authPath, "write");
++    }
+     updateReadState(data, revision) {
+         this.readState.data = data;
+         this.readState.revision = revision;
+@@ -318,7 +332,7 @@ export class AuthStorage {
+         try {
+             this.storage.withLock((current) => {
+                 content = current;
+-                revision = this.authPath ? getFileRevision(this.authPath) : undefined;
++                revision = this.fileRevision();
+                 return { result: undefined };
+             });
+             this.updateReadState(this.parseStorageData(content), revision);
+@@ -330,7 +344,7 @@ export class AuthStorage {
+     async reloadFromStorageAsync(options) {
+         return this.storage.withLockAsync(async (content) => {
+             const currentData = this.parseStorageData(content);
+-            const revision = this.authPath ? getFileRevision(this.authPath) : undefined;
++            const revision = this.fileRevision();
+             this.updateReadState(currentData, revision);
+             return { result: currentData };
+         }, options);
+@@ -341,7 +355,7 @@ export class AuthStorage {
+             const reload = this.reloadFromStorageAsync(options);
+             return options?.signal ? reload : reload.catch(() => this.readState.data);
+         }
+-        const revision = getFileRevision(this.authPath);
++        const revision = this.fileRevision();
+         if (revision !== undefined && revision === this.readState.revision)
+             return this.readState.data;
+         if (!this.readState.reload) {
+@@ -384,6 +398,7 @@ export class AuthStorage {
+         return { ...credential, key: await resolveConfigValueAsync(credential.key, credential.env) };
+     }
+     async modify(provider, fn, options) {
++        this.assertWriteAdmitted();
+         let latestData = this.readState.data;
+         let revision;
+         const result = await this.storage.withLockAsync(async (content) => {
+@@ -391,7 +406,7 @@ export class AuthStorage {
+             const next = await fn(currentData[provider]);
+             if (next === undefined) {
+                 latestData = currentData;
+-                revision = this.authPath ? getFileRevision(this.authPath) : undefined;
++                revision = this.fileRevision();
+                 return { result: currentData[provider] };
+             }
+             const merged = { ...currentData, [provider]: next };
+@@ -402,6 +417,7 @@ export class AuthStorage {
+         return result;
+     }
+     async delete(provider, options) {
++        this.assertWriteAdmitted();
+         let latestData = this.readState.data;
+         await this.storage.withLockAsync(async (content) => {
+             const currentData = this.parseStorageData(content);
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/footer-data-provider.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/footer-data-provider.d.ts
+index a5cfa0e..f9c5477 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/footer-data-provider.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/footer-data-provider.d.ts
+@@ -1,3 +1,5 @@
++import type { ResourceDiagnostic } from "./diagnostics.ts";
++import { type LinkPolicy } from "./link-policy.ts";
+ export type GitPaths = {
+     repoDir: string;
+     commonGitDir: string;
+@@ -6,8 +8,10 @@ export type GitPaths = {
+ /**
+  * Find git metadata paths by walking up from cwd.
+  * Handles both regular git repos (.git is a directory) and worktrees (.git is a file).
++ * With a linkPolicy, a `.git` link and every git metadata path a `.git` file names are asked before they are touched;
++ * a refusal is reported to diagnostics and answered as no repository.
+  */
+-export declare function findGitPaths(cwd: string): GitPaths | null;
++export declare function findGitPaths(cwd: string, linkPolicy?: LinkPolicy, diagnostics?: ResourceDiagnostic[]): GitPaths | null;
+ /**
+  * Provides git branch and extension statuses - data not otherwise accessible to extensions.
+  * Context usage on ctx.getContextUsage(), token stats on ctx.sessionManager.getEntries(), model info on ctx.model.
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/footer-data-provider.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/footer-data-provider.js
+index efc80fe..a1e2e19 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/footer-data-provider.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/footer-data-provider.js
+@@ -2,14 +2,21 @@ import { execFile, spawnSync } from "child_process";
+ import { existsSync, readFileSync, statSync, unwatchFile, watchFile } from "fs";
+ import { dirname, join, resolve } from "path";
+ import { closeWatcher, FS_WATCH_RETRY_DELAY_MS, watchWithErrorHandler } from "../utils/fs-watch.js";
++import { admitsEntry, admitsPath } from "./link-policy.js";
++const GIT_METADATA_REFUSED = "git metadata not read: the link policy refuses it";
+ /**
+  * Find git metadata paths by walking up from cwd.
+  * Handles both regular git repos (.git is a directory) and worktrees (.git is a file).
++ * With a linkPolicy, a `.git` link and every git metadata path a `.git` file names are asked before they are touched;
++ * a refusal is reported to diagnostics and answered as no repository.
+  */
+-export function findGitPaths(cwd) {
++export function findGitPaths(cwd, linkPolicy, diagnostics) {
++    const admits = (path) => admitsPath(linkPolicy, path, diagnostics, GIT_METADATA_REFUSED);
+     let dir = cwd;
+     while (true) {
+         const gitPath = join(dir, ".git");
++        if (!admitsEntry(linkPolicy, gitPath, diagnostics))
++            return null;
+         if (existsSync(gitPath)) {
+             try {
+                 const stat = statSync(gitPath);
+@@ -18,18 +25,22 @@ export function findGitPaths(cwd) {
+                     if (content.startsWith("gitdir: ")) {
+                         const gitDir = resolve(dir, content.slice(8).trim());
+                         const headPath = join(gitDir, "HEAD");
+-                        if (!existsSync(headPath))
++                        if (!admits(headPath) || !existsSync(headPath))
+                             return null;
+                         const commonDirPath = join(gitDir, "commondir");
++                        if (!admits(commonDirPath))
++                            return null;
+                         const commonGitDir = existsSync(commonDirPath)
+                             ? resolve(gitDir, readFileSync(commonDirPath, "utf8").trim())
+                             : gitDir;
++                        if (commonGitDir !== gitDir && !admits(commonGitDir))
++                            return null;
+                         return { repoDir: dir, commonGitDir, headPath };
+                     }
+                 }
+                 else if (stat.isDirectory()) {
+                     const headPath = join(gitPath, "HEAD");
+-                    if (!existsSync(headPath))
++                    if (!admitsEntry(linkPolicy, headPath, diagnostics) || !existsSync(headPath))
+                         return null;
+                     return { repoDir: dir, commonGitDir: gitPath, headPath };
+                 }
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/link-policy.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/link-policy.d.ts
+new file mode 100644
+index 0000000..ad3c16c
+--- /dev/null
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/link-policy.d.ts
+@@ -0,0 +1,21 @@
++import type { ResourceDiagnostic } from "./diagnostics.ts";
++/**
++ * A host's rule for following links. Resource walkers call it with the path of a link entry, and of each walk root,
++ * before they stat it; config, context and git metadata reads call it with the file's path before they touch the
++ * file. False skips the entry, or treats the file as unreadable, with a diagnostic.
++ */
++export type LinkPolicy = (path: string) => boolean;
++/** Whether linkPolicy admits path; a refusal adds a warning naming path, with message, to diagnostics. */
++export declare function admitsPath(linkPolicy: LinkPolicy | undefined, path: string, diagnostics?: ResourceDiagnostic[], message?: string): boolean;
++/**
++ * admitsPath for a name inside a folder the caller already admitted: one lstat, which follows nothing at path, and the
++ * policy is asked only when path is a link.
++ */
++export declare function admitsEntry(linkPolicy: LinkPolicy | undefined, path: string, diagnostics?: ResourceDiagnostic[]): boolean;
++/** Throws the refusal error, code ELINKPOLICY, when linkPolicy refuses the config file at path for operation. */
++export declare function assertPathAdmitted(linkPolicy: LinkPolicy | undefined, path: string, operation: "read" | "write"): void;
++/** The folders one recursive walk entered, by realpath, so a link back into one ends there. */
++export type VisitedFolders = Set<string>;
++/** Records dir's realpath; false, with a warning, for a folder the walk already entered. */
++export declare function enterFolder(visited: VisitedFolders, dir: string, diagnostics?: ResourceDiagnostic[]): boolean;
++//# sourceMappingURL=link-policy.d.ts.map
+\ No newline at end of file
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/link-policy.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/link-policy.js
+new file mode 100644
+index 0000000..c777165
+--- /dev/null
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/link-policy.js
+@@ -0,0 +1,49 @@
++import { lstatSync } from "node:fs";
++import { getResourcePathKey } from "./source-info.js";
++const LINK_REFUSED = "link not followed: the link policy refuses it";
++/** Whether linkPolicy admits path; a refusal adds a warning naming path, with message, to diagnostics. */
++export function admitsPath(linkPolicy, path, diagnostics, message = LINK_REFUSED) {
++    if (!linkPolicy || linkPolicy(path))
++        return true;
++    diagnostics?.push({ type: "warning", message, path });
++    return false;
++}
++/**
++ * admitsPath for a name inside a folder the caller already admitted: one lstat, which follows nothing at path, and the
++ * policy is asked only when path is a link.
++ */
++export function admitsEntry(linkPolicy, path, diagnostics) {
++    if (!linkPolicy)
++        return true;
++    let isLink;
++    try {
++        isLink = lstatSync(path).isSymbolicLink();
++    }
++    catch {
++        // The caller's own stat or read of path meets the same error, as it resolves the same name.
++        return true;
++    }
++    return !isLink || admitsPath(linkPolicy, path, diagnostics);
++}
++/** Throws the refusal error, code ELINKPOLICY, when linkPolicy refuses the config file at path for operation. */
++export function assertPathAdmitted(linkPolicy, path, operation) {
++    if (linkPolicy && !linkPolicy(path)) {
++        const refused = operation === "read" ? "Not read" : "Not written";
++        throw Object.assign(new Error(`${refused}: the link policy refuses ${path}`), { code: "ELINKPOLICY" });
++    }
++}
++/** Records dir's realpath; false, with a warning, for a folder the walk already entered. */
++export function enterFolder(visited, dir, diagnostics) {
++    const key = getResourcePathKey(dir);
++    if (!visited.has(key)) {
++        visited.add(key);
++        return true;
++    }
++    diagnostics?.push({
++        type: "warning",
++        message: "folder skipped: this walk already entered it through another path (a link loop or a second link to it)",
++        path: dir,
++    });
++    return false;
++}
++//# sourceMappingURL=link-policy.js.map
+\ No newline at end of file
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/model-config.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/model-config.d.ts
+index 3870536..015f15b 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/model-config.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/model-config.d.ts
+@@ -1,5 +1,6 @@
+ /** Immutable, credential-blind models.json snapshot. */
+ import { type Static, Type } from "typebox";
++import { type LinkPolicy } from "./link-policy.ts";
+ declare const ModelDefinitionSchema: Type.TObject<{
+     id: Type.TString;
+     name: Type.TOptional<Type.TString>;
+@@ -2004,7 +2005,10 @@ export declare class ModelConfig {
+     private readonly providers;
+     private readonly error;
+     private constructor();
+-    static load(modelsJsonPath: string | undefined): Promise<ModelConfig>;
++    /** linkPolicy is consulted with the file's path before it is read (see `LinkPolicy`). */
++    static load(modelsJsonPath: string | undefined, options?: {
++        linkPolicy?: LinkPolicy;
++    }): Promise<ModelConfig>;
+     getProvider(providerId: string): ModelsJsonProvider | undefined;
+     getProviderIds(): readonly string[];
+     getError(): string | undefined;
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/model-config.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/model-config.js
+index db59339..19c2a8a 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/model-config.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/model-config.js
+@@ -5,6 +5,7 @@ import { Compile } from "typebox/compile";
+ import { stripJsonComments } from "../utils/json.js";
+ import { normalizePath } from "../utils/paths.js";
+ import { stripBom } from "../utils/text.js";
++import { admitsPath } from "./link-policy.js";
+ import { ModelCostSchema, ModelInputLimitsSchema, ModelInputModalitySchema, ModelPromptCacheSchema, PartialModelCostSchema, ProviderCompatSchema, ThinkingLevelMapSchema, } from "./pi-ai-schemas.js";
+ const SamplingParamsSchema = Type.Record(Type.String(), Type.Unknown());
+ const SamplingParamsByThinkingLevelSchema = Type.Object({
+@@ -121,10 +122,14 @@ export class ModelConfig {
+         this.providers = providers;
+         this.error = error;
+     }
+-    static async load(modelsJsonPath) {
++    /** linkPolicy is consulted with the file's path before it is read (see `LinkPolicy`). */
++    static async load(modelsJsonPath, options = {}) {
+         if (!modelsJsonPath)
+             return new ModelConfig(new Map());
+         const path = normalizePath(modelsJsonPath);
++        if (!admitsPath(options.linkPolicy, path)) {
++            return new ModelConfig(new Map(), `Failed to load models.json: the link policy refuses it\n\nFile: ${path}`);
++        }
+         let content;
+         try {
+             content = await readFile(path, "utf-8");
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/model-runtime.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/model-runtime.d.ts
+index 3a04f6f..12cad78 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/model-runtime.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/model-runtime.d.ts
+@@ -1,4 +1,5 @@
+ import { type AnyModel, type Api, type AssistantImages, type AssistantMessage, type AssistantMessageEventStream, type AuthCheck, type AuthInteraction, type AuthOperationOptions, type AuthResult, type AuthType, type ClassifierApi, type ClassifierContext, type ClassifierModel, type ClassifierResult, type Context, type Credential, type CredentialInfo, type CredentialStore, type DeferredHandle, type ImageApi, type ImageModel, type ImagesContext, type LoginOptions, type Message, type Model, type Models, type ModelsApiStreamOptions, type ModelsClassifierOptions, type ModelsDeferredCancelOptions, type ModelsDeferredFetchOptions, type ModelsImagesOptions, type ModelsRefreshOptions, type ModelsRefreshResult, type ModelsSimpleStreamOptions, type ModelsStore, type ModelThinkingLevel, type ModelType, type ModelTypeMap, type Provider } from "@earendil-works/pi-ai";
++import type { LinkPolicy } from "./link-policy.ts";
+ import { type AuthStatus, type CompatibilityRequestConfig, type ProviderConfigInput } from "./provider-composer.ts";
+ import { type ModelRoute, type ModelRouteReason, type VirtualModelDefinition } from "./virtual-models.ts";
+ export interface CreateModelRuntimeOptions {
+@@ -17,6 +18,11 @@ export interface CreateModelRuntimeOptions {
+     signal?: AbortSignal;
+     /** Skip initial catalog and availability refresh. Static models remain available. */
+     refreshOnCreate?: boolean;
++    /**
++     * Consulted with the path of auth.json, models.json and models-store.json before each is read or written (see
++     * `LinkPolicy`); a refused file is handled like one that does not parse, and getError() reports it.
++     */
++    linkPolicy?: LinkPolicy;
+ }
+ export interface ModelRuntimeAuthOverrides extends AuthOperationOptions {
+     apiKey?: string;
+@@ -44,6 +50,7 @@ export declare class ModelRuntime implements Models {
+     private readonly virtualModels;
+     private readonly compositionErrors;
+     private readonly modelsPath;
++    private readonly linkPolicy;
+     private readonly modelNetworkEnabled;
+     private config;
+     private snapshot;
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/model-runtime.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/model-runtime.js
+index d97f080..9e0c32d 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/model-runtime.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/model-runtime.js
+@@ -51,6 +51,7 @@ export class ModelRuntime {
+     virtualModels = new Map();
+     compositionErrors = new Map();
+     modelsPath;
++    linkPolicy;
+     modelNetworkEnabled;
+     config;
+     snapshot = {
+@@ -65,10 +66,11 @@ export class ModelRuntime {
+     providerAvailabilitySeq = new Map();
+     availabilityError;
+     credentialOperations = new Map();
+-    constructor(credentials, config, modelsPath, modelsStore, providers, modelNetworkEnabled) {
++    constructor(credentials, config, modelsPath, modelsStore, providers, modelNetworkEnabled, linkPolicy) {
+         this.credentials = credentials;
+         this.config = config;
+         this.modelsPath = modelsPath;
++        this.linkPolicy = linkPolicy;
+         this.modelNetworkEnabled = modelNetworkEnabled;
+         this.defaultBuiltins = new Map(providers.map((provider) => [provider.id, provider]));
+         for (const [providerId, provider] of this.defaultBuiltins)
+@@ -77,12 +79,15 @@ export class ModelRuntime {
+         this.rebuildProviders();
+     }
+     static async create(options = {}) {
+-        const credentials = new RuntimeCredentials(options.credentials ?? DefaultAuthStorage.create(options.authPath));
++        const linkPolicy = options.linkPolicy;
++        const credentials = new RuntimeCredentials(options.credentials ?? DefaultAuthStorage.create(options.authPath, { linkPolicy }));
+         const modelsPath = options.modelsPath === null ? undefined : (options.modelsPath ?? join(getAgentDir(), "models.json"));
+-        const config = await ModelConfig.load(modelsPath);
++        const config = await ModelConfig.load(modelsPath, { linkPolicy });
+         const modelsStore = options.modelsStore ??
+             (modelsPath
+-                ? new FileModelsStore(options.modelsStorePath ?? join(dirname(modelsPath), "models-store.json"))
++                ? new FileModelsStore(options.modelsStorePath ?? join(dirname(modelsPath), "models-store.json"), {
++                    linkPolicy,
++                })
+                 : new InMemoryCodingAgentModelsStore());
+         const builtinModelDataGeneratedAt = builtinProviderCatalog.getBuiltinModelDataGeneratedAt();
+         const providers = builtinProviderCatalog.builtinProviders().map((provider) => {
+@@ -94,7 +99,7 @@ export class ModelRuntime {
+             }
+             return withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt);
+         });
+-        const runtime = new ModelRuntime(credentials, config, modelsPath, modelsStore, providers, process.env.PI_OFFLINE === undefined);
++        const runtime = new ModelRuntime(credentials, config, modelsPath, modelsStore, providers, process.env.PI_OFFLINE === undefined, linkPolicy);
+         runtime.configureRadiusProviders();
+         runtime.rebuildProviders();
+         const refreshFromNetwork = runtime.modelNetworkEnabled && options.allowModelNetwork === true;
+@@ -595,7 +600,7 @@ export class ModelRuntime {
+         });
+     }
+     async refresh(options = {}) {
+-        this.config = await ModelConfig.load(this.modelsPath);
++        this.config = await ModelConfig.load(this.modelsPath, { linkPolicy: this.linkPolicy });
+         this.configureRadiusProviders();
+         if (options.providers) {
+             for (const providerId of new Set(options.providers))
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/models-store.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/models-store.d.ts
+index 2a78c09..1383dac 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/models-store.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/models-store.d.ts
+@@ -1,4 +1,5 @@
+ import type { ModelsStore, ModelsStoreEntry, ModelsStoreOperationOptions } from "@earendil-works/pi-ai";
++import { type FileAuthStorageOptions } from "./auth-storage.ts";
+ export declare class InMemoryCodingAgentModelsStore implements ModelsStore {
+     private readonly entries;
+     read(providerId: string, options?: ModelsStoreOperationOptions): Promise<ModelsStoreEntry | undefined>;
+@@ -9,8 +10,11 @@ export declare class InMemoryCodingAgentModelsStore implements ModelsStore {
+ export declare class FileModelsStore implements ModelsStore {
+     private readonly storage;
+     private readonly path;
++    private readonly linkPolicy;
+     private readonly readState;
+-    constructor(path?: string);
++    constructor(path?: string, options?: FileAuthStorageOptions);
++    /** The store file's revision, undefined for a file the link policy refuses. */
++    private fileRevision;
+     private parse;
+     private updateReadState;
+     private reloadFromStorage;
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/models-store.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/models-store.js
+index 9cc01b8..a481b60 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/models-store.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/models-store.js
+@@ -4,6 +4,7 @@ import { raceWithAbortSignal } from "../utils/abort.js";
+ import { getFileRevision, normalizePath } from "../utils/paths.js";
+ import { stripBom } from "../utils/text.js";
+ import { FileAuthStorageBackend } from "./auth-storage.js";
++import { admitsPath, assertPathAdmitted } from "./link-policy.js";
+ // Optimize the common path without retaining an unbounded set of custom paths.
+ let sharedModelsFileReadState;
+ export class InMemoryCodingAgentModelsStore {
+@@ -26,16 +27,22 @@ export class InMemoryCodingAgentModelsStore {
+ export class FileModelsStore {
+     storage;
+     path;
++    linkPolicy;
+     readState;
+-    constructor(path = join(getAgentDir(), "models-store.json")) {
++    constructor(path = join(getAgentDir(), "models-store.json"), options = {}) {
+         this.path = normalizePath(path);
+-        this.storage = new FileAuthStorageBackend(this.path);
++        this.linkPolicy = options.linkPolicy;
++        this.storage = new FileAuthStorageBackend(this.path, options);
+         this.readState =
+             sharedModelsFileReadState?.path === this.path ? sharedModelsFileReadState.readState : { data: {} };
+         if (!sharedModelsFileReadState) {
+             sharedModelsFileReadState = { path: this.path, readState: this.readState };
+         }
+     }
++    /** The store file's revision, undefined for a file the link policy refuses. */
++    fileRevision() {
++        return admitsPath(this.linkPolicy, this.path) ? getFileRevision(this.path) : undefined;
++    }
+     parse(content) {
+         return content ? JSON.parse(stripBom(content)) : {};
+     }
+@@ -46,13 +53,13 @@ export class FileModelsStore {
+     reloadFromStorage(readState, options) {
+         return this.storage.withLockAsync(async (content) => {
+             const data = this.parse(content);
+-            this.updateReadState(readState, data, getFileRevision(this.path));
++            this.updateReadState(readState, data, this.fileRevision());
+             return { result: data };
+         }, options);
+     }
+     async readLatest(readState, options) {
+         options?.signal?.throwIfAborted();
+-        const revision = getFileRevision(this.path);
++        const revision = this.fileRevision();
+         if (revision !== undefined && revision === readState.revision)
+             return readState.data;
+         if (!readState.reload) {
+@@ -90,6 +97,7 @@ export class FileModelsStore {
+         return entry ? structuredClone(entry) : undefined;
+     }
+     async write(providerId, entry, options) {
++        assertPathAdmitted(this.linkPolicy, this.path, "write");
+         let latest;
+         await this.storage.withLockAsync(async (content) => {
+             const current = this.parse(content);
+@@ -101,6 +109,7 @@ export class FileModelsStore {
+             this.updateReadState(this.readState, latest);
+     }
+     async delete(providerId, options) {
++        assertPathAdmitted(this.linkPolicy, this.path, "write");
+         let latest;
+         await this.storage.withLockAsync(async (content) => {
+             const current = this.parse(content);
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/package-manager.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/package-manager.d.ts
+index ef4b947..f122bd1 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/package-manager.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/package-manager.d.ts
+@@ -1,3 +1,5 @@
++import type { ResourceDiagnostic } from "./diagnostics.ts";
++import { type LinkPolicy } from "./link-policy.ts";
+ import type { SettingsManager } from "./settings-manager.ts";
+ /** Whether PI_OFFLINE is set; package installs and updates then skip all network access. */
+ export declare function isOfflineModeEnabled(): boolean;
+@@ -21,6 +23,15 @@ export interface ResolvedPaths {
+     themes: ResolvedResource[];
+     /** Configured packages that were skipped because installing them failed. */
+     installFailures?: PackageInstallFailure[];
++    /** Links and folders the resource walks skipped, by the resource type they were collecting. */
++    diagnostics?: ResolvedPathDiagnostics;
++}
++/** Diagnostics of resource discovery, by resource type; a skipped package root is an extensions diagnostic. */
++export interface ResolvedPathDiagnostics {
++    extensions: ResourceDiagnostic[];
++    skills: ResourceDiagnostic[];
++    prompts: ResourceDiagnostic[];
++    themes: ResourceDiagnostic[];
+ }
+ /** A configured package that could not be installed while resolving resources. */
+ export interface PackageInstallFailure {
+@@ -89,6 +100,8 @@ interface PackageManagerOptions {
+     settingsManager: SettingsManager;
+     /** Names of built-in extensions, resolved as `builtin:<name>` extension resources. */
+     builtinExtensions?: string[];
++    /** Consulted before a resource walk follows a link (see `LinkPolicy`). */
++    linkPolicy?: LinkPolicy;
+ }
+ type SourceScope = "user" | "project" | "temporary";
+ export declare function getExtensionTempFolder(agentDir: string): string;
+@@ -97,6 +110,7 @@ export declare class DefaultPackageManager implements PackageManager {
+     private agentDir;
+     private settingsManager;
+     private builtinExtensions;
++    private linkPolicy;
+     private globalNpmRoot;
+     private globalNpmRootCommandKey;
+     private progressCallback;
+@@ -226,6 +240,7 @@ export declare class DefaultPackageManager implements PackageManager {
+     private resolveLocalEntries;
+     private addAutoDiscoveredResources;
+     private collectFilesFromPaths;
++    private walkContext;
+     private getTargetMap;
+     private addResource;
+     private createAccumulator;
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/package-manager.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/package-manager.js
+index ca3f474..b5b342a 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/package-manager.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/package-manager.js
+@@ -22,13 +22,14 @@ function getEnv() {
+ }
+ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+ import ignore from "ignore";
+-import { minimatch } from "minimatch";
++import { Minimatch, minimatch } from "minimatch";
+ import { gt, maxSatisfying, rcompare, satisfies, valid, validRange } from "semver";
+ import { CONFIG_DIR_NAME } from "../config.js";
+ import { spawnProcess, spawnProcessSync } from "../utils/child-process.js";
+ import { parseGitUrl } from "../utils/git.js";
+ import { canonicalizePath, getPathComparisonKey, isLocalPath, markPathIgnoredByCloudSync, normalizePath, pathsEqual, resolvePath, } from "../utils/paths.js";
+ import { stripBom } from "../utils/text.js";
++import { admitsEntry, admitsPath, assertPathAdmitted, enterFolder, } from "./link-policy.js";
+ import { isStdoutTakenOver } from "./output-guard.js";
+ import { readPiManifest } from "./pi-manifest.js";
+ import { BUILTIN_PATH_PREFIX, getResourcePathKey } from "./source-info.js";
+@@ -110,12 +111,12 @@ function prefixIgnorePattern(line, prefix) {
+     const prefixed = prefix ? `${prefix}${pattern}` : pattern;
+     return negated ? `!${prefixed}` : prefixed;
+ }
+-function addIgnoreRules(ig, dir, rootDir) {
++function addIgnoreRules(ig, dir, rootDir, context) {
+     const relativeDir = relative(rootDir, dir);
+     const prefix = relativeDir ? `${toPosixPath(relativeDir)}/` : "";
+     for (const filename of IGNORE_FILE_NAMES) {
+         const ignorePath = join(dir, filename);
+-        if (!existsSync(ignorePath))
++        if (!admitsEntry(context.linkPolicy, ignorePath, context.diagnostics) || !existsSync(ignorePath))
+             continue;
+         try {
+             const content = readFileSync(ignorePath, "utf-8");
+@@ -139,10 +140,83 @@ function isOverridePattern(s) {
+ function hasGlobPattern(s) {
+     return s.includes("*") || s.includes("?");
+ }
++/** readPiManifest of dir's package.json, or null for a link the policy refuses, whose refusal goes to diagnostics. */
++function readPackageManifest(dir, linkPolicy, diagnostics) {
++    const packageJsonPath = join(dir, "package.json");
++    return admitsEntry(linkPolicy, packageJsonPath, diagnostics) ? readPiManifest(packageJsonPath) : null;
++}
++// A segment holding any of these is a pattern, never taken as a literal folder name.
++const GLOB_MAGIC = /[*?[\]{}()!+@]/;
++/**
++ * Glob expansion under a link policy: a readdir walk from the pattern's literal base that asks the policy before it
++ * stats a link, enters an admitted link to a folder the walk has not entered, and never touches a refused one. Unlike
++ * fs.globSync it follows admitted links below `**` too. Dot entries are skipped, as expandPackageGlob drops them.
++ */
++function globAskingLinks(pattern, root, context) {
++    const segments = pattern.split(process.platform === "win32" ? /[\\/]/ : "/");
++    const firstPattern = segments.findIndex((segment) => GLOB_MAGIC.test(segment));
++    const prefix = segments.slice(0, firstPattern).join("/");
++    const base = resolve(root, prefix);
++    if (prefix && !admitsPath(context.linkPolicy, base, context.diagnostics))
++        return [];
++    // fs.globSync's matcher options, but unoptimized, so the literal prefix stays as spelled in the paths it is matched with.
++    const matcher = new Minimatch(pattern, {
++        nocase: process.platform === "win32" || process.platform === "darwin",
++        windowsPathsNoEscape: true,
++        nonegate: true,
++        nocomment: true,
++        optimizationLevel: 0,
++        platform: process.platform,
++    });
++    const matches = [];
++    const visited = new Set();
++    const walk = (dir, relDir) => {
++        if (!enterFolder(visited, dir, context.diagnostics))
++            return;
++        let entries;
++        try {
++            entries = readdirSync(dir, { withFileTypes: true });
++        }
++        catch {
++            // As in fs.globSync, a folder that cannot be listed has no matches.
++            return;
++        }
++        for (const entry of entries) {
++            if (entry.name.startsWith("."))
++                continue;
++            const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
++            const matched = matcher.match(rel);
++            if (matched)
++                matches.push(resolve(root, rel));
++            if (!matcher.match(rel, true))
++                continue;
++            const fullPath = join(dir, entry.name);
++            let isDir = entry.isDirectory();
++            if (entry.isSymbolicLink()) {
++                // The caller asks again, and reports, about a link that is itself a match.
++                if (!admitsPath(context.linkPolicy, fullPath, matched ? undefined : context.diagnostics))
++                    continue;
++                try {
++                    isDir = statSync(fullPath).isDirectory();
++                }
++                catch {
++                    // A broken link has nothing to walk.
++                    continue;
++                }
++            }
++            if (isDir)
++                walk(fullPath, rel);
++        }
++    };
++    walk(base, prefix);
++    return matches;
++}
+ /** Glob entries discover visible paths; exact entries can target dot paths or symlinked trees. */
+-function expandPackageGlob(pattern, root) {
+-    return globSync(pattern, { cwd: root })
+-        .map((match) => resolve(root, match))
++function expandPackageGlob(pattern, root, context) {
++    const matches = context.linkPolicy
++        ? globAskingLinks(pattern, root, context)
++        : globSync(pattern, { cwd: root }).map((match) => resolve(root, match));
++    return matches
+         .filter((path) => relative(root, path)
+         .split(sep)
+         .every((segment) => segment === ".." || !segment.startsWith(".")))
+@@ -161,13 +235,17 @@ function splitPatterns(entries) {
+     }
+     return { plain, patterns };
+ }
+-function collectFiles(dir, filePattern, skipNodeModules = true, ignoreMatcher, rootDir) {
++function collectFiles(dir, filePattern, context, visited = new Set(), skipNodeModules = true, ignoreMatcher, rootDir) {
+     const files = [];
++    if (rootDir === undefined && !admitsPath(context.linkPolicy, dir, context.diagnostics))
++        return files;
+     if (!existsSync(dir))
+         return files;
++    if (!enterFolder(visited, dir, context.diagnostics))
++        return files;
+     const root = rootDir ?? dir;
+     const ig = ignoreMatcher ?? ignore();
+-    addIgnoreRules(ig, dir, root);
++    addIgnoreRules(ig, dir, root, context);
+     try {
+         const entries = readdirSync(dir, { withFileTypes: true });
+         for (const entry of entries) {
+@@ -179,6 +257,8 @@ function collectFiles(dir, filePattern, skipNodeModules = true, ignoreMatcher, r
+             let isDir = entry.isDirectory();
+             let isFile = entry.isFile();
+             if (entry.isSymbolicLink()) {
++                if (!admitsPath(context.linkPolicy, fullPath, context.diagnostics))
++                    continue;
+                 try {
+                     const stats = statSync(fullPath);
+                     isDir = stats.isDirectory();
+@@ -193,7 +273,7 @@ function collectFiles(dir, filePattern, skipNodeModules = true, ignoreMatcher, r
+             if (ig.ignores(ignorePath))
+                 continue;
+             if (isDir) {
+-                files.push(...collectFiles(fullPath, filePattern, skipNodeModules, ig, root));
++                files.push(...collectFiles(fullPath, filePattern, context, visited, skipNodeModules, ig, root));
+             }
+             else if (isFile && filePattern.test(entry.name)) {
+                 files.push(fullPath);
+@@ -205,13 +285,17 @@ function collectFiles(dir, filePattern, skipNodeModules = true, ignoreMatcher, r
+     }
+     return files;
+ }
+-function collectSkillEntries(dir, mode, ignoreMatcher, rootDir) {
++function collectSkillEntries(dir, mode, context, visited = new Set(), ignoreMatcher, rootDir) {
+     const entries = [];
++    if (rootDir === undefined && !admitsPath(context.linkPolicy, dir, context.diagnostics))
++        return entries;
+     if (!existsSync(dir))
+         return entries;
++    if (!enterFolder(visited, dir, context.diagnostics))
++        return entries;
+     const root = rootDir ?? dir;
+     const ig = ignoreMatcher ?? ignore();
+-    addIgnoreRules(ig, dir, root);
++    addIgnoreRules(ig, dir, root, context);
+     try {
+         const dirEntries = readdirSync(dir, { withFileTypes: true });
+         for (const entry of dirEntries) {
+@@ -221,6 +305,8 @@ function collectSkillEntries(dir, mode, ignoreMatcher, rootDir) {
+             const fullPath = join(dir, entry.name);
+             let isFile = entry.isFile();
+             if (entry.isSymbolicLink()) {
++                if (!admitsPath(context.linkPolicy, fullPath, context.diagnostics))
++                    continue;
+                 try {
+                     isFile = statSync(fullPath).isFile();
+                 }
+@@ -243,6 +329,8 @@ function collectSkillEntries(dir, mode, ignoreMatcher, rootDir) {
+             let isDir = entry.isDirectory();
+             let isFile = entry.isFile();
+             if (entry.isSymbolicLink()) {
++                if (!admitsPath(context.linkPolicy, fullPath, context.diagnostics))
++                    continue;
+                 try {
+                     const stats = statSync(fullPath);
+                     isDir = stats.isDirectory();
+@@ -265,7 +353,7 @@ function collectSkillEntries(dir, mode, ignoreMatcher, rootDir) {
+                 continue;
+             if (ig.ignores(`${relPath}/`))
+                 continue;
+-            entries.push(...collectSkillEntries(fullPath, mode, ig, root));
++            entries.push(...collectSkillEntries(fullPath, mode, context, visited, ig, root));
+         }
+     }
+     catch {
+@@ -273,13 +361,15 @@ function collectSkillEntries(dir, mode, ignoreMatcher, rootDir) {
+     }
+     return entries;
+ }
+-function collectAutoSkillEntries(dir, mode) {
+-    return collectSkillEntries(dir, mode);
++function collectAutoSkillEntries(dir, mode, context) {
++    return collectSkillEntries(dir, mode, context);
+ }
+-function findGitRepoRoot(startDir) {
++function findGitRepoRoot(startDir, context) {
+     let dir = resolve(startDir);
+     while (true) {
+-        if (existsSync(join(dir, ".git"))) {
++        const gitPath = join(dir, ".git");
++        // A `.git` link the policy refuses still marks the repository root; its target is never touched.
++        if (!admitsEntry(context.linkPolicy, gitPath, context.diagnostics) || existsSync(gitPath)) {
+             return dir;
+         }
+         const parent = dirname(dir);
+@@ -289,10 +379,10 @@ function findGitRepoRoot(startDir) {
+         dir = parent;
+     }
+ }
+-function collectAncestorAgentsSkillDirs(startDir) {
++function collectAncestorAgentsSkillDirs(startDir, context) {
+     const skillDirs = [];
+     const resolvedStartDir = resolve(startDir);
+-    const gitRepoRoot = findGitRepoRoot(resolvedStartDir);
++    const gitRepoRoot = findGitRepoRoot(resolvedStartDir, context);
+     let dir = resolvedStartDir;
+     while (true) {
+         skillDirs.push(join(dir, ".agents", "skills"));
+@@ -307,12 +397,12 @@ function collectAncestorAgentsSkillDirs(startDir) {
+     }
+     return skillDirs;
+ }
+-function collectAutoPromptEntries(dir) {
++function collectAutoPromptEntries(dir, context) {
+     const entries = [];
+-    if (!existsSync(dir))
++    if (!admitsPath(context.linkPolicy, dir, context.diagnostics) || !existsSync(dir))
+         return entries;
+     const ig = ignore();
+-    addIgnoreRules(ig, dir, dir);
++    addIgnoreRules(ig, dir, dir, context);
+     try {
+         const dirEntries = readdirSync(dir, { withFileTypes: true });
+         for (const entry of dirEntries) {
+@@ -323,6 +413,8 @@ function collectAutoPromptEntries(dir) {
+             const fullPath = join(dir, entry.name);
+             let isFile = entry.isFile();
+             if (entry.isSymbolicLink()) {
++                if (!admitsPath(context.linkPolicy, fullPath, context.diagnostics))
++                    continue;
+                 try {
+                     isFile = statSync(fullPath).isFile();
+                 }
+@@ -343,12 +435,12 @@ function collectAutoPromptEntries(dir) {
+     }
+     return entries;
+ }
+-function collectAutoThemeEntries(dir) {
++function collectAutoThemeEntries(dir, context) {
+     const entries = [];
+-    if (!existsSync(dir))
++    if (!admitsPath(context.linkPolicy, dir, context.diagnostics) || !existsSync(dir))
+         return entries;
+     const ig = ignore();
+-    addIgnoreRules(ig, dir, dir);
++    addIgnoreRules(ig, dir, dir, context);
+     try {
+         const dirEntries = readdirSync(dir, { withFileTypes: true });
+         for (const entry of dirEntries) {
+@@ -359,6 +451,8 @@ function collectAutoThemeEntries(dir) {
+             const fullPath = join(dir, entry.name);
+             let isFile = entry.isFile();
+             if (entry.isSymbolicLink()) {
++                if (!admitsPath(context.linkPolicy, fullPath, context.diagnostics))
++                    continue;
+                 try {
+                     isFile = statSync(fullPath).isFile();
+                 }
+@@ -379,15 +473,15 @@ function collectAutoThemeEntries(dir) {
+     }
+     return entries;
+ }
+-function resolveExtensionEntries(dir) {
++function resolveExtensionEntries(dir, context) {
+     const packageJsonPath = join(dir, "package.json");
+-    if (existsSync(packageJsonPath)) {
++    if (admitsEntry(context.linkPolicy, packageJsonPath, context.diagnostics) && existsSync(packageJsonPath)) {
+         const manifest = readPiManifest(packageJsonPath);
+         if (manifest?.extensions?.length) {
+             const entries = [];
+             for (const extPath of manifest.extensions) {
+                 const resolvedExtPath = resolve(dir, extPath);
+-                if (existsSync(resolvedExtPath)) {
++                if (admitsPath(context.linkPolicy, resolvedExtPath, context.diagnostics) && existsSync(resolvedExtPath)) {
+                     entries.push(resolvedExtPath);
+                 }
+             }
+@@ -398,26 +492,26 @@ function resolveExtensionEntries(dir) {
+     }
+     const indexTs = join(dir, "index.ts");
+     const indexJs = join(dir, "index.js");
+-    if (existsSync(indexTs)) {
++    if (admitsEntry(context.linkPolicy, indexTs, context.diagnostics) && existsSync(indexTs)) {
+         return [indexTs];
+     }
+-    if (existsSync(indexJs)) {
++    if (admitsEntry(context.linkPolicy, indexJs, context.diagnostics) && existsSync(indexJs)) {
+         return [indexJs];
+     }
+     return null;
+ }
+-function collectAutoExtensionEntries(dir) {
++function collectAutoExtensionEntries(dir, context) {
+     const entries = [];
+-    if (!existsSync(dir))
++    if (!admitsPath(context.linkPolicy, dir, context.diagnostics) || !existsSync(dir))
+         return entries;
+     // First check if this directory itself has explicit extension entries (package.json or index)
+-    const rootEntries = resolveExtensionEntries(dir);
++    const rootEntries = resolveExtensionEntries(dir, context);
+     if (rootEntries) {
+         return rootEntries;
+     }
+     // Otherwise, discover extensions from directory contents
+     const ig = ignore();
+-    addIgnoreRules(ig, dir, dir);
++    addIgnoreRules(ig, dir, dir, context);
+     try {
+         const dirEntries = readdirSync(dir, { withFileTypes: true });
+         for (const entry of dirEntries) {
+@@ -429,6 +523,8 @@ function collectAutoExtensionEntries(dir) {
+             let isDir = entry.isDirectory();
+             let isFile = entry.isFile();
+             if (entry.isSymbolicLink()) {
++                if (!admitsPath(context.linkPolicy, fullPath, context.diagnostics))
++                    continue;
+                 try {
+                     const stats = statSync(fullPath);
+                     isDir = stats.isDirectory();
+@@ -446,7 +542,7 @@ function collectAutoExtensionEntries(dir) {
+                 entries.push(fullPath);
+             }
+             else if (isDir) {
+-                const resolvedEntries = resolveExtensionEntries(fullPath);
++                const resolvedEntries = resolveExtensionEntries(fullPath, context);
+                 if (resolvedEntries) {
+                     entries.push(...resolvedEntries);
+                 }
+@@ -462,14 +558,14 @@ function collectAutoExtensionEntries(dir) {
+  * Collect resource files from a directory based on resource type.
+  * Extensions use smart discovery (index.ts in subdirs), others use recursive collection.
+  */
+-function collectResourceFiles(dir, resourceType) {
++function collectResourceFiles(dir, resourceType, context) {
+     if (resourceType === "skills") {
+-        return collectSkillEntries(dir, "pi");
++        return collectSkillEntries(dir, "pi", context);
+     }
+     if (resourceType === "extensions") {
+-        return collectAutoExtensionEntries(dir);
++        return collectAutoExtensionEntries(dir, context);
+     }
+-    return collectFiles(dir, FILE_PATTERNS[resourceType]);
++    return collectFiles(dir, FILE_PATTERNS[resourceType], context);
+ }
+ // A `pi` object counts as an explicit resource manifest only when it lists resources. Packages whose
+ // `pi` object holds only metadata (changelogPath, gallery image/video) still use directory auto-discovery.
+@@ -480,13 +576,14 @@ function isPathInside(parent, child) {
+     const relativePath = relative(parent, child);
+     return (relativePath !== "" && relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath));
+ }
+-function resolvePackageChangelogPath(packageRoot, manifest) {
++function resolvePackageChangelogPath(packageRoot, manifest, context) {
+     const changelogPath = manifest?.changelogPath ?? "CHANGELOG.md";
+     if (!changelogPath)
+         return undefined;
+     const resolvedPath = resolve(packageRoot, changelogPath);
+-    if (!existsSync(resolvedPath))
++    if (!admitsPath(context.linkPolicy, resolvedPath, context.diagnostics) || !existsSync(resolvedPath)) {
+         return undefined;
++    }
+     const canonicalPackageRoot = canonicalizePath(packageRoot);
+     const canonicalChangelogPath = canonicalizePath(resolvedPath);
+     if (!isPathInside(canonicalPackageRoot, canonicalChangelogPath))
+@@ -637,6 +734,7 @@ export class DefaultPackageManager {
+     agentDir;
+     settingsManager;
+     builtinExtensions;
++    linkPolicy;
+     globalNpmRoot;
+     globalNpmRootCommandKey;
+     progressCallback;
+@@ -645,6 +743,7 @@ export class DefaultPackageManager {
+         this.agentDir = resolvePath(options.agentDir);
+         this.settingsManager = options.settingsManager;
+         this.builtinExtensions = options.builtinExtensions ?? [];
++        this.linkPolicy = options.linkPolicy;
+     }
+     setProgressCallback(callback) {
+         this.progressCallback = callback;
+@@ -701,16 +800,16 @@ export class DefaultPackageManager {
+         const parsed = this.parseSource(source);
+         if (parsed.type === "npm") {
+             const path = this.getNpmInstallPath(parsed, scope);
+-            return existsSync(path) ? path : undefined;
++            return admitsPath(this.linkPolicy, path) && existsSync(path) ? path : undefined;
+         }
+         if (parsed.type === "git") {
+             const path = this.getGitInstallPath(parsed, scope);
+-            return existsSync(path) ? path : undefined;
++            return admitsPath(this.linkPolicy, path) && existsSync(path) ? path : undefined;
+         }
+         if (parsed.type === "local") {
+             const baseDir = this.getBaseDirForScope(scope);
+             const path = this.resolvePathFromBase(parsed.path, baseDir);
+-            return existsSync(path) ? path : undefined;
++            return admitsPath(this.linkPolicy, path) && existsSync(path) ? path : undefined;
+         }
+         return undefined;
+     }
+@@ -750,16 +849,17 @@ export class DefaultPackageManager {
+             const target = this.getTargetMap(accumulator, resourceType);
+             const globalEntries = (globalSettings[resourceType] ?? []);
+             const projectEntries = (projectSettings[resourceType] ?? []);
++            const context = this.walkContext(accumulator, resourceType);
+             this.resolveLocalEntries(projectEntries, resourceType, target, {
+                 source: "local",
+                 scope: "project",
+                 origin: "top-level",
+-            }, projectBaseDir);
++            }, projectBaseDir, context);
+             this.resolveLocalEntries(globalEntries, resourceType, target, {
+                 source: "local",
+                 scope: "user",
+                 origin: "top-level",
+-            }, globalBaseDir);
++            }, globalBaseDir, context);
+         }
+         this.addAutoDiscoveredResources(accumulator, globalSettings, projectSettings, globalBaseDir, projectBaseDir);
+         // Built-in extensions are enabled unless the user `extensions` setting excludes them, for example
+@@ -823,6 +923,7 @@ export class DefaultPackageManager {
+             }
+             if (parsed.type === "local") {
+                 const resolved = this.resolvePath(parsed.path);
++                assertPathAdmitted(this.linkPolicy, resolved, "read");
+                 if (!existsSync(resolved)) {
+                     throw new Error(`Path does not exist: ${resolved}`);
+                 }
+@@ -948,7 +1049,9 @@ export class DefaultPackageManager {
+         const updated = [];
+         for (const { entry } of npmUpdates) {
+             const installedPath = this.getManagedNpmInstallPath(entry.parsed, entry.scope);
+-            const to = existsSync(installedPath) ? this.getInstalledNpmVersion(installedPath) : undefined;
++            const to = admitsPath(this.linkPolicy, installedPath) && existsSync(installedPath)
++                ? this.getInstalledNpmVersion(installedPath)
++                : undefined;
+             if (to !== entry.installedVersion) {
+                 updated.push({ source: entry.source, type: "npm", scope: entry.scope, from: entry.installedVersion, to });
+             }
+@@ -972,7 +1075,7 @@ export class DefaultPackageManager {
+         }
+     }
+     async getGitHead(targetDir) {
+-        if (!existsSync(targetDir))
++        if (!admitsPath(this.linkPolicy, targetDir) || !existsSync(targetDir))
+             return undefined;
+         try {
+             const head = await this.runCommandCapture("git", ["rev-parse", "HEAD"], {
+@@ -987,6 +1090,9 @@ export class DefaultPackageManager {
+     }
+     async shouldUpdateNpmSource(source, scope) {
+         const installedPath = this.getManagedNpmInstallPath(source, scope);
++        if (!admitsPath(this.linkPolicy, installedPath)) {
++            return { shouldUpdate: false };
++        }
+         const installedVersion = existsSync(installedPath) ? this.getInstalledNpmVersion(installedPath) : undefined;
+         if (!installedVersion) {
+             return { shouldUpdate: true };
+@@ -1007,6 +1113,9 @@ export class DefaultPackageManager {
+         const sourceLabel = sources.length === 1 ? sources[0].source : `${scope} npm packages`;
+         const message = sources.length === 1 ? `Updating ${sources[0].source}...` : `Updating ${scope} npm packages...`;
+         const specs = sources.map((entry) => (entry.parsed.version ? entry.parsed.spec : `${entry.parsed.name}@latest`));
++        for (const entry of sources) {
++            assertPathAdmitted(this.linkPolicy, this.getManagedNpmInstallPath(entry.parsed, scope), "write");
++        }
+         await this.withProgress("update", sourceLabel, message, async () => {
+             await this.installNpmBatch(specs, scope);
+         });
+@@ -1063,7 +1172,7 @@ export class DefaultPackageManager {
+             }
+             if (parsed.type === "npm") {
+                 const installedPath = this.getNpmInstallPath(parsed, entry.scope);
+-                if (!existsSync(installedPath)) {
++                if (!admitsPath(this.linkPolicy, installedPath) || !existsSync(installedPath)) {
+                     return undefined;
+                 }
+                 const hasUpdate = await this.npmHasAvailableUpdate(parsed, installedPath);
+@@ -1078,7 +1187,7 @@ export class DefaultPackageManager {
+                 };
+             }
+             const installedPath = this.getGitInstallPath(parsed, entry.scope);
+-            if (!existsSync(installedPath)) {
++            if (!admitsPath(this.linkPolicy, installedPath) || !existsSync(installedPath)) {
+                 return undefined;
+             }
+             const hasUpdate = await this.gitHasAvailableUpdate(installedPath);
+@@ -1137,6 +1246,8 @@ export class DefaultPackageManager {
+             };
+             if (parsed.type === "npm") {
+                 let installedPath = this.getNpmInstallPath(parsed, resolvedScope);
++                if (!admitsPath(this.linkPolicy, installedPath, accumulator.diagnostics.extensions))
++                    continue;
+                 const needsInstall = !existsSync(installedPath) || !(await this.installedNpmMatchesConfiguredVersion(parsed, installedPath));
+                 if (!needsInstall &&
+                     resolvedScope === "temporary" &&
+@@ -1166,6 +1277,8 @@ export class DefaultPackageManager {
+             }
+             if (parsed.type === "git") {
+                 const installedPath = this.getGitInstallPath(parsed, resolvedScope);
++                if (!admitsPath(this.linkPolicy, installedPath, accumulator.diagnostics.extensions))
++                    continue;
+                 if (!existsSync(installedPath)) {
+                     const installed = await installMissing();
+                     if (!installed)
+@@ -1191,7 +1304,7 @@ export class DefaultPackageManager {
+     }
+     resolveLocalExtensionSource(source, accumulator, filter, metadata, baseDir) {
+         const resolved = this.resolvePathFromBase(source.path, baseDir);
+-        if (!existsSync(resolved)) {
++        if (!admitsPath(this.linkPolicy, resolved, accumulator.diagnostics.extensions) || !existsSync(resolved)) {
+             return;
+         }
+         try {
+@@ -1340,7 +1453,7 @@ export class DefaultPackageManager {
+     }
+     getInstalledNpmVersion(installedPath) {
+         const packageJsonPath = join(installedPath, "package.json");
+-        if (!existsSync(packageJsonPath))
++        if (!admitsEntry(this.linkPolicy, packageJsonPath) || !existsSync(packageJsonPath))
+             return undefined;
+         try {
+             const content = readFileSync(packageJsonPath, "utf-8");
+@@ -1653,12 +1766,15 @@ export class DefaultPackageManager {
+         return ["install", ...specs, "--prefix", installRoot, "--legacy-peer-deps", "--no-audit", "--no-fund"];
+     }
+     async installNpm(source, scope, temporary) {
++        assertPathAdmitted(this.linkPolicy, this.getManagedNpmInstallPath(source, scope), "write");
+         const installRoot = this.getNpmInstallRoot(scope, temporary);
+         this.ensureNpmProject(installRoot);
+         await this.runNpmCommand(this.getNpmInstallArgs([source.spec], installRoot));
+     }
+     async uninstallNpm(source, scope) {
+         const root = this.getNpmInstallRoot(scope, false);
++        assertPathAdmitted(this.linkPolicy, root, "write");
++        assertPathAdmitted(this.linkPolicy, this.getManagedNpmInstallPath(source, scope), "write");
+         if (!existsSync(root)) {
+             return;
+         }
+@@ -1677,6 +1793,7 @@ export class DefaultPackageManager {
+     }
+     async installGit(source, scope) {
+         const targetDir = this.getGitInstallPath(source, scope);
++        assertPathAdmitted(this.linkPolicy, targetDir, "write");
+         if (existsSync(targetDir)) {
+             if (source.ref) {
+                 await this.ensureGitRef(targetDir, ["fetch", "origin", source.ref], "FETCH_HEAD");
+@@ -1698,7 +1815,7 @@ export class DefaultPackageManager {
+                 await this.runCommand("git", ["checkout", source.ref], { cwd: targetDir });
+             }
+             const packageJsonPath = join(targetDir, "package.json");
+-            if (existsSync(packageJsonPath)) {
++            if (admitsEntry(this.linkPolicy, packageJsonPath) && existsSync(packageJsonPath)) {
+                 await this.runNpmCommand(this.getGitDependencyInstallArgs(), { cwd: targetDir });
+             }
+         }
+@@ -1710,6 +1827,7 @@ export class DefaultPackageManager {
+     }
+     async updateGit(source, scope) {
+         const targetDir = this.getGitInstallPath(source, scope);
++        assertPathAdmitted(this.linkPolicy, targetDir, "write");
+         if (!existsSync(targetDir)) {
+             await this.installGit(source, scope);
+             return;
+@@ -1723,7 +1841,7 @@ export class DefaultPackageManager {
+     }
+     hasMissingGitDependencies(targetDir) {
+         const packageJsonPath = join(targetDir, "package.json");
+-        if (!existsSync(packageJsonPath))
++        if (!admitsEntry(this.linkPolicy, packageJsonPath) || !existsSync(packageJsonPath))
+             return false;
+         try {
+             const manifest = JSON.parse(stripBom(readFileSync(packageJsonPath, "utf-8")));
+@@ -1737,7 +1855,7 @@ export class DefaultPackageManager {
+                 const dependencyPath = resolve(nodeModulesDir, name);
+                 if (!dependencyPath.startsWith(`${nodeModulesDir}${sep}`))
+                     return false;
+-                return !existsSync(dependencyPath);
++                return admitsPath(this.linkPolicy, dependencyPath) && !existsSync(dependencyPath);
+             });
+         }
+         catch {
+@@ -1772,7 +1890,7 @@ export class DefaultPackageManager {
+             });
+         }
+         const packageJsonPath = join(targetDir, "package.json");
+-        if (existsSync(packageJsonPath)) {
++        if (admitsEntry(this.linkPolicy, packageJsonPath) && existsSync(packageJsonPath)) {
+             await this.runNpmCommand(this.getGitDependencyInstallArgs(), { cwd: targetDir });
+         }
+         if (cleaned) {
+@@ -1831,6 +1949,7 @@ export class DefaultPackageManager {
+     }
+     async removeGit(source, scope) {
+         const targetDir = this.getGitInstallPath(source, scope);
++        assertPathAdmitted(this.linkPolicy, targetDir, "write");
+         rmSync(targetDir, { recursive: true, force: true });
+         rmSync(this.getGitUpdateMarkerPath(targetDir), { force: true });
+         this.pruneEmptyGitParents(targetDir, this.getGitInstallRoot(scope));
+@@ -1859,6 +1978,7 @@ export class DefaultPackageManager {
+         }
+     }
+     ensureNpmProject(installRoot) {
++        assertPathAdmitted(this.linkPolicy, installRoot, "write");
+         if (!existsSync(installRoot)) {
+             mkdirSync(installRoot, { recursive: true });
+         }
+@@ -1938,11 +2058,12 @@ export class DefaultPackageManager {
+     }
+     getNpmInstallPath(source, scope) {
+         const managedPath = this.getManagedNpmInstallPath(source, scope);
+-        if (scope !== "user" || existsSync(managedPath)) {
++        if (scope !== "user" || !admitsPath(this.linkPolicy, managedPath) || existsSync(managedPath)) {
+             return managedPath;
+         }
+         const legacyPath = this.getLegacyGlobalNpmInstallPath(source);
+-        return legacyPath && existsSync(legacyPath) ? legacyPath : managedPath;
++        // A legacy install the policy refuses cannot be used, so the managed root serves the package.
++        return legacyPath && admitsPath(this.linkPolicy, legacyPath) && existsSync(legacyPath) ? legacyPath : managedPath;
+     }
+     getGitInstallPath(source, scope) {
+         if (scope === "temporary") {
+@@ -1998,8 +2119,12 @@ export class DefaultPackageManager {
+         return resolvePath(input, baseDir, { homeDir: getHomeDir(), trim: true });
+     }
+     collectPackageResources(packageRoot, accumulator, filter, metadata) {
+-        const manifest = readPiManifest(join(packageRoot, "package.json"));
+-        const changelogPath = resolvePackageChangelogPath(packageRoot, manifest);
++        if (!admitsPath(this.linkPolicy, packageRoot, accumulator.diagnostics.extensions)) {
++            return false;
++        }
++        const packageContext = { linkPolicy: this.linkPolicy, diagnostics: accumulator.diagnostics.extensions };
++        const manifest = readPackageManifest(packageRoot, this.linkPolicy, packageContext.diagnostics);
++        const changelogPath = resolvePackageChangelogPath(packageRoot, manifest, packageContext);
+         if (changelogPath) {
+             metadata.changelogPath = changelogPath;
+         }
+@@ -2010,14 +2135,15 @@ export class DefaultPackageManager {
+             for (const resourceType of RESOURCE_TYPES) {
+                 const patterns = filter[resourceType];
+                 const target = this.getTargetMap(accumulator, resourceType);
++                const context = this.walkContext(accumulator, resourceType);
+                 if (filter.autoload === false) {
+-                    this.applyPackageDeltaFilter(packageRoot, patterns ?? [], resourceType, target, metadata);
++                    this.applyPackageDeltaFilter(packageRoot, patterns ?? [], resourceType, target, metadata, context);
+                 }
+                 else if (patterns !== undefined) {
+-                    this.applyPackageFilter(packageRoot, patterns, resourceType, target, metadata);
++                    this.applyPackageFilter(packageRoot, patterns, resourceType, target, metadata, context);
+                 }
+                 else {
+-                    this.collectDefaultResources(packageRoot, resourceType, target, metadata);
++                    this.collectDefaultResources(packageRoot, resourceType, target, metadata, context);
+                 }
+             }
+             return true;
+@@ -2025,16 +2151,17 @@ export class DefaultPackageManager {
+         if (manifest && hasManifestResourceFields(manifest)) {
+             for (const resourceType of RESOURCE_TYPES) {
+                 const entries = manifest[resourceType];
+-                this.addManifestEntries(entries, packageRoot, resourceType, this.getTargetMap(accumulator, resourceType), metadata);
++                this.addManifestEntries(entries, packageRoot, resourceType, this.getTargetMap(accumulator, resourceType), metadata, this.walkContext(accumulator, resourceType));
+             }
+             return true;
+         }
+         let hasAnyDir = false;
+         for (const resourceType of RESOURCE_TYPES) {
+             const dir = join(packageRoot, resourceType);
+-            if (existsSync(dir)) {
++            const context = this.walkContext(accumulator, resourceType);
++            if (admitsPath(context.linkPolicy, dir, context.diagnostics) && existsSync(dir)) {
+                 // Collect all files from the directory (all enabled by default)
+-                const files = collectResourceFiles(dir, resourceType);
++                const files = collectResourceFiles(dir, resourceType, context);
+                 for (const f of files) {
+                     this.addResource(this.getTargetMap(accumulator, resourceType), f, metadata, true);
+                 }
+@@ -2043,24 +2170,24 @@ export class DefaultPackageManager {
+         }
+         return hasAnyDir;
+     }
+-    collectDefaultResources(packageRoot, resourceType, target, metadata) {
+-        const manifest = readPiManifest(join(packageRoot, "package.json"));
++    collectDefaultResources(packageRoot, resourceType, target, metadata, context) {
++        const manifest = readPackageManifest(packageRoot, context.linkPolicy);
+         const entries = manifest?.[resourceType];
+         if (entries) {
+-            this.addManifestEntries(entries, packageRoot, resourceType, target, metadata);
++            this.addManifestEntries(entries, packageRoot, resourceType, target, metadata, context);
+             return;
+         }
+         const dir = join(packageRoot, resourceType);
+-        if (existsSync(dir)) {
++        if (admitsPath(context.linkPolicy, dir, context.diagnostics) && existsSync(dir)) {
+             // Collect all files from the directory (all enabled by default)
+-            const files = collectResourceFiles(dir, resourceType);
++            const files = collectResourceFiles(dir, resourceType, context);
+             for (const f of files) {
+                 this.addResource(target, f, metadata, true);
+             }
+         }
+     }
+-    applyPackageFilter(packageRoot, userPatterns, resourceType, target, metadata) {
+-        const { allFiles } = this.collectManifestFiles(packageRoot, resourceType);
++    applyPackageFilter(packageRoot, userPatterns, resourceType, target, metadata, context) {
++        const { allFiles } = this.collectManifestFiles(packageRoot, resourceType, context);
+         if (userPatterns.length === 0) {
+             // Empty array explicitly disables all resources of this type
+             for (const f of allFiles) {
+@@ -2075,11 +2202,11 @@ export class DefaultPackageManager {
+             this.addResource(target, f, metadata, enabled);
+         }
+     }
+-    applyPackageDeltaFilter(packageRoot, userPatterns, resourceType, target, metadata) {
++    applyPackageDeltaFilter(packageRoot, userPatterns, resourceType, target, metadata, context) {
+         if (userPatterns.length === 0) {
+             return;
+         }
+-        const { allFiles } = this.collectManifestFiles(packageRoot, resourceType);
++        const { allFiles } = this.collectManifestFiles(packageRoot, resourceType, context);
+         const enabledByUser = applyAutoloadDisabledPatterns(allFiles, userPatterns, packageRoot);
+         for (const [filePath, enabled] of enabledByUser) {
+             this.addResource(target, filePath, metadata, enabled);
+@@ -2090,26 +2217,26 @@ export class DefaultPackageManager {
+      * Returns { allFiles, enabledByManifest } where enabledByManifest is the set of files
+      * that pass the manifest's own patterns.
+      */
+-    collectManifestFiles(packageRoot, resourceType) {
+-        const manifest = readPiManifest(join(packageRoot, "package.json"));
++    collectManifestFiles(packageRoot, resourceType, context) {
++        const manifest = readPackageManifest(packageRoot, context.linkPolicy);
+         const entries = manifest?.[resourceType];
+         if (entries && entries.length > 0) {
+-            const allFiles = this.collectFilesFromManifestEntries(entries, packageRoot, resourceType);
++            const allFiles = this.collectFilesFromManifestEntries(entries, packageRoot, resourceType, context);
+             const manifestPatterns = entries.filter(isOverridePattern);
+             const enabledByManifest = manifestPatterns.length > 0 ? applyPatterns(allFiles, manifestPatterns, packageRoot) : new Set(allFiles);
+             return { allFiles: Array.from(enabledByManifest), enabledByManifest };
+         }
+         const conventionDir = join(packageRoot, resourceType);
+-        if (!existsSync(conventionDir)) {
++        if (!admitsPath(context.linkPolicy, conventionDir, context.diagnostics) || !existsSync(conventionDir)) {
+             return { allFiles: [], enabledByManifest: new Set() };
+         }
+-        const allFiles = collectResourceFiles(conventionDir, resourceType);
++        const allFiles = collectResourceFiles(conventionDir, resourceType, context);
+         return { allFiles, enabledByManifest: new Set(allFiles) };
+     }
+-    addManifestEntries(entries, root, resourceType, target, metadata) {
++    addManifestEntries(entries, root, resourceType, target, metadata, context) {
+         if (!entries)
+             return;
+-        const allFiles = this.collectFilesFromManifestEntries(entries, root, resourceType);
++        const allFiles = this.collectFilesFromManifestEntries(entries, root, resourceType, context);
+         const patterns = entries.filter(isOverridePattern);
+         const enabledPaths = applyPatterns(allFiles, patterns, root);
+         for (const f of allFiles) {
+@@ -2118,23 +2245,23 @@ export class DefaultPackageManager {
+             }
+         }
+     }
+-    collectFilesFromManifestEntries(entries, root, resourceType) {
++    collectFilesFromManifestEntries(entries, root, resourceType, context) {
+         const sourceEntries = entries.filter((entry) => !isOverridePattern(entry));
+         const resolved = sourceEntries.flatMap((entry) => {
+             if (!hasGlobPattern(entry)) {
+                 return [resolve(root, entry)];
+             }
+-            return expandPackageGlob(entry, root);
++            return expandPackageGlob(entry, root, context);
+         });
+-        return this.collectFilesFromPaths(resolved, resourceType);
++        return this.collectFilesFromPaths(resolved, resourceType, context);
+     }
+-    resolveLocalEntries(entries, resourceType, target, metadata, baseDir) {
++    resolveLocalEntries(entries, resourceType, target, metadata, baseDir, context) {
+         if (entries.length === 0)
+             return;
+         // Collect all files from plain entries (non-pattern entries)
+         const { plain, patterns } = splitPatterns(entries);
+         const resolvedPlain = plain.map((p) => this.resolvePathFromBase(p, baseDir));
+-        const allFiles = this.collectFilesFromPaths(resolvedPlain, resourceType);
++        const allFiles = this.collectFilesFromPaths(resolvedPlain, resourceType, context);
+         // Determine which files are enabled based on patterns
+         const enabledPaths = applyPatterns(allFiles, patterns, baseDir);
+         // Add all files with their enabled state
+@@ -2182,7 +2309,7 @@ export class DefaultPackageManager {
+         const userAgentsSkillsDir = join(getHomeDir(), ".agents", "skills");
+         const projectTrusted = this.settingsManager.isProjectTrusted();
+         const projectAgentsSkillDirs = projectTrusted
+-            ? collectAncestorAgentsSkillDirs(this.cwd).filter((dir) => !pathsEqual(dir, userAgentsSkillsDir))
++            ? collectAncestorAgentsSkillDirs(this.cwd, this.walkContext(accumulator, "skills")).filter((dir) => !pathsEqual(dir, userAgentsSkillsDir))
+             : [];
+         const addResources = (resourceType, paths, metadata, overrides, baseDir) => {
+             const target = this.getTargetMap(accumulator, resourceType);
+@@ -2193,9 +2320,9 @@ export class DefaultPackageManager {
+         };
+         if (projectTrusted) {
+             // Project extensions from .pi/
+-            addResources("extensions", collectAutoExtensionEntries(projectDirs.extensions), projectMetadata, projectOverrides.extensions, projectBaseDir);
++            addResources("extensions", collectAutoExtensionEntries(projectDirs.extensions, this.walkContext(accumulator, "extensions")), projectMetadata, projectOverrides.extensions, projectBaseDir);
+             // Project skills from .pi/
+-            addResources("skills", collectAutoSkillEntries(projectDirs.skills, "pi"), projectMetadata, projectOverrides.skills, projectBaseDir);
++            addResources("skills", collectAutoSkillEntries(projectDirs.skills, "pi", this.walkContext(accumulator, "skills")), projectMetadata, projectOverrides.skills, projectBaseDir);
+         }
+         // Project skills from .agents/ (each with its own baseDir)
+         for (const agentsSkillsDir of projectAgentsSkillDirs) {
+@@ -2204,30 +2331,30 @@ export class DefaultPackageManager {
+                 ...projectMetadata,
+                 baseDir: agentsBaseDir,
+             };
+-            addResources("skills", collectAutoSkillEntries(agentsSkillsDir, "agents"), agentsMetadata, projectOverrides.skills, agentsBaseDir);
++            addResources("skills", collectAutoSkillEntries(agentsSkillsDir, "agents", this.walkContext(accumulator, "skills")), agentsMetadata, projectOverrides.skills, agentsBaseDir);
+         }
+         if (projectTrusted) {
+-            addResources("prompts", collectAutoPromptEntries(projectDirs.prompts), projectMetadata, projectOverrides.prompts, projectBaseDir);
+-            addResources("themes", collectAutoThemeEntries(projectDirs.themes), projectMetadata, projectOverrides.themes, projectBaseDir);
++            addResources("prompts", collectAutoPromptEntries(projectDirs.prompts, this.walkContext(accumulator, "prompts")), projectMetadata, projectOverrides.prompts, projectBaseDir);
++            addResources("themes", collectAutoThemeEntries(projectDirs.themes, this.walkContext(accumulator, "themes")), projectMetadata, projectOverrides.themes, projectBaseDir);
+         }
+         // User extensions from ~/.pi/agent/
+-        addResources("extensions", collectAutoExtensionEntries(userDirs.extensions), userMetadata, userOverrides.extensions, globalBaseDir);
++        addResources("extensions", collectAutoExtensionEntries(userDirs.extensions, this.walkContext(accumulator, "extensions")), userMetadata, userOverrides.extensions, globalBaseDir);
+         // User skills from ~/.pi/agent/
+-        addResources("skills", collectAutoSkillEntries(userDirs.skills, "pi"), userMetadata, userOverrides.skills, globalBaseDir);
++        addResources("skills", collectAutoSkillEntries(userDirs.skills, "pi", this.walkContext(accumulator, "skills")), userMetadata, userOverrides.skills, globalBaseDir);
+         // User skills from ~/.agents/ (with its own baseDir)
+         const userAgentsBaseDir = dirname(userAgentsSkillsDir);
+         const userAgentsMetadata = {
+             ...userMetadata,
+             baseDir: userAgentsBaseDir,
+         };
+-        addResources("skills", collectAutoSkillEntries(userAgentsSkillsDir, "agents"), userAgentsMetadata, userOverrides.skills, userAgentsBaseDir);
+-        addResources("prompts", collectAutoPromptEntries(userDirs.prompts), userMetadata, userOverrides.prompts, globalBaseDir);
+-        addResources("themes", collectAutoThemeEntries(userDirs.themes), userMetadata, userOverrides.themes, globalBaseDir);
++        addResources("skills", collectAutoSkillEntries(userAgentsSkillsDir, "agents", this.walkContext(accumulator, "skills")), userAgentsMetadata, userOverrides.skills, userAgentsBaseDir);
++        addResources("prompts", collectAutoPromptEntries(userDirs.prompts, this.walkContext(accumulator, "prompts")), userMetadata, userOverrides.prompts, globalBaseDir);
++        addResources("themes", collectAutoThemeEntries(userDirs.themes, this.walkContext(accumulator, "themes")), userMetadata, userOverrides.themes, globalBaseDir);
+     }
+-    collectFilesFromPaths(paths, resourceType) {
++    collectFilesFromPaths(paths, resourceType, context) {
+         const files = [];
+         for (const p of paths) {
+-            if (!existsSync(p))
++            if (!admitsPath(context.linkPolicy, p, context.diagnostics) || !existsSync(p))
+                 continue;
+             try {
+                 const stats = statSync(p);
+@@ -2235,7 +2362,7 @@ export class DefaultPackageManager {
+                     files.push(p);
+                 }
+                 else if (stats.isDirectory()) {
+-                    files.push(...collectResourceFiles(p, resourceType));
++                    files.push(...collectResourceFiles(p, resourceType, context));
+                 }
+             }
+             catch {
+@@ -2244,6 +2371,9 @@ export class DefaultPackageManager {
+         }
+         return files;
+     }
++    walkContext(accumulator, resourceType) {
++        return { linkPolicy: this.linkPolicy, diagnostics: accumulator.diagnostics[resourceType] };
++    }
+     getTargetMap(accumulator, resourceType) {
+         switch (resourceType) {
+             case "extensions":
+@@ -2271,6 +2401,7 @@ export class DefaultPackageManager {
+             skills: new Map(),
+             prompts: new Map(),
+             themes: new Map(),
++            diagnostics: { extensions: [], skills: [], prompts: [], themes: [] },
+         };
+     }
+     toResolvedPaths(accumulator) {
+@@ -2295,6 +2426,7 @@ export class DefaultPackageManager {
+             skills: mapToResolved(accumulator.skills),
+             prompts: mapToResolved(accumulator.prompts),
+             themes: mapToResolved(accumulator.themes),
++            diagnostics: accumulator.diagnostics,
+         };
+     }
+     spawnCommand(command, args, options) {
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/prompt-templates.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/prompt-templates.d.ts
+index 7120aaf..0b27925 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/prompt-templates.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/prompt-templates.d.ts
+@@ -1,4 +1,5 @@
+ import type { ResourceDiagnostic } from "./diagnostics.ts";
++import { type LinkPolicy } from "./link-policy.ts";
+ import { type SourceInfo } from "./source-info.ts";
+ /**
+  * Represents a prompt template loaded from a markdown file
+@@ -39,6 +40,8 @@ export interface LoadPromptTemplatesOptions {
+     promptPaths: string[];
+     /** Include default prompt directories. */
+     includeDefaults: boolean;
++    /** Consulted before following a link (see `LinkPolicy`). */
++    linkPolicy?: LinkPolicy;
+ }
+ export interface LoadPromptTemplatesResult {
+     templates: PromptTemplate[];
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/prompt-templates.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/prompt-templates.js
+index b945e3a..5648382 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/prompt-templates.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/prompt-templates.js
+@@ -3,6 +3,7 @@ import { basename, dirname, join, resolve, sep } from "path";
+ import { CONFIG_DIR_NAME } from "../config.js";
+ import { parseFrontmatter } from "../utils/frontmatter.js";
+ import { resolvePath } from "../utils/paths.js";
++import { admitsPath } from "./link-policy.js";
+ import { createSyntheticSourceInfo } from "./source-info.js";
+ /**
+  * Parse command arguments respecting quoted strings (bash-style)
+@@ -148,10 +149,10 @@ function loadTemplateFromFile(filePath, sourceInfo) {
+ /**
+  * Scan a directory for .md files (non-recursive) and load them as prompt templates.
+  */
+-function loadTemplatesFromDir(dir, getSourceInfo) {
++function loadTemplatesFromDir(dir, getSourceInfo, linkPolicy) {
+     const templates = [];
+     const diagnostics = [];
+-    if (!existsSync(dir)) {
++    if (!admitsPath(linkPolicy, dir, diagnostics) || !existsSync(dir)) {
+         return { templates, diagnostics };
+     }
+     try {
+@@ -161,6 +162,9 @@ function loadTemplatesFromDir(dir, getSourceInfo) {
+             // For symlinks, check if they point to a file
+             let isFile = entry.isFile();
+             if (entry.isSymbolicLink()) {
++                if (!admitsPath(linkPolicy, fullPath, diagnostics)) {
++                    continue;
++                }
+                 try {
+                     const stats = statSync(fullPath);
+                     isFile = stats.isFile();
+@@ -195,6 +199,7 @@ export function loadPromptTemplates(options) {
+     const resolvedAgentDir = resolvePath(options.agentDir);
+     const promptPaths = options.promptPaths;
+     const includeDefaults = options.includeDefaults;
++    const linkPolicy = options.linkPolicy;
+     const templates = [];
+     const diagnostics = [];
+     const addResult = (result) => {
+@@ -232,19 +237,19 @@ export function loadPromptTemplates(options) {
+         });
+     };
+     if (includeDefaults) {
+-        addResult(loadTemplatesFromDir(globalPromptsDir, getSourceInfo));
+-        addResult(loadTemplatesFromDir(projectPromptsDir, getSourceInfo));
++        addResult(loadTemplatesFromDir(globalPromptsDir, getSourceInfo, linkPolicy));
++        addResult(loadTemplatesFromDir(projectPromptsDir, getSourceInfo, linkPolicy));
+     }
+     // 3. Load explicit prompt paths
+     for (const rawPath of promptPaths) {
+         const resolvedPath = resolvePath(rawPath, resolvedCwd, { trim: true });
+-        if (!existsSync(resolvedPath)) {
++        if (!admitsPath(linkPolicy, resolvedPath, diagnostics) || !existsSync(resolvedPath)) {
+             continue;
+         }
+         try {
+             const stats = statSync(resolvedPath);
+             if (stats.isDirectory()) {
+-                addResult(loadTemplatesFromDir(resolvedPath, getSourceInfo));
++                addResult(loadTemplatesFromDir(resolvedPath, getSourceInfo, linkPolicy));
+             }
+             else if (stats.isFile() && resolvedPath.endsWith(".md")) {
+                 const result = loadTemplateFromFile(resolvedPath, getSourceInfo(resolvedPath));
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.d.ts
+index 8d3c16d..f6dcbd8 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.d.ts
+@@ -3,6 +3,7 @@ import type { ResourceDiagnostic } from "./diagnostics.ts";
+ export type { ResourceCollision, ResourceDiagnostic } from "./diagnostics.ts";
+ import { type EventBus } from "./event-bus.ts";
+ import type { ExtensionFactory, InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
++import { type LinkPolicy } from "./link-policy.ts";
+ import { type PackageInstallFailure, type PathMetadata } from "./package-manager.ts";
+ import type { PromptTemplate } from "./prompt-templates.ts";
+ import { SettingsManager } from "./settings-manager.ts";
+@@ -51,6 +52,8 @@ export interface ResourceLoader {
+             content: string;
+         }>;
+     };
++    /** Warnings of the last load's context file, git metadata, SYSTEM.md and APPEND_SYSTEM.md lookups. */
++    getContextDiagnostics?(): ResourceDiagnostic[];
+     getSystemPrompt(): string | undefined;
+     getSystemPromptSource(): {
+         path: string;
+@@ -65,6 +68,13 @@ export interface ResourceLoader {
+ export declare function loadProjectContextFiles(options: {
+     cwd: string;
+     agentDir: string;
++    /**
++     * Consulted with each candidate file's path before it is read, and with the git metadata the shadowed-file
++     * lookup reads (see `LinkPolicy`).
++     */
++    linkPolicy?: LinkPolicy;
++    /** Receives a warning for each file or git metadata path the link policy refuses. */
++    diagnostics?: ResourceDiagnostic[];
+ }): Array<{
+     path: string;
+     content: string;
+@@ -123,6 +133,12 @@ export interface DefaultResourceLoaderOptions {
+     };
+     systemPromptOverride?: (base: string | undefined) => string | undefined;
+     appendSystemPromptOverride?: (base: string[]) => string[];
++    /**
++     * Consulted before following a link in every resource walk (skills, prompt templates, themes, and the package
++     * manager's discovery), and before reading a context file, SYSTEM.md or APPEND_SYSTEM.md, or (when this loader
++     * creates the settings manager) a settings file. See `LinkPolicy`.
++     */
++    linkPolicy?: LinkPolicy;
+ }
+ export declare class DefaultResourceLoader implements ResourceLoader {
+     private cwd;
+@@ -151,6 +167,8 @@ export declare class DefaultResourceLoader implements ResourceLoader {
+     private agentsFilesOverride?;
+     private systemPromptOverride?;
+     private appendSystemPromptOverride?;
++    private linkPolicy?;
++    private packageDiagnostics;
+     private extensionsResult;
+     private skills;
+     private skillDiagnostics;
+@@ -159,6 +177,7 @@ export declare class DefaultResourceLoader implements ResourceLoader {
+     private themes;
+     private themeDiagnostics;
+     private agentsFiles;
++    private contextDiagnostics;
+     private systemPrompt?;
+     private systemPromptSourcePath?;
+     private appendSystemPrompt;
+@@ -191,6 +210,7 @@ export declare class DefaultResourceLoader implements ResourceLoader {
+             content: string;
+         }>;
+     };
++    getContextDiagnostics(): ResourceDiagnostic[];
+     getSystemPrompt(): string | undefined;
+     getSystemPromptSource(): {
+         path: string;
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.js
+index 120a7c7..9b22791 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.js
+@@ -4,11 +4,12 @@ import { detectCapabilities, getTerminalColorMode } from "@earendil-works/pi-tui
+ import chalk from "chalk";
+ import { APP_NAME, CONFIG_DIR_NAME } from "../config.js";
+ import { loadThemeFromPath } from "../modes/interactive/theme/theme.js";
+-import { canonicalizePath, isLocalPath, isPathWithin, pathsEqual, resolvePath } from "../utils/paths.js";
++import { canonicalizePath, getPathComparisonKey, isLocalPath, isPathWithin, pathsEqual, resolvePath, } from "../utils/paths.js";
+ import { stripBom } from "../utils/text.js";
+ import { createEventBus } from "./event-bus.js";
+ import { clearExtensionCache, createExtensionRuntime, loadExtensionFromFactory, loadExtensionsCached, } from "./extensions/loader.js";
+ import { findGitPaths } from "./footer-data-provider.js";
++import { admitsEntry, admitsPath } from "./link-policy.js";
+ import { DefaultPackageManager, } from "./package-manager.js";
+ import { loadPromptTemplates } from "./prompt-templates.js";
+ import { SettingsManager } from "./settings-manager.js";
+@@ -27,14 +28,15 @@ const HOST_PROVIDED_EXTENSION_PACKAGES = new Set([
+     "@sinclair/typebox",
+     "typebox",
+ ]);
+-function collectExtensionPackageWarnings(extensionPaths, metadataByPath) {
++function collectExtensionPackageWarnings(extensionPaths, metadataByPath, linkPolicy) {
+     const warnings = [];
+     const packageRoots = new Set(extensionPaths
+         .map((extensionPath) => metadataByPath.get(extensionPath)?.packageRoot)
+         .filter((packageRoot) => packageRoot !== undefined));
+     for (const packageRoot of packageRoots) {
+         const packageJsonPath = join(packageRoot, "package.json");
+-        if (!existsSync(packageJsonPath))
++        // Package resolution already reported a manifest the policy refuses.
++        if (!admitsEntry(linkPolicy, packageJsonPath) || !existsSync(packageJsonPath))
+             continue;
+         const manifest = JSON.parse(stripBom(readFileSync(packageJsonPath, "utf-8")));
+         if (typeof manifest.dependencies !== "object" ||
+@@ -68,6 +70,18 @@ export function formatPackageInstallWarning(failure) {
+ function collectPackageInstallWarnings(...failures) {
+     return failures.flatMap((entries) => (entries ?? []).map((failure) => ({ path: failure.source, warning: describePackageInstallFailure(failure) })));
+ }
++/** The extension diagnostics of package resolution, as extension warnings. */
++function collectPackageDiagnosticWarnings(...resolved) {
++    return resolved.flatMap((paths) => (paths?.diagnostics?.extensions ?? []).map((diagnostic) => ({
++        path: diagnostic.path ?? "",
++        warning: diagnostic.message,
++    })));
++}
++const FILE_REFUSED = "file not read: the link policy refuses it";
++/** Whether linkPolicy admits the context or system prompt file at path; a refusal is a warning in diagnostics. */
++function admitsReadPath(linkPolicy, path, diagnostics) {
++    return admitsPath(linkPolicy, path, diagnostics, FILE_REFUSED);
++}
+ function mergeExtensionWarnings(result, warnings) {
+     result.warnings = [
+         ...new Map([...(result.warnings ?? []), ...warnings].map((warning) => [warning.path, warning])).values(),
+@@ -126,10 +140,13 @@ function resolvePromptInput(input, description) {
+     }
+     return input;
+ }
+-function loadContextFileFromDir(dir) {
++function loadContextFileFromDir(dir, linkPolicy, diagnostics) {
+     const candidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
+     for (const filename of candidates) {
+         const filePath = join(dir, filename);
++        if (!admitsReadPath(linkPolicy, filePath, diagnostics)) {
++            continue;
++        }
+         if (existsSync(filePath)) {
+             try {
+                 if (!statSync(filePath).isFile()) {
+@@ -156,8 +173,8 @@ function loadContextFileFromDir(dir) {
+  * file's `gitdir:` target in realpath form while cwd may still be symlinked
+  * (macOS `/tmp` -> `/private/tmp`).
+  */
+-function findShadowedContextFile(cwd) {
+-    const gitPaths = findGitPaths(cwd);
++function findShadowedContextFile(cwd, linkPolicy, diagnostics) {
++    const gitPaths = findGitPaths(cwd, linkPolicy, diagnostics);
+     if (!gitPaths)
+         return undefined;
+     const commonGitDir = canonicalizePath(gitPaths.commonGitDir);
+@@ -171,26 +188,32 @@ function findShadowedContextFile(cwd) {
+     // itself checked out from the same repo. In a bare layout (`proj/.bare` +
+     // `proj/main`) it is just the directory holding `.bare`, which tracks nothing; a
+     // submodule's gitdir has no `commondir`, so it lands under `.git/modules`.
+-    if (!pathsEqual(canonicalizePath(join(mainRepoRoot, ".git")), commonGitDir))
++    const mainGitPath = join(mainRepoRoot, ".git");
++    if (!admitsEntry(linkPolicy, mainGitPath, diagnostics))
++        return undefined;
++    if (!pathsEqual(canonicalizePath(mainGitPath), commonGitDir))
+         return undefined;
+-    const worktreeContextFile = loadContextFileFromDir(worktreeRoot);
++    // The ancestor walk probes this folder too, and reports what the policy refuses there.
++    const worktreeContextFile = loadContextFileFromDir(worktreeRoot, linkPolicy, []);
+     return worktreeContextFile ? join(mainRepoRoot, basename(worktreeContextFile.path)) : undefined;
+ }
+ export function loadProjectContextFiles(options) {
+     const resolvedCwd = resolvePath(options.cwd);
+     const resolvedAgentDir = resolvePath(options.agentDir);
++    const linkPolicy = options.linkPolicy;
++    const diagnostics = options.diagnostics ?? [];
+     const contextFiles = [];
+     const seenPaths = new Set();
+-    const globalContext = loadContextFileFromDir(resolvedAgentDir);
++    const globalContext = loadContextFileFromDir(resolvedAgentDir, linkPolicy, diagnostics);
+     if (globalContext) {
+         contextFiles.push(globalContext);
+         seenPaths.add(globalContext.path);
+     }
+     const ancestorContextFiles = [];
+-    const shadowedContextFile = findShadowedContextFile(resolvedCwd);
++    const shadowedContextFile = findShadowedContextFile(resolvedCwd, linkPolicy, diagnostics);
+     let currentDir = resolvedCwd;
+     while (true) {
+-        const contextFile = loadContextFileFromDir(currentDir);
++        const contextFile = loadContextFileFromDir(currentDir, linkPolicy, diagnostics);
+         // Compare the directory's real path, not the file's: a worktree AGENTS.md that
+         // symlinks to the main repo's file resolves to the shadowed path itself.
+         const isShadowed = shadowedContextFile !== undefined &&
+@@ -235,6 +258,8 @@ export class DefaultResourceLoader {
+     agentsFilesOverride;
+     systemPromptOverride;
+     appendSystemPromptOverride;
++    linkPolicy;
++    packageDiagnostics;
+     extensionsResult;
+     skills;
+     skillDiagnostics;
+@@ -243,6 +268,7 @@ export class DefaultResourceLoader {
+     themes;
+     themeDiagnostics;
+     agentsFiles;
++    contextDiagnostics;
+     systemPrompt;
+     systemPromptSourcePath;
+     appendSystemPrompt;
+@@ -258,7 +284,9 @@ export class DefaultResourceLoader {
+     constructor(options) {
+         this.cwd = resolvePath(options.cwd);
+         this.agentDir = resolvePath(options.agentDir);
+-        this.settingsManager = options.settingsManager ?? SettingsManager.create(this.cwd, this.agentDir);
++        this.linkPolicy = options.linkPolicy;
++        this.settingsManager =
++            options.settingsManager ?? SettingsManager.create(this.cwd, this.agentDir, { linkPolicy: this.linkPolicy });
+         this.eventBus = options.eventBus ?? createEventBus();
+         const factories = options.extensionFactories ?? [];
+         this.extensionFactories = factories.filter((input) => !isBuiltinExtension(input));
+@@ -268,6 +296,7 @@ export class DefaultResourceLoader {
+             agentDir: this.agentDir,
+             settingsManager: this.settingsManager,
+             builtinExtensions: [...this.builtinExtensions.keys()],
++            linkPolicy: this.linkPolicy,
+         });
+         this.additionalExtensionPaths = options.additionalExtensionPaths ?? [];
+         this.additionalSkillPaths = options.additionalSkillPaths ?? [];
+@@ -296,6 +325,7 @@ export class DefaultResourceLoader {
+         this.themes = [];
+         this.themeDiagnostics = [];
+         this.agentsFiles = [];
++        this.contextDiagnostics = [];
+         this.appendSystemPrompt = [];
+         this.appendSystemPromptSourcePaths = [];
+         this.lastSkillPaths = [];
+@@ -305,6 +335,7 @@ export class DefaultResourceLoader {
+         this.resourceMetadataByPath = new Map();
+         this.lastPromptPaths = [];
+         this.lastThemePaths = [];
++        this.packageDiagnostics = { extensions: [], skills: [], prompts: [], themes: [] };
+         this.loaded = false;
+     }
+     getExtensions() {
+@@ -322,6 +353,9 @@ export class DefaultResourceLoader {
+     getAgentsFiles() {
+         return { agentsFiles: this.agentsFiles };
+     }
++    getContextDiagnostics() {
++        return this.contextDiagnostics;
++    }
+     getSystemPrompt() {
+         return this.systemPrompt;
+     }
+@@ -385,6 +419,13 @@ export class DefaultResourceLoader {
+             temporary: true,
+         });
+         const installWarnings = collectPackageInstallWarnings(resolvedPaths.installFailures, cliExtensionPaths.installFailures);
++        const linkWarnings = collectPackageDiagnosticWarnings(resolvedPaths, cliExtensionPaths);
++        this.packageDiagnostics = {
++            extensions: [],
++            skills: [...(resolvedPaths.diagnostics?.skills ?? []), ...(cliExtensionPaths.diagnostics?.skills ?? [])],
++            prompts: [...(resolvedPaths.diagnostics?.prompts ?? []), ...(cliExtensionPaths.diagnostics?.prompts ?? [])],
++            themes: [...(resolvedPaths.diagnostics?.themes ?? []), ...(cliExtensionPaths.diagnostics?.themes ?? [])],
++        };
+         // Kept on the instance so post-reload passes (extendResources) can still resolve package metadata.
+         this.resourceMetadataByPath = new Map();
+         const metadataByPath = this.resourceMetadataByPath;
+@@ -423,13 +464,13 @@ export class DefaultResourceLoader {
+         const cliEnabledThemes = getEnabledPaths(cliExtensionPaths.themes);
+         const extensionPaths = (this.noExtensions ? cliEnabledExtensions : this.mergePaths(cliEnabledExtensions, enabledExtensions)).filter((path) => !path.startsWith(BUILTIN_PATH_PREFIX) ||
+             !this.disabledBuiltinExtensions.has(path.slice(BUILTIN_PATH_PREFIX.length)));
+-        const packageWarnings = collectExtensionPackageWarnings(extensionPaths, metadataByPath);
++        const packageWarnings = collectExtensionPackageWarnings(extensionPaths, metadataByPath, this.linkPolicy);
+         const extensionsResult = await this.loadFinalExtensionSet(extensionPaths, preTrustExtensions);
+-        mergeExtensionWarnings(extensionsResult, [...installWarnings, ...packageWarnings]);
++        mergeExtensionWarnings(extensionsResult, [...installWarnings, ...packageWarnings, ...linkWarnings]);
+         for (const p of this.additionalExtensionPaths) {
+             if (isLocalPath(p)) {
+                 const resolved = this.resolveResourcePath(p);
+-                if (!existsSync(resolved)) {
++                if (admitsPath(this.linkPolicy, resolved) && !existsSync(resolved)) {
+                     extensionsResult.errors.push({ path: resolved, error: `Extension path does not exist: ${resolved}` });
+                 }
+             }
+@@ -444,7 +485,9 @@ export class DefaultResourceLoader {
+         for (const p of this.additionalSkillPaths) {
+             if (isLocalPath(p)) {
+                 const resolved = this.resolveResourcePath(p);
+-                if (!existsSync(resolved) && !this.skillDiagnostics.some((d) => d.path === resolved)) {
++                if (admitsPath(this.linkPolicy, resolved) &&
++                    !existsSync(resolved) &&
++                    !this.skillDiagnostics.some((d) => d.path === resolved)) {
+                     this.skillDiagnostics.push({ type: "error", message: "Skill path does not exist", path: resolved });
+                 }
+             }
+@@ -457,7 +500,9 @@ export class DefaultResourceLoader {
+         for (const p of this.additionalPromptTemplatePaths) {
+             if (isLocalPath(p)) {
+                 const resolved = this.resolveResourcePath(p);
+-                if (!existsSync(resolved) && !this.promptDiagnostics.some((d) => d.path === resolved)) {
++                if (admitsPath(this.linkPolicy, resolved) &&
++                    !existsSync(resolved) &&
++                    !this.promptDiagnostics.some((d) => d.path === resolved)) {
+                     this.promptDiagnostics.push({
+                         type: "error",
+                         message: "Prompt template path does not exist",
+@@ -473,28 +518,33 @@ export class DefaultResourceLoader {
+         this.updateThemesFromPaths(themePaths, metadataByPath);
+         for (const p of this.additionalThemePaths) {
+             const resolved = this.resolveResourcePath(p);
+-            if (!existsSync(resolved) && !this.themeDiagnostics.some((d) => d.path === resolved)) {
++            if (admitsPath(this.linkPolicy, resolved) &&
++                !existsSync(resolved) &&
++                !this.themeDiagnostics.some((d) => d.path === resolved)) {
+                 this.themeDiagnostics.push({ type: "error", message: "Theme path does not exist", path: resolved });
+             }
+         }
++        const contextDiagnostics = [];
+         const agentsFiles = {
+             agentsFiles: this.noContextFiles
+                 ? []
+                 : loadProjectContextFiles({
+                     cwd: this.cwd,
+                     agentDir: this.agentDir,
++                    linkPolicy: this.linkPolicy,
++                    diagnostics: contextDiagnostics,
+                 }),
+         };
+         const resolvedAgentsFiles = this.agentsFilesOverride ? this.agentsFilesOverride(agentsFiles) : agentsFiles;
+         this.agentsFiles = resolvedAgentsFiles.agentsFiles;
+-        const systemPromptSource = this.systemPromptSource ?? this.discoverSystemPromptFile();
++        const systemPromptSource = this.systemPromptSource ?? this.discoverSystemPromptFile(contextDiagnostics);
+         const baseSystemPrompt = resolvePromptInput(systemPromptSource, "system prompt");
+         this.systemPrompt = this.systemPromptOverride ? this.systemPromptOverride(baseSystemPrompt) : baseSystemPrompt;
+         this.systemPromptSourcePath =
+             systemPromptSource && existsSync(systemPromptSource) ? resolvePath(systemPromptSource) : undefined;
+         let appendSources = this.appendSystemPromptSource;
+         if (!appendSources) {
+-            const discoveredAppendSystemPromptFile = this.discoverAppendSystemPromptFile();
++            const discoveredAppendSystemPromptFile = this.discoverAppendSystemPromptFile(contextDiagnostics);
+             appendSources = discoveredAppendSystemPromptFile ? [discoveredAppendSystemPromptFile] : [];
+         }
+         const baseAppend = appendSources
+@@ -506,6 +556,7 @@ export class DefaultResourceLoader {
+         this.appendSystemPromptSourcePaths = appendSources
+             .filter((source) => existsSync(source))
+             .map((source) => resolvePath(source));
++        this.contextDiagnostics = contextDiagnostics;
+         this.loaded = true;
+     }
+     async loadCurrentExtensionSet(options) {
+@@ -522,10 +573,11 @@ export class DefaultResourceLoader {
+             resource.path,
+             resource.metadata,
+         ]));
+-        const packageWarnings = collectExtensionPackageWarnings(extensionPaths, metadataByPath);
++        const packageWarnings = collectExtensionPackageWarnings(extensionPaths, metadataByPath, this.linkPolicy);
+         const installWarnings = collectPackageInstallWarnings(resolvedPaths.installFailures, cliExtensionPaths.installFailures);
++        const linkWarnings = collectPackageDiagnosticWarnings(resolvedPaths, cliExtensionPaths);
+         const extensionsResult = await loadExtensionsCached(extensionPaths, this.cwd, this.eventBus);
+-        mergeExtensionWarnings(extensionsResult, [...installWarnings, ...packageWarnings]);
++        mergeExtensionWarnings(extensionsResult, [...installWarnings, ...packageWarnings, ...linkWarnings]);
+         if (!options.includeInlineFactories) {
+             return extensionsResult;
+         }
+@@ -621,7 +673,8 @@ export class DefaultResourceLoader {
+             return resource.path;
+         }
+         const skillFile = join(resource.path, "SKILL.md");
+-        if (existsSync(skillFile)) {
++        // The skill walk of resource.path reports a SKILL.md the policy refuses.
++        if (admitsEntry(this.linkPolicy, skillFile) && existsSync(skillFile)) {
+             if (!metadataByPath.has(skillFile)) {
+                 metadataByPath.set(skillFile, resource.metadata);
+             }
+@@ -646,12 +699,14 @@ export class DefaultResourceLoader {
+             skillsResult = { skills: [], diagnostics: [] };
+         }
+         else {
+-            skillsResult = loadSkills({
++            const loaded = loadSkills({
+                 cwd: this.cwd,
+                 agentDir: this.agentDir,
+                 skillPaths,
+                 includeDefaults: false,
++                linkPolicy: this.linkPolicy,
+             });
++            skillsResult = { ...loaded, diagnostics: [...this.packageDiagnostics.skills, ...loaded.diagnostics] };
+         }
+         const resolvedSkills = this.skillsOverride ? this.skillsOverride(skillsResult) : skillsResult;
+         this.skills = resolvedSkills.skills.map((skill) => ({
+@@ -673,11 +728,12 @@ export class DefaultResourceLoader {
+                 agentDir: this.agentDir,
+                 promptPaths,
+                 includeDefaults: false,
++                linkPolicy: this.linkPolicy,
+             });
+             const deduped = this.dedupePrompts(loaded.templates);
+             promptsResult = {
+                 prompts: deduped.prompts,
+-                diagnostics: [...loaded.diagnostics, ...deduped.diagnostics],
++                diagnostics: [...this.packageDiagnostics.prompts, ...loaded.diagnostics, ...deduped.diagnostics],
+             };
+         }
+         const resolvedPrompts = this.promptsOverride ? this.promptsOverride(promptsResult) : promptsResult;
+@@ -702,7 +758,10 @@ export class DefaultResourceLoader {
+             });
+             const loaded = this.loadThemes(themePaths, false, colorMode);
+             const deduped = this.dedupeThemes(loaded.themes);
+-            themesResult = { themes: deduped.themes, diagnostics: [...loaded.diagnostics, ...deduped.diagnostics] };
++            themesResult = {
++                themes: deduped.themes,
++                diagnostics: [...this.packageDiagnostics.themes, ...loaded.diagnostics, ...deduped.diagnostics],
++            };
+         }
+         const resolvedThemes = this.themesOverride ? this.themesOverride(themesResult) : themesResult;
+         this.themes = resolvedThemes.themes.map((theme) => {
+@@ -803,7 +862,10 @@ export class DefaultResourceLoader {
+         const seen = new Set();
+         for (const p of [...primary, ...additional]) {
+             const resolved = this.resolveResourcePath(p);
+-            const pathKey = getResourcePathKey(resolved);
++            // A refused path is never resolved through its links; the walk that would load it reports the refusal.
++            const pathKey = admitsPath(this.linkPolicy, resolved)
++                ? getResourcePathKey(resolved)
++                : getPathComparisonKey(resolved);
+             if (seen.has(pathKey))
+                 continue;
+             seen.add(pathKey);
+@@ -825,6 +887,9 @@ export class DefaultResourceLoader {
+         }
+         for (const p of paths) {
+             const resolved = this.resolveResourcePath(p);
++            if (!admitsPath(this.linkPolicy, resolved, diagnostics)) {
++                continue;
++            }
+             if (!existsSync(resolved)) {
+                 diagnostics.push({ type: "warning", message: "theme path does not exist", path: resolved });
+                 continue;
+@@ -849,7 +914,7 @@ export class DefaultResourceLoader {
+         return { themes, diagnostics };
+     }
+     loadThemesFromDir(dir, themes, diagnostics, colorMode) {
+-        if (!existsSync(dir)) {
++        if (!admitsPath(this.linkPolicy, dir, diagnostics) || !existsSync(dir)) {
+             return;
+         }
+         try {
+@@ -857,6 +922,9 @@ export class DefaultResourceLoader {
+             for (const entry of entries) {
+                 let isFile = entry.isFile();
+                 if (entry.isSymbolicLink()) {
++                    if (!admitsPath(this.linkPolicy, join(dir, entry.name), diagnostics)) {
++                        continue;
++                    }
+                     try {
+                         isFile = statSync(join(dir, entry.name)).isFile();
+                     }
+@@ -956,24 +1024,28 @@ export class DefaultResourceLoader {
+         }
+         return { themes: Array.from(seen.values()), diagnostics };
+     }
+-    discoverSystemPromptFile() {
++    discoverSystemPromptFile(diagnostics) {
+         const projectPath = join(this.cwd, CONFIG_DIR_NAME, "SYSTEM.md");
+-        if (this.settingsManager.isProjectTrusted() && existsSync(projectPath)) {
++        if (this.settingsManager.isProjectTrusted() &&
++            admitsReadPath(this.linkPolicy, projectPath, diagnostics) &&
++            existsSync(projectPath)) {
+             return projectPath;
+         }
+         const globalPath = join(this.agentDir, "SYSTEM.md");
+-        if (existsSync(globalPath)) {
++        if (admitsReadPath(this.linkPolicy, globalPath, diagnostics) && existsSync(globalPath)) {
+             return globalPath;
+         }
+         return undefined;
+     }
+-    discoverAppendSystemPromptFile() {
++    discoverAppendSystemPromptFile(diagnostics) {
+         const projectPath = join(this.cwd, CONFIG_DIR_NAME, "APPEND_SYSTEM.md");
+-        if (this.settingsManager.isProjectTrusted() && existsSync(projectPath)) {
++        if (this.settingsManager.isProjectTrusted() &&
++            admitsReadPath(this.linkPolicy, projectPath, diagnostics) &&
++            existsSync(projectPath)) {
+             return projectPath;
+         }
+         const globalPath = join(this.agentDir, "APPEND_SYSTEM.md");
+-        if (existsSync(globalPath)) {
++        if (admitsReadPath(this.linkPolicy, globalPath, diagnostics) && existsSync(globalPath)) {
+             return globalPath;
+         }
+         return undefined;
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/settings-manager.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/settings-manager.d.ts
+index 5d05602..e723f59 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/settings-manager.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/settings-manager.d.ts
+@@ -1,6 +1,7 @@
+ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+ import type { Model } from "@earendil-works/pi-ai";
+ import type { ScrollViewScrollbar, TerminalCapabilities, WheelScrollLines } from "@earendil-works/pi-tui";
++import { type LinkPolicy } from "./link-policy.ts";
+ import type { CacheWarmingMode, DefaultProjectTrust, FullscreenExitOutput, MermaidRenderingMode, PackageSource, QuietStartup, SessionShareDestination, Settings, ThinkingBudgetsSettings, TransportSetting, TuiMode, WarningSettings } from "./settings-schema.ts";
+ export type { BranchSummarySettings, CacheWarmingMode, CodemodeMode, CodemodeSettings, CompactionModelOverride, CompactionSettings, DefaultProjectTrust, FullscreenExitOutput, ImageSettings, MarkdownSettings, MermaidRenderingMode, PackageSource, ProviderRetrySettings, QuietStartup, RetrySettings, SessionShareDestination, Settings, TerminalSettings, ThinkingBudgetsSettings, TransportSetting, TuiMode, WarningSettings, } from "./settings-schema.ts";
+ /** Cache-warming profile. "idle" also warms between agent runs. */
+@@ -23,6 +24,11 @@ export declare function applyToolModifiers(base: readonly string[], entries: rea
+ export type SettingsScope = "global" | "project";
+ export interface SettingsManagerCreateOptions {
+     projectTrusted?: boolean;
++    /**
++     * Consulted with each settings file's path before it is read or written (see `LinkPolicy`); a refused file is
++     * reported and handled like one that does not parse.
++     */
++    linkPolicy?: LinkPolicy;
+ }
+ export interface SettingsStorage {
+     withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void;
+@@ -35,7 +41,10 @@ export interface SettingsError {
+ export declare class FileSettingsStorage implements SettingsStorage {
+     private globalSettingsPath;
+     private projectSettingsPath;
+-    constructor(cwd: string, agentDir: string);
++    private linkPolicy;
++    constructor(cwd: string, agentDir: string, options?: {
++        linkPolicy?: LinkPolicy;
++    });
+     private acquireLockSyncWithRetry;
+     withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void;
+ }
+@@ -59,6 +68,7 @@ export declare class SettingsManager {
+     private writeQueue;
+     private errors;
+     private settingsPaths;
++    private linkPolicy;
+     private constructor();
+     /** Create a SettingsManager that loads from files */
+     static create(cwd: string, agentDir?: string, options?: SettingsManagerCreateOptions): SettingsManager;
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/settings-manager.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/settings-manager.js
+index 1a02347..5726942 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/settings-manager.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/settings-manager.js
+@@ -6,6 +6,7 @@ import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
+ import { normalizePath, resolvePath } from "../utils/paths.js";
+ import { stripBom } from "../utils/text.js";
+ import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.js";
++import { assertPathAdmitted } from "./link-policy.js";
+ import { SETTINGS_DEFAULTS } from "./settings-defaults.js";
+ /** Cache-warming profile. "idle" also warms between agent runs. */
+ export const CACHE_WARMING_MODES = ["off", "streaming", "idle"];
+@@ -117,11 +118,13 @@ function toSettingsError(scope, error, path) {
+ export class FileSettingsStorage {
+     globalSettingsPath;
+     projectSettingsPath;
+-    constructor(cwd, agentDir) {
++    linkPolicy;
++    constructor(cwd, agentDir, options = {}) {
+         const resolvedCwd = resolvePath(cwd);
+         const resolvedAgentDir = resolvePath(agentDir);
+         this.globalSettingsPath = join(resolvedAgentDir, "settings.json");
+         this.projectSettingsPath = join(resolvedCwd, CONFIG_DIR_NAME, "settings.json");
++        this.linkPolicy = options.linkPolicy;
+     }
+     acquireLockSyncWithRetry(path) {
+         const maxAttempts = 10;
+@@ -150,6 +153,7 @@ export class FileSettingsStorage {
+     withLock(scope, fn) {
+         const path = scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
+         const dir = dirname(path);
++        assertPathAdmitted(this.linkPolicy, path, "read");
+         let release;
+         try {
+             // Only create directory and lock if file exists or we need to write
+@@ -208,7 +212,8 @@ export class SettingsManager {
+     writeQueue = Promise.resolve();
+     errors;
+     settingsPaths;
+-    constructor(storage, initialGlobal, initialProject, globalLoadError = null, projectLoadError = null, initialErrors = [], projectTrusted = true, settingsPaths = {}) {
++    linkPolicy;
++    constructor(storage, initialGlobal, initialProject, globalLoadError = null, projectLoadError = null, initialErrors = [], projectTrusted = true, settingsPaths = {}, linkPolicy) {
+         this.storage = storage;
+         this.globalSettings = initialGlobal;
+         this.projectSettings = initialProject;
+@@ -217,13 +222,14 @@ export class SettingsManager {
+         this.projectSettingsLoadError = projectLoadError;
+         this.errors = [...initialErrors];
+         this.settingsPaths = settingsPaths;
++        this.linkPolicy = linkPolicy;
+         this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
+     }
+     /** Create a SettingsManager that loads from files */
+     static create(cwd, agentDir = getAgentDir(), options = {}) {
+         const resolvedCwd = resolvePath(cwd);
+         const resolvedAgentDir = resolvePath(agentDir);
+-        const storage = new FileSettingsStorage(resolvedCwd, resolvedAgentDir);
++        const storage = new FileSettingsStorage(resolvedCwd, resolvedAgentDir, { linkPolicy: options.linkPolicy });
+         return SettingsManager.fromStorageWithPaths(storage, options, {
+             global: join(resolvedAgentDir, "settings.json"),
+             project: join(resolvedCwd, CONFIG_DIR_NAME, "settings.json"),
+@@ -245,7 +251,7 @@ export class SettingsManager {
+         if (projectLoad.error) {
+             initialErrors.push(toSettingsError("project", projectLoad.error, settingsPaths.project));
+         }
+-        return new SettingsManager(storage, globalLoad.settings, projectLoad.settings, globalLoad.error, projectLoad.error, initialErrors, projectTrusted, settingsPaths);
++        return new SettingsManager(storage, globalLoad.settings, projectLoad.settings, globalLoad.error, projectLoad.error, initialErrors, projectTrusted, settingsPaths, options.linkPolicy);
+     }
+     /** Create an in-memory SettingsManager (no file I/O) */
+     static inMemory(settings = {}, options = {}) {
+@@ -447,6 +453,9 @@ export class SettingsManager {
+         return snapshot;
+     }
+     persistScopedSettings(scope, snapshotSettings, modifiedFields, modifiedNestedFields) {
++        const path = this.settingsPaths[scope];
++        if (path)
++            assertPathAdmitted(this.linkPolicy, path, "write");
+         this.storage.withLock(scope, (current) => {
+             const currentFileSettings = current
+                 ? SettingsManager.migrateSettings(JSON.parse(stripBom(current)))
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/skills.d.ts b/node_modules/@earendil-works/pi-coding-agent/dist/core/skills.d.ts
+index 4d13be8..fe6b768 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/skills.d.ts
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/skills.d.ts
+@@ -1,4 +1,5 @@
+ import type { ResourceDiagnostic } from "./diagnostics.ts";
++import { type LinkPolicy } from "./link-policy.ts";
+ import { type SourceInfo } from "./source-info.ts";
+ export interface SkillFrontmatter {
+     name?: string;
+@@ -23,6 +24,8 @@ export interface LoadSkillsFromDirOptions {
+     dir: string;
+     /** Source identifier for these skills */
+     source: string;
++    /** Consulted before following a link (see `LinkPolicy`). */
++    linkPolicy?: LinkPolicy;
+ }
+ /**
+  * Load skills from a directory.
+@@ -54,6 +57,8 @@ export interface LoadSkillsOptions {
+     skillPaths: string[];
+     /** Include default skills directories. */
+     includeDefaults: boolean;
++    /** Consulted before following a link (see `LinkPolicy`). */
++    linkPolicy?: LinkPolicy;
+ }
+ /**
+  * Load skills from all configured locations.
+diff --git a/node_modules/@earendil-works/pi-coding-agent/dist/core/skills.js b/node_modules/@earendil-works/pi-coding-agent/dist/core/skills.js
+index b1600f5..d1d4135 100644
+--- a/node_modules/@earendil-works/pi-coding-agent/dist/core/skills.js
++++ b/node_modules/@earendil-works/pi-coding-agent/dist/core/skills.js
+@@ -4,6 +4,7 @@ import { basename, dirname, join, relative, resolve, sep } from "path";
+ import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
+ import { parseFrontmatter } from "../utils/frontmatter.js";
+ import { isPathWithin, resolvePath } from "../utils/paths.js";
++import { admitsEntry, admitsPath, enterFolder } from "./link-policy.js";
+ import { createSyntheticSourceInfo, getResourcePathKey } from "./source-info.js";
+ /** Max name length per spec */
+ const MAX_NAME_LENGTH = 64;
+@@ -34,12 +35,12 @@ function prefixIgnorePattern(line, prefix) {
+     const prefixed = prefix ? `${prefix}${pattern}` : pattern;
+     return negated ? `!${prefixed}` : prefixed;
+ }
+-function addIgnoreRules(ig, dir, rootDir) {
++function addIgnoreRules(ig, dir, rootDir, linkPolicy, diagnostics) {
+     const relativeDir = relative(rootDir, dir);
+     const prefix = relativeDir ? `${toPosixPath(relativeDir)}/` : "";
+     for (const filename of IGNORE_FILE_NAMES) {
+         const ignorePath = join(dir, filename);
+-        if (!existsSync(ignorePath))
++        if (!admitsEntry(linkPolicy, ignorePath, diagnostics) || !existsSync(ignorePath))
+             continue;
+         try {
+             const content = readFileSync(ignorePath, "utf-8");
+@@ -119,18 +120,28 @@ function createSkillSourceInfo(filePath, baseDir, source) {
+  * - recurse into subdirectories to find SKILL.md
+  */
+ export function loadSkillsFromDir(options) {
+-    const { dir, source } = options;
+-    return loadSkillsFromDirInternal(dir, source, true);
++    const { dir, source, linkPolicy } = options;
++    return loadSkillsFromRoot(dir, source, linkPolicy);
+ }
+-function loadSkillsFromDirInternal(dir, source, includeRootFiles, ignoreMatcher, rootDir) {
++function loadSkillsFromRoot(dir, source, linkPolicy) {
++    const diagnostics = [];
++    if (!admitsPath(linkPolicy, dir, diagnostics)) {
++        return { skills: [], diagnostics };
++    }
++    return loadSkillsFromDirInternal(dir, source, true, { linkPolicy, visited: new Set() });
++}
++function loadSkillsFromDirInternal(dir, source, includeRootFiles, walk, ignoreMatcher, rootDir) {
+     const skills = [];
+     const diagnostics = [];
+     if (!existsSync(dir)) {
+         return { skills, diagnostics };
+     }
++    if (!enterFolder(walk.visited, dir, diagnostics)) {
++        return { skills, diagnostics };
++    }
+     const root = rootDir ?? dir;
+     const ig = ignoreMatcher ?? ignore();
+-    addIgnoreRules(ig, dir, root);
++    addIgnoreRules(ig, dir, root, walk.linkPolicy, diagnostics);
+     try {
+         const entries = readdirSync(dir, { withFileTypes: true });
+         for (const entry of entries) {
+@@ -140,6 +151,9 @@ function loadSkillsFromDirInternal(dir, source, includeRootFiles, ignoreMatcher,
+             const fullPath = join(dir, entry.name);
+             let isFile = entry.isFile();
+             if (entry.isSymbolicLink()) {
++                if (!admitsPath(walk.linkPolicy, fullPath, diagnostics)) {
++                    continue;
++                }
+                 try {
+                     isFile = statSync(fullPath).isFile();
+                 }
+@@ -171,6 +185,9 @@ function loadSkillsFromDirInternal(dir, source, includeRootFiles, ignoreMatcher,
+             let isDirectory = entry.isDirectory();
+             let isFile = entry.isFile();
+             if (entry.isSymbolicLink()) {
++                if (!admitsPath(walk.linkPolicy, fullPath, diagnostics)) {
++                    continue;
++                }
+                 try {
+                     const stats = statSync(fullPath);
+                     isDirectory = stats.isDirectory();
+@@ -187,7 +204,7 @@ function loadSkillsFromDirInternal(dir, source, includeRootFiles, ignoreMatcher,
+                 continue;
+             }
+             if (isDirectory) {
+-                const subResult = loadSkillsFromDirInternal(fullPath, source, false, ig, root);
++                const subResult = loadSkillsFromDirInternal(fullPath, source, false, walk, ig, root);
+                 skills.push(...subResult.skills);
+                 diagnostics.push(...subResult.diagnostics);
+                 continue;
+@@ -314,7 +331,7 @@ function escapeXml(str) {
+  * Returns skills and any validation diagnostics.
+  */
+ export function loadSkills(options) {
+-    const { agentDir, skillPaths, includeDefaults } = options;
++    const { agentDir, skillPaths, includeDefaults, linkPolicy } = options;
+     // Resolve agentDir - if not provided, use default from config
+     const resolvedCwd = resolvePath(options.cwd);
+     const resolvedAgentDir = resolvePath(agentDir ?? getAgentDir());
+@@ -352,8 +369,8 @@ export function loadSkills(options) {
+         }
+     }
+     if (includeDefaults) {
+-        addSkills(loadSkillsFromDirInternal(join(resolvedAgentDir, "skills"), "user", true));
+-        addSkills(loadSkillsFromDirInternal(resolve(resolvedCwd, CONFIG_DIR_NAME, "skills"), "project", true));
++        addSkills(loadSkillsFromRoot(join(resolvedAgentDir, "skills"), "user", linkPolicy));
++        addSkills(loadSkillsFromRoot(resolve(resolvedCwd, CONFIG_DIR_NAME, "skills"), "project", linkPolicy));
+     }
+     const userSkillsDir = join(resolvedAgentDir, "skills");
+     const projectSkillsDir = resolve(resolvedCwd, CONFIG_DIR_NAME, "skills");
+@@ -368,6 +385,9 @@ export function loadSkills(options) {
+     };
+     for (const rawPath of skillPaths) {
+         const resolvedPath = resolvePath(rawPath, resolvedCwd, { trim: true });
++        if (!admitsPath(linkPolicy, resolvedPath, allDiagnostics)) {
++            continue;
++        }
+         if (!existsSync(resolvedPath)) {
+             allDiagnostics.push({ type: "warning", message: "skill path does not exist", path: resolvedPath });
+             continue;
+@@ -376,7 +396,7 @@ export function loadSkills(options) {
+             const stats = statSync(resolvedPath);
+             const source = getSource(resolvedPath);
+             if (stats.isDirectory()) {
+-                addSkills(loadSkillsFromDirInternal(resolvedPath, source, true));
++                addSkills(loadSkillsFromDirInternal(resolvedPath, source, true, { linkPolicy, visited: new Set() }));
+             }
+             else if (stats.isFile() && resolvedPath.endsWith(".md")) {
+                 const result = loadSkillFromFile(resolvedPath, source);

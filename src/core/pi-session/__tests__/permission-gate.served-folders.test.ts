@@ -80,7 +80,8 @@ function chat(opts: { mode?: 'default' | 'acceptEdits' | 'plan'; yolo?: boolean;
   handler.setPostMessage((msg) => { posted.push(msg); });
   const prompts = (): PermissionRequest[] => posted.filter((msg): msg is PermissionRequest => msg.type === 'requestPermission');
   const serve = vi.fn(async () => SERVED);
-  const files = opts.files ?? new ChatServedFiles({ roots: () => ({ project: workspace, designs: [] }), serve, ...(opts.home !== undefined ? { home: opts.home } : {}) });
+  const host = opts.home === undefined ? undefined : { platform: process.platform, env: process.env, home: opts.home, drives: [] };
+  const files = opts.files ?? new ChatServedFiles({ roots: () => ({ project: workspace, designs: [] }), serve, ...(host !== undefined ? { host } : {}) });
   const panel = {
     permissionHandler: handler,
     isPlanMode: () => handler.turnPermissionMode() === 'plan',
@@ -277,6 +278,25 @@ describe('a file page outside the chat\'s folders asks, and the call the gate le
     const root = await runPermissionGate(ev('BrowserOpen', 'u4', { url: 'file://192.0.2.10/share/x.html' }), c.panel, undefined);
     expect(root?.reason).toMatch(/root of a drive, share/);
     expect(c.prompts()).toHaveLength(4);
+  });
+
+  it.runIf(process.platform === 'win32')('asks for a page in the temp folder spelled with an 8.3 name, as its canonical path is no data store', async () => {
+    const c = chat();
+    // the temp folder as Windows gives it, which may spell the user's folder by its 8.3 name
+    const short = path.join(os.tmpdir(), path.relative(fs.realpathSync.native(os.tmpdir()), c.outside));
+    expect(await answered(c, ev('BrowserOpen', 'v1', { url: `${short}\\a.html` }), true)).toBeUndefined();
+    expect(c.prompts()).toHaveLength(1);
+  });
+
+  // ProgramData's 8.3 alias, where the system drive has 8.3 names
+  const programData = process.env['ProgramData'] ?? 'C:\\ProgramData';
+  const programDataAlias = path.join(path.parse(programData).root, 'PROGRA~3');
+  const aliased = process.platform === 'win32' && fs.existsSync(programDataAlias) && fs.realpathSync.native(programDataAlias).toLowerCase() === programData.toLowerCase();
+  it.runIf(aliased)('refuses a page under an 8.3 alias of ProgramData through its canonical path, with no card', async () => {
+    const c = chat();
+    const refused = await runPermissionGate(ev('BrowserOpen', 'v2', { url: `${programDataAlias}\\damocles-x\\a.html` }), c.panel, undefined);
+    expect(refused?.reason).toContain(`lies inside ${programData},`);
+    expect(c.prompts()).toEqual([]);
   });
 
   it.runIf(process.platform === 'win32')('refuses every Windows spelling of the home folder', async () => {

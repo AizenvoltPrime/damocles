@@ -39,7 +39,7 @@ export interface DesignDecisionView {
   chosen: string;
   rejected: string[];
   source: { kind: DesignDecisionSourceKind; ref: string };
-  /** A question decision's reference row, 'R<n>#<element>', which its question named (feature `chat.designDecisionReferences`). */
+  /** A question decision's reference row, 'R<n>#<element>', which its question named. */
   reference?: string;
   /** Only from a core that predates `replaces`, which reads a stored one as `replaces: [supersedes]`. */
   supersedes?: string;
@@ -47,7 +47,7 @@ export interface DesignDecisionView {
   replaces?: string[];
   /** Current decisions that stay valid beside this one. */
   stillHolds?: string[];
-  /** A question decision's stored flags (feature `chat.designDecisionChecks`). */
+  /** A question decision's stored flags. */
   conflicts?: DesignDecisionConflict[];
   conflictCheck?: 'checked' | 'unchecked';
   uncheckedReason?: DecisionCheckUnavailable;

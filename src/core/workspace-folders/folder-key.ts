@@ -1,4 +1,4 @@
-import * as path from 'path';
+import * as path from 'node:path';
 
 /**
  * Resolved absolute form, case-folded only on win32, where the filesystem is case-insensitive and a

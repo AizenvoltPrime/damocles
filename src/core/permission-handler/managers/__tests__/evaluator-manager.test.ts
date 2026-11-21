@@ -24,8 +24,23 @@ vi.mock('os', async (importOriginal) => {
   return { ...actual, homedir: () => fakeHome };
 });
 
+// A file's injected network-rule check failure, which the reader takes as the file being unreadable.
+const checkFailures = vi.hoisted(() => new Map<string, Error>());
+vi.mock('../../../config/local-config-path', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../config/local-config-path')>();
+  return {
+    ...actual,
+    checkConfigPath: async (baseFolder: string, file: string) => {
+      const failure = checkFailures.get(file);
+      if (failure !== undefined) throw failure;
+      return actual.checkConfigPath(baseFolder, file);
+    },
+  };
+});
+
 import { createFakePlatform, type FakePlatform } from '../../../../__mocks__/fake-platform';
 import { EvaluatorManager } from '../evaluator-manager';
+import { PermissionRulesUnreadable } from '../../permission-settings';
 import { PermissionState } from '../../state';
 import { DAMOCLES_PLANS_DIR } from '../../../paths';
 import { createMcpToolName } from '../../../pi-session/mcp/naming';
@@ -895,5 +910,83 @@ describe('EvaluatorManager.webHostFilter', () => {
     writeSettings(fakeHome, '.damocles', 'settings.json', { ask: ['WebFetch(example.com)'] });
     expect((await buildEvaluator().webHostFilter(null))('https://other.org/')).toBe(true);
     expect((await buildEvaluator({ dangerouslySkipPermissions: true }).webHostFilter(null))('https://other.org/')).toBe(false);
+  });
+});
+
+describe('EvaluatorManager — a rules file that cannot be read', () => {
+  const projectFile = path.join(fakeWorkspace, '.damocles', 'settings.json');
+  const timeout = Object.assign(new Error('ETIMEDOUT'), { code: 'ETIMEDOUT' });
+  const rm = { command: 'rm -rf build' };
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+  });
+
+  afterEach(() => {
+    checkFailures.clear();
+    vi.useRealTimers();
+  });
+
+  // past the evaluator's 5 s cache, so the next evaluation reads the files again
+  const nextCacheWindow = () => vi.setSystemTime(Date.now() + 6_000);
+  const notices = () => platform.notifications.calls.map((call) => call.message);
+
+  it('keeps applying the rules it last read, with one notice across evaluations', async () => {
+    writeSettings(fakeWorkspace, '.damocles', 'settings.json', { deny: ['Bash(rm:*)'] });
+    const evaluator = buildEvaluator();
+    expect(await evaluator.evaluate('Bash', rm, fakeWorkspace)).toBe('deny');
+
+    checkFailures.set(projectFile, timeout);
+    for (let window = 0; window < 3; window++) {
+      nextCacheWindow();
+      expect(await evaluator.evaluate('Bash', rm, fakeWorkspace)).toBe('deny');
+    }
+
+    expect(notices()).toHaveLength(1);
+    expect(notices()[0]).toContain(projectFile);
+  });
+
+  it('cannot decide while a file never read in its lifetime fails, in every consumer, and decides again once it reads', async () => {
+    writeSettings(fakeWorkspace, '.damocles', 'settings.json', { deny: ['Bash(rm:*)'] });
+    writeSettings(fakeHome, '.damocles', 'settings.json', { allow: ['Bash(rm:*)', 'Read'] });
+    checkFailures.set(projectFile, timeout);
+    const evaluator = buildEvaluator();
+
+    await expect(evaluator.evaluate('Read', { file_path: 'a.ts' }, fakeWorkspace)).rejects.toThrow(PermissionRulesUnreadable);
+    await expect(evaluator.matchRule('Bash', rm, fakeWorkspace)).rejects.toThrow(projectFile);
+    await expect(evaluator.readRuleFilter(fakeWorkspace)).rejects.toThrow(PermissionRulesUnreadable);
+    await expect(evaluator.readAskCovers('Edit', { file_path: 'a.ts' }, fakeWorkspace)).rejects.toThrow(PermissionRulesUnreadable);
+    await expect(evaluator.webHostFilter(fakeWorkspace)).rejects.toThrow(PermissionRulesUnreadable);
+    await expect(evaluator.mcpResourceRuleFilter('list_mcp_resources', fakeWorkspace)).rejects.toThrow(PermissionRulesUnreadable);
+    nextCacheWindow();
+    await expect(evaluator.matchRule('Bash', rm, fakeWorkspace)).rejects.toThrow(PermissionRulesUnreadable);
+    expect(notices()).toHaveLength(1);
+
+    checkFailures.delete(projectFile);
+    await expect(evaluator.matchRule('Bash', rm, fakeWorkspace)).rejects.toThrow(PermissionRulesUnreadable);
+    nextCacheWindow();
+    expect(await evaluator.matchRule('Bash', rm, fakeWorkspace)).toBe('deny');
+  });
+
+  it('reads nothing of an untrusted folder, so its unreadable project file blocks nothing', async () => {
+    platform.trust.setTrusted(false);
+    writeSettings(fakeWorkspace, '.damocles', 'settings.json', { deny: ['Bash(rm:*)'] });
+    checkFailures.set(projectFile, timeout);
+    const evaluator = buildEvaluator();
+
+    expect(await evaluator.evaluate('Bash', rm, fakeWorkspace)).toBe('ask');
+    expect(await evaluator.evaluate('Read', { file_path: 'a.ts' }, fakeWorkspace)).toBe('allow');
+    expect(notices()).toEqual([]);
+  });
+
+  it('under YOLO reads no rules and decides, except for a call only the user approves, whose rules YOLO does not skip', async () => {
+    writeSettings(fakeWorkspace, '.damocles', 'settings.json', { deny: ['Bash(rm:*)'] });
+    checkFailures.set(projectFile, timeout);
+    const evaluator = buildEvaluator({ dangerouslySkipPermissions: true });
+
+    expect(await evaluator.evaluate('Bash', rm, fakeWorkspace)).toBe('allow');
+    expect(await evaluator.matchRule('Read', { file_path: 'a.ts' }, fakeWorkspace)).toBeNull();
+    expect((await evaluator.readRuleFilter(fakeWorkspace))(path.join(fakeWorkspace, 'a.ts'))).toBe(false);
+    await expect(evaluator.matchRule('mcp__srv__write', {}, fakeWorkspace, { server: 'srv', tool: 'write' }, { ignoreBypass: true })).rejects.toThrow(PermissionRulesUnreadable);
   });
 });

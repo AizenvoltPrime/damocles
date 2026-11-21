@@ -77,7 +77,7 @@ jobs:
         run: npm ci
 
       - name: Windows unit tests
-        run: npx vitest run src/core src/desktop src/remote scripts
+        run: npx vitest run src/core src/desktop src/remote src/vscode scripts
 
   # The @loopback specs, with the release workflow's Linux e2e setup (release.yml, e2e-desktop).
   loopback:

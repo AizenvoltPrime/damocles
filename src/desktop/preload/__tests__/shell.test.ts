@@ -4,6 +4,7 @@ import { SHELL_CHANNELS, type DamoclesShellApi } from '../shell-channels';
 const H = vi.hoisted(() => ({
   exposed: undefined as DamoclesShellApi | undefined,
   invoked: [] as Array<[string, unknown]>,
+  sent: [] as Array<[string, unknown]>,
 }));
 
 vi.mock('electron', () => ({
@@ -14,7 +15,9 @@ vi.mock('electron', () => ({
       return undefined;
     },
     on: () => undefined,
-    send: () => undefined,
+    send: (channel: string, payload: unknown) => {
+      H.sent.push([channel, payload]);
+    },
     removeListener: () => undefined,
   },
 }));
@@ -100,5 +103,13 @@ describe('shell preload', () => {
       ['damocles:shell:files:download', folder],
       ['damocles:shell:files:transfer-cancel', { transferId: 7 }],
     ]);
+  });
+
+  it('sends a collapsed Files folder as its own fields only', async () => {
+    await import('../shell');
+    const api = H.exposed!;
+    H.sent.length = 0;
+    api.filesCollapsed({ projectKey: 'p', relativePath: 'linked/sub', extra: 1 } as never);
+    expect(H.sent).toEqual([[SHELL_CHANNELS.filesCollapsed, { projectKey: 'p', relativePath: 'linked/sub' }]]);
   });
 });

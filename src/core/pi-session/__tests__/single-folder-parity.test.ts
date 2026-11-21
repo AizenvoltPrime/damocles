@@ -68,8 +68,8 @@ describe('single-folder parity', () => {
     const pi = await initPiLoader();
     if (!pi) throw new Error('pi failed to load');
     const home = os.homedir();
-    const entries = (kind: 'skills' | 'commands') =>
-      assetSourceDirs(kind, { workspacePath: workspace, homeDir: home }).filter((d) => fs.existsSync(d.dir));
+    // Commands reach pi only through promptsOverride, never as template roots, so the baseline names skill roots alone.
+    const skillRoots = assetSourceDirs('skills', { workspacePath: workspace, homeDir: home }).filter((d) => fs.existsSync(d.dir));
     const services = await pi.createAgentSessionServices({
       cwd: workspace,
       agentDir,
@@ -83,17 +83,16 @@ describe('single-folder parity', () => {
             () => () => undefined,
           ),
         ],
-        additionalSkillPaths: entries('skills').map((e) => e.dir),
-        additionalPromptTemplatePaths: entries('commands').map((e) => e.dir),
+        additionalSkillPaths: skillRoots.map((e) => e.dir),
         agentsFilesOverride: (base) => ({
           agentsFiles: overrideGlobalContextFile(base.agentsFiles, { agentDir, homeDir: home, trusted: true }),
         }),
         extensionsOverride: (base) => ({ ...base, extensions: base.extensions.filter((e) => e.path.startsWith('<inline:')) }),
       },
     });
-    const withMetadata = (kind: 'skills' | 'commands') =>
-      entries(kind).map((e) => ({ path: e.dir, metadata: { source: e.source, scope: e.scope, origin: 'top-level' as const } }));
-    services.resourceLoader.extendResources({ skillPaths: withMetadata('skills'), promptPaths: withMetadata('commands') });
+    services.resourceLoader.extendResources({
+      skillPaths: skillRoots.map((e) => ({ path: e.dir, metadata: { source: e.source, scope: e.scope, origin: 'top-level' as const } })),
+    });
     return services;
   }
 

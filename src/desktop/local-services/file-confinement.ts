@@ -6,6 +6,6 @@ import { confineExisting } from './confine';
 /** confine.ts's rule, so a link to a share is refused before anything follows it. */
 export function createDesktopFileConfinement(): FileConfinement {
   return {
-    confineExisting: (folder, relativePath) => confineExisting({ key: folderKey(folder), fsPath: folder, name: path.basename(folder) }, relativePath),
+    confineExisting: (folder, relativePath, rule) => confineExisting({ key: folderKey(folder), fsPath: folder, name: path.basename(folder) }, relativePath, rule),
   };
 }

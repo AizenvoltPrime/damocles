@@ -13,11 +13,14 @@ import { compileMatch } from '../hooks/dispatch';
 import {
   findPermissionRuleRenames,
   rewritePermissionRuleToolNames,
+  RuleFileNotWritable,
+  RuleFileUnreadable,
   type PermissionRuleAdditions,
   type PermissionRuleRename,
 } from '../../permission-handler/permission-settings';
 import { JsonConfigWriteError } from '../../config/json-config-write';
 import { log } from '../../logger';
+import { englishText } from '../../../shared/localized-text';
 
 /** What the legacy names of one folder's MCP tools were built from. */
 export interface LegacyToolNameInput {
@@ -262,6 +265,8 @@ export function toolRenames(legacy: ReadonlyMap<string, string>, retired: Readon
 export interface RuleMigrationFolder {
   readonly path: string;
   readonly personalFiles: boolean;
+  /** Whether the folder's personal files still apply, read again inside each write of its file: a revoke during the run writes nothing there and leaves the run not done. */
+  readonly trusted: () => boolean;
 }
 
 /** The folder holding the personal files, a chat worktree's project (D34), while they are read. */
@@ -275,41 +280,48 @@ function personalRoot(folder: RuleMigrationFolder | null): string | null {
  * `~/.damocles` may be a dotfiles symlink. A file is `shared` when other folders read it too: the home
  * files, and a chat worktree's personal file, which is its project's (D34).
  */
-export function ownedRuleFiles(folder: RuleMigrationFolder | null): { path: string; confineTo?: string; shared: boolean }[] {
-  const home = os.homedir();
+export function ownedRuleFiles(folder: RuleMigrationFolder | null): { path: string; baseFolder: string; confineTo?: string; shared: boolean; writable?: () => boolean }[] {
+  const data = path.join(os.homedir(), '.damocles');
   const personal = personalRoot(folder);
   return [
-    { path: path.join(home, '.damocles', 'settings.json'), shared: true },
-    { path: path.join(home, '.damocles', 'settings.local.json'), shared: true },
+    { path: path.join(data, 'settings.json'), baseFolder: data, shared: true },
+    { path: path.join(data, 'settings.local.json'), baseFolder: data, shared: true },
     ...(folder !== null && personal !== null
-      ? [{ path: path.join(personal, '.damocles', 'settings.local.json'), confineTo: path.join(personal, '.damocles'), shared: personal !== folder.path }]
+      ? [{ path: path.join(personal, '.damocles', 'settings.local.json'), baseFolder: personal, confineTo: path.join(personal, '.damocles'), shared: personal !== folder.path, writable: folder.trusted }]
       : []),
   ];
+}
+
+/** A file the migration only reads, with its scope root (checkConfigPath). */
+interface ReadFile {
+  readonly path: string;
+  readonly baseFolder: string;
 }
 
 /**
  * Settings files Damocles reads rules from but never rewrites. Claude Code's files are not among them:
  * Claude Code keeps `-` in MCP tool names, so a rule there equal to a legacy Damocles name is correct for it.
  */
-function noticeRuleFiles(folder: string | null): string[] {
-  return folder ? [path.join(folder, '.damocles', 'settings.json')] : [];
+function noticeRuleFiles(folder: string | null): ReadFile[] {
+  return folder ? [{ path: path.join(folder, '.damocles', 'settings.json'), baseFolder: folder }] : [];
 }
 
 /** Claude Code's settings files, checked for retired resource tools only: Claude Code never had those, so such a rule was written for Damocles. */
-function claudeRuleFiles(folder: RuleMigrationFolder | null): string[] {
+function claudeRuleFiles(folder: RuleMigrationFolder | null): ReadFile[] {
   const home = os.homedir();
   const personal = personalRoot(folder);
   return [
-    path.join(home, '.claude', 'settings.json'),
-    path.join(home, '.claude', 'settings.local.json'),
-    ...(folder ? [path.join(folder.path, '.claude', 'settings.json')] : []),
-    ...(personal !== null ? [path.join(personal, '.claude', 'settings.local.json')] : []),
+    { path: path.join(home, '.claude', 'settings.json'), baseFolder: home },
+    { path: path.join(home, '.claude', 'settings.local.json'), baseFolder: home },
+    ...(folder ? [{ path: path.join(folder.path, '.claude', 'settings.json'), baseFolder: folder.path }] : []),
+    ...(personal !== null ? [{ path: path.join(personal, '.claude', 'settings.local.json'), baseFolder: personal }] : []),
   ];
 }
 
 /** Hook files: their matchers are patterns the user wrote, so they are listed, never rewritten. */
-function hookFiles(folder: string | null): string[] {
-  return [path.join(os.homedir(), '.damocles', 'hooks.json'), ...(folder ? [path.join(folder, '.damocles', 'hooks.json')] : [])];
+function hookFiles(folder: string | null): ReadFile[] {
+  const data = path.join(os.homedir(), '.damocles');
+  return [{ path: path.join(data, 'hooks.json'), baseFolder: data }, ...(folder ? [{ path: path.join(folder, '.damocles', 'hooks.json'), baseFolder: folder }] : [])];
 }
 
 const isToolNameChar = (char: string | undefined): boolean => char !== undefined && /[A-Za-z0-9_-]/.test(char);
@@ -349,10 +361,10 @@ function lostResourceMatches(matcher: string, retiredTools: readonly RetiredReso
 }
 
 /** Hook matchers naming a legacy or retired tool, one entry per matcher, with the matcher text the user would edit. */
-function findHookMatcherRenames(file: string, renames: RenameSet): PermissionRuleRename[] {
+function findHookMatcherRenames(file: ReadFile, renames: RenameSet): PermissionRuleRename[] {
   const legacyByLength = [...renames.matchers.keys()].sort((a, b) => b.length - a.length);
   const found = new Map<string, string>();
-  for (const entries of Object.values(parseHooksFile(file))) {
+  for (const entries of Object.values(parseHooksFile(file.path, file.baseFolder))) {
     for (const entry of entries) {
       const matcher = entry.match;
       if (typeof matcher !== 'string') continue;
@@ -429,7 +441,7 @@ export interface MigrationMemory {
 
 export interface RuleMigrationResult {
   notices: FoundRuleNotice[];
-  /** False when the personal lists' rewrite failed, so the run is not done. */
+  /** False when the personal lists' rewrite failed, or a rules file could not be checked, read or rewritten, so the run is not done. */
   complete: boolean;
 }
 
@@ -455,6 +467,8 @@ function collapseHome(target: string): string {
 
 function errorCode(err: unknown): string {
   if (err instanceof JsonConfigWriteError) return err.code ?? `${err.stage} refused`;
+  if (err instanceof RuleFileUnreadable) return englishText(err.reason);
+  if (err instanceof RuleFileNotWritable) return 'its folder is no longer trusted';
   const code = (err as NodeJS.ErrnoException | undefined)?.code;
   return typeof code === 'string' ? code : 'no error code';
 }
@@ -477,12 +491,23 @@ export async function migrateRenamedToolRules(
   if (renames.rules.size === 0) return { notices: [], complete: true };
   const notices: FoundRuleNotice[] = [];
   const seen: FoundRuleNotice[] = [];
+  // a rules file that could not be checked, read or rewritten leaves the run not done, so a later run tries it again
+  let complete = true;
   type Finder = (set: RenameSet) => readonly PermissionRuleRename[] | Promise<readonly PermissionRuleRename[]>;
   // An entry the shared renames find unchanged reads the same in every folder.
   const collectAt = async (location: McpRenamedToolRuleLocation, find: Finder): Promise<void> => {
-    const found = await find(renames);
-    if (found.length === 0) return;
-    const shared = await find(renames.shared);
+    let found: readonly PermissionRuleRename[];
+    let shared: readonly PermissionRuleRename[];
+    try {
+      found = await find(renames);
+      if (found.length === 0) return;
+      shared = await find(renames.shared);
+    } catch (err) {
+      if (!(err instanceof RuleFileUnreadable)) throw err;
+      log('[ToolNameMigration] MCP permission rules in %s were not checked (%s)', err.file, errorCode(err));
+      complete = false;
+      return;
+    }
     const entries = found.map((rule) => ({ ...rule, perFolder: !shared.some((other) => other.old === rule.old && other.new === rule.new) }));
     const known = entries.filter((entry) => memory.notices.has(location, entry));
     if (known.length > 0) seen.push({ ...location, rules: known });
@@ -507,18 +532,20 @@ export async function migrateRenamedToolRules(
     let rewritten: PermissionRuleRename[];
     try {
       rewritten = await rewritePermissionRuleToolNames(file.path, set.rules, {
+        baseFolder: file.baseFolder,
         additions: unappliedAdditions(file.path, set.ruleAdditions, memory.additions, applied),
         ...(file.confineTo !== undefined ? { confineTo: file.confineTo } : {}),
+        ...(file.writable !== undefined ? { writable: file.writable } : {}),
       });
     } catch (err) {
       log('[ToolNameMigration] MCP permission rules in %s were not migrated (%s)', file.path, errorCode(err));
+      complete = false;
       continue;
     }
     if (rewritten.length > 0) log('[ToolNameMigration] renamed %d MCP permission rule(s) in %s', rewritten.length, file.path);
     if (applied.size > 0) await memory.additions.add(file.path, [...applied]);
-    if (file.shared) await collect(file.path, (set) => findPermissionRuleRenames(file.path, set.rules, unappliedAdditions(file.path, set.ruleAdditions, memory.additions)));
+    if (file.shared) await collect(file.path, (set) => findPermissionRuleRenames(file.path, file.baseFolder, set.rules, unappliedAdditions(file.path, set.ruleAdditions, memory.additions)));
   }
-  let complete = true;
   if (personal && renames.retiredListEntries.size > 0) {
     const entries = renames.shared.retiredListEntries;
     if (entries.size > 0) {
@@ -532,11 +559,11 @@ export async function migrateRenamedToolRules(
     for (const list of personal.lists()) await collectList(list, (set) => set.retiredListEntries);
   }
 
-  for (const file of noticeRuleFiles(folder?.path ?? null)) await collect(file, (set) => findPermissionRuleRenames(file, set.rules, set.ruleAdditions));
+  for (const file of noticeRuleFiles(folder?.path ?? null)) await collect(file.path, (set) => findPermissionRuleRenames(file.path, file.baseFolder, set.rules, set.ruleAdditions));
   if (renames.retiredTools.length > 0) {
-    for (const file of claudeRuleFiles(folder)) await collect(file, (set) => findPermissionRuleRenames(file, set.retiredRules, set.ruleAdditions));
+    for (const file of claudeRuleFiles(folder)) await collect(file.path, (set) => findPermissionRuleRenames(file.path, file.baseFolder, set.retiredRules, set.ruleAdditions));
   }
-  for (const file of hookFiles(folder?.path ?? null)) await collect(file, (set) => findHookMatcherRenames(file, set));
+  for (const file of hookFiles(folder?.path ?? null)) await collect(file.path, (set) => findHookMatcherRenames(file, set));
   for (const list of toolNameLists) await collectList(list, (set) => set.names);
   // An entry remembered by its rule alone takes the content it stands for now.
   for (const notice of seen) await memory.notices.add(notice, notice.rules);

@@ -15,6 +15,8 @@ import { identityFolder } from "../../../worktrees/personal-config";
 import { MAX_PENDING_TERMINAL_ATTACHMENTS, type TakenAttachment } from "../../terminal-attachment-manager";
 import { attachmentContent } from "../../mcp-resource-attachments";
 import { READ_MCP_RESOURCE } from "../../../permission-handler/mcp-resource-rule";
+import type { AssetWithheld } from "../../../../shared/types/commands";
+import { isRunnable } from "../../../assets";
 
 /** Build the echo of a locally-handled slash command that bypasses sendMessage. It commits no user
  *  entry, so it is injected: it names no prompt and carries the latest prompt's index, as a cancel note does. */
@@ -32,6 +34,34 @@ function stampUserMessage(
     isInjected: true,
     isCommandEcho: true,
   };
+}
+
+function untrustedNotice(): LocalizedText {
+  return l("This workspace is not trusted, so project skills and commands are not loaded. Trust the workspace to run them.");
+}
+
+/** Why the command or skill `/name` cannot run, for a refused send; a link leaving the project waits on trust. */
+function withheldNotice(command: string, withheld: AssetWithheld): LocalizedText {
+  switch (withheld.reason) {
+    case "linkOutside":
+      return untrustedNotice();
+    case "share":
+      return l("{0} links to a network share or WSL path, so it is not loaded.", command);
+    case "broken":
+      return l("{0} is a broken link to {1}.", command, withheld.target);
+    case "loop":
+      return l("{0} is reached through a link loop, so it is not loaded.", command);
+    case "unreachable":
+      return l("{0} links to a drive that did not answer, so it is not loaded.", command);
+    case "tooLarge":
+      return l("{0} is larger than 1 MiB, so it is not loaded.", command);
+    case "missingDescription":
+      return l("The skill {0} has no description, which it needs to load.", command);
+    case "reservedNamespace":
+      return l("{0} is in a folder named skill, which the /skill: prefix claims, so it cannot run.", command);
+    case "invalidFrontmatter":
+      return l("The frontmatter of {0} does not parse: {1}", command, withheld.detail);
+  }
 }
 
 /** The conversation a webview send names; anything but a string names none. */
@@ -82,15 +112,10 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
     });
   };
 
-  /** Withheld project-scope asset: no turn is sent, since the agent never loaded it. */
-  const refuseUntrusted = (ctx: HandlerContext): InterceptResult => {
-    postMessage(ctx.reply, {
-      type: "notification",
-      message: l(
-        "This workspace is not trusted, so project skills and commands are not loaded. Trust the workspace to run them.",
-      ),
-      notificationType: "warning",
-    });
+  /** An asset the agent never loaded: no turn is sent; with no withheld reason it is held back by an untrusted project. */
+  const refuseWithheld = (ctx: HandlerContext, name: string, withheld: AssetWithheld | undefined): InterceptResult => {
+    const message = withheld === undefined ? untrustedNotice() : withheldNotice(`/${name}`, withheld);
+    postMessage(ctx.reply, { type: "notification", message, notificationType: "warning" });
     return { kind: "handled" };
   };
 
@@ -189,8 +214,8 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
           // working asset of the other kind that claims the same name. Both are memoized scans.
           const skill = await workspaceManager.findSkill(skillName, ctx.folder);
           const command = await workspaceManager.findCommand(skillName, ctx.folder);
-          const skillRunnable = skill !== undefined && skill.untrusted !== true;
-          const commandRunnable = command !== undefined && command.untrusted !== true;
+          const skillRunnable = skill !== undefined && isRunnable(skill);
+          const commandRunnable = command !== undefined && isRunnable(command);
 
           if (skillRunnable) {
             ctx.permissionHandler.preApproveSkill(skillName);
@@ -198,10 +223,11 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
             transformedContent = skillArgs
               ? `Execute skill ${skillName}\nAdditional info: ${skillArgs}`
               : `Execute skill ${skillName}`;
-          } else if (!commandRunnable && (skill !== undefined || command !== undefined)) {
-            // Everything claiming this name is withheld from the agent, so passing it through would
-            // send `/name` to the model as literal text.
-            return refuseUntrusted(ctx);
+          } else if (!commandRunnable && (skill !== undefined || command !== undefined) && !(await ctx.session.hasPromptTemplate(skillName))) {
+            // Nothing claiming this name reaches the agent, pi's own templates included, so passing it through would
+            // send `/name` to the model as literal text. A row trust alone holds back speaks for the name, as trusting runs it.
+            const trustWouldRun = [command, skill].some((row) => row?.untrusted === true && row.withheld === undefined);
+            return refuseWithheld(ctx, skillName, trustWouldRun ? undefined : command?.withheld ?? skill?.withheld);
           }
           // A runnable command needs no transform: pi expands the prompt template inside `prompt()`.
           // An unknown name passes through unchanged too.

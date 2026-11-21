@@ -82,6 +82,7 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'ExtensionToWebviewMessage[type="contextInjectionLoaded"].memoryData.profile.text': MODEL,
   'ExtensionToWebviewMessage[type="customAgents"].agents[].description': NAME,
   'ExtensionToWebviewMessage[type="customSlashCommands"].commands[].description': NAME,
+  'ExtensionToWebviewMessage[type="customSlashCommands"].commands[].withheld.detail': THIRD_PARTY,
   'ExtensionToWebviewMessage[type="editorShowDiff"].modified.body[kind="unreadable"].error': THIRD_PARTY,
   'ExtensionToWebviewMessage[type="editorShowDiff"].original.body[kind="unreadable"].error': THIRD_PARTY,
   'ExtensionToWebviewMessage[type="extensionUiRequest"].items[].description': THIRD_PARTY,

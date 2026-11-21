@@ -5,7 +5,7 @@ import type { ExtensionToWebviewMessage } from "../../../../shared/types/message
 import type { ProviderSignInError, ProviderSignInState } from "../../../../shared/types/settings";
 import { isKeyProviderId, isSignInProviderId, SIGN_IN_PROVIDER_IDS, type AccountProviderId, type SignInProviderId } from "../../../../shared/settings-sections";
 import { PiRuntime, remoteSignInRefusal } from "../../../pi-session/pi-runtime";
-import { providerSignInDef } from "../../../pi-session/custom-providers";
+import { providerSignInDef } from "../../../pi-session/provider-defs";
 import { signInFailure, signInFailureLog } from "./sign-in-failure";
 import { deleteProviderKey, storeProviderKey } from "../../settings-manager/managers/provider-keys";
 import { buildAuthInteraction } from "./auth-interaction";

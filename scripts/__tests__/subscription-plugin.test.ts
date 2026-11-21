@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tarGz } from '../server-archive.ts';
 import { pluginDigest, pluginFiles, subscriptionPluginFiles, subscriptionPluginProblems, vendorSubscriptionPlugin } from '../subscription-plugin.ts';
 import subscriptionPin from '../../src/core/pi-session/subscription-pin.json' with { type: 'json' };
-import { SUBSCRIPTION_SOURCE } from '../../src/core/pi-session/subscription.ts';
+import { SUBSCRIPTION_SOURCE } from '../../src/core/pi-session/subscription-source.ts';
 
 const { repo: SUBSCRIPTION_REPO, commit: SUBSCRIPTION_COMMIT } = subscriptionPin;
 const TOP = `pi-anthropic-auth-${SUBSCRIPTION_COMMIT}`;

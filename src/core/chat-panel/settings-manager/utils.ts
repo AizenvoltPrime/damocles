@@ -133,6 +133,8 @@ interface SettingsDestination {
   readonly path: string;
   /** Set for a repository's own `.damocles`, which a symlink must not lead out of. */
   readonly confineTo?: string;
+  /** The file's scope root, whose own share a link may lead onto (checkConfigPath). */
+  readonly baseFolder: string;
 }
 
 /** Returns `null` for `'session'`: a session-scoped rule lives in memory and must never be persisted. */
@@ -144,17 +146,18 @@ function getSettingsDestination(
   const inWorkspace = (file: string): SettingsDestination => {
     const root = file === "settings.local.json" ? personalConfigRoot(workspacePath!) : workspacePath!;
     const dir = path.join(root, ".damocles");
-    return { path: path.join(dir, file), confineTo: dir };
+    return { path: path.join(dir, file), confineTo: dir, baseFolder: root };
   };
+  const data = path.join(os.homedir(), ".damocles");
   switch (destination) {
     case 'userSettings':
-      return { path: path.join(os.homedir(), ".damocles", "settings.json") };
+      return { path: path.join(data, "settings.json"), baseFolder: data };
     case 'projectSettings':
       if (workspacePath) return inWorkspace("settings.json");
-      return { path: path.join(os.homedir(), ".damocles", "settings.local.json") };
+      return { path: path.join(data, "settings.local.json"), baseFolder: data };
     case 'localSettings':
       if (workspacePath) return inWorkspace("settings.local.json");
-      return { path: path.join(os.homedir(), ".damocles", "settings.local.json") };
+      return { path: path.join(data, "settings.local.json"), baseFolder: data };
     case 'session':
       return null;
     default: {
@@ -222,7 +225,7 @@ export async function syncPermissionRulesToSettings(
 
         // Trailing newline, matching `mcp-config-write.ts` and POSIX convention for a text file.
         return `${JSON.stringify(settings, null, 2)}\n`;
-      }, destination.confineTo !== undefined ? { confineTo: destination.confineTo } : {});
+      }, destination.confineTo !== undefined ? { confineTo: destination.confineTo, baseFolder: destination.baseFolder } : { baseFolder: destination.baseFolder });
       log(`[PermissionSettings] Wrote permissions to ${settingsPath}`);
     } catch (err) {
       log(`[PermissionSettings] Failed to write ${settingsPath}: ${err instanceof Error ? err.message : String(err)}`);

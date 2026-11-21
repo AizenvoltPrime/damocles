@@ -24,6 +24,8 @@ beforeAll(async () => {
     format: 'cjs',
     target: 'node24',
     outfile: childBundle,
+    // the write's network check pulls in dos-devices.ts, which requires koffi only lazily, as the app's bundles keep it external
+    external: ['koffi'],
     logLevel: 'silent',
   });
 });

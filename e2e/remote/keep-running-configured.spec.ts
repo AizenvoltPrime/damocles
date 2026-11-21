@@ -4,7 +4,7 @@ import { writeUserSettings } from '../desktop/support/hermetic';
 import { sendPrompt } from '../desktop/support/loopback-agent';
 import { STUB_MODEL_ID, type OpenAIStub } from '../desktop/support/openai-stub';
 import { hostMessages, recordHostMessages } from '../desktop/support/ui';
-import { customProviderDef } from '../../src/core/pi-session/custom-providers';
+import { customProviderDef } from '../../src/core/pi-session/provider-defs';
 import { EXPLORE_MODEL_SETTING } from '../../src/shared/explore-settings';
 import { shutdownHostDaemon } from './support/daemon-teardown';
 import { addHost, expect, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test } from './support/remote';

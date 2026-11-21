@@ -15,7 +15,7 @@ vi.mock("../../../../pi-session/pi-runtime", () => ({
   PiRuntime: { get: () => H.runtime, exists: true, notifyMemoryJudgeChange: () => {} },
   remoteSignInRefusal: () => ({ message: "Sign-ins change only in the User tab on your computer." }),
 }));
-vi.mock("../../../../pi-session/custom-providers", () => ({ providerSignInDef: () => H.signInDef }));
+vi.mock("../../../../pi-session/provider-defs", () => ({ providerSignInDef: () => H.signInDef }));
 vi.mock("../../../settings-manager/managers/provider-keys", () => ({
   storeProviderKey: vi.fn(async () => {}),
   deleteProviderKey: vi.fn(async () => {}),

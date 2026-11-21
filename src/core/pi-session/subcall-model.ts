@@ -5,7 +5,7 @@ import type { EffortLevel } from '../../shared/types/settings';
 import { DEFAULT_MODELS, migrateLegacyModelValue, supportedRoleEffort } from '../../shared/types/constants';
 import type { OpenAIAuthStatus } from './openai-auth';
 import { effortToPiThinking, resolvePiModel, PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI, type ModelLookup } from './pi-models';
-import { CUSTOM_PROVIDER_DEFS } from './custom-providers';
+import { CUSTOM_PROVIDER_DEFS } from './provider-defs';
 
 /** Every purpose that runs through `PiRuntime.runStructuredCompletion`; `/btw` runs as a chat turn instead. */
 export type StructuredSubCallPurpose = Exclude<SubCallPurpose, 'btw'>;

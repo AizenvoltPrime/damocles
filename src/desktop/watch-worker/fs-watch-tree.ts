@@ -3,6 +3,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import picomatch from 'picomatch';
 import type { Disposable } from '../../platform/disposable';
+import { isWithin } from '../../core/config/local-config-path';
+import { followsLocalLinksOnlySync, isMissing, walkAnswers } from '../../core/local-links';
 import { settlePending } from '../../shared/settle-pending';
 
 export type RawEventType = 'create' | 'change' | 'delete';
@@ -33,25 +35,49 @@ export function toGlobPath(relative: string): string {
   return relative.split(path.sep).join('/');
 }
 
-export function isGoneError(err: unknown): boolean {
-  const code = (err as NodeJS.ErrnoException).code;
-  return code === 'ENOENT' || code === 'ENOTDIR';
-}
-
 export function lstatNow(fsPath: string, log: Log): fs.BigIntStats | undefined {
   try {
     return fs.lstatSync(fsPath, { bigint: true, throwIfNoEntry: false });
   } catch (err) {
-    if (!isGoneError(err)) log(`[watcher] could not stat ${fsPath}: ${errorText(err)}`);
+    if (!isMissing(err)) log(`[watcher] could not stat ${fsPath}: ${errorText(err)}`);
     return undefined;
   }
+}
+
+/**
+ * The first path below base on the way to dir whose link leads off base's share or onto WSL or a device path (D10,
+ * followsLocalLinksOnlySync), decided by lstat and readlink of the path's entries, the realpaths of base and of the drive roots a
+ * climbing link passes, and where Windows maps base's drive, never by a stat of a link's target; undefined when every link on the way stays
+ * local, or a missing entry ends the way before any that does not. A walk that fails otherwise (a loop) refuses, so what it
+ * could not judge is never statted. A dir outside base is judged from its own root. Always undefined off win32.
+ */
+export function linkOffBase(base: string, dir: string): string | undefined {
+  const from = isWithin(base, dir) ? base : path.parse(dir).root;
+  const segments = path.relative(from, dir).split(path.sep).filter(Boolean);
+  // the shorter walks reuse the first walk's file system answers, so a refusal reads no entry twice
+  const answers = walkAnswers();
+  const stays = (depth: number): boolean => {
+    try {
+      return followsLocalLinksOnlySync(from, segments.slice(0, depth), answers);
+    } catch (err) {
+      return isMissing(err);
+    }
+  };
+  if (stays(segments.length)) return undefined;
+  for (let depth = 1; depth < segments.length; depth++) if (!stays(depth)) return path.join(from, ...segments.slice(0, depth));
+  return dir;
+}
+
+/** Whether dir exists, where a link below base that leads off base's share (linkOffBase) counts as dir missing, never statted. */
+export function presentBelow(base: string, dir: string): boolean {
+  return linkOffBase(base, dir) === undefined && fs.existsSync(dir);
 }
 
 export async function lstatLater(fsPath: string, log: Log): Promise<fs.BigIntStats | undefined> {
   try {
     return await fs.promises.lstat(fsPath, { bigint: true });
   } catch (err) {
-    if (!isGoneError(err)) log(`[watcher] could not stat ${fsPath}: ${errorText(err)}`);
+    if (!isMissing(err)) log(`[watcher] could not stat ${fsPath}: ${errorText(err)}`);
     return undefined;
   }
 }
@@ -69,6 +95,8 @@ interface FsScan {
   readonly rel: string;
   readonly children: Map<string, FsEntry>;
   readonly report: boolean;
+  // a full scan that may wait behind another, so the root is judged again right before it is listed
+  readonly judgeRoot?: true;
 }
 
 function fsEntry(stat: fs.BigIntStats): FsEntry {
@@ -81,8 +109,12 @@ function sameFile(entry: FsEntry, stat: fs.BigIntStats): boolean {
 }
 
 // One fs.watch(real, { recursive: true }) per root; docs/invariants.md "The Windows tree settles every event against a snapshot".
-// ready settles once the first scan pass is done, so the snapshot every later event is diffed against is complete.
-function startFsWatchTree(dir: string, report: boolean, emit: RawListener, lost: () => void, log: Log, track: TrackWork): StartedWatch {
+// ready settles once the first scan pass is done, so the snapshot every later event is diffed against is complete. The root
+// counts as gone once a link below base leads off base's share (linkOffBase), judged before the start, a reopen, a full scan
+// and a batch's paths touch it.
+function startFsWatchTree(dir: string, base: string, report: boolean, emit: RawListener, lost: () => void, log: Log, track: TrackWork): StartedWatch {
+  const offLink = linkOffBase(base, dir);
+  if (offLink !== undefined) throw new Error(`${offLink} leads onto a network share, WSL or device path off the share of ${base}, or the network rule's check could not follow it`);
   // Events are relative to the real path (long names, links resolved) and reported under dir, the caller's form.
   const real = fs.realpathSync.native(dir);
   const root = new Map<string, FsEntry>();
@@ -148,7 +180,7 @@ function startFsWatchTree(dir: string, report: boolean, emit: RawListener, lost:
       names = await fs.promises.readdir(path.join(real, rel));
     } catch (err) {
       // A directory gone since it was queued is removed by its own events, or by the next full scan.
-      if (!isGoneError(err)) log(`[watcher] could not list ${callerPath(rel)}: ${errorText(err)}`);
+      if (!isMissing(err)) log(`[watcher] could not list ${callerPath(rel)}: ${errorText(err)}`);
       return;
     }
     if (stopped) return;
@@ -172,6 +204,7 @@ function startFsWatchTree(dir: string, report: boolean, emit: RawListener, lost:
   const runScans = async (): Promise<void> => {
     try {
       for (let scan = scans.shift(); scan && !stopped; scan = scans.shift()) {
+        if (scan.judgeRoot && rootGone()) return;
         // A directory removed since it was queued is no longer the snapshot's.
         if (childrenOf(scan.rel) === scan.children) await scanDir(scan.rel, scan.children, scan.report);
       }
@@ -191,7 +224,7 @@ function startFsWatchTree(dir: string, report: boolean, emit: RawListener, lost:
 
   // A full scan already running gets one successor, since it may have listed a directory before the changes it missed.
   const rescan = (): void => {
-    if (!scans.some((scan) => scan.children === root)) scans.push({ rel: '', children: root, report: true });
+    if (!scans.some((scan) => scan.children === root)) scans.push({ rel: '', children: root, report: true, judgeRoot: true });
     startScans();
   };
 
@@ -232,10 +265,28 @@ function startFsWatchTree(dir: string, report: boolean, emit: RawListener, lost:
     if (added?.children) scans.push({ rel, children: added.children, report: true });
   };
 
+  // Ends the watch once the root is gone, statting nothing more. A root past a link off base's share leaves its batch unsettled;
+  // for a root that is only missing, a path its batch names that no snapshot holds was created and deleted within that window,
+  // and gone() reports the rest.
+  const rootGone = (): boolean => {
+    if (linkOffBase(base, dir) === undefined) {
+      if (fs.existsSync(dir)) return false;
+      for (const rel of pending) {
+        const cut = rel.lastIndexOf(path.sep);
+        const children = childrenOf(cut < 0 ? '' : rel.slice(0, cut));
+        if (children && !children.has(rel.slice(cut + 1))) emit('delete', callerPath(rel));
+      }
+    }
+    gone();
+    return true;
+  };
+
   const flush = (): void => {
     clearTimeout(timer);
     timer = undefined;
     if (scanning || stopped) return;
+    // A root renamed away keeps its handle, which goes on reporting from the new place.
+    if (rootGone()) return;
     // A case-only rename reports both names, which fold to one.
     const byFold = new Map<string, string[]>();
     for (const rel of pending) {
@@ -249,11 +300,6 @@ function startFsWatchTree(dir: string, report: boolean, emit: RawListener, lost:
       const onDisk = rels.length > 1 ? namesOnDisk(rels[0]!) : undefined;
       for (const rel of rels) reconcile(rel, onDisk);
       if (stopped) return;
-    }
-    // A root renamed away keeps its handle, which goes on reporting from the new place.
-    if (!fs.existsSync(dir)) {
-      gone();
-      return;
     }
     startScans();
   };
@@ -283,16 +329,13 @@ function startFsWatchTree(dir: string, report: boolean, emit: RawListener, lost:
   const reopenLater = (): void => {
     watcher?.close();
     watcher = undefined;
-    if (!fs.existsSync(dir)) {
-      gone();
-      return;
-    }
+    if (rootGone()) return;
     const delay = Math.min(REOPEN_MAX_MS, REOPEN_FIRST_MS * 2 ** failures++);
     log(`[watcher] watching ${dir} again in ${delay} ms`);
     clearTimeout(reopenTimer);
     reopenTimer = setTimeout(() => {
       reopenTimer = undefined;
-      if (stopped) return;
+      if (stopped || rootGone()) return;
       try {
         open();
       } catch (err) {
@@ -301,8 +344,7 @@ function startFsWatchTree(dir: string, report: boolean, emit: RawListener, lost:
         return;
       }
       // What changed while no handle was open is found by the diff.
-      scans.push({ rel: '', children: root, report: true });
-      startScans();
+      rescan();
     }, delay);
   };
 
@@ -344,7 +386,8 @@ function startFsWatchTree(dir: string, report: boolean, emit: RawListener, lost:
 /** Where the Windows recursive watches run: this thread's event loop; main uses the watch worker's (watch-worker-host.ts). */
 export interface FsWatchTreeHost {
   // report: the first scan reports what the root holds as created. lost: the root is gone, and its files were reported deleted.
-  start(dir: string, report: boolean, emit: RawListener, lost: () => void): StartedWatch;
+  // base: the watch's base folder, below which a link off its share counts as the root gone (presentBelow).
+  start(dir: string, report: boolean, emit: RawListener, lost: () => void, base: string): StartedWatch;
   // Settles once no scan of a watch it started is running; the caller has disposed every watch first.
   close(): Promise<void>;
 }
@@ -361,7 +404,7 @@ export function createInProcessTreeHost(log: Log): FsWatchTreeHost {
     return promise;
   };
   return {
-    start: (dir, report, emit, lost) => startFsWatchTree(dir, report, emit, lost, log, track),
+    start: (dir, report, emit, lost, base) => startFsWatchTree(dir, base, report, emit, lost, log, track),
     close: () => settlePending(() => work),
   };
 }

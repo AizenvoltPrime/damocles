@@ -146,6 +146,8 @@ export interface PanelManagerConfig {
   storedSessionsOf: (projectKey: string) => Promise<readonly StoredSession[]>;
   /** `storedSessionsOf` once none is still being parsed (removing deleted worktree records). */
   completeStoredSessionsOf: (projectKey: string) => Promise<readonly StoredSession[]>;
+  /** The menu's description of a runnable skill in `folder`, from the folder's cached scan, for a skill approval prompt. */
+  describeSkill: (name: string, folder: FolderTarget) => Promise<string | undefined>;
 }
 
 /** How a host is set up: a fork of a panel, a folder the webview saved, or a new chat bound to a live chat worktree. */
@@ -188,6 +190,7 @@ export class PanelManager {
   private readonly folderRegistry: WorkspaceFolderRegistry;
   private readonly sendFolderState: PanelManagerConfig["sendFolderState"];
   private readonly releaseFolder: PanelManagerConfig["releaseFolder"];
+  private readonly describeSkill: PanelManagerConfig["describeSkill"];
   private readonly messageGates = new Map<string, MessageGate>();
   // Called when a panel's first `ready` was handled.
   private readonly chatsChangedListeners = new Set<() => void>();
@@ -229,6 +232,7 @@ export class PanelManager {
     this.folderRegistry = config.folderRegistry;
     this.sendFolderState = config.sendFolderState;
     this.releaseFolder = config.releaseFolder;
+    this.describeSkill = config.describeSkill;
     this.worktrees = new PanelWorktrees({
       platform: this.platform,
       folderRegistry: this.folderRegistry,
@@ -276,7 +280,7 @@ export class PanelManager {
     const designFolder = instance.session.design.role()?.folder;
     const inDesign = designFolder !== undefined && 'path' in target && isFileBelow(designFolder, target.path);
     return mentionInChat(
-      { folders: this.folderRegistry, confinement: this.platform.confinement, notifications: this.platform.notifications, post: (message) => this.postMessage(instance.host, message) },
+      { folders: this.folderRegistry, confinement: this.platform.confinement, trust: this.platform.trust, notifications: this.platform.notifications, post: (message) => this.postMessage(instance.host, message) },
       target,
       inDesign ? designFolder : instance.folder.fsPath,
     );
@@ -733,7 +737,9 @@ export class PanelManager {
       throw err;
     }
 
-    const permissionHandler = new PermissionHandler(this.platform, getPiCodingAgent, panelId, settingsFolderOf(folder));
+    // the panel's current folder, as a switch or a worktree hand-off moves it
+    const describeSkill = (name: string) => this.describeSkill(name, this.panels.get(panelId)?.folder ?? folder);
+    const permissionHandler = new PermissionHandler(this.platform, getPiCodingAgent, panelId, settingsFolderOf(folder), describeSkill);
     permissionHandler.setPostMessage((msg) => this.postMessage(host, msg));
     // Before the session is created, which takes its tool set from the mode. A design chat inherits no permissions (PD-50).
     const inherited = options?.design ? undefined : source?.permissionHandler.getPermissions() ?? options?.permissions;

@@ -1,11 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as nodeOs from 'os';
 import * as path from 'path';
 
 // User-scope dirs resolve through `os.homedir()`. Redirect it to a temp dir so a developer's real
 // `~/.claude/skills` cannot add entries to the results under assertion.
-const H = vi.hoisted(() => ({ home: '' }));
+// timedOut: paths below the scope root, joined with '/', whose network check answers as a drive that did not answer
+const H = vi.hoisted(() => ({ home: '', timedOut: new Set<string>() }));
 
 vi.mock('os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('os')>();
@@ -13,11 +14,29 @@ vi.mock('os', async (importOriginal) => {
   return { ...actual, homedir, default: { ...actual, homedir } };
 });
 
+vi.mock('../../local-links', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../local-links')>();
+  return {
+    ...actual,
+    followsLocalLinksOnly: async (...args: Parameters<typeof actual.followsLocalLinksOnly>): Promise<boolean> => {
+      if (H.timedOut.has(args[1].join('/'))) throw Object.assign(new Error('the drive did not answer'), { code: 'ETIMEDOUT' });
+      return actual.followsLocalLinksOnly(...args);
+    },
+  };
+});
+
 vi.mock('../../logger', () => ({ log: vi.fn() }));
 
 import { installFakePlatform, type FakeFileWatcher, type FakePlatform } from '../../../__mocks__/fake-platform';
 import { SlashCommandService } from '../slash-command-service';
+import { initPiLoader } from '../../pi-session/pi-loader';
+import { DRIVE_ANSWER_TTL_MS } from '../../local-links';
 import type { AssetSourcePrecedence } from '../../../shared/types/settings';
+
+// pi's one-time module load, paid here so no test's timeout measures it.
+beforeAll(async () => {
+  await initPiLoader();
+});
 
 /** The three asset sources' on-disk folder names, stated here rather than read from the source. */
 const SOURCE_FOLDERS = [
@@ -25,6 +44,9 @@ const SOURCE_FOLDERS = [
   { commands: '.claude/commands', skills: '.claude/skills' },
   { commands: '.codex/prompts', skills: '.codex/skills' },
 ] as const;
+
+/** What a skill root's recursive watch matches: every SKILL.md and every ignore file the skill walks read, stated here. */
+const SKILL_FILES = '{SKILL.md,.gitignore,.ignore,.fdignore}';
 
 /** Flatten a registered watcher to `<base>|<glob>`, or `workspace:<glob>` for a workspace-wide one. */
 function describeWatcher(watcher: FakeFileWatcher): string {
@@ -74,19 +96,23 @@ function writeUnnamedSkill(root: string, rel: string, name: string, description:
   return file;
 }
 
-/**
- * Create a symlink, returning false when the host refuses. Unprivileged Windows hosts cannot create
- * symlinks, and a test that silently passes there would assert nothing.
- */
-function trySymlink(target: string, link: string, type: 'file' | 'dir'): boolean {
+// A file symlink needs a privilege unprivileged Windows lacks, so the tests that make one report a skip there.
+const canSymlinkFiles = ((): boolean => {
+  const dir = fs.mkdtempSync(path.join(nodeOs.tmpdir(), 'scs-probe-'));
   try {
-    fs.mkdirSync(path.dirname(link), { recursive: true });
-    fs.symlinkSync(target, link, type);
+    fs.writeFileSync(path.join(dir, 'target'), '');
+    fs.symlinkSync(path.join(dir, 'target'), path.join(dir, 'link'), 'file');
     return true;
-  } catch (err) {
-    console.warn(`Skipping symlink assertion: ${(err as Error).message}`);
+  } catch {
     return false;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
+})();
+
+function fileLink(target: string, link: string): void {
+  fs.mkdirSync(path.dirname(link), { recursive: true });
+  fs.symlinkSync(target, link, 'file');
 }
 
 /** Write `<root>/<rel>/<name>.md` and return its path. */
@@ -692,49 +718,275 @@ describe('SlashCommandService asset-source precedence', () => {
     });
   });
 
-  describe('symlinks under a command directory', () => {
+  describe('links under the asset folders', () => {
     let outside = '';
 
     beforeEach(() => {
-      outside = fs.mkdtempSync(path.join(nodeOs.tmpdir(), 'scs-outside-'));
+      outside = fs.realpathSync.native(fs.mkdtempSync(path.join(nodeOs.tmpdir(), 'scs-outside-')));
     });
 
     afterEach(() => {
       fs.rmSync(outside, { recursive: true, force: true });
     });
 
-    it('does not read a symlinked command file', async () => {
-      const target = path.join(outside, 'secret.md');
-      fs.writeFileSync(target, '---\ndescription: contents from outside the workspace\n---\n', 'utf8');
-      writeCommand(ws, '.damocles/commands', 'real', 'a real file');
-      if (!trySymlink(target, path.join(ws, '.damocles', 'commands', 'linked.md'), 'file')) return;
+    // A folder link every host can make: a junction on Windows, which needs no privilege.
+    function folderLink(target: string, link: string): void {
+      fs.mkdirSync(path.dirname(link), { recursive: true });
+      fs.symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir');
+    }
+
+    function writeAt(file: string, text = '---\ndescription: from the clone\n---\nPick up issue $1.\n'): string {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, text, 'utf8');
+      return file;
+    }
+
+    it.skipIf(!canSymlinkFiles)('follows a linked command file in a namespace folder', async () => {
+      const target = writeAt(path.join(outside, 'pickup.md'));
+      fileLink(target, path.join(H.home, '.claude', 'commands', 'gs', 'pickup.md'));
 
       const commands = await makeService().getCommands();
-      expect(commands.map((c) => c.name)).toEqual(['real']);
+      expect(commands.map((c) => [c.name, c.description, c.withheld])).toEqual([['gs:pickup', 'from the clone', undefined]]);
     });
 
-    it('does not descend into a symlinked namespace directory', async () => {
-      fs.mkdirSync(path.join(outside, 'ns'), { recursive: true });
-      fs.writeFileSync(
-        path.join(outside, 'ns', 'secret.md'),
-        '---\ndescription: contents from outside the workspace\n---\n',
-        'utf8',
-      );
+    it('follows a namespace folder that is a junction or a folder link', async () => {
+      writeAt(path.join(outside, 'commands', 'pickup.md'));
+      folderLink(path.join(outside, 'commands'), path.join(H.home, '.claude', 'commands', 'gs'));
+
+      expect((await makeService().getCommands()).map((c) => c.name)).toEqual(['gs:pickup']);
+      expect((await service!.findCommand('gs:pickup'))?.filePath).toBe(path.join(H.home, '.claude', 'commands', 'gs', 'pickup.md'));
+    });
+
+    it('follows a linked ~/.damocles root', async () => {
+      writeAt(path.join(outside, 'dotfiles', 'commands', 'gs', 'pickup.md'));
+      folderLink(path.join(outside, 'dotfiles'), path.join(H.home, '.damocles'));
+
+      expect((await makeService().getCommands()).map((c) => c.name)).toEqual(['gs:pickup']);
+    });
+
+    it.skipIf(!canSymlinkFiles)('follows a linked skill folder and a linked SKILL.md', async () => {
+      writeSkill(outside, 'skills', 'tidy', 'tidy up');
+      folderLink(path.join(outside, 'skills', 'tidy'), path.join(ws, '.damocles', 'skills', 'tidy'));
+      const file = writeSkill(outside, 'more', 'lint', 'lint it');
+      fileLink(file, path.join(H.home, '.claude', 'skills', 'lint', 'SKILL.md'));
+
+      expect((await makeService().getSkills()).map((s) => [s.name, s.source])).toEqual([['lint', 'user'], ['tidy', 'project']]);
+    });
+
+    it('lists a skill folder linked from both the project and the user folder once', async () => {
+      writeSkill(outside, 'skills', 'tidy', 'tidy up');
+      folderLink(path.join(outside, 'skills', 'tidy'), path.join(ws, '.claude', 'skills', 'tidy'));
+      folderLink(path.join(outside, 'skills', 'tidy'), path.join(H.home, '.claude', 'skills', 'tidy'));
+
+      expect((await makeService().getSkills()).map((s) => [s.name, s.source])).toEqual([['tidy', 'project']]);
+    });
+
+    it('shows a link loop as an inert row', async () => {
       writeCommand(ws, '.damocles/commands', 'real', 'a real file');
-      if (!trySymlink(path.join(outside, 'ns'), path.join(ws, '.damocles', 'commands', 'ns'), 'dir')) return;
+      folderLink(path.join(ws, '.damocles', 'commands'), path.join(ws, '.damocles', 'commands', 'again'));
 
       const commands = await makeService().getCommands();
-      expect(commands.map((c) => c.name)).toEqual(['real']);
+      expect(commands.map((c) => [c.name, c.withheld])).toEqual([['again:', { reason: 'loop' }], ['real', undefined]]);
+      expect((await service!.findCommand('again:anything'))?.withheld).toEqual({ reason: 'loop' });
     });
 
-    it('does not read a symlinked SKILL.md', async () => {
-      const target = path.join(outside, 'SKILL.md');
-      fs.writeFileSync(target, '---\nname: linked\ndescription: from outside\n---\n', 'utf8');
-      writeSkill(ws, '.damocles/skills', 'real', 'a real skill');
-      if (!trySymlink(target, path.join(ws, '.damocles', 'skills', 'linked', 'SKILL.md'), 'file')) return;
+    it('withholds every command under commands/skill, which pi\'s /skill: prefix claims', async () => {
+      writeCommand(ws, '.damocles/commands/skill', 'x', 'shadowed');
 
-      const skills = await makeService().getSkills();
-      expect(skills.map((s) => s.name)).toEqual(['real']);
+      expect((await makeService().getCommands()).map((c) => [c.name, c.withheld])).toEqual([['skill:x', { reason: 'reservedNamespace' }]]);
+    });
+
+    it.runIf(process.platform !== 'win32')('skips a socket named like a command and lists the rest', async () => {
+      writeCommand(ws, '.damocles/commands', 'real', 'a real file');
+      const net = await import('net');
+      const server = net.createServer();
+      await new Promise<void>((resolve) => server.listen(path.join(ws, '.damocles', 'commands', 'sock.md'), resolve));
+      try {
+        expect((await makeService().getCommands()).map((c) => c.name)).toEqual(['real']);
+      } finally {
+        server.close();
+      }
+    });
+
+    it('lists one unavailable row for each folder a broken ~/.claude withholds', async () => {
+      folderLink(path.join(outside, 'gone'), path.join(H.home, '.claude'));
+
+      const roots = await makeService().getWithheldRoots();
+
+      expect(roots.map((root) => [root.assets, root.folder, root.source, root.withheld])).toEqual([
+        ['commands', '.claude', 'user', { reason: 'broken', target: path.join(outside, 'gone') }],
+        ['skills', '.claude', 'user', { reason: 'broken', target: path.join(outside, 'gone') }],
+      ]);
+    });
+
+    describe('a commands folder on a drive that did not answer', () => {
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      });
+
+      afterEach(() => {
+        H.timedOut.clear();
+        vi.useRealTimers();
+      });
+
+      it('rescans once the drive probe\'s answer expired, and lists the folder once the drive answers', async () => {
+        writeCommand(H.home, '.claude/commands', 'deploy', 'ship it');
+        H.timedOut.add('.claude/commands');
+        const svc = makeService(null);
+        const invalidated = vi.fn();
+        svc.setOnCacheInvalidate(invalidated);
+
+        expect((await svc.getWithheldRoots()).map((root) => [root.assets, root.withheld])).toEqual([['commands', { reason: 'unreachable' }]]);
+
+        H.timedOut.clear();
+        await vi.advanceTimersByTimeAsync(DRIVE_ANSWER_TTL_MS + 300);
+
+        expect(invalidated).toHaveBeenCalledTimes(1);
+        expect(await svc.getWithheldRoots()).toEqual([]);
+        expect((await svc.getCommands()).map((c) => c.name)).toEqual(['deploy']);
+      });
+    });
+
+    describe('in an untrusted project', () => {
+      it('lists an unavailable row asking for trust for a commands folder linked out of the project, and its commands once trusted', async () => {
+        writeAt(path.join(outside, 'deploy.md'));
+        folderLink(outside, path.join(ws, '.damocles', 'commands'));
+        setTrusted(false);
+        const svc = makeService();
+
+        expect(await svc.getWithheldRoots()).toEqual([
+          { kind: 'withheldRoot', assets: 'commands', folder: '.damocles', source: 'project', filePath: path.join(ws, '.damocles', 'commands'), untrusted: true, withheld: { reason: 'linkOutside' } },
+        ]);
+
+        platform.trust.grantTrust([ws]);
+
+        expect(await svc.getWithheldRoots()).toEqual([]);
+        expect((await svc.getCommands()).map((c) => c.name)).toEqual(['deploy']);
+      });
+
+      it.skipIf(!canSymlinkFiles)('lists a link that stays inside as untrusted and one leading outside as an inert row, never reading its target', async () => {
+        writeCommand(ws, 'shared', 'inside', 'inside the project');
+        fileLink(path.join(ws, 'shared', 'inside.md'), path.join(ws, '.damocles', 'commands', 'inside.md'));
+        writeAt(path.join(outside, 'ns', 'pickup.md'));
+        folderLink(path.join(outside, 'ns'), path.join(ws, '.damocles', 'commands', 'gs'));
+        setTrusted(false);
+        const touched: string[] = [];
+        for (const name of ['open', 'stat', 'readFile'] as const) {
+          const original = fs.promises[name].bind(fs.promises) as (...args: unknown[]) => Promise<unknown>;
+          vi.spyOn(fs.promises, name).mockImplementation((async (file: fs.PathLike, ...rest: unknown[]) => {
+            touched.push(String(file));
+            return original(file, ...rest);
+          }) as never);
+        }
+
+        const commands = await makeService().getCommands();
+
+        expect(commands.map((c) => [c.name, c.untrusted, c.withheld])).toEqual([['gs:', true, { reason: 'linkOutside' }], ['inside', true, undefined]]);
+        expect(touched.filter((file) => file.toLowerCase().startsWith(outside.toLowerCase()) || file.includes(`${path.sep}gs`))).toEqual([]);
+        expect((await service!.findCommand('gs:pickup'))?.withheld).toEqual({ reason: 'linkOutside' });
+        vi.restoreAllMocks();
+      });
+
+      it('follows the outside link once trust is granted and withholds it again on a revoke, with no reload', async () => {
+        writeAt(path.join(outside, 'ns', 'pickup.md'));
+        folderLink(path.join(outside, 'ns'), path.join(ws, '.damocles', 'commands', 'gs'));
+        setTrusted(false);
+        const svc = makeService();
+
+        expect((await svc.findCommand('gs:pickup'))?.withheld).toEqual({ reason: 'linkOutside' });
+
+        platform.trust.grantTrust([ws]);
+        const granted = await svc.findCommand('gs:pickup');
+        expect([granted?.name, granted?.untrusted, granted?.withheld]).toEqual(['gs:pickup', undefined, undefined]);
+
+        platform.trust.revokeTrust([ws]);
+        expect((await svc.findCommand('gs:pickup'))?.withheld).toEqual({ reason: 'linkOutside' });
+      });
+    });
+
+    describe('refresh behind a link', () => {
+      beforeEach(() => {
+        vi.useFakeTimers();
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it.skipIf(!canSymlinkFiles).each(['user', 'project'] as const)('re-reads a %s-scope linked command after its target is renamed over, as git writes it', async (scope) => {
+        const target = writeAt(path.join(outside, 'pickup.md'), '---\ndescription: first\n---\nbody\n');
+        const root = scope === 'user' ? H.home : ws;
+        fileLink(target, path.join(root, '.claude', 'commands', 'gs', 'pickup.md'));
+        const svc = makeService();
+        const invalidated = vi.fn();
+        svc.setOnCacheInvalidate(invalidated);
+        expect((await svc.getCommands())[0]?.description).toBe('first');
+
+        const next = writeAt(path.join(outside, 'pickup.md.tmp'), '---\ndescription: second\n---\nbody\n');
+        fs.renameSync(next, target);
+        platform.fileWatchers.watcher(outside, '*').fireCreate(target);
+        vi.advanceTimersByTime(300);
+
+        expect(invalidated).toHaveBeenCalledTimes(1);
+        expect((await svc.getCommands())[0]?.description).toBe('second');
+      });
+
+      it.skipIf(!canSymlinkFiles)('shows a broken link with its target and lists the command once the target is restored', async () => {
+        const target = writeAt(path.join(outside, 'pickup.md'));
+        fileLink(target, path.join(H.home, '.claude', 'commands', 'pickup.md'));
+        fs.rmSync(target);
+        const svc = makeService();
+
+        expect((await svc.getCommands()).map((c) => [c.name, c.withheld])).toEqual([['pickup', { reason: 'broken', target }]]);
+
+        writeAt(target);
+        platform.fileWatchers.watcher(outside, '*').fireCreate(target);
+        vi.advanceTimersByTime(300);
+
+        expect((await svc.getCommands()).map((c) => [c.name, c.withheld])).toEqual([['pickup', undefined]]);
+      });
+
+      it.skipIf(!canSymlinkFiles)('ignores a change beside the target in its folder', async () => {
+        const target = writeAt(path.join(outside, 'pickup.md'));
+        fileLink(target, path.join(H.home, '.claude', 'commands', 'pickup.md'));
+        const svc = makeService();
+        const invalidated = vi.fn();
+        svc.setOnCacheInvalidate(invalidated);
+        await svc.getCommands();
+
+        platform.fileWatchers.watcher(outside, '*').fireChange(path.join(outside, 'unrelated.md'));
+        vi.advanceTimersByTime(300);
+
+        expect(invalidated).not.toHaveBeenCalled();
+      });
+    });
+
+    // The network check reads link targets as readlink gives them, so a junction whose readlink is faked onto a share
+    // stands for a link Windows would follow there.
+    it.runIf(process.platform === 'win32')('shows links onto a network share and WSL as inert rows, reaching neither', async () => {
+      const commands = path.join(H.home, '.claude', 'commands');
+      folderLink(outside, path.join(commands, 'nas.md'));
+      folderLink(outside, path.join(commands, 'wsl.md'));
+      const fakes = new Map([
+        [path.join(commands, 'nas.md').toLowerCase(), '\\\\host\\share\\x.md'],
+        [path.join(commands, 'wsl.md').toLowerCase(), '\\\\wsl.localhost\\Ubuntu\\x.md'],
+      ]);
+      const readlink = fs.promises.readlink.bind(fs.promises);
+      vi.spyOn(fs.promises, 'readlink').mockImplementation((async (file: fs.PathLike) => fakes.get(String(file).toLowerCase()) ?? readlink(file)) as never);
+      const reached: string[] = [];
+      for (const name of ['lstat', 'stat', 'realpath', 'open'] as const) {
+        const original = fs.promises[name].bind(fs.promises) as (...args: unknown[]) => Promise<unknown>;
+        vi.spyOn(fs.promises, name).mockImplementation((async (file: fs.PathLike, ...rest: unknown[]) => {
+          if (/^[\\/]{2}/.test(String(file)) || (name !== 'lstat' && fakes.has(String(file).toLowerCase()))) reached.push(`${name} ${String(file)}`);
+          return original(file, ...rest);
+        }) as never);
+      }
+
+      const rows = await makeService().getCommands();
+
+      expect(rows.map((c) => [c.name, c.withheld])).toEqual([['nas', { reason: 'share' }], ['wsl', { reason: 'share' }]]);
+      expect(reached).toEqual([]);
+      vi.restoreAllMocks();
     });
   });
 
@@ -793,16 +1045,21 @@ describe('SlashCommandService asset-source precedence', () => {
       return platform.fileWatchers.watchers.filter((w) => !w.disposed).map(describeWatcher);
     }
 
-    it('anchors every registered watcher on the directory it must observe', () => {
+    /** A user dir's watcher: based at the Damocles data folder for ~/.damocles, else the home folder, so the watcher judges `.claude`. */
+    function user(dir: string, glob: string): string {
+      return dir.startsWith('.damocles/') ? `${path.join(H.home, '.damocles')}|${dir.slice('.damocles/'.length)}/${glob}` : `${H.home}|${dir}/${glob}`;
+    }
+
+    it('anchors every registered watcher on the network-rule base of the directory it must observe', () => {
       makeService();
 
       const expected = SOURCE_FOLDERS.flatMap((source) => [
-        `${ws}|${source.commands}/**/*.md`,
-        `${ws}|${source.skills}/**/SKILL.md`,
+        `${ws}|${source.commands}/**`,
+        `${ws}|${source.skills}/**/${SKILL_FILES}`,
         `${ws}|${source.skills}/*`,
-        `${path.join(H.home, source.commands)}|**/*.md`,
-        `${path.join(H.home, source.skills)}|**/SKILL.md`,
-        `${path.join(H.home, source.skills)}|*`,
+        user(source.commands, '**'),
+        user(source.skills, `**/${SKILL_FILES}`),
+        user(source.skills, '*'),
       ]);
 
       expect(registered().sort()).toEqual(expected.sort());
@@ -841,7 +1098,6 @@ describe('SlashCommandService asset-source precedence', () => {
       });
 
       it('re-scans after a user-scope command file appears', async () => {
-        const userCommands = path.join(H.home, '.damocles/commands');
         const svc = makeService();
         const invalidated = vi.fn();
         svc.setOnCacheInvalidate(invalidated);
@@ -849,7 +1105,7 @@ describe('SlashCommandService asset-source precedence', () => {
         expect(await svc.getCommands()).toEqual([]);
 
         const file = writeCommand(H.home, '.damocles/commands', 'foo', 'appeared later');
-        platform.fileWatchers.watcher(userCommands, '**/*.md').fireCreate(file);
+        platform.fileWatchers.watcher(path.join(H.home, '.damocles'), 'commands/**').fireCreate(file);
 
         expect(invalidated).not.toHaveBeenCalled();
         vi.advanceTimersByTime(300);
@@ -861,7 +1117,6 @@ describe('SlashCommandService asset-source precedence', () => {
       });
 
       it('re-scans after a user-scope SKILL.md appears', async () => {
-        const userSkills = path.join(H.home, '.damocles/skills');
         const svc = makeService();
         const invalidated = vi.fn();
         svc.setOnCacheInvalidate(invalidated);
@@ -869,11 +1124,27 @@ describe('SlashCommandService asset-source precedence', () => {
         expect(await svc.getSkills()).toEqual([]);
 
         const file = writeSkill(H.home, '.damocles/skills', 'foo', 'appeared later');
-        platform.fileWatchers.watcher(userSkills, '**/SKILL.md').fireCreate(file);
+        platform.fileWatchers.watcher(path.join(H.home, '.damocles'), `skills/**/${SKILL_FILES}`).fireCreate(file);
         vi.advanceTimersByTime(300);
 
         expect(invalidated).toHaveBeenCalledTimes(1);
         expect((await svc.getSkills()).map((s) => s.name)).toEqual(['foo']);
+      });
+
+      // The skill walks read the ignore files of every folder they enter, as pi does.
+      it('re-scans after an ignore file below the skills folder changes', async () => {
+        writeSkill(ws, '.damocles/skills/group', 'foo', 'ignored later');
+        const svc = makeService();
+        const invalidated = vi.fn();
+        svc.setOnCacheInvalidate(invalidated);
+        await svc.getSkills();
+
+        const ignoreFile = path.join(ws, '.damocles', 'skills', 'group', '.gitignore');
+        fs.writeFileSync(ignoreFile, 'foo/\n', 'utf8');
+        platform.fileWatchers.watcher(ws, `.damocles/skills/**/${SKILL_FILES}`).fireCreate(ignoreFile);
+        vi.advanceTimersByTime(300);
+
+        expect(invalidated).toHaveBeenCalledTimes(1);
       });
 
       it('re-scans after a project-scope command file changes', async () => {
@@ -885,21 +1156,65 @@ describe('SlashCommandService asset-source precedence', () => {
         expect((await svc.getCommands())[0]?.description).toBe('first version');
 
         const file = writeCommand(ws, '.damocles/commands', 'foo', 'second version');
-        platform.fileWatchers.watcher(ws, '.damocles/commands/**/*.md').fireChange(file);
+        platform.fileWatchers.watcher(ws, '.damocles/commands/**').fireChange(file);
         vi.advanceTimersByTime(300);
 
         expect(invalidated).toHaveBeenCalledTimes(1);
         expect((await svc.getCommands())[0]?.description).toBe('second version');
       });
 
-      it('collapses a burst of events into one re-scan', async () => {
-        const userCommands = path.join(H.home, '.damocles/commands');
+      // A skill approval prompt reads the description from the menu's cache, which only a watched change refreshes.
+      it('describes a skill from its cached scan until a watched change', async () => {
+        writeSkill(ws, '.damocles/skills', 'foo', 'first version');
+        const svc = makeService();
+
+        expect(await svc.describeSkill('foo')).toBe('first version');
+        const file = writeSkill(ws, '.damocles/skills', 'foo', 'second version');
+        expect(await svc.describeSkill('FOO')).toBe('first version');
+
+        platform.fileWatchers.watcher(ws, `.damocles/skills/**/${SKILL_FILES}`).fireChange(file);
+        vi.advanceTimersByTime(300);
+
+        expect(await svc.describeSkill('foo')).toBe('second version');
+      });
+
+      it('describes no skill that cannot run', async () => {
+        writeSkill(ws, '.damocles/skills', 'foo', 'project skill');
+        setTrusted(false);
+        const svc = makeService();
+
+        expect(await svc.describeSkill('foo')).toBeUndefined();
+        expect(await svc.describeSkill('nope')).toBeUndefined();
+      });
+
+      // A namespace link has no .md suffix, and no recursive watch enters a link, so only its own entry's events reach the menu.
+      it.each([
+        ['user', () => H.home],
+        ['project', () => ws],
+      ])('re-scans when a %s namespace link commands/gs is made, removed or re-pointed', async (_scope, baseOf) => {
         const svc = makeService();
         const invalidated = vi.fn();
         svc.setOnCacheInvalidate(invalidated);
         await svc.getCommands();
 
-        const watcher = platform.fileWatchers.watcher(userCommands, '**/*.md');
+        const base = baseOf();
+        const link = path.join(base, '.claude', 'commands', 'gs');
+        const live = platform.fileWatchers.watchers.filter((w) => !w.disposed && w.base === base);
+        for (const fire of [(w: FakeFileWatcher) => w.fireCreate(link), (w: FakeFileWatcher) => w.fireDelete(link), (w: FakeFileWatcher) => w.fireChange(link)]) {
+          for (const watcher of live) fire(watcher);
+          vi.advanceTimersByTime(300);
+        }
+
+        expect(invalidated).toHaveBeenCalledTimes(3);
+      });
+
+      it('collapses a burst of events into one re-scan', async () => {
+        const svc = makeService();
+        const invalidated = vi.fn();
+        svc.setOnCacheInvalidate(invalidated);
+        await svc.getCommands();
+
+        const watcher = platform.fileWatchers.watcher(path.join(H.home, '.damocles'), 'commands/**');
         const file = writeCommand(H.home, '.damocles/commands', 'foo', 'appeared later');
         watcher.fireCreate(file);
         vi.advanceTimersByTime(100);
@@ -918,7 +1233,7 @@ describe('SlashCommandService asset-source precedence', () => {
         svc.setOnCacheInvalidate(invalidated);
         await svc.getCommands();
 
-        const watcher = platform.fileWatchers.watcher(userCommands, '**/*.md');
+        const watcher = platform.fileWatchers.watcher(path.join(H.home, '.damocles'), 'commands/**');
         svc.dispose();
         service = null;
         watcher.fireCreate(path.join(userCommands, 'foo.md'));
@@ -931,11 +1246,7 @@ describe('SlashCommandService asset-source precedence', () => {
     it('watches only the user directories when no workspace folder is open', () => {
       makeService(null);
 
-      const expected = SOURCE_FOLDERS.flatMap((source) => [
-        `${path.join(H.home, source.commands)}|**/*.md`,
-        `${path.join(H.home, source.skills)}|**/SKILL.md`,
-        `${path.join(H.home, source.skills)}|*`,
-      ]);
+      const expected = SOURCE_FOLDERS.flatMap((source) => [user(source.commands, '**'), user(source.skills, `**/${SKILL_FILES}`), user(source.skills, '*')]);
 
       expect(registered().sort()).toEqual(expected.sort());
     });

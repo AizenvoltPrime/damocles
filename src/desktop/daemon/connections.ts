@@ -291,7 +291,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
         return deps.control['mirror.syncSubcalls'](params, { id, clientId: accepted.hello.clientId, mux, claimStream, core, close, end });
       });
       const workspace = mux.messageChannel(CHANNEL.workspace, WORKSPACE_MAX_MESSAGE_BYTES);
-      disposables.push(deps.workspace.serve(id, accepted.hello.clientId, channelTransport(workspace, WORKSPACE_MAX_MESSAGE_BYTES, close), close, claimStream, () => protocol.lost()));
+      disposables.push(deps.workspace.serve(id, accepted.hello.clientId, channelTransport(workspace, WORKSPACE_MAX_MESSAGE_BYTES, close), close, claimStream, () => protocol.lost(), () => core.clientFeatures()));
       const ports = mux.messageChannel(CHANNEL.ports, PORTS_MAX_MESSAGE_BYTES);
       disposables.push(deps.ports.serve(id, channelTransport(ports, PORTS_MAX_MESSAGE_BYTES, close), claimStream, close, (listener) => protocol.onLost(() => listener())));
       const { clientId, deviceName } = accepted.hello;

@@ -22,11 +22,36 @@ vi.mock('os', async (importOriginal) => {
   return { ...actual, homedir: () => home };
 });
 
+// A file's injected check failure: an error the network-rule check rejects with, or its refusal of a link onto a share.
+const checkFailures = vi.hoisted(() => new Map<string, Error | 'refused'>());
+vi.mock('../../config/local-config-path', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../config/local-config-path')>();
+  return {
+    ...actual,
+    checkConfigPath: async (baseFolder: string, file: string) => {
+      const failure = checkFailures.get(file);
+      if (failure === 'refused') return { refused: 'share' };
+      if (failure !== undefined) throw failure;
+      return actual.checkConfigPath(baseFolder, file);
+    },
+  };
+});
+
 import ignore from 'ignore';
-import { loadPermissionsByPriority, usableGitignorePattern } from '../permission-settings';
+import { loadPermissionsByPriority, usableGitignorePattern, type FilePermissions, type RuleFileRecords } from '../permission-settings';
 import { PermissionHandler } from '../index';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { getPiCodingAgent } from '../../pi-session/pi-loader';
+import { englishText } from '../../../shared/localized-text';
+
+/** The rules a first read in a fresh session gives, which must not be the unreadable outcome. */
+async function filesOf(folder: { path: string; personalFiles: boolean } | null): Promise<FilePermissions[]> {
+  const loaded = await loadPermissionsByPriority(folder, new Map());
+  if (!('files' in loaded)) throw new Error('the rules were unreadable');
+  return loaded.files;
+}
+
+const errno = (code: string): Error => Object.assign(new Error(code), { code });
 
 /** The eight read locations, most-specific first — mirrors the order under test. */
 const ORDERED_FILES = [
@@ -53,6 +78,7 @@ beforeEach(() => {
   fs.rmSync(home, { recursive: true, force: true });
   fs.rmSync(workspace, { recursive: true, force: true });
   logMock.mockClear();
+  checkFailures.clear();
 });
 
 afterAll(() => {
@@ -65,7 +91,7 @@ describe('loadPermissionsByPriority', () => {
       writeSettings(segments, { allow: [ruleFor(index)] });
     });
 
-    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
+    const result = await filesOf({ path: workspace, personalFiles: true });
 
     expect(result.map(perms => perms.allow[0])).toEqual(
       ORDERED_FILES.map((_, index) => ruleFor(index)),
@@ -77,7 +103,7 @@ describe('loadPermissionsByPriority', () => {
       writeSettings(segments, { allow: [ruleFor(index)] });
     });
 
-    const result = await loadPermissionsByPriority(null);
+    const result = await filesOf(null);
 
     expect(result.map(perms => perms.allow[0])).toEqual([
       ruleFor(4),
@@ -92,7 +118,7 @@ describe('loadPermissionsByPriority', () => {
       writeSettings(segments, { allow: [ruleFor(index)] });
     });
 
-    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
+    const result = await filesOf({ path: workspace, personalFiles: true });
 
     expect(result.map((perms) => perms.root)).toEqual([
       workspace, workspace, workspace, workspace,
@@ -104,7 +130,7 @@ describe('loadPermissionsByPriority', () => {
     writeSettings(ORDERED_FILES[0], { allow: [], deny: [], ask: [] });
     writeSettings(ORDERED_FILES[2], { deny: ['Bash(git push:*)'] });
 
-    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
+    const result = await filesOf({ path: workspace, personalFiles: true });
 
     expect(result).toHaveLength(1);
     expect(result[0]?.deny).toEqual(['Bash(git push:*)']);
@@ -125,7 +151,7 @@ describe('loadPermissionsByPriority — unusable files', () => {
     writeRaw(ORDERED_FILES[0], '{ "permissions": { "deny": ["Bash(rm:*)"] }, }');
     writeSettings(ORDERED_FILES[2], { deny: ['Bash(git push:*)'] });
 
-    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
+    const result = await filesOf({ path: workspace, personalFiles: true });
 
     expect(result).toHaveLength(1);
     expect(logMock.mock.calls.flat().join(' ')).toContain('is not valid JSON');
@@ -134,13 +160,13 @@ describe('loadPermissionsByPriority — unusable files', () => {
   it('never puts the parser message in the log, which quotes the file', async () => {
     writeRaw(ORDERED_FILES[0], '{"permissions":{"deny":["Bash(rm:*)"],"note":sk-SUPERSECRET}}');
 
-    await loadPermissionsByPriority({ path: workspace, personalFiles: true });
+    await filesOf({ path: workspace, personalFiles: true });
 
     expect(logMock.mock.calls.flat().join(' ')).not.toContain('SUPERSECRET');
   });
 
   it('says nothing about a file that is simply absent', async () => {
-    await loadPermissionsByPriority({ path: workspace, personalFiles: true });
+    await filesOf({ path: workspace, personalFiles: true });
 
     expect(logMock.mock.calls.flat().join(' ')).not.toContain('could not be read');
   });
@@ -151,7 +177,7 @@ describe('loadPermissionsByPriority — unusable files', () => {
     writeRaw(ORDERED_FILES[0], 'null');
     writeSettings(ORDERED_FILES[2], { allow: ['Bash(ls:*)'] });
 
-    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
+    const result = await filesOf({ path: workspace, personalFiles: true });
 
     expect(result).toHaveLength(1);
     expect(result[0]?.allow).toEqual(['Bash(ls:*)']);
@@ -160,7 +186,7 @@ describe('loadPermissionsByPriority — unusable files', () => {
   it('reads a file that starts with a byte order mark, as the settings store does', async () => {
     writeRaw(ORDERED_FILES[0], `\uFEFF${JSON.stringify({ permissions: { deny: ['Read(secret.txt)'] } })}`);
 
-    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
+    const result = await filesOf({ path: workspace, personalFiles: true });
 
     expect(result[0]?.deny).toEqual(['Read(secret.txt)']);
     expect(logMock).not.toHaveBeenCalled();
@@ -169,7 +195,7 @@ describe('loadPermissionsByPriority — unusable files', () => {
   it('drops a rule that is not a string and logs its file and index, never its value', async () => {
     writeRaw(ORDERED_FILES[0], JSON.stringify({ permissions: { deny: [987654321, 'Read(secret.txt)', { tool: 'Bash-SECRET' }], ask: 'Read(SECRET-STRING)' } }));
 
-    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
+    const result = await filesOf({ path: workspace, personalFiles: true });
 
     expect(result).toHaveLength(1);
     expect(result[0]?.deny).toEqual(['Read(secret.txt)']);
@@ -189,7 +215,7 @@ describe('loadPermissionsByPriority — unusable files', () => {
     writeRaw(ORDERED_FILES[2], JSON.stringify({ note: 'no permissions key at all' }));
     writeSettings(ORDERED_FILES[3], { allow: ['Bash(ls:*)'] });
 
-    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
+    const result = await filesOf({ path: workspace, personalFiles: true });
 
     expect(result).toHaveLength(1);
     expect(result[0]?.allow).toEqual(['Bash(ls:*)']);
@@ -210,7 +236,7 @@ describe('loadPermissionsByPriority — unusable files', () => {
     const inert = ['*', 'B*', 'mcp__*', 'mcp__git*__get_x', 'Edit(!secret-a/**)', 'Read(#secret-b)', 'Write(secret-c/**)', 'WebFetch(secret-d.com)', 'WebFetch(domain:*.secret-e.com)'];
     writeSettings(ORDERED_FILES[0], { allow: [...inert, 'mcp__github__get_*', 'Edit(src/**)', 'Write', 'WebFetch(domain:example.com)'], deny: inert, ask: inert });
 
-    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
+    const result = await filesOf({ path: workspace, personalFiles: true });
 
     expect(result[0]?.allow).toEqual(['mcp__github__get_*', 'Edit(src/**)', 'Write', 'WebFetch(domain:example.com)']);
     expect(result[0]?.deny).toEqual(inert);
@@ -236,7 +262,7 @@ describe('loadPermissionsByPriority — unusable files', () => {
     ];
     writeSettings(ORDERED_FILES[0], { allow: rules, deny: rules, ask: rules });
 
-    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
+    const result = await filesOf({ path: workspace, personalFiles: true });
 
     expect(result[0]).toMatchObject({ allow: rules, deny: rules, ask: rules });
     expect(logMock).not.toHaveBeenCalled();
@@ -248,7 +274,7 @@ describe('loadPermissionsByPriority — unusable files', () => {
     const live = ['mcp__srv__read_mcp_resource(file:///secret/*)', `${'mcp__' + 's'.repeat(50)}_0123abcd(x://secret)`, 'mcp__srv__*'];
     writeSettings(ORDERED_FILES[0], { deny: [...inert, ...live], ask: inert });
 
-    const result = await loadPermissionsByPriority({ path: workspace, personalFiles: true });
+    const result = await filesOf({ path: workspace, personalFiles: true });
 
     expect(result[0]).toMatchObject({ deny: live, ask: [] });
     const logged = logMock.mock.calls.flat().join('\n');
@@ -259,6 +285,152 @@ describe('loadPermissionsByPriority — unusable files', () => {
     for (const index of [0, 1, 2, 3]) expect(logged).toContain(`${file} permissions.ask[${index}]`);
     expect(logged).not.toContain('secret');
     expect(logMock).toHaveBeenCalledTimes(8);
+  });
+});
+
+describe('loadPermissionsByPriority — a rules file that cannot be checked or read', () => {
+  const subject = ORDERED_FILES[2];
+  const file = path.join(...subject);
+  const trusted = { path: workspace, personalFiles: true };
+  const notices = (notifications: ReturnType<typeof createFakePlatform>['notifications']) => notifications.calls.map((call) => call.message);
+
+  async function load(records: RuleFileRecords, notifications = createFakePlatform().notifications) {
+    return loadPermissionsByPriority(trusted, records, undefined, notifications);
+  }
+
+  it('keeps the rules it last read after a timeout, with one notice across repeated reads', async () => {
+    writeSettings(subject, { deny: ['Bash(rm:*)'], ask: ['Read(.env)'] });
+    const records: RuleFileRecords = new Map();
+    const { notifications } = createFakePlatform();
+    expect(await load(records, notifications)).toMatchObject({ files: [{ deny: ['Bash(rm:*)'], ask: ['Read(.env)'] }] });
+
+    checkFailures.set(file, errno('ETIMEDOUT'));
+    for (let read = 0; read < 3; read++) {
+      expect(await load(records, notifications)).toMatchObject({ files: [{ deny: ['Bash(rm:*)'], ask: ['Read(.env)'] }] });
+    }
+
+    expect(notices(notifications)).toHaveLength(1);
+    expect(notices(notifications)[0]).toContain(file);
+    expect(notices(notifications)[0]).toContain('did not answer');
+    expect(notices(notifications)[0]).toContain('keeps the rules it last read');
+    expect(logMock.mock.calls.flat().join(' ')).toContain(`${file} could not be read`);
+  });
+
+  it('cannot tell which rules apply when the file was never read, and says so once', async () => {
+    writeSettings(subject, { deny: ['Bash(rm:*)'] });
+    writeSettings(ORDERED_FILES[6], { allow: ['Read'] });
+    checkFailures.set(file, errno('ETIMEDOUT'));
+    const records: RuleFileRecords = new Map();
+    const { notifications } = createFakePlatform();
+
+    const first = await load(records, notifications);
+    const second = await load(records, notifications);
+
+    for (const loaded of [first, second]) {
+      expect(loaded).not.toHaveProperty('files');
+      if (!('unreadable' in loaded)) throw new Error('expected the unreadable outcome');
+      expect(loaded.unreadable.file).toBe(file);
+      expect(englishText(loaded.unreadable.reason)).toContain('did not answer');
+    }
+    expect(notices(notifications)).toHaveLength(1);
+    expect(notices(notifications)[0]).toContain(file);
+    expect(notices(notifications)[0]).toContain('blocks every tool call');
+  });
+
+  it('reads the file again once it answers, and a new failure gives a new notice', async () => {
+    writeSettings(subject, { deny: ['Bash(rm:*)'] });
+    const records: RuleFileRecords = new Map();
+    const { notifications } = createFakePlatform();
+    checkFailures.set(file, errno('ETIMEDOUT'));
+    expect(await load(records, notifications)).toHaveProperty('unreadable');
+
+    checkFailures.delete(file);
+    writeSettings(subject, { deny: ['Bash(git push:*)'] });
+    expect(await load(records, notifications)).toMatchObject({ files: [{ deny: ['Bash(git push:*)'] }] });
+
+    checkFailures.set(file, errno('ETIMEDOUT'));
+    expect(await load(records, notifications)).toMatchObject({ files: [{ deny: ['Bash(git push:*)'] }] });
+    expect(notices(notifications)).toHaveLength(2);
+    expect(notices(notifications)[1]).toContain('keeps the rules it last read');
+  });
+
+  it('reads a missing file, or one below a folder that is a file, as no rules with no notice', async () => {
+    writeRaw([workspace, '.claude'], 'not a folder');
+    const records: RuleFileRecords = new Map();
+    const { notifications } = createFakePlatform();
+
+    expect(await load(records, notifications)).toEqual({ files: [] });
+    expect(notices(notifications)).toEqual([]);
+    expect(logMock.mock.calls.flat().join(' ')).not.toContain('could not be read');
+  });
+
+  it('keeps no rules after a timeout when the file was missing at its last read', async () => {
+    const records: RuleFileRecords = new Map();
+    expect(await load(records)).toEqual({ files: [] });
+
+    checkFailures.set(file, errno('ETIMEDOUT'));
+    expect(await load(records)).toEqual({ files: [] });
+  });
+
+  it('takes a loop and a refused link onto a share as unreadable', async () => {
+    writeSettings(subject, { deny: ['Bash(rm:*)'] });
+    for (const [failure, reason] of [[errno('ELOOP'), 'loops'], ['refused', 'network share or WSL path']] as const) {
+      checkFailures.set(file, failure);
+      const loaded = await load(new Map());
+      if (!('unreadable' in loaded)) throw new Error('expected the unreadable outcome');
+      expect(loaded.unreadable.file).toBe(file);
+      expect(englishText(loaded.unreadable.reason)).toContain(reason);
+    }
+  });
+
+  it('anchors the last good rules at this load\'s folder, as a worktree chat shares its project\'s personal file', async () => {
+    writeSettings(subject, { deny: ['Read(/secrets/**)'] });
+    const records: RuleFileRecords = new Map();
+    await load(records);
+    for (const [key, record] of records) records.set(key, { ...record, lastGood: record.lastGood && { ...record.lastGood, root: path.join(tmpRoot, 'other-folder') } });
+
+    checkFailures.set(file, errno('ETIMEDOUT'));
+    expect(await load(records)).toMatchObject({ files: [{ deny: ['Read(/secrets/**)'], root: workspace }] });
+  });
+
+  it('takes a read that fails with ENOTDIR as a missing file', async () => {
+    writeSettings(subject, { deny: ['Bash(rm:*)'] });
+    const readFile = vi.spyOn(fs.promises, 'readFile').mockImplementation(async (target) => {
+      if (String(target) === file) throw errno('ENOTDIR');
+      throw errno('ENOENT');
+    });
+    try {
+      expect(await load(new Map())).toEqual({ files: [] });
+    } finally {
+      readFile.mockRestore();
+    }
+  });
+
+  it('takes a read that fails with EACCES as unreadable', async () => {
+    writeSettings(subject, { deny: ['Bash(rm:*)'] });
+    const readFile = vi.spyOn(fs.promises, 'readFile').mockImplementation(async (target) => {
+      if (String(target) === file) throw errno('EACCES');
+      return '{}';
+    });
+    try {
+      const loaded = await load(new Map());
+      if (!('unreadable' in loaded)) throw new Error('expected the unreadable outcome');
+      expect(englishText(loaded.unreadable.reason)).toContain('EACCES');
+    } finally {
+      readFile.mockRestore();
+    }
+  });
+
+  it('reads a file that does not parse as no rules and no block, as its last good rules', async () => {
+    writeSettings(subject, { deny: ['Bash(rm:*)'] });
+    const records: RuleFileRecords = new Map();
+    expect(await load(records)).toMatchObject({ files: [{ deny: ['Bash(rm:*)'] }] });
+
+    writeRaw(subject, '{ "permissions": { "deny": ["Bash(rm:*)"] }, }');
+    expect(await load(records)).toEqual({ files: [] });
+
+    checkFailures.set(file, errno('ETIMEDOUT'));
+    expect(await load(records)).toEqual({ files: [] });
   });
 });
 

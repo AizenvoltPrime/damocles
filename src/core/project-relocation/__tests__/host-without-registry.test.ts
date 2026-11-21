@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import { fileLinkedOntoDevice } from '../../../__mocks__/admin-share';
 import { WORKTREES_ROOT_DIR } from '../../paths';
 import { REGISTRY_FILE } from '../../worktrees/registry';
 import { ProjectRelocations } from '../index';
@@ -45,6 +46,11 @@ afterEach(() => {
 describe('a relocation on a host without a worktree registry', () => {
   it('refuses while registry.json does not parse, since the project\'s chat worktree records cannot be known', async () => {
     fs.writeFileSync(registryFile, '{ broken');
+    expect(await relocations.preflight({ from: P, to: P_NEW, listed: [P_NEW] })).toEqual({ ok: false, refusal: { code: 'registryUnreadable' } });
+  });
+
+  it.runIf(process.platform === 'win32')('refuses while registry.json links off its folder, which the network rule keeps unread (win32)', async (ctx) => {
+    fileLinkedOntoDevice(ctx, registryFile);
     expect(await relocations.preflight({ from: P, to: P_NEW, listed: [P_NEW] })).toEqual({ ok: false, refusal: { code: 'registryUnreadable' } });
   });
 

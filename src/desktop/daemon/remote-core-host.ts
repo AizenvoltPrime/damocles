@@ -65,6 +65,8 @@ export interface RemoteCoreHostDeps {
 /** A connection's `core` channel; attach starts serving the attach generation it names. */
 export interface CoreConnection extends Disposable {
   attach(payload: CoreAttach): CoreState;
+  // the FEATURES of the latest attach, none before the first
+  clientFeatures(): ReadonlySet<string>;
 }
 
 export interface RemoteCoreHost {
@@ -371,6 +373,7 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
           serve(connection);
           return state;
         },
+        clientFeatures: () => new Set(connection.payload?.features ?? []),
         dispose: () => {
           subscription.dispose();
           // read before the router's detach, which drops it

@@ -6,12 +6,15 @@ import type { Disposable } from '../../platform/disposable';
 import type { FileRename, FileWatcher, FileWatcherFactory } from '../../platform/file-watcher';
 import type { WorkspaceFolders } from '../../platform/workspace-folders';
 import { folderKey } from '../../core/workspace-folders/folder-key';
+import { watchRoot } from '../../core/watch-root';
 import { settlePending } from '../../shared/settle-pending';
 import {
   errorText,
   isRecursiveIgnored,
+  linkOffBase,
   lstatLater,
   lstatNow,
+  presentBelow,
   RECURSIVE_IGNORE,
   SHALLOW_COALESCE_MS,
   toGlobPath,
@@ -28,20 +31,6 @@ import { procWatchModeSources, watchModeOf, type WatchModeSources } from './watc
 
 // Bound on the synthetic create events replayed for a directory that appears after its watch started.
 const REPLAY_LIMIT = 10_000;
-
-// A glob with no separator and no globstar matches direct children only, so a non-recursive watch covers it; this keeps a
-// watch like (home, '.claude.json') from subscribing to the whole home tree.
-export function isShallowGlob(glob: string): boolean {
-  return !glob.includes('/') && !glob.includes('**');
-}
-
-/** The directory to subscribe to for (base, glob): the glob's static prefix under base, recursive only when the rest needs it. */
-export function watchRoot(base: string, glob: string): { readonly root: string; readonly recursive: boolean } {
-  const scan = picomatch.scan(glob);
-  const prefix = scan.isGlob ? scan.base : path.posix.dirname(glob);
-  const rest = scan.isGlob ? scan.glob : path.posix.basename(glob);
-  return { root: path.resolve(base, prefix), recursive: !isShallowGlob(rest) };
-}
 
 // Linux watches recursively with startInotifyTree; @parcel/watcher's inotify backend never lists a directory created or moved in
 // after the watch started, so it misses what is inside and never watches its subdirectories (parcel-bundler/watcher#97). A
@@ -75,9 +64,11 @@ function nearestExistingAncestor(dir: string): string | undefined {
 // start(appeared, lost, failed) runs while dir exists; lost() hands the directory back to waiting, so a deleted root resumes once
 // recreated, and failed(err) ends a start that failed after it returned as one that threw does.
 // Until then a non-recursive watch on its nearest existing ancestor waits for it, or with poll a check every POLL_INTERVAL_MS.
-// ready is the first start's, settled at once when dir was missing or that start threw.
+// A link below base that leads off base's share (linkOffBase) counts as dir missing, waited for from the link's folder, so
+// nothing stats through it. ready is the first start's, settled at once when dir was missing or that start threw.
 function watchWhileExists(
   dir: string,
+  base: string,
   start: (appeared: boolean, lost: () => void, failed: (err: unknown) => void) => StartedWatch,
   log: Log,
   poll = false,
@@ -85,6 +76,15 @@ function watchWhileExists(
   let disposed = false;
   let started: StartedWatch | undefined;
   let waiting: { ancestor: string; stop: () => void } | undefined;
+  // the refused link last logged, so a wait logs it once
+  let refused: string | undefined;
+  const offLink = (): string | undefined => {
+    const link = linkOffBase(base, dir);
+    if (link !== undefined && link !== refused) log(`[watcher] ${link} is not followed under the network rule (a link onto a network share, WSL or device path off the share of ${base}, or one the check could not follow); ${dir} is not watched through it`);
+    refused = link;
+    return link;
+  };
+  const present = (): boolean => offLink() === undefined && fs.existsSync(dir);
   const stopWaiting = (): void => {
     waiting?.stop();
     waiting = undefined;
@@ -105,18 +105,20 @@ function watchWhileExists(
   const check = (appeared: boolean): void => {
     if (disposed || started) return;
     try {
-      if (fs.existsSync(dir)) {
+      const link = offLink();
+      if (link === undefined && fs.existsSync(dir)) {
         stopWaiting();
         try {
           started = start(appeared, lost, failed);
           return;
         } catch (err) {
           log(`[watcher] could not watch ${dir}: ${errorText(err)}`);
-          // Only a directory that vanished while the watch started is waited for again; any other failure stays logged.
-          if (fs.existsSync(dir)) return;
+          // Only a directory that vanished, or came to lie past a link off base's share, while the watch started is waited for
+          // again; any other failure stays logged.
+          if (present()) return;
         }
       }
-      const ancestor = nearestExistingAncestor(dir);
+      const ancestor = nearestExistingAncestor(refused ?? dir);
       if (ancestor === undefined || ancestor === waiting?.ancestor) return;
       stopWaiting();
       if (poll) {
@@ -134,7 +136,7 @@ function watchWhileExists(
       });
       waiting = own;
       // The directory may have appeared between the existence check and the watch.
-      if (fs.existsSync(dir)) check(true);
+      if (present()) check(true);
     } catch (err) {
       log(`[watcher] could not watch ${dir}: ${errorText(err)}`);
     }
@@ -179,13 +181,18 @@ function replayExisting(dir: string, recursive: boolean, emit: RawListener, log:
   walk(dir);
 }
 
-// ready at once: the watch and the baseline listing are both made before this returns.
-function startShallow(dir: string, emit: RawListener, lost: () => void, log: Log): StartedWatch {
+// ready at once: the watch and the baseline listing are both made before this returns. dir counts as gone once a link below base
+// leads off base's share (presentBelow), checked before a batch's paths are touched.
+function startShallow(dir: string, base: string, emit: RawListener, lost: () => void, log: Log): StartedWatch {
   const present = new Set(fs.readdirSync(dir));
   const pending = new Set<string>();
   let timer: NodeJS.Timeout | undefined;
   const flush = (): void => {
     timer = undefined;
+    if (!presentBelow(base, dir)) {
+      gone();
+      return;
+    }
     for (const name of pending) {
       const full = path.join(dir, name);
       // lstat, never a following call: a child link to \\host\share would make Windows connect to that host.
@@ -209,19 +216,15 @@ function startShallow(dir: string, emit: RawListener, lost: () => void, log: Log
     present.clear();
     lost();
   };
-  // Windows reports a deleted watched directory as an endless run of rename events naming the directory itself.
+  // Windows reports a deleted watched directory as an endless run of rename events naming the directory itself, so every event,
+  // one with no name included, leads to a flush, which finds the directory gone.
   const watcher = fs.watch(dir, (_eventType, filename) => {
-    if (!fs.existsSync(dir)) {
-      gone();
-      return;
-    }
-    if (filename === null) return;
-    pending.add(filename.toString());
+    if (filename !== null) pending.add(filename.toString());
     timer ??= setTimeout(flush, SHALLOW_COALESCE_MS);
   });
   watcher.on('error', (err) => {
     log(`[watcher] ${dir}: ${err.message}`);
-    if (!fs.existsSync(dir)) gone();
+    if (!presentBelow(base, dir)) gone();
   });
   return {
     ready: Promise.resolve(),
@@ -522,8 +525,10 @@ class EventFan implements FileWatcher {
 }
 
 /**
- * One watch shared per root, filtered by picomatch: recursive on the Windows tree host (Windows), startInotifyTree (Linux) or
- * @parcel/watcher (macOS), non-recursive fs.watch for direct-children globs; a Linux root watch-mode.ts marks polls instead.
+ * One watch shared per root (on Windows per base and root), filtered by picomatch: recursive on the Windows tree host
+ * (Windows), startInotifyTree (Linux) or @parcel/watcher (macOS), non-recursive fs.watch for direct-children globs; a Linux
+ * root watch-mode.ts marks polls instead. No watch stats or watches through a link below its base that leads off the base's
+ * share (D10, linkOffBase).
  */
 export class DesktopFileWatcherFactory implements FileWatcherFactory {
   private readonly roots = new Map<string, RootEntry>();
@@ -577,7 +582,7 @@ export class DesktopFileWatcherFactory implements FileWatcherFactory {
         if (isStrictlyInside(relative) && matches(toGlobPath(relative))) fan.deliver(type, fsPath);
       };
       const { root: watched, recursive } = watchRoot(root, glob);
-      const subscription = this.subscribe(watched, recursive, listener);
+      const subscription = this.subscribe(root, watched, recursive, listener);
       release = subscription.release;
       fan.readyWhen(subscription.ready);
     } catch (err) {
@@ -636,9 +641,10 @@ export class DesktopFileWatcherFactory implements FileWatcherFactory {
     await Promise.all([settlePending(() => this.work), this.windowsTree.close()]);
   }
 
-  private subscribe(root: string, recursive: boolean, listener: RawListener): { readonly release: () => void; readonly ready: Promise<void> } {
+  // The D10 rule judges the links below base, on Windows only, so there one watch of a root is shared only by callers of one base.
+  private subscribe(base: string, root: string, recursive: boolean, listener: RawListener): { readonly release: () => void; readonly ready: Promise<void> } {
     if (this.closed) return { release: () => undefined, ready: Promise.resolve() };
-    const key = `${recursive ? 'r' : 's'}:${folderKey(root)}`;
+    const key = `${recursive ? 'r' : 's'}:${process.platform === 'win32' ? `${folderKey(base)}\0` : ''}${folderKey(root)}`;
     let entry = this.roots.get(key);
     if (!entry) {
       const listeners = new Set<RawListener>();
@@ -648,11 +654,11 @@ export class DesktopFileWatcherFactory implements FileWatcherFactory {
       const { log, track, windowsTree } = this;
       const poll = this.modeSources !== undefined && watchModeOf(root, this.modeSources) === 'poll';
       if (poll) log(`[watcher] ${root} is polled every ${POLL_INTERVAL_MS} ms`);
-      const source = watchWhileExists(root, (appeared, lost, failed) => {
+      const source = watchWhileExists(root, base, (appeared, lost, failed) => {
         // Its first scan reports what a root that appeared holds, and the events after it are diffed against that scan.
-        if (recursive && USE_FS_WATCH_TREE) return windowsTree.start(root, appeared, emit, lost);
+        if (recursive && USE_FS_WATCH_TREE) return windowsTree.start(root, appeared, emit, lost, base);
         let started: StartedWatch;
-        if (!recursive) started = poll ? startShallowPolling(root, emit, lost, failed, log, track) : startShallow(root, emit, lost, log);
+        if (!recursive) started = poll ? startShallowPolling(root, emit, lost, failed, log, track) : startShallow(root, base, emit, lost, log);
         else if (poll) started = startPolling(root, emit, lost, failed, log, track);
         else started = USE_INOTIFY_TREE ? startInotifyTree(root, emit, lost, log, () => this.reachedLimit(root)) : startParcel(root, emit, lost, log, track);
         let live = true;

@@ -24,10 +24,7 @@ vi.mock("../../../../pi-session/pi-loader", async () => {
   };
 });
 
-vi.mock("../../../../pi-session/agent-dir", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../../pi-session/agent-dir")>()),
-  ensurePiAgentDir: () => undefined,
-}));
+vi.mock("../../../../pi-session/agent-dir-setup", () => ({ ensurePiAgentDir: () => undefined }));
 
 import { PiRuntime } from "../../../../pi-session/pi-runtime";
 import { createOpenAIHandlers } from "../openai-handlers";

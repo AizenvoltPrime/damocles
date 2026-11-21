@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import * as path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { portWalkChannel, stdioWalkChannel } from '../walk-channels';
@@ -11,6 +12,7 @@ const walkStub = vi.hoisted(() => ({
   files: (async function* () {})() as AsyncGenerator<readonly string[], void, undefined>,
   options: [] as WalkOptions[],
   insideRepo: false,
+  modified: new Map<string, number>(),
   // folders still being read ahead, and what settles them
   ahead: 0,
   settled: Promise.resolve() as Promise<void>,
@@ -19,7 +21,7 @@ vi.mock('../walk', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../walk')>()),
   walkFiles: (options: WalkOptions) => {
     walkStub.options.push(options);
-    return { errors: [], files: walkStub.files, readsAhead: () => walkStub.ahead, readsSettled: () => walkStub.settled };
+    return { errors: [], files: walkStub.files, modified: walkStub.modified, readsAhead: () => walkStub.ahead, readsSettled: () => walkStub.settled };
   },
   insideGitRepo: async () => walkStub.insideRepo,
 }));
@@ -158,6 +160,35 @@ describe('serveWalks', () => {
     }
     expect(walkStub.options.map((options) => options.requireGit)).toEqual([true, false]);
     expect([...await walkStub.options[0]!.allowedHosts()]).toEqual(['files.example']);
+  });
+
+  it('walks through links only for a request that asks, with its pointer hosts apart from them', async () => {
+    walkStub.options.length = 0;
+    const { receive, replies } = serve();
+    for (const [id, followLinks] of [[1, true], [2, undefined]] as const) {
+      walkStub.files = (async function* () {})();
+      receive(walk({ id, ...(followLinks ? { followLinks } : {}) }));
+      await vi.waitFor(() => expect(replies.at(-1)).toEqual({ kind: 'end', id, errors: [] }));
+    }
+    expect(walkStub.options.map((options) => options.followLinks)).toEqual([true, undefined]);
+    // a walk no chat runs reads a pointer onto its root's own hosts only, whatever it follows
+    expect([...await walkStub.options[0]!.allowedHosts()]).toEqual([]);
+  });
+
+  it('passes the timed rule and skipRealUnder to the walk, and sends each timed file\'s time with its batch', async () => {
+    walkStub.options.length = 0;
+    const nested = path.join('d', 'plan.md');
+    walkStub.modified = new Map([['a.md', 5], [nested, 7]]);
+    walkStub.files = (async function* () {
+      yield ['a.md', 'b.ts'];
+      yield ['c.ts', nested];
+    })();
+    const timed = { extension: '.md', folder: 'plans', word: 'plan' };
+    const { receive, replies } = serve();
+    receive(walk({ followLinks: true, timed, skipRealUnder: ['/p'] }));
+    await vi.waitFor(() => expect(replies.at(-1)?.kind).toBe('end'));
+    expect(replies).toEqual([{ kind: 'files', id: 1, files: ['a.md', 'b.ts', 'c.ts', 'd/plan.md'], times: [[0, 5], [3, 7]] }, { kind: 'end', id: 1, errors: [] }]);
+    expect(walkStub.options.map((options) => [options.timed, options.skipRealUnder])).toEqual([[timed, ['/p']]]);
   });
 });
 

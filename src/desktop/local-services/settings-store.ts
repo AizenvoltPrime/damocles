@@ -8,6 +8,7 @@ import type { TrustService } from '../../platform/trust-service';
 import type { WorkspaceFolders } from '../../platform/workspace-folders';
 import { settingTypeFits, type ContributedConfiguration } from '../../core/config/contributed-configuration';
 import { stripBom } from '../../core/config/bom';
+import { checkConfigPathSync, noticeRefusedConfigRead } from '../../core/config/local-config-path';
 import { jsonConfigWritesSettled, writeJsonConfig } from '../../core/config/json-config-write';
 import { mergeSettingValues, parseSettingsText, type SettingsObject } from '../../core/config/settings-file';
 import { folderKey } from '../../core/workspace-folders/folder-key';
@@ -16,13 +17,6 @@ import { DESKTOP_CONFIGURATION } from './desktop-configuration';
 import { Emitter } from './emitter';
 import { l } from '../../core/l10n';
 import { LocalizedError } from '../../shared/localized-text';
-
-// VS Code's own search settings, which ripgrep enumeration reads; desktop answers VS Code's defaults so .gitignore stays respected.
-const HOST_DEFAULTS: Readonly<Record<string, unknown>> = {
-  'search.useIgnoreFiles': true,
-  'search.useGlobalIgnoreFiles': true,
-  'search.useParentIgnoreFiles': true,
-};
 
 const PROJECT_FILE = 'settings.json';
 const LOCAL_FILE = 'settings.local.json';
@@ -188,15 +182,10 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
   constructor(deps: DesktopSettingsStoreDeps) {
     this.deps = { ...deps, contributed: withDesktopConfiguration(deps.contributed) };
     this.listeners = new Emitter('settings', deps.log);
-    this.user = this.readLayer(deps.userFile, true);
-    const userWatcher = deps.fileWatchers.watch(path.dirname(deps.userFile), path.basename(deps.userFile));
-    const reloadUser = (): void => this.reloadUser(false);
-    userWatcher.onDidCreate(reloadUser);
-    userWatcher.onDidChange(reloadUser);
-    userWatcher.onDidDelete(reloadUser);
+    this.user = this.readLayer(path.dirname(deps.userFile), deps.userFile, true);
     const windowChange = (): void => this.windowFolderChanged();
     this.subscriptions.push(
-      userWatcher,
+      this.watchConfig(path.dirname(deps.userFile), path.basename(deps.userFile), () => this.reloadUser(false)),
       deps.projects.onDidChange(windowChange),
       deps.chatFolders.onDidChange(() => this.releaseUnused()),
       deps.trust.onDidChangeTrust(() => this.reloadAll(false)),
@@ -230,8 +219,7 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
 
   inspect<T>(key: string, folder?: SettingsFolder): SettingInspection<T> {
     const { user, project, local } = this.layersFor(folder);
-    const contributed = this.deps.contributed.defaults.get(key);
-    const defaultValue = contributed !== undefined ? contributed : HOST_DEFAULTS[key];
+    const defaultValue = this.deps.contributed.defaults.get(key);
     const own = Object.hasOwn(user, key);
     // read per call, since a pinned turn reads its own client's layer whoever acts later
     const client = this.deps.remote?.clientSettings() ?? {};
@@ -260,13 +248,15 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
     if (scope === 'user' && this.deps.remote !== undefined) this.checkMachineWrite(key);
     const filePath = scope === 'user' ? this.deps.userFile : this.writableProjectFile(key, scope, folder);
     this.written.add(filePath);
+    // a project or local file is <folder>/.damocles/<file> (projectFile), whose folder is its scope root
+    const options = scope === 'user' ? { baseFolder: path.dirname(filePath) } : { confineTo: path.dirname(filePath), baseFolder: path.dirname(path.dirname(filePath)) };
     await writeJsonConfig(filePath, (current) => {
       // A file that does not parse is the user's to fix; overwriting it would lose every other setting in it.
       const settings = current === undefined ? {} : parseSettingsText(current, filePath);
       if (value === undefined) delete settings[key];
       else settings[key] = value;
       return `${JSON.stringify(settings, null, 2)}\n`;
-    }, scope === 'user' ? {} : { confineTo: path.dirname(filePath) });
+    }, options);
     this.reloadAll(false);
   }
 
@@ -334,21 +324,23 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
     this.folders.set(key, entry);
     if (this.disposed) return entry;
     const reload = (): void => this.reloadEntry(entry, false);
-    const watched = entry.personalPath === entry.path
-      ? [this.deps.fileWatchers.watch(entry.path, PROJECT_GLOB)]
-      : [this.deps.fileWatchers.watch(entry.path, `.damocles/${PROJECT_FILE}`), this.deps.fileWatchers.watch(entry.personalPath, `.damocles/${LOCAL_FILE}`)];
-    for (const watcher of watched) {
-      watcher.onDidCreate(reload);
-      watcher.onDidChange(reload);
-      watcher.onDidDelete(reload);
-      entry.watchers.push(watcher);
-    }
+    if (entry.personalPath === entry.path) entry.watchers.push(this.watchConfig(entry.path, PROJECT_GLOB, reload));
+    else entry.watchers.push(this.watchConfig(entry.path, `.damocles/${PROJECT_FILE}`, reload), this.watchConfig(entry.personalPath, `.damocles/${LOCAL_FILE}`, reload));
     return entry;
+  }
+
+  // based at the file's scope root, so the watcher factory judges a link below it by the network rule (D10)
+  private watchConfig(base: string, glob: string, reload: () => void): Disposable {
+    const watcher = this.deps.fileWatchers.watch(base, glob);
+    watcher.onDidCreate(reload);
+    watcher.onDidChange(reload);
+    watcher.onDidDelete(reload);
+    return watcher;
   }
 
   private readFolderLayers(entry: FolderEntry, acceptEmpty: boolean): void {
     for (const scope of ['project', 'local'] as const) {
-      if (this.fileTrusted(entry, scope)) entry[scope] = this.readProjectLayer(projectFile(entry, scope), acceptEmpty);
+      if (this.fileTrusted(entry, scope)) entry[scope] = this.readProjectLayer(scope === 'project' ? entry.path : entry.personalPath, projectFile(entry, scope), acceptEmpty);
       else delete entry[scope];
     }
   }
@@ -396,9 +388,16 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
     return overlaps(key, this.deps.contributed.userOnlyKeys);
   }
 
-  private readLayer(filePath: string, acceptEmpty: boolean): SettingsObject {
+  // baseFolder: the file's scope root, the Damocles data folder for the user file and the project or personal folder otherwise
+  private readLayer(baseFolder: string, filePath: string, acceptEmpty: boolean): SettingsObject {
     let text: string;
     try {
+      // eslint-disable-next-line damocles/no-sync -- the store's layers are read synchronously already, right after this check
+      if (checkConfigPathSync(baseFolder, filePath) !== 'ok') {
+        this.deps.log(`[settings] ${filePath} links to a network share or WSL path; keeping what was last read from it`);
+        noticeRefusedConfigRead(filePath, this.deps.notifications);
+        return { ...this.lastParsed.get(filePath) };
+      }
       text = fs.readFileSync(filePath, 'utf8');
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -457,8 +456,8 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
     return type === undefined || settingTypeFits(type, value);
   }
 
-  private readProjectLayer(filePath: string, acceptEmpty: boolean): SettingsObject {
-    const settings = this.readLayer(filePath, acceptEmpty);
+  private readProjectLayer(baseFolder: string, filePath: string, acceptEmpty: boolean): SettingsObject {
+    const settings = this.readLayer(baseFolder, filePath, acceptEmpty);
     const ignored = Object.keys(settings).filter((key) => this.isUserOnly(key)).sort();
     for (const key of ignored) delete settings[key];
     const list = ignored.join(', ');
@@ -485,7 +484,7 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
 
   private reloadUser(acceptEmpty: boolean): void {
     const before = this.user;
-    this.user = this.readLayer(this.deps.userFile, acceptEmpty);
+    this.user = this.readLayer(path.dirname(this.deps.userFile), this.deps.userFile, acceptEmpty);
     this.fire(changedKeys({ user: before }, { user: this.user }));
   }
 
@@ -500,7 +499,7 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
   private reloadAll(acceptEmpty: boolean): void {
     const keys = new Set<string>();
     const userBefore = this.user;
-    this.user = this.readLayer(this.deps.userFile, acceptEmpty);
+    this.user = this.readLayer(path.dirname(this.deps.userFile), this.deps.userFile, acceptEmpty);
     for (const key of changedKeys({ user: userBefore }, { user: this.user })) keys.add(key);
     for (const entry of this.folders.values()) {
       const before = this.snapshot(entry);

@@ -96,7 +96,7 @@ describe('design handlers', () => {
     expect(useDesignStore().link).toEqual(LINK);
     expect(useDesignStore().openInBrowser).toBe(false);
 
-    // A core that predates `chat.designOpenInBrowser` omits the field, which hides the buttons.
+    // A core that predates `openInBrowser` omits the field, which hides the buttons.
     dispatch({ type: 'designState', design: DESIGN, link: null, openInBrowser: true });
     dispatch({ type: 'designState', design: DESIGN, link: null });
     expect(useDesignStore().openInBrowser).toBe(false);

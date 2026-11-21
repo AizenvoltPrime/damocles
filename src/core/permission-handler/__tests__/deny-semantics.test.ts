@@ -13,7 +13,7 @@ import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { getPiCodingAgent } from '../../pi-session/pi-loader';
 
-vi.mock('../../skills/utils', () => ({ loadSkillDescription: async () => undefined }));
+const noDescription = async (): Promise<undefined> => undefined;
 
 // User-scope settings resolve through `os.homedir()`; a temp dir keeps the developer's own rules out.
 const H = vi.hoisted(() => {
@@ -164,13 +164,13 @@ describe('ApprovalManager — infra failures must not end the turn', () => {
 describe('SkillManager — infra failures must not end the turn', () => {
   it('no tool use id / no webview deny without interrupt', async () => {
     const state = new PermissionState();
-    const noId = new SkillManager(state, () => (vi.fn() as unknown as PostMessageFn));
+    const noId = new SkillManager(state, () => (vi.fn() as unknown as PostMessageFn), noDescription);
     const idResult = await noId.handleSkillApproval({ skill: 'demo' }, ctx(null));
     expect(idResult.behavior).toBe('deny');
     expect(idResult).not.toHaveProperty('interrupt');
     expect(idResult.message).toContain('no tool use ID');
 
-    const noWebview = new SkillManager(state, () => null);
+    const noWebview = new SkillManager(state, () => null, noDescription);
     const webviewResult = await noWebview.handleSkillApproval({ skill: 'demo' }, ctx('t1'));
     expect(webviewResult).not.toHaveProperty('interrupt');
     expect(webviewResult.message).toContain('webview not available');
@@ -178,7 +178,7 @@ describe('SkillManager — infra failures must not end the turn', () => {
 
   it('an abort while waiting denies without interrupt', async () => {
     const state = new PermissionState();
-    const manager = new SkillManager(state, () => (vi.fn() as unknown as PostMessageFn));
+    const manager = new SkillManager(state, () => (vi.fn() as unknown as PostMessageFn), noDescription);
     const controller = new AbortController();
 
     const pending = manager.handleSkillApproval({ skill: 'demo' }, ctx('t1', controller.signal));
@@ -192,7 +192,7 @@ describe('SkillManager — infra failures must not end the turn', () => {
 
   it('a REAL user Deny of a skill with no feedback still interrupts', async () => {
     const state = new PermissionState();
-    const manager = new SkillManager(state, () => (vi.fn() as unknown as PostMessageFn));
+    const manager = new SkillManager(state, () => (vi.fn() as unknown as PostMessageFn), noDescription);
 
     const pending = manager.handleSkillApproval({ skill: 'demo' }, ctx('t1'));
     await vi.waitFor(() => expect(state.pendingSkillApprovals.has('t1')).toBe(true));
@@ -200,6 +200,21 @@ describe('SkillManager — infra failures must not end the turn', () => {
     const result = await pending;
 
     expect(result.interrupt).toBe(true);
+  });
+
+  it('describes the skill in its approval prompt through the describer it was given', async () => {
+    const state = new PermissionState();
+    const posted = vi.fn();
+    const describeSkill = vi.fn(async () => 'from the menu');
+    const manager = new SkillManager(state, () => posted as unknown as PostMessageFn, describeSkill);
+
+    const pending = manager.handleSkillApproval({ skill: 'demo' }, ctx('t1'));
+    await vi.waitFor(() => expect(state.pendingSkillApprovals.has('t1')).toBe(true));
+    manager.resolveSkillApproval('t1', true);
+    await pending;
+
+    expect(describeSkill).toHaveBeenCalledWith('demo');
+    expect(posted).toHaveBeenCalledWith(expect.objectContaining({ type: 'requestSkillApproval', skillName: 'demo', skillDescription: 'from the menu' }));
   });
 });
 

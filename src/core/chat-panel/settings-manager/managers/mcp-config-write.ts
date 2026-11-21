@@ -10,6 +10,8 @@ import {
 import { DAMOCLES_MCP_CONFIG_PATH } from "./mcp-config-import";
 import { stripBom } from "../../../config/bom";
 import { JsonConfigWriteError, writeJsonConfig } from "../../../config/json-config-write";
+import { checkConfigPath, ConfigWriteRefused } from "../../../config/local-config-path";
+import { LocalizedError } from "../../../../shared/localized-text";
 import { assertValidMcpServerConfig, assertValidMcpServerName } from "./mcp-config-validate";
 import { log } from "../../../logger";
 
@@ -117,8 +119,10 @@ async function writeDamoclesMcpServers(
       root["mcpServers"] = servers;
       count = Object.keys(servers).length;
       return `${JSON.stringify(root, null, 2)}\n`;
-    }, { fileMode: 0o600, dirMode: 0o700 });
+    }, { fileMode: 0o600, dirMode: 0o700, baseFolder: dirname(DAMOCLES_MCP_CONFIG_PATH) });
   } catch (err) {
+    if (err instanceof ConfigWriteRefused) throw new McpWriteError("fileLinksToShare", "~/.damocles/mcp.json links to a network share or WSL path, so it was not written");
+    if (err instanceof LocalizedError) throw new McpWriteError("fileUnreadable", `~/.damocles/mcp.json could not be read (${(err as NodeJS.ErrnoException).code ?? "unknown error"})`);
     if (!(err instanceof JsonConfigWriteError)) throw err;
     if (err.stage === "read") {
       throw new McpWriteError("fileUnreadable", `~/.damocles/mcp.json could not be read (${err.code ?? "unknown error"})`);
@@ -300,12 +304,15 @@ function migratedText(text: string | undefined): string | undefined {
   return changed ? `${JSON.stringify(root, null, 2)}\n` : undefined;
 }
 
-/** The two files Damocles owns that hold MCP servers; the folder one is written only inside its `.damocles` dir. */
-function ownedMcpFile(path: string): { label: string; confineTo?: string } {
+/**
+ * The two files Damocles owns that hold MCP servers, each with its scope root (baseFolder); the folder one is written only
+ * inside its `.damocles` dir.
+ */
+function ownedMcpFile(path: string): { label: string; baseFolder: string; confineTo?: string } {
   const resolved = resolve(path);
-  if (resolved === resolve(DAMOCLES_MCP_CONFIG_PATH)) return { label: "~/.damocles/mcp.json" };
+  if (resolved === resolve(DAMOCLES_MCP_CONFIG_PATH)) return { label: "~/.damocles/mcp.json", baseFolder: dirname(resolved) };
   if (basename(resolved) === "mcp.local.json" && basename(dirname(resolved)) === ".damocles") {
-    return { label: ".damocles/mcp.local.json", confineTo: dirname(resolved) };
+    return { label: ".damocles/mcp.local.json", baseFolder: dirname(dirname(resolved)), confineTo: dirname(resolved) };
   }
   throw new Error("migrateOwnedMcpFile only migrates ~/.damocles/mcp.json and <folder>/.damocles/mcp.local.json");
 }
@@ -317,11 +324,12 @@ function ownedMcpFile(path: string): { label: string; confineTo?: string } {
  * the file was rewritten; a missing or unparseable file is left alone for the read path to report.
  */
 export async function migrateOwnedMcpFile(path: string): Promise<boolean> {
-  const { label, confineTo } = ownedMcpFile(path);
-  if (!existsSync(path)) return false;
+  const { label, baseFolder, confineTo } = ownedMcpFile(path);
   // A lock-free look first: taking the lock on every load would wait out a crashed writer's stale lock.
   let text: string;
   try {
+    // a file that links off its share is left alone for the read path to report, and checked before existsSync follows it
+    if ((await checkConfigPath(baseFolder, path)) !== "ok" || !existsSync(path)) return false;
     text = await fs.readFile(path, "utf-8");
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
@@ -334,9 +342,11 @@ export async function migrateOwnedMcpFile(path: string): Promise<boolean> {
       const next = migratedText(text);
       if (next === undefined) throw new NothingToMigrate();
       return next;
-    }, { fileMode: 0o600, ...(confineTo !== undefined ? { confineTo } : {}) });
+    }, { fileMode: 0o600, baseFolder, ...(confineTo !== undefined ? { confineTo } : {}) });
   } catch (err) {
     if (err instanceof NothingToMigrate) return false;
+    if (err instanceof ConfigWriteRefused) throw new McpWriteError("fileLinksToShare", `${label} links to a network share or WSL path, so it was not written`);
+    if (err instanceof LocalizedError) throw new McpWriteError("fileUnreadable", `${label} could not be read (${(err as NodeJS.ErrnoException).code ?? "unknown error"})`);
     if (!(err instanceof JsonConfigWriteError)) throw err;
     if (err.stage === "read") {
       throw new McpWriteError("fileUnreadable", `${label} could not be read (${err.code ?? "unknown error"})`);

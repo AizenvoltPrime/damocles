@@ -51,6 +51,7 @@ import { ASSET_SOURCE_PRECEDENCE_SETTING, getAssetSourcePrecedence } from "../..
 import { serializeSettingWrite } from "../../../settings-write-chain";
 import { log } from "../../../logger";
 import { verbatim } from "../../../l10n";
+import { userConfigBase } from "../../../config/local-config-path";
 
 /** workspaceState key for the disabled user-scope server names, window-wide. */
 export const MCP_DISABLED_SERVERS_KEY = "damocles.mcp.disabledServers";
@@ -281,7 +282,7 @@ export class McpManager {
   setupWatcher(): void {
     if (this.userWatchers.length === 0) {
       this.userWatchers = [DAMOCLES_MCP_CONFIG_PATH, CODEX_CONFIG_PATH, PI_MCP_CONFIG_PATH].map(file =>
-        this.watch(path.dirname(file), path.basename(file)));
+        this.watch(userConfigBase(file), path.dirname(file), path.basename(file)));
     }
     // The precedence breaks Claude-vs-Codex server name ties, which the loaded snapshot has already settled.
     this.precedenceListener ??= this.platform.settings.onDidChange(ASSET_SOURCE_PRECEDENCE_SETTING, () => {
@@ -324,7 +325,10 @@ export class McpManager {
     for (const [key, target] of open) {
       if (this.folderWatchers.has(key)) continue;
       // The local file is watched where localMcpConfigPath reads it: a worktree chat's is its project's (D34).
-      this.folderWatchers.set(key, FOLDER_WATCHED_FILES.map(file => this.watch(file === LOCAL_MCP_RELATIVE_PATH ? personalConfigRoot(target.fsPath) : target.fsPath, file)));
+      this.folderWatchers.set(key, FOLDER_WATCHED_FILES.map(file => {
+        const base = file === LOCAL_MCP_RELATIVE_PATH ? personalConfigRoot(target.fsPath) : target.fsPath;
+        return this.watch(base, base, file);
+      }));
     }
   }
 
@@ -334,8 +338,10 @@ export class McpManager {
     await this.reload();
   }
 
-  private watch(base: string, glob: string): FileWatcher {
-    const watcher = this.platform.fileWatchers.watch(base, glob);
+  // based at baseFolder, the file's scope root, so the watcher factory judges a link below it by the network rule (D10)
+  private watch(baseFolder: string, base: string, glob: string): FileWatcher {
+    const below = path.relative(baseFolder, base).split(path.sep).join("/");
+    const watcher = this.platform.fileWatchers.watch(baseFolder, below === "" ? glob : `${below}/${glob}`);
     const fire = (): void => {
       this.reload().catch(err => log("[McpManager] Reload after a config file change failed:", err));
     };
@@ -853,7 +859,7 @@ export class McpManager {
 
     await migrateOwnedFile(DAMOCLES_MCP_CONFIG_PATH);
     const [global, fileReads] = await Promise.all([
-      readGlobalMcpSources(projectTargets.map(target => target.fsPath)),
+      readGlobalMcpSources(projectTargets.map(target => target.fsPath), this.platform.notifications),
       Promise.all(projectTargets.map(target => this.readFolderFiles(target, trustByKey.get(target.key)!))),
     ]);
     const relayedSource = this.relayedSource();
@@ -954,13 +960,14 @@ export class McpManager {
   private async readFolderFiles(target: FolderTarget, trust: FolderTrust): Promise<FolderRead> {
     const localFile = localMcpConfigPath(target.fsPath);
     if (trust.local) await migrateOwnedFile(localFile);
-    const files: readonly (readonly [McpServerSource, string])[] = [
-      ["workspace", path.join(target.fsPath, ".mcp.json")],
-      ...(trust.project ? [["pi-project", piProjectMcpConfigPath(target.fsPath)] as const] : []),
-      ["damocles-local", localFile],
+    // each with its scope root: the folder, or for the local file the folder it is read from
+    const files: readonly (readonly [McpServerSource, string, string])[] = [
+      ["workspace", path.join(target.fsPath, ".mcp.json"), target.fsPath],
+      ...(trust.project ? [["pi-project", piProjectMcpConfigPath(target.fsPath), target.fsPath] as const] : []),
+      ["damocles-local", localFile, personalConfigRoot(target.fsPath)],
     ];
     const [reads, localMcpUnignored] = await Promise.all([
-      Promise.all(files.map(async ([source, file]) => ({ source, read: await readMcpConfigFile(file) }))),
+      Promise.all(files.map(async ([source, file, base]) => ({ source, read: await readMcpConfigFile(file, base, this.platform.notifications) }))),
       trust.local ? isLocalMcpFileUnignored(target.fsPath) : false,
     ]);
     return {

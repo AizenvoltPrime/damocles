@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import ignore from 'ignore';
 import type { Memento } from '../../platform/key-value-state';
 import { stripBom } from '../config/bom';
+import { checkConfigPath } from '../config/local-config-path';
 import { endOfOptions, revision, type GitResult, type GitRunner } from '../scm/git-runner';
 import { GitError } from '../scm/errors';
 import { addWorktreeArgs } from '../scm/worktrees';
@@ -523,6 +524,7 @@ export async function readSetupCommands(projectPath: string, platform: NodeJS.Pl
   const file = path.join(projectPath, WORKTREE_SETUP_FILE);
   let text: string;
   try {
+    if ((await checkConfigPath(projectPath, file)) !== 'ok') throw new LocalizedError(l('{0} links to a network share or WSL path, so Damocles does not read it.', file));
     // lstat: a link or a FIFO in the repository is never followed or read.
     const stat = await fs.lstat(file);
     if (!stat.isFile()) throw new LocalizedError(l('{0} is not a regular file.', file));

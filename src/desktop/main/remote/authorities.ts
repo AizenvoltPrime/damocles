@@ -2,7 +2,7 @@ import type { Duplex } from 'node:stream';
 import type { Project } from '../../local-services/confine';
 import type { ProjectConnection, ShellPlatform } from '../../preload/shell-channels';
 import type { ProjectWorkspace } from '../../workspace/project-workspace';
-import { carriesOutsideFiles, carriesTransfers, carriesWalks, createRemoteWorkspace, OUTSIDE_LISTING_FEATURE, RANGED_READS_FEATURE, WATCH_READY_FEATURE } from '../workspace/remote-workspace';
+import { carriesOutsideFiles, carriesTransfers, carriesWalks, createRemoteWorkspace, LINKS_FEATURE, OUTSIDE_LISTING_FEATURE, RANGED_READS_FEATURE, WATCH_READY_FEATURE } from '../workspace/remote-workspace';
 import type { NotConnectedError } from '../workspace/workspaces';
 import { connect, type OtherProtocolDaemon, type RemoteConnection } from './connection';
 
@@ -223,6 +223,7 @@ export class Authorities {
       rangedReads: connection.features.includes(RANGED_READS_FEATURE),
       outside: carriesOutsideFiles(connection.features),
       listing: connection.features.includes(OUTSIDE_LISTING_FEATURE),
+      links: connection.features.includes(LINKS_FEATURE),
       walks: carriesWalks(connection.features),
       searchUnsupported: () => this.deps.searchUnsupported(),
       openStream: () => connection.openStream(),

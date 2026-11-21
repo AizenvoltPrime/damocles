@@ -1,14 +1,14 @@
 // The walk process's messages, shared by its hosts and the process: one JSON text a line on its stdin and stdout, or structured
 // clones over a utility process's parent port (walk-channels.ts).
 import { BATCH_COMMAND_LINE, commandLineCost } from './command-line';
-import type { WalkIgnore } from './walk';
+import type { TimedFiles, WalkIgnore } from './walk';
 
 // Files in a batch the walk sends by count; quickOpen.files carries one such batch, so the wire's bound is this.
 export const WALK_BATCH_FILES = 1000;
 // A count batch also ends before its paths pass this many UTF-16 units, so its line stays within MAX_WALK_LINE_BYTES.
 export const WALK_BATCH_UNITS: number = 512 * 1024;
 // The longest reply line a host reads: WALK_BATCH_UNITS units of JSON at most 6 bytes each (\uXXXX), the quotes and commas of
-// WALK_BATCH_FILES files, and the envelope; an end's MAX_WALK_ERRORS messages take less.
+// WALK_BATCH_FILES files, a times pair per file, and the envelope; an end's MAX_WALK_ERRORS messages take less.
 export const MAX_WALK_LINE_BYTES: number = 4 * 1024 * 1024;
 // A batch is sent when the walk next lists a folder, one with no file listed included, once its first file waited this long, so a
 // slow walk still delivers; a folder whose read takes longer holds it until the read returns.
@@ -33,8 +33,14 @@ export interface WalkSpec {
   readonly gitFolders: 'skip' | 'list';
   // rg --glob lines: an include, or an exclude after '!'
   readonly overrides: readonly string[];
-  // the network hosts a `.git` file's pointer may lead onto (networkReach); the root's own (rootHosts) when left out
+  // the network hosts a `.git` file's pointer may lead onto (networkReach); the root's own (rootHosts) when left out; never links'
   readonly allowedHosts?: readonly string[];
+  // WalkOptions.followLinks
+  readonly followLinks?: true;
+  // WalkOptions.timed: their times come with the batches
+  readonly timed?: TimedFiles;
+  // WalkOptions.skipRealUnder
+  readonly skipRealUnder?: readonly string[];
   // the walk ends once it listed this many files
   readonly maxFiles?: number;
   // batches by command line instead of by count: a file costs commandLineCost(path), and a batch of more than one file stays
@@ -52,12 +58,13 @@ export type WalkRequest =
   | { readonly kind: 'cancel'; readonly id: number };
 
 /**
- * process → host. files: listed files, '/'-separated paths below the root. end: the walk is over, after its last batch; errors
+ * process → host. files: listed files, '/'-separated paths below the root, and times: [index in files, modified time in ms] of
+ * each timed one, in files' order. end: the walk is over, after its last batch; errors
  * names folders below the root it could not read (the walk went on), error the failure that ended it early, and reading that
  * folders it read ahead are still being read. released: a walk cancelled, or ended while reading, has no read left running.
  */
 export type WalkReply =
-  | { readonly kind: 'files'; readonly id: number; readonly files: readonly string[] }
+  | { readonly kind: 'files'; readonly id: number; readonly files: readonly string[]; readonly times?: ReadonlyArray<readonly [number, number]> }
   | { readonly kind: 'end'; readonly id: number; readonly errors: readonly string[]; readonly error?: string; readonly reading?: true }
   | { readonly kind: 'released'; readonly id: number };
 
@@ -121,6 +128,19 @@ export function isWalkedPath(value: unknown, platform: NodeJS.Platform = process
   return value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
 }
 
+// A files reply's times: pairs of an index into its files, increasing, and a finite time.
+function isTimes(value: unknown, files: number): value is ReadonlyArray<readonly [number, number]> {
+  if (!Array.isArray(value) || value.length > files) return false;
+  let last = -1;
+  return value.every((pair) => {
+    if (!Array.isArray(pair) || pair.length !== 2) return false;
+    const [index, time] = pair as unknown[];
+    if (!isId(index) || index <= last || index >= files || typeof time !== 'number' || !Number.isFinite(time)) return false;
+    last = index;
+    return true;
+  });
+}
+
 /** A reply from the process, checked as untrusted data: anything outside the contract or its bounds is undefined. */
 export function parseWalkReply(raw: unknown): WalkReply | undefined {
   const value = record(raw);
@@ -132,7 +152,10 @@ export function parseWalkReply(raw: unknown): WalkReply | undefined {
     const files = own(value, 'files');
     // the host holds each walk to its own maxBatchFiles once it knows the id; the units bound is the line bound's on a channel without lines
     if (!Array.isArray(files) || files.length === 0 || files.length > MAX_REPLY_FILES || !files.every((file) => isWalkedPath(file))) return undefined;
-    return (files as string[]).reduce((units, file) => units + file.length, 0) <= WALK_BATCH_UNITS ? { kind, id, files: files as string[] } : undefined;
+    if ((files as string[]).reduce((units, file) => units + file.length, 0) > WALK_BATCH_UNITS) return undefined;
+    const times = own(value, 'times');
+    if (times === undefined) return { kind, id, files: files as string[] };
+    return isTimes(times, files.length) ? { kind, id, files: files as string[], times } : undefined;
   }
   if (kind === 'released') return { kind, id };
   if (kind !== 'end') return undefined;

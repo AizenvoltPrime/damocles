@@ -477,6 +477,28 @@ Findings:
 - **On Windows the first match comes later with runs at once.** 0.44 to 0.48 s at 2 or 4 runs, against 0.30 s with one: the first batches start together and share the stats. On Linux it stayed between 17 and 19 ms.
 - **Search still takes about four times rg's own walk on Windows** (27 s against 6.6 s), and Grep of every file about four times (32 s against 8 s). The cause is in rg: the stat of every named path on one thread, which more runs share only up to about 4 (21.3 s at 8 runs of rg alone), since the opens stop scaling past 2 to 4 processes. Only rg's own walk avoids it, and Damocles does not use that walk because on Windows it opens a link's target ("Tool overrides" in `docs/invariants.md`). A file-list input in rg (#273, PR #3462) is what would let one rg take a whole listing. On Linux the gap is about 2.5 times (0.37 s against 0.15 s).
 
+### The walk's follow mode on a tree with no links
+
+Quick Open and Search walk with `followLinks` while `damocles.desktop.search.followSymlinks` is on, its default, and so does the chat's @ list of a trusted folder while its follow switch is on (`docs/invariants.md` "Tool overrides", D6). With the flag, each folder costs one key of its derived realpath and a set insert more, and one more pass over its entries for links; a link costs a `followsLocalLinksOnly` check (none off Windows; on Windows an `lstat` of each segment of its path from the root, and of each segment of every target it reads), a `stat`, and for a folder link a `realpath` (a file link gets none, except in a worktree chat's @ list). The budget for a tree with no links is 1.1 times the walk without the flag.
+
+Measured 2026-11-19 on Windows 11 Pro, Intel Core i7-13650HX (20 logical CPUs), 32 GB, SSD, Node 24.21.0: `walkFiles` on the calling thread of a harness bundled with esbuild, over a generated tree of 100,102 files in 1,102 folders (100 packages of 10 folders of 100 empty `.ts` files, a `.gitignore` per package, a root `.gitignore` and a `.git` folder holding `HEAD`), Quick Open's mode (`gitFolders: 'list'`, all ignore files, `!**/.git`), 100,101 files listed by every walk. Three variants: "base" is `walk.ts` of `64eeab4a` over the same `rg-ignore.ts`, "off" this walk without the flag, "on" with it. Each run built the tree, made two warm-up walks of each variant, then timed the given rounds in rotating order; process CPU is `process.cpuUsage()` over each walk (all threads, 15.6 ms resolution on Windows).
+
+| Run | Rounds | base ms (range) | off ms (range) | on ms (range) | on/off | on/base |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 11 | 126.6 (113.5-219.6) | 140.9 (115.0-248.8) | 134.3 (115.0-288.0) | 0.953 | 1.061 |
+| 2 | 31 | 135.4 (115.0-195.9) | 142.4 (115.3-176.7) | 141.1 (118.3-219.1) | 0.991 | 1.041 |
+| 3 | 31 | 280.3 (219.8-791.5) | 280.6 (216.1-571.2) | 307.9 (211.5-508.9) | 1.098 | 1.099 |
+| 4 | 41 | 290.0 (247.4-503.2) | 275.2 (247.1-601.2) | 286.0 (257.3-465.8) | 1.039 | 0.986 |
+| 5 | 31 | 281.7 (243.2-355.7) | 278.2 (246.5-347.4) | 279.9 (245.4-354.1) | 1.006 | 0.994 |
+| 6 | 31 | 265.7 (241.9-327.2) | 268.0 (243.8-372.2) | 271.2 (251.9-321.7) | 1.012 | 1.021 |
+
+Runs 5 and 6 timed a build whose follow mode checks at most `LINK_CHECKS` (8) links of a folder at once and registers a folder's own subfolders before its links; runs 1 to 4 a build without that bound and that order. Process CPU medians, base, off and on: run 4 485, 485 and 501 ms; run 5 485, 501 and 516 ms; run 6 469, 485 and 453 ms. Runs 3 to 6 ran while other test processes loaded the machine, which about doubled every variant's time; run 3's on/off is the widest seen.
+
+Findings:
+
+- **The follow mode costs at most a few percent on a tree with no links.** The medians of "on" stayed within 1.1 of "off" in every run (0.95 to 1.10, and 1.006 and 1.012 in runs 5 and 6), and its process CPU stayed within about 3% of "off" (one 15.6 ms clock tick) or below it. The run-to-run spread of one variant (126 to 142 ms on a quiet machine) is wider than the difference between them.
+- **The walk without the flag costs what the base walk did** (off/base 1.11, 1.05, 1.00, 0.95, 0.99 and 1.01, inside the spread above), so Grep and Glob, which never set it, walk as before.
+
 ## Process launcher (S2 measurements)
 
 libuv's `uv_spawn` calls `CreateProcessW` synchronously on the thread that starts a process, so every start Damocles owns is meant to run on the process launcher (`src/core/process-launcher/`, `docs/invariants.md` "Shell cancellation and process lifetime"). The host thread pays one `postMessage` per request.

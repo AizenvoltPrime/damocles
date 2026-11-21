@@ -213,7 +213,7 @@ describe("McpManager: what the watchers cover", () => {
       expect(watchedGlobs()).toContain(".damocles/mcp.local.json");
       expect(watchedGlobs()).toContain(".gitignore");
       expect(watchedGlobs()).toContain("mcp.json");
-      expect(watchedGlobs()).toContain("config.toml");
+      expect(watchedGlobs()).toContain(".codex/config.toml");
       expect(watchedGlobs()).not.toContain(".claude.json");
     } finally {
       manager.dispose();

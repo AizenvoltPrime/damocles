@@ -1,9 +1,11 @@
 import * as path from 'node:path';
 import { promises as fs } from 'node:fs';
 import * as lockfile from 'proper-lockfile';
+import { LocalizedError } from '../../shared/localized-text';
 import { settlePending } from '../../shared/settle-pending';
 import { log } from '../logger';
 import { folderKey } from '../workspace-folders/folder-key';
+import { checkConfigPath, ConfigWriteRefused } from './local-config-path';
 
 // A lock whose heartbeat stopped this long ago belongs to a dead process and is taken over. The takeover is not
 // exclusive: two waiters can both remove a stale lock, and a holder stalled past this threshold is superseded; the
@@ -20,7 +22,7 @@ const MAX_LINK_HOPS = 40;
 
 export type JsonConfigWriteStage = 'lock' | 'read' | 'write';
 
-/** A failure of the write machinery itself; errors thrown by the mutation propagate unchanged. */
+/** A failure of the write machinery itself; errors thrown by the mutation, and the network check's LocalizedError, propagate unchanged. */
 export class JsonConfigWriteError extends Error {
   readonly stage: JsonConfigWriteStage;
   readonly code: string | undefined;
@@ -41,6 +43,8 @@ export interface JsonConfigWriteOptions {
   readonly dirMode?: number;
   /** The directory the file must resolve directly inside, that directory itself not being a symlink; for a file a repository owns. */
   readonly confineTo?: string;
+  /** The file's scope root (home, project or Damocles data folder), whose own share a link may lead onto; without it, the path's own root. */
+  readonly baseFolder?: string;
 }
 
 /** Receives the current file text (undefined when the file does not exist) and returns the new text. */
@@ -85,6 +89,13 @@ export function allJsonConfigWritesSettled(): Promise<void> {
 }
 
 async function lockedWrite(filePath: string, mutate: JsonConfigMutation, options: JsonConfigWriteOptions): Promise<void> {
+  // Before anything follows a link: resolveTarget's realpath would already contact a share the link leads onto.
+  const verdict = await checkConfigPath(options.baseFolder ?? path.parse(filePath).root, filePath).catch((err: unknown) => {
+    // the walk's own refusal (a loop, a drive that did not answer) reaches the caller in the user's language
+    if (err instanceof LocalizedError) throw err;
+    throw new JsonConfigWriteError('read', filePath, err);
+  });
+  if (verdict !== 'ok') throw new ConfigWriteRefused(filePath);
   // Writes go through a symlinked config file, dangling or not, to its target instead of replacing the link.
   const target = await resolveTarget(filePath);
   if (options.confineTo !== undefined) await assertConfined(target, options.confineTo);

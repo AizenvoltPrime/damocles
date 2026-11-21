@@ -548,7 +548,7 @@ describe('what a move across file systems left', () => {
 
 describe('host refusals in the summary', () => {
   it('lists each host reason in the user\'s language; only a failure without a reason keeps the system\'s text', async () => {
-    for (const name of ['short', 'invalid', 'gone', 'outside', 'full', 'raw']) write(LOCAL, `in/${name}.txt`, name);
+    for (const name of ['short', 'invalid', 'gone', 'outside', 'full', 'raw', 'shared', 'stale', 'chat']) write(LOCAL, `in/${name}.txt`, name);
     const shown = withDetails();
     const results: Record<string, TransferResult> = {
       'short.txt': { ok: false, reason: 'incomplete', message: 'The source ended after 3 of 8 bytes' },
@@ -557,18 +557,37 @@ describe('host refusals in the summary', () => {
       'outside.txt': { ok: false, reason: 'outside' },
       'full.txt': { ok: false, reason: 'failed', code: 'ENOSPC', message: 'ENOSPC: no space left on device, write' },
       'raw.txt': { ok: false, reason: 'failed', code: 'EIO', message: 'EIO: i/o error, write' },
+      'shared.txt': { ok: false, reason: 'outside', refusal: 'share' },
+      'stale.txt': { ok: false, reason: 'outside', refusal: 'oldDaemon' },
+      'chat.txt': { ok: false, reason: 'sessionFile' },
     };
     vi.spyOn(hosts.get(PROD1)!, 'receiveFile').mockImplementation(async (_project, _dir, name) => results[name]!);
     await run({ op: 'copy', sources: [{ kind: 'local', path: at(LOCAL, 'in') }], destination: { kind: 'project', projectKey: PROD1, relativeDir: 'src' } });
     await vi.waitFor(() => expect(shown).toHaveLength(1));
     expect([...shown[0]!].sort()).toEqual([
+      'in/chat.txt: chat session files are kept there, and only Damocles changes them',
       'in/full.txt: the disk is full',
       'in/gone.txt: it or its folder is no longer there',
       'in/invalid.txt: its size, time or link target cannot be stored there',
       'in/outside.txt: its folder now leads outside the destination folder',
       'in/raw.txt: EIO: i/o error, write',
+      'in/shared.txt: a link on its path leads to a network share or WSL path',
       'in/short.txt: it changed during the copy',
+      'in/stale.txt: a link on its path leads outside the project, which only an updated Damocles server follows',
     ]);
+  });
+
+  it('lands a copy of a moved file the session store holds and keeps the source, saying why', async () => {
+    const sessions = path.join(root, 'home', 'pi', 'agent', 'sessions');
+    const chat = path.join(sessions, '--work--', '2026-11-04T10-00-00-000Z_s1.jsonl');
+    fs.mkdirSync(path.dirname(chat), { recursive: true });
+    fs.writeFileSync(chat, 'chat\n');
+    fs.symlinkSync(sessions, at(PROD1, 'store'), 'junction');
+    const shown = withDetails();
+    await run({ op: 'move', sources: [{ kind: 'project', projectKey: PROD1, relativePath: `store/--work--/${path.basename(chat)}` }], destination: { kind: 'project', projectKey: PROD2, relativeDir: 'src' } });
+    await vi.waitFor(() => expect(shown).toHaveLength(1));
+    expect(shown[0]).toEqual([`${path.basename(chat)}: chat session files are kept there, and only Damocles changes them`]);
+    expect([read(PROD2, `src/${path.basename(chat)}`), fs.readFileSync(chat, 'utf8')]).toEqual(['chat\n', 'chat\n']);
   });
 
   it('lists an entry the walk could not read with its error code', async () => {

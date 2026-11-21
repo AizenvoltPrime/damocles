@@ -8,9 +8,10 @@ import { previewCsp } from '../../../../core/served-pages/serve-policy';
 import { MAX_SERVED_FOLDERS_PER_CHAT, SERVED_OPEN_PATH } from '../../../../shared/served-file-url';
 import type { DesignPreviewFile } from '../../../../shared/types/design';
 import type { Project } from '../../../local-services/confine';
-import type { ReadRangeResult } from '../../../workspace/transfer-ops';
+import type { PreviewRead, ReadRangeResult } from '../../../workspace/transfer-ops';
 import { PreviewHttpServer } from '../../../../core/served-pages/preview-http-server';
 import { servedPathRefusal } from '../../../../core/served-pages/root-files';
+import { folderKey } from '../../../../core/workspace-folders/folder-key';
 import { MAX_DESIGN_ROOTS_PER_VIEW, ServedRoots, type ServedGrant } from '../served-roots';
 
 const LOCAL: Project = { key: '/home/u/proj', fsPath: '/home/u/proj', name: 'proj' };
@@ -25,6 +26,17 @@ const FILES: Record<string, string> = {
   '.env': 'SECRET=1',
   // a folder link inside the root whose real path is a dot folder
   'link/config': '[core]',
+  // through a folder link that leaves the project (site -> ~/shared/assets), and one whose absolute real path is a dot folder
+  // (keys -> ~/.ssh)
+  'site/page.html': '<p>shared</p>',
+  'keys/notes.txt': 'private',
+};
+
+// The workspace's preview rule (transfer-ops.ts openPreviewFile) for a file reached through a link that leaves the project:
+// read only under a trusted preview read, and refused when its absolute real path is denied; without the option, never.
+const LEAVING: Record<string, { readonly resolvedPath: string; readonly denied: boolean }> = {
+  'site/page.html': { resolvedPath: 'page.html', denied: false },
+  'keys/notes.txt': { resolvedPath: 'notes.txt', denied: true },
 };
 
 interface Harness {
@@ -37,17 +49,21 @@ interface Harness {
   // a folder's real path now, when a link replaced it
   readonly realRoots: Map<string, string>;
   readonly trusted: Set<string>;
+  // each read's preview option, by its path
+  readonly previews: Array<[string, PreviewRead | undefined]>;
   readonly changes: string[];
   readonly designReads: Array<[string, string, string]>;
 }
 
 let h: Harness;
 
-function readRange(relativePath: string, offset: number, length: number): Promise<ReadRangeResult> {
+function readRange(relativePath: string, offset: number, length: number, preview?: PreviewRead): Promise<ReadRangeResult> {
   const text = FILES[relativePath];
   if (text === undefined) return Promise.resolve({ ok: false, reason: 'missing' });
+  const leaving = LEAVING[relativePath];
+  if (leaving && (preview?.trusted !== true || leaving.denied)) return Promise.resolve({ ok: false, reason: 'outside' });
   const bytes = Buffer.from(text).subarray(Math.max(0, offset), Math.max(0, offset) + length);
-  const resolvedPath = relativePath === 'link/config' ? '.git/config' : relativePath;
+  const resolvedPath = leaving?.resolvedPath ?? (relativePath === 'link/config' ? '.git/config' : relativePath);
   return Promise.resolve({ ok: true, size: Buffer.byteLength(text), offset: Math.max(0, offset), length: bytes.length, resolvedPath, chunks: (async function* () { yield bytes; })() });
 }
 
@@ -59,6 +75,7 @@ beforeEach(() => {
   const chatViews = new Map<string, string>();
   const fileKeys: string[] = [];
   const realRoots = new Map<string, string>();
+  const previews: Array<[string, PreviewRead | undefined]> = [];
   const served = new ServedRoots({
     projectOfView: (authority, viewId) => {
       const project = views.get(viewId);
@@ -69,7 +86,10 @@ beforeEach(() => {
     files: (rootKey) => {
       fileKeys.push(rootKey);
       return {
-        readFileRange: (_project: Project, relativePath: string, offset: number, length: number) => readRange(relativePath, offset, length),
+        readFileRange: (_project: Project, relativePath: string, offset: number, length: number, preview?: PreviewRead) => {
+          previews.push([relativePath, preview]);
+          return readRange(relativePath, offset, length, preview);
+        },
         confineExisting: async (project: Project) => ({ ok: true as const, path: realRoots.get(project.fsPath) ?? project.fsPath }),
       };
     },
@@ -83,7 +103,7 @@ beforeEach(() => {
     log: () => undefined,
   });
   served.onDidChange((authority) => changes.push(authority));
-  h = { served, views, chatViews, fileKeys, realRoots, trusted, changes, designReads };
+  h = { served, views, chatViews, fileKeys, realRoots, trusted, previews, changes, designReads };
 });
 
 afterEach(() => {
@@ -178,6 +198,43 @@ describe('a project root served to a chat view', () => {
     const cookie = await cookieOf(grant, 'docs/index.html');
     expect((await get(`${grant.origin}/.env`, { cookie })).status).toBe(404);
     expect((await get(`${grant.origin}/link/config`, { cookie })).status).toBe(404);
+  });
+
+  it('reads a trusted project under the preview rule, for a chat view and Open in Browser alike: a link out serves, a denied real path does not', async () => {
+    h.trusted.add(LOCAL.key);
+    for (const grant of [await granted('v1', LOCAL), await h.served.grantPreview(LOCAL)]) {
+      const cookie = await cookieOf(grant, 'docs/index.html');
+      const page = await get(`${grant.origin}/site/page.html`, { cookie });
+      expect(page.status, grant.origin).toBe(200);
+      expect(page.body).toBe(FILES['site/page.html']);
+      expect(page.headers['content-security-policy']).toBe(previewCsp(true, 'browser'));
+      expect((await get(`${grant.origin}/keys/notes.txt`, { cookie })).status, grant.origin).toBe(404);
+    }
+    expect(h.previews.length).toBeGreaterThan(0);
+    expect(h.previews.every(([, preview]) => preview?.trusted === true)).toBe(true);
+  });
+
+  it('reads an untrusted project only through links that stay inside it, for a chat view and Open in Browser alike', async () => {
+    for (const grant of [await granted('v1', LOCAL), await h.served.grantPreview(LOCAL)]) {
+      const cookie = await cookieOf(grant, 'docs/index.html');
+      const page = await get(`${grant.origin}/site/page.html`, { cookie });
+      expect(page.status, grant.origin).toBe(404);
+      expect(page.headers['content-security-policy']).toBe(previewCsp(false, 'browser'));
+      expect((await get(`${grant.origin}/docs/data.json`, { cookie })).status, grant.origin).toBe(200);
+    }
+    expect(h.previews.every(([, preview]) => preview?.trusted === false)).toBe(true);
+  });
+
+  it('takes the project\'s trust once per request, so a response\'s CSP and its read never disagree', async () => {
+    const grant = await granted('v1', LOCAL);
+    const cookie = await cookieOf(grant, 'docs/index.html');
+    // trust flips on every look, as a grant or revoke landing between two looks would
+    let looks = 0;
+    h.trusted.has = (): boolean => looks++ % 2 === 0;
+    for (let request = 0; request < 6; request++) {
+      const page = await get(`${grant.origin}/site/page.html`, { cookie });
+      expect(page.headers['content-security-policy'], `request ${request}`).toBe(previewCsp(page.status === 200, 'browser'));
+    }
   });
 
   it('takes the project from the view, never one of another authority, and answers a view with none as unavailable', async () => {
@@ -430,6 +487,16 @@ describe('a folder a chat\'s permission gate granted, served to that chat view',
     expect(h.fileKeys.length).toBeGreaterThan(0);
     expect(h.fileKeys.every((key) => key === 'ssh+box|c:\\users\\me\\reports')).toBe(true);
     expect(h.served.mappings('ssh+box', 'v1')).toEqual([{ origin: grant.origin, displayRoot: 'C:\\Users\\me\\reports' }]);
+  });
+
+  it('reads a granted folder strictly, following no link out of it whatever the trust', async () => {
+    const folder = '/home/u/reports';
+    h.trusted.add(folderKey(folder));
+    const grant = await folderGrant('v1', 'local', folder);
+    const cookie = await cookieOf(grant, 'docs/index.html');
+    expect((await get(`${grant.origin}/docs/index.html`, { cookie })).status).toBe(200);
+    expect((await get(`${grant.origin}/site/page.html`, { cookie })).status).toBe(404);
+    expect(h.previews.map(([, preview]) => preview)).toEqual(h.previews.map(() => undefined));
   });
 
   it('serves a folder only to a live chat view of the asking authority, on that view\'s own host', async () => {

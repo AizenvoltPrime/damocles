@@ -1,5 +1,5 @@
 import { processLauncher, type ProcessExit } from '../process-launcher';
-import { lineReader, MAX_WALK_LINE_BYTES, maxBatchFiles, parseWalkReply, WALK_CREDIT, walkLine, type WalkRequest, type WalkSpec } from './walk-protocol';
+import { lineReader, MAX_WALK_LINE_BYTES, maxBatchFiles, parseWalkReply, WALK_CREDIT, walkLine, type WalkReply, type WalkRequest, type WalkSpec } from './walk-protocol';
 
 /**
  * What the host needs of a walk process, whatever carries its messages: startWalkChild starts one on the launcher, desktop main
@@ -21,6 +21,8 @@ export interface WalkChild {
 export interface WalkStream extends AsyncIterable<readonly string[]> {
   // folders below the root the walk could not read, as rg reports them (the walk went on); complete once the iteration ended
   readonly errors: readonly string[];
+  // under WalkSpec.timed, each timed file's modified time in ms by its path, set as its batch is taken
+  readonly modified: ReadonlyMap<string, number>;
 }
 
 export interface WalkHost {
@@ -46,7 +48,7 @@ const MAX_STDERR_CHARS = 2000;
 
 interface Pending {
   readonly batchFiles: number;
-  readonly batches: Array<readonly string[]>;
+  readonly batches: Array<Extract<WalkReply, { kind: 'files' }>>;
   ended: { readonly errors: readonly string[]; readonly error?: Error } | undefined;
   // settles the iteration waiting for a batch or the end
   wake: (() => void) | undefined;
@@ -212,7 +214,7 @@ export function createWalkHost(start: () => WalkChild, log: (line: string) => vo
         fail(run, 'sent more batches than its credit');
         return;
       }
-      pending.batches.push(reply.files);
+      pending.batches.push(reply);
       pending.wake?.();
       pending.wake = undefined;
       return;
@@ -250,6 +252,7 @@ export function createWalkHost(start: () => WalkChild, log: (line: string) => vo
       const id = nextId++;
       const pending: Pending = { batchFiles: maxBatchFiles(spec), batches: [], ended: undefined, wake: undefined };
       const errors: string[] = [];
+      const modified = new Map<string, number>();
       const run = signal?.aborted ? undefined : pick();
       if (signal?.aborted) {
         settle(pending, { errors: [], error: new Error('Operation aborted') });
@@ -277,7 +280,8 @@ export function createWalkHost(start: () => WalkChild, log: (line: string) => vo
             const batch = pending.batches.shift();
             if (batch !== undefined) {
               if (run !== undefined && live(run) && run.walks.has(id)) send(run, { kind: 'ack', id });
-              yield batch;
+              for (const [index, time] of batch.times ?? []) modified.set(batch.files[index]!, time);
+              yield batch.files;
             } else if (pending.ended) {
               errors.push(...pending.ended.errors);
               if (pending.ended.error) throw pending.ended.error;
@@ -292,7 +296,7 @@ export function createWalkHost(start: () => WalkChild, log: (line: string) => vo
         }
       }
       const iterator = batches();
-      return { [Symbol.asyncIterator]: () => iterator, errors };
+      return { [Symbol.asyncIterator]: () => iterator, errors, modified };
     },
     close: async () => {
       const killed = running;

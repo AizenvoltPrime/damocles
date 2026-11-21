@@ -500,6 +500,7 @@ export interface ShellEditorActions {
 export interface ShellFilesActions {
   // report: a failure is reported to the user, for a listing a user action waits on
   list(projectKey: string, relativeDir: string, report: boolean): Promise<FilesListResult>;
+  collapsed(folder: FileRef): void;
   create(request: FilesCreateRequest): Promise<FilesMutationResult>;
   rename(file: FileRef, newName: string): Promise<FilesMutationResult>;
   delete(file: FileRef): Promise<FilesDeleteResult>;
@@ -1879,6 +1880,11 @@ export class ShellHost {
       const report = value ? own(value, 'report') : undefined;
       if (!ref || typeof report !== 'boolean') throw new Error('Malformed or unconfined listing from the shell');
       return files.list(ref.projectKey, ref.relativePath, report);
+    });
+    this.on(SHELL_CHANNELS.filesCollapsed, (raw) => {
+      const folder = exactFileRef(raw, false);
+      if (folder) files.collapsed(folder);
+      else this.log('[shell] ignoring a malformed Files collapse');
     });
     this.handle(SHELL_CHANNELS.filesCreate, (raw) => {
       const request = parseFilesCreate(raw);

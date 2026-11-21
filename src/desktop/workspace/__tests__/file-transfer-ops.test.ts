@@ -13,10 +13,12 @@ import { createTransferOps, isPartName, MOVE_LEFT_LISTED, resolvesWithin, walkPa
 const posix = process.platform !== 'win32';
 let root: string;
 let project: Project;
-let ops: TransferOps;
+let ops: ReturnType<typeof createTransferOps>;
 const logged: string[] = [];
 const at = (relative: string): string => path.join(project.fsPath, ...relative.split('/'));
 const partsIn = (relative: string): string[] => fs.readdirSync(at(relative)).filter(isPartName);
+// the host's session store, beside the project
+const damoclesHome = (): string => path.join(root, 'home', '.damocles');
 
 beforeEach(() => {
   root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dm-transfer-ops-')));
@@ -26,7 +28,7 @@ beforeEach(() => {
   fs.writeFileSync(path.join(root, 'outside.txt'), 'outside');
   project = { key: folderKey(projectDir), fsPath: projectDir, name: 'proj' };
   logged.length = 0;
-  ops = createTransferOps({ platform: process.platform, log: (line) => logged.push(line) });
+  ops = createTransferOps({ damoclesHome: damoclesHome(), platform: process.platform, log: (line) => logged.push(line) });
 });
 
 afterEach(() => {
@@ -149,15 +151,21 @@ describe('receiveFile', () => {
   });
 
   it('refuses a name the host does not allow, and a folder outside the project', async () => {
-    const windows = createTransferOps({ platform: 'win32', log: () => undefined });
+    const windows = createTransferOps({ damoclesHome: damoclesHome(), platform: 'win32', log: () => undefined });
     for (const name of ['CON', 'nul.txt', 'a:b', 'trailing.', '..', 'a/b']) {
       expect(await windows.receiveFile(project, 'src', name, chunks('x'), { mode: 0o644, mtimeMs: MTIME, replace: false, size: 1 }), name).toEqual({ ok: false, reason: 'invalidName' });
     }
+    const strict = ops.under('withinProject');
     expect(await ops.receiveFile(project, 'src', '..', chunks('x'), { mode: 0o644, mtimeMs: MTIME, replace: false, size: 1 })).toEqual({ ok: false, reason: 'invalidName' });
-    expect(await ops.receiveFile(project, '../', 'x', chunks('x'), { mode: 0o644, mtimeMs: MTIME, replace: false, size: 1 })).toMatchObject({ ok: false, reason: 'outside' });
+    for (const files of [ops, strict]) {
+      expect(await files.receiveFile(project, '../', 'x', chunks('x'), { mode: 0o644, mtimeMs: MTIME, replace: false, size: 1 })).toMatchObject({ ok: false, reason: 'outside' });
+    }
     fs.symlinkSync(root, at('escape'), 'junction');
-    expect(await ops.receiveFile(project, 'escape', 'x', chunks('x'), { mode: 0o644, mtimeMs: MTIME, replace: false, size: 1 })).toMatchObject({ ok: false, reason: 'outside' });
+    expect(await strict.receiveFile(project, 'escape', 'x', chunks('x'), { mode: 0o644, mtimeMs: MTIME, replace: false, size: 1 })).toMatchObject({ ok: false, reason: 'outside' });
     expect(fs.existsSync(path.join(root, 'x'))).toBe(false);
+    // a user view's receive follows a folder link that leads out of the project
+    expect(await ops.receiveFile(project, 'escape', 'x', chunks('x'), { mode: 0o644, mtimeMs: MTIME, replace: false, size: 1 })).toEqual({ ok: true });
+    expect(fs.readFileSync(path.join(root, 'x'), 'utf8')).toBe('x');
     expect(await ops.receiveFile(project, 'src', 'ok.txt', chunks('x'), { mode: 0o644, mtimeMs: Number.NaN, replace: false, size: 1 })).toMatchObject({ ok: false, reason: 'failed' });
   });
 
@@ -185,7 +193,7 @@ describe('receiveFile', () => {
     for (const entry of [part, other, folderPart]) fs.utimesSync(entry, twoDaysAgo, twoDaysAgo);
     expect(await ops.receiveFile(project, 'src', 'b.ts', chunks('x'), { mode: 0o644, mtimeMs: MTIME, replace: false, size: 1 })).toEqual({ ok: true });
     expect(fs.existsSync(part)).toBe(true);
-    const twoDaysLater = createTransferOps({ platform: process.platform, log: () => undefined, now: () => Date.now() + 2 * 24 * 60 * 60 * 1000 });
+    const twoDaysLater = createTransferOps({ damoclesHome: damoclesHome(), platform: process.platform, log: () => undefined, now: () => Date.now() + 2 * 24 * 60 * 60 * 1000 });
     expect(await twoDaysLater.receiveFile(project, 'src', 'c.ts', chunks('x'), { mode: 0o644, mtimeMs: MTIME, replace: false, size: 1 })).toEqual({ ok: true });
     expect(fs.existsSync(part)).toBe(false);
     expect(fs.existsSync(other)).toBe(true);
@@ -248,9 +256,9 @@ describe('clashes', () => {
   it('ignores case on win32 and darwin hosts only', async () => {
     fs.writeFileSync(at('src/App.ts'), '');
     for (const platform of ['win32', 'darwin'] as const) {
-      expect(await createTransferOps({ platform, log: () => undefined }).clashes(project, 'src', ['app.ts', 'b.ts'])).toEqual({ ok: true, clashes: [{ name: 'App.ts', kind: 'file' }, null] });
+      expect(await createTransferOps({ damoclesHome: damoclesHome(), platform, log: () => undefined }).clashes(project, 'src', ['app.ts', 'b.ts'])).toEqual({ ok: true, clashes: [{ name: 'App.ts', kind: 'file' }, null] });
     }
-    expect(await createTransferOps({ platform: 'linux', log: () => undefined }).clashes(project, 'src', ['app.ts', 'App.ts'])).toEqual({ ok: true, clashes: [null, { name: 'App.ts', kind: 'file' }] });
+    expect(await createTransferOps({ damoclesHome: damoclesHome(), platform: 'linux', log: () => undefined }).clashes(project, 'src', ['app.ts', 'App.ts'])).toEqual({ ok: true, clashes: [null, { name: 'App.ts', kind: 'file' }] });
   });
 });
 
@@ -375,7 +383,7 @@ describe('makeLink', () => {
   });
 
   it('skips a link on a Windows host', async () => {
-    const windows = createTransferOps({ platform: 'win32', log: () => undefined });
+    const windows = createTransferOps({ damoclesHome: damoclesHome(), platform: 'win32', log: () => undefined });
     expect(await windows.makeLink(project, 'src', 'to-a', 'a.ts', false)).toEqual({ ok: false, reason: 'unsupported' });
     expect(fs.existsSync(at('src/to-a'))).toBe(false);
   });
@@ -594,7 +602,7 @@ describe('the claim', () => {
 describe('the stale part sweep', () => {
   it('remembers only the folders swept within the last hour', async () => {
     let clock = Date.now();
-    const timed = createTransferOps({ platform: process.platform, log: () => undefined, now: () => clock });
+    const timed = createTransferOps({ damoclesHome: damoclesHome(), platform: process.platform, log: () => undefined, now: () => clock });
     const maps: Array<Map<unknown, unknown>> = [];
     const set = Map.prototype.set;
     vi.spyOn(Map.prototype, 'set').mockImplementation(function record(this: Map<unknown, unknown>, key, value) {

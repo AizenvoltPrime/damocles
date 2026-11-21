@@ -44,7 +44,7 @@ async function terminalEnvironment(
     watchLimits: { roots: () => [], onReached: () => ({ dispose: () => undefined }), limit: async () => null },
   } as unknown as WorkspaceModules, () => undefined);
   const [clientEnd, hostEnd] = channel();
-  const served = host.serve('test-connection', clientId, hostEnd, (reason) => { throw new Error(reason); }, () => undefined, () => false);
+  const served = host.serve('test-connection', clientId, hostEnd, (reason) => { throw new Error(reason); }, () => undefined, () => false, () => new Set());
   const endpoint = createEndpoint<ClientToWorkspace, WorkspaceToClient>({ transport: clientEnd, outgoing: CLIENT_TO_WORKSPACE, incoming: WORKSPACE_TO_CLIENT, log: () => undefined, errors: ERROR_CODEC });
   try {
     return await endpoint.request('terminals.environment', { locale: 'en-US' });

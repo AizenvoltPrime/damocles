@@ -10,6 +10,7 @@ import { MODEL_SWITCH_NOTE, SYSTEM_PROMPT_PREAMBLE } from '../system-prompt';
 import { buildAgentPrompt } from '../subagents/prompts';
 import { DEFAULT_AGENTS } from '../subagents/default-agents';
 import type { SubagentEngine } from '../subagents/agent-manager';
+import { AgentRegistry } from '../subagents/agent-types';
 import type { AgentConfig } from '../subagents/types';
 import { bindPanel, blockingShell, panelSession, realPiSessions } from './real-pi-fixtures';
 
@@ -229,7 +230,7 @@ describe('what the provider receives across a model switch or a folder move, thr
   it("gives an append-mode subagent on another model the parent's prompt without the parent's model section", async () => {
     const env = opusEnv();
     const panel = panelSession([]);
-    const engine = (panel as unknown as { buildSubagentEngine: (pi: unknown, folder: unknown) => SubagentEngine }).buildSubagentEngine({}, {});
+    const engine = (panel as unknown as { buildSubagentEngine: (pi: unknown, folder: unknown, agents: unknown) => SubagentEngine }).buildSubagentEngine({}, {}, { getRegistry: () => new AgentRegistry() });
     let parentHead: SystemEntry | undefined;
     let inherited = '';
     // An agent is spawned from a tool call, inside the parent's run.

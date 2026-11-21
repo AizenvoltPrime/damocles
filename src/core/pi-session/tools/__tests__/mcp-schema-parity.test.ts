@@ -4,6 +4,7 @@ import type { McpClientManager } from '../../mcp/mcp-client-manager';
 import type { McpToolDescriptor } from '../../mcp/types';
 import { buildMcpPiTool } from '../mcp-tools';
 import { NO_RESOURCE_READ } from '../../mcp/content';
+import { PermissionRulesUnreadable } from '../../../permission-handler/permission-settings';
 import * as piMcp from '@earendil-works/pi-mcp';
 
 const NO_REACH = () => async () => NO_RESOURCE_READ;
@@ -91,6 +92,21 @@ describe('MCP tool builder — schema parity + routing', () => {
     const result = await tool.execute('t1', { message: 'hi' }, controller.signal);
     expect(callTool).toHaveBeenCalledWith('mcp__git__commit', { message: 'hi' }, { signal: controller.signal });
     expect(result.content[0]).toEqual({ type: 'text', text: 'done' });
+  });
+
+  it('keeps the result of a call that ran, offering no resource read, while the permission rules cannot be read', async () => {
+    const link = { type: 'resource_link', uri: 'docs://a', name: 'a' };
+    const callTool = vi.fn(async () => ({ content: [{ type: 'text', text: 'done' }, link], isError: false }));
+    const manager = { callTool, resourceServers: () => [] } as unknown as McpClientManager;
+    const unreadable = new PermissionRulesUnreadable({ file: '/p/.damocles/settings.json', reason: { message: 'its drive did not answer' } });
+    const resourceReach = () => async () => { throw unreadable; };
+    const tool = buildMcpPiTool(piStub, piMcp, descriptor(), manager, { resourceReach }) as unknown as PiTool;
+    const noRead = buildMcpPiTool(piStub, piMcp, descriptor(), manager, { resourceReach: NO_REACH }) as unknown as PiTool;
+
+    const result = await tool.execute('t1', { message: 'hi' }, undefined);
+
+    expect(result.content[0]).toEqual({ type: 'text', text: 'done' });
+    expect(result).toEqual(await noRead.execute('t2', { message: 'hi' }, undefined));
   });
 
   it('returns a structured error result instead of throwing when the call fails', async () => {

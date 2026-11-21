@@ -4,8 +4,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { SessionManager, type AgentSession } from '@earendil-works/pi-coding-agent';
 import { loadFormatNoApiKeyFoundMessage } from '../../../../__mocks__/pi-auth-guidance';
-import { AgentManager, isSubagentId, type SubagentEngine, type SpawnRequest } from '../agent-manager';
+import { AgentManager, isSubagentId, type SubagentEngine, type SpawnCall } from '../agent-manager';
 import { AgentRegistry } from '../agent-types';
+import type { AgentConfig, AgentRecord } from '../types';
 import { nestedDesignGrantOf } from '../agent-toolset';
 import { designRuleSet } from '../../../design/rule-set';
 import { RESUME_NOTE_LABEL, STEER_INSTRUCTION_PREFIX, buildRejectedResumePrompt, buildResumePrompt, withResumeNote, wrapSteerMessage } from '../../../../shared/steer';
@@ -116,6 +117,7 @@ function makeEngine(): { engine: SubagentEngine; gates: Gate[] } {
     cwd: '/ws',
     trust: createFakePlatform().trust,
     registry: new AgentRegistry(),
+    registryLoaded: async () => {},
     createSession: async (opts) => {
       sessionOpts.push(opts);
       let resolve!: () => void;
@@ -216,8 +218,23 @@ function gateAt(gates: readonly Gate[], i: number): Gate {
   return g;
 }
 
-function spec(i: number): SpawnRequest {
+function spec(i: number): SpawnCall {
   return { kind: 'spawn', type: 'general-purpose', prompt: `task ${i}`, description: `d${i}`, toolCallId: `tc${i}`, runInBackground: true };
+}
+
+/** A markdown agent template as the registry holds one. */
+function customAgent(name: string, over: Partial<AgentConfig> = {}): AgentConfig {
+  return { name, description: `${name} agent`, extensions: true, skills: true, systemPrompt: '', promptMode: 'append', ...over };
+}
+
+async function spawnId(mgr: AgentManager, call: SpawnCall): Promise<string> {
+  return (await mgr.spawn(call)).id;
+}
+
+async function spawnAndWait(mgr: AgentManager, call: SpawnCall): Promise<AgentRecord> {
+  const record = await mgr.spawn(call);
+  await record.promise;
+  return record;
 }
 
 describe('AgentManager concurrency', () => {
@@ -225,7 +242,7 @@ describe('AgentManager concurrency', () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 2);
 
-    const ids = [mgr.spawn(spec(0)), mgr.spawn(spec(1)), mgr.spawn(spec(2)), mgr.spawn(spec(3))] as const;
+    const ids = [await spawnId(mgr, spec(0)), await spawnId(mgr, spec(1)), await spawnId(mgr, spec(2)), await spawnId(mgr, spec(3))] as const;
 
     // First two start running immediately; the rest queue (checked synchronously).
     expect(mgr.getRecord(ids[0])!.status).toBe('running');
@@ -264,8 +281,8 @@ describe('AgentManager concurrency', () => {
     engine.postMessage = (m) => void posted.push(m);
     const queueWaits = () => posted.flatMap((m) => (m.type === 'statusUpdate' && m.status === 'queued' ? [[m.parentToolUseId, m.queued]] : []));
     const mgr = new AgentManager(engine, 1);
-    mgr.spawn(spec(0));
-    mgr.spawn(spec(1));
+    await spawnId(mgr, spec(0));
+    await spawnId(mgr, spec(1));
     expect(queueWaits()).toEqual([['tc1', true]]);
 
     mgr.replayLive();
@@ -286,8 +303,8 @@ describe('AgentManager concurrency', () => {
     const mgr = new AgentManager(engine, 1);
     engine.onRunsChanged = () => unsettled.push(mgr.hasUnsettledRuns());
 
-    mgr.spawn(spec(0));
-    mgr.spawn(spec(1));
+    await spawnId(mgr, spec(0));
+    await spawnId(mgr, spec(1));
     expect(unsettled).toEqual([true, true]);
 
     await flush();
@@ -306,11 +323,11 @@ describe('AgentManager concurrency', () => {
   it('foreground spawns honor the shared concurrency cap, queueing the overflow', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 2);
-    const fg = (i: number): SpawnRequest => ({ ...spec(i), runInBackground: false });
+    const fg = (i: number): SpawnCall => ({ ...spec(i), runInBackground: false });
 
-    const p0 = mgr.spawnAndWait(fg(0));
-    const p1 = mgr.spawnAndWait(fg(1));
-    const p2 = mgr.spawnAndWait(fg(2)); // over the cap → must wait for a slot, not launch immediately
+    const p0 = spawnAndWait(mgr, fg(0));
+    const p1 = spawnAndWait(mgr, fg(1));
+    const p2 = spawnAndWait(mgr, fg(2)); // over the cap → must wait for a slot, not launch immediately
 
     await flush();
     expect(gates).toHaveLength(2); // only two nested sessions launched; the third is queued
@@ -332,8 +349,8 @@ describe('AgentManager concurrency', () => {
   it('a queued spawn resolves its lifetime promise only after it drains and completes', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 1);
-    mgr.spawn(spec(0));
-    const b = mgr.spawn(spec(1)); // queued (cap = 1)
+    await spawnId(mgr, spec(0));
+    const b = await spawnId(mgr, spec(1)); // queued (cap = 1)
     expect(mgr.getRecord(b)!.status).toBe('queued');
 
     let resolved = false;
@@ -358,8 +375,8 @@ describe('AgentManager concurrency', () => {
   it('aborting a queued spawn settles its lifetime promise', async () => {
     const { engine } = makeEngine();
     const mgr = new AgentManager(engine, 1);
-    mgr.spawn(spec(0));
-    const b = mgr.spawn(spec(1));
+    await spawnId(mgr, spec(0));
+    const b = await spawnId(mgr, spec(1));
     await flush();
 
     let settled = false;
@@ -372,28 +389,59 @@ describe('AgentManager concurrency', () => {
     mgr.dispose();
   });
 
-  it('rejects an unknown subagent type with a distinct error instead of silently running general-purpose', async () => {
+  it('refuses an unknown subagent type before recording anything, naming the types it can start, instead of silently running general-purpose', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 2);
-    const rec = await mgr.spawnAndWait({ ...spec(0), type: 'does-not-exist', runInBackground: false });
-    expect(rec.status).toBe('error');
-    expect(rec.error).toContain('Unknown or disabled');
+    await expect(mgr.spawn({ ...spec(0), type: 'does-not-exist', runInBackground: false })).rejects.toThrow(
+      `"does-not-exist" is not a subagent type this chat can start. The available types are: ${engine.registry.getAvailableTypes().join(', ')}.`,
+    );
+    expect(invocations).toEqual([]);
     expect(gates).toHaveLength(0); // no nested session was ever created
     mgr.dispose();
   });
 
-  it('rejects an explicitly disabled agent type', async () => {
+  it('refuses an explicitly disabled agent type', async () => {
     const { engine, gates } = makeEngine();
-    engine.registry.register(
-      new Map([
-        ['Disabled', { name: 'Disabled', description: 'd', extensions: true, skills: true, systemPrompt: '', promptMode: 'append' as const, enabled: false }],
-      ]),
-    );
+    engine.registry.register(new Map([['Disabled', customAgent('Disabled', { enabled: false })]]));
     const mgr = new AgentManager(engine, 2);
-    const rec = await mgr.spawnAndWait({ ...spec(0), type: 'Disabled', runInBackground: false });
-    expect(rec.status).toBe('error');
-    expect(rec.error).toContain('Unknown or disabled');
+    await expect(mgr.spawn({ ...spec(0), type: 'Disabled', runInBackground: false })).rejects.toThrow('"Disabled" is not a subagent type this chat can start.');
+    expect(invocations).toEqual([]);
     expect(gates).toHaveLength(0);
+    mgr.dispose();
+  });
+
+  // The Agent tool's description is fixed for the session, so a type it never listed can still be started and one it lists refused.
+  it('starts a type the registry gained after the manager was built, and refuses one it lost', async () => {
+    const { engine, gates } = makeEngine();
+    const mgr = new AgentManager(engine, 2);
+    engine.registry.register(new Map([['Reviewer', customAgent('Reviewer')]]));
+    const started = await mgr.spawn({ ...spec(0), type: 'Reviewer' });
+    expect(started.status).toBe('running');
+
+    engine.registry.register(new Map());
+    await expect(mgr.spawn({ ...spec(1), type: 'Reviewer' })).rejects.toThrow('"Reviewer" is not a subagent type this chat can start. The available types are: ');
+    expect(invocations.map((inv) => inv.toolCallId)).toEqual(['tc0']);
+    await flush();
+    expect(gates).toHaveLength(1);
+    mgr.dispose();
+  });
+
+  it('fails a queued spawn whose type the registry lost while it waited for a slot', async () => {
+    const { engine, gates } = makeEngine();
+    engine.registry.register(new Map([['Reviewer', customAgent('Reviewer')]]));
+    const mgr = new AgentManager(engine, 1);
+    await mgr.spawn(spec(0));
+    const queued = await mgr.spawn({ ...spec(1), type: 'Reviewer' });
+    expect(queued.status).toBe('queued');
+
+    engine.registry.register(new Map());
+    await flush();
+    gateAt(gates, 0).resolve();
+    await queued.promise;
+
+    expect(queued.status).toBe('error');
+    expect(queued.error).toBe('Unknown or disabled subagent type "Reviewer".');
+    expect(gates).toHaveLength(1);
     mgr.dispose();
   });
 
@@ -412,7 +460,7 @@ describe('AgentManager concurrency', () => {
       return session as unknown as AgentSession;
     };
     const mgr = new AgentManager(engine, 2);
-    const rec = await mgr.spawnAndWait({ ...spec(0), runInBackground: false });
+    const rec = await spawnAndWait(mgr, { ...spec(0), runInBackground: false });
     expect(rec.status).toBe('error');
     expect(rec.error).toBe('400 invalid_request_error');
     mgr.dispose();
@@ -435,7 +483,7 @@ describe('AgentManager concurrency', () => {
       return session as unknown as AgentSession;
     };
     const mgr = new AgentManager(engine, 2);
-    const rec = await mgr.spawnAndWait({ ...spec(0), runInBackground: false });
+    const rec = await spawnAndWait(mgr, { ...spec(0), runInBackground: false });
 
     const text = recordResultText(rec);
     expect(text).toContain('529 overloaded_error');
@@ -448,8 +496,8 @@ describe('AgentManager concurrency', () => {
   it('abortAll stops running and queued agents', async () => {
     const { engine } = makeEngine();
     const mgr = new AgentManager(engine, 1);
-    const a = mgr.spawn(spec(0));
-    const b = mgr.spawn(spec(1));
+    const a = await spawnId(mgr, spec(0));
+    const b = await spawnId(mgr, spec(1));
     await flush();
     const count = mgr.abortAll('user');
     expect(count).toBe(2);
@@ -461,8 +509,8 @@ describe('AgentManager concurrency', () => {
   it('abortAll discards the records it kills, so the NEXT turn does not pay to synthesise "(no output)"', async () => {
     const { engine } = makeEngine();
     const mgr = new AgentManager(engine, 1);
-    const running = mgr.spawn(spec(0)); // background, starts immediately
-    const queued = mgr.spawn(spec(1));  // background, waits behind the concurrency cap
+    const running = await spawnId(mgr, spec(0)); // background, starts immediately
+    const queued = await spawnId(mgr, spec(1));  // background, waits behind the concurrency cap
     await flush();
 
     mgr.abortAll('user');
@@ -482,7 +530,7 @@ describe('AgentManager concurrency', () => {
   it('whenRunsSettled waits for runs abortAll stopped until their status is written, even after clearCompleted', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 4);
-    mgr.spawn(spec(0));
+    await spawnId(mgr, spec(0));
     await flush();
     mgr.abortAll('reset');
     const settled = mgr.whenRunsSettled();
@@ -502,7 +550,7 @@ describe('AgentManager concurrency', () => {
   it('clearCompleted drops finished records but keeps running ones', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 4);
-    const a = mgr.spawn(spec(0));
+    const a = await spawnId(mgr, spec(0));
     await flush();
     gateAt(gates, 0).resolve();
     await flush();
@@ -517,7 +565,7 @@ describe('AgentManager background keep-alive', () => {
   it('tracks pending background work and waitForBackground resolves once they finish', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 4);
-    const id = mgr.spawn(spec(0)); // background
+    const id = await spawnId(mgr, spec(0)); // background
     await flush();
     expect(mgr.hasPendingBackground()).toBe(true);
 
@@ -538,7 +586,7 @@ describe('AgentManager background keep-alive', () => {
   it('deliverableLive returns a finished background record until the branch records its delivery', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 4);
-    mgr.spawn(spec(0));
+    await spawnId(mgr, spec(0));
     await flush();
     expect(mgr.deliverableLive()).toHaveLength(0); // still running
     gateAt(gates, 0).resolve();
@@ -557,7 +605,7 @@ describe('AgentManager background keep-alive', () => {
     const msgs: { type: string }[] = [];
     engine.postMessage = (m) => msgs.push(m as { type: string });
     const mgr = new AgentManager(engine, 4);
-    mgr.spawn(spec(0));
+    await spawnId(mgr, spec(0));
     await flush();
     expect(msgs.some((m) => m.type === 'backgroundTaskStarted')).toBe(true);
     expect(msgs.some((m) => m.type === 'backgroundTaskCompleted')).toBe(false);
@@ -572,9 +620,9 @@ describe('AgentManager background keep-alive', () => {
     const { engine } = makeEngine();
     const mgr = new AgentManager(engine, 4);
     vi.mocked(createSubagentExtensionFactory).mockClear();
-    const stopped = mgr.spawn(spec(0));
+    const stopped = await spawnId(mgr, spec(0));
     await flush();
-    const kept = mgr.spawn(spec(1));
+    const kept = await spawnId(mgr, spec(1));
     await flush();
     const [stoppedSignal, keptSignal] = vi.mocked(createSubagentExtensionFactory).mock.calls.map(([ctx]) => ctx.stopSignal);
     expect(stoppedSignal!.aborted).toBe(false);
@@ -592,7 +640,7 @@ describe('AgentManager background keep-alive', () => {
     const msgs: { type: string; status?: string }[] = [];
     engine.postMessage = (m) => msgs.push(m as { type: string; status?: string });
     const mgr = new AgentManager(engine, 4);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await flush();
     expect(mgr.getRecord(id)!.status).toBe('running');
 
@@ -613,7 +661,7 @@ describe('AgentManager background keep-alive', () => {
   it('foreground spawns are not counted as pending background', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 4);
-    void mgr.spawnAndWait({ ...spec(0), runInBackground: false });
+    void spawnAndWait(mgr, { ...spec(0), runInBackground: false });
     await flush();
     expect(mgr.hasPendingBackground()).toBe(false);
     gates[0]?.resolve();
@@ -625,7 +673,7 @@ describe('AgentManager background keep-alive', () => {
   it('a background agent that finished mid-turn but was never fetched stays deliverable', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 4);
-    const id = mgr.spawn(spec(0)); // background
+    const id = await spawnId(mgr, spec(0)); // background
     await flush();
     gateAt(gates, 0).resolve(); // completes during the turn, before the settle
     await flush();
@@ -640,7 +688,7 @@ describe('AgentManager background keep-alive', () => {
   it('a result fetched with GetSubagentResult is not deliverable, because its marker is on the branch', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 4);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await flush();
     gateAt(gates, 0).resolve();
     await flush();
@@ -656,11 +704,11 @@ describe('AgentManager background keep-alive', () => {
 });
 
 describe('AgentManager.agentIdOfToolCall', () => {
-  it('names the subagent an Agent call started, running or queued, and none for any other call', () => {
+  it('names the subagent an Agent call started, running or queued, and none for any other call', async () => {
     const { engine } = makeEngine();
     const mgr = new AgentManager(engine, 1);
-    const running = mgr.spawn(spec(0));
-    const queued = mgr.spawn(spec(1));
+    const running = await spawnId(mgr, spec(0));
+    const queued = await spawnId(mgr, spec(1));
 
     expect(mgr.agentIdOfToolCall('tc0')).toBe(running);
     expect(mgr.agentIdOfToolCall('tc1')).toBe(queued);
@@ -677,13 +725,13 @@ describe('AgentManager user stop of one subagent', () => {
     return parsed.content[0]!.text;
   };
 
-  it('names the agent to its card while it is still queued, so a stop can reach it', () => {
+  it('names the agent to its card while it is still queued, so a stop can reach it', async () => {
     const { engine } = makeEngine();
     const posted: Posted[] = [];
     engine.postMessage = (m) => void posted.push(m);
     const mgr = new AgentManager(engine, 1);
-    mgr.spawn(spec(0));
-    const queued = mgr.spawn(spec(1));
+    await spawnId(mgr, spec(0));
+    const queued = await spawnId(mgr, spec(1));
 
     expect(mgr.getRecord(queued)!.status).toBe('queued');
     expect(posted).toContainEqual(expect.objectContaining({ type: 'subagentStart', agentId: queued, toolUseId: 'tc1' }));
@@ -695,8 +743,8 @@ describe('AgentManager user stop of one subagent', () => {
     const posted: Posted[] = [];
     engine.postMessage = (m) => void posted.push(m);
     const mgr = new AgentManager(engine, 1);
-    mgr.spawn(spec(0));
-    const queued = mgr.spawn(spec(1));
+    await spawnId(mgr, spec(0));
+    const queued = await spawnId(mgr, spec(1));
     await flush();
 
     expect(mgr.abort(queued, 'user')).toBe(true);
@@ -739,7 +787,7 @@ describe('AgentManager user stop of one subagent', () => {
   it('a stop that lands after the agent finished changes nothing and says so', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 4);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await vi.waitFor(() => expect(gates).toHaveLength(1));
     gateAt(gates, 0).resolve();
     await mgr.getRecord(id)!.promise;
@@ -795,7 +843,7 @@ describe('AgentManager run that pi ended on a rejected call', () => {
 
   it('a hook that rejected a call with terminate stops a background agent as hookDenied, delivered with its note', async () => {
     const mgr = new AgentManager(rejectingEngine(['c1'], [{ toolCallId: 'c1', toolName: 'Bash', cause: 'hook' }]), 2);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     const record = mgr.getRecord(id)!;
     await record.promise;
 
@@ -824,7 +872,7 @@ describe('AgentManager steer', () => {
   it('reports "failed" (not "steered") when delivery throws', async () => {
     const { engine } = makeEngine();
     const mgr = new AgentManager(engine, 2);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await flush(); // session created → record.session set
     const record = mgr.getRecord(id)!;
     (record.session as unknown as { steer: () => Promise<void> }).steer = () => Promise.reject(new Error('mid-shutdown'));
@@ -835,7 +883,7 @@ describe('AgentManager steer', () => {
   it('reports "steered" on successful delivery', async () => {
     const { engine } = makeEngine();
     const mgr = new AgentManager(engine, 2);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await flush();
     expect(await mgr.steer(id, 'hello')).toBe('steered');
     mgr.dispose();
@@ -844,7 +892,7 @@ describe('AgentManager steer', () => {
   it('injects the message tagged with the absolute-priority marker', async () => {
     const { engine } = makeEngine();
     const mgr = new AgentManager(engine, 2);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await flush(); // session created → record.session set
     const record = mgr.getRecord(id)!;
     const delivered: string[] = [];
@@ -859,8 +907,8 @@ describe('AgentManager steer', () => {
   it('buffers a queued steer already tagged with the priority marker', async () => {
     const { engine } = makeEngine();
     const mgr = new AgentManager(engine, 1);
-    mgr.spawn(spec(0)); // fills the single concurrency slot
-    const queued = mgr.spawn(spec(1)); // over the cap → queued
+    await spawnId(mgr, spec(0)); // fills the single concurrency slot
+    const queued = await spawnId(mgr, spec(1)); // over the cap → queued
     expect(mgr.getRecord(queued)!.status).toBe('queued');
     expect(await mgr.steer(queued, 'do X')).toBe('queued');
     const buffered = mgr.getRecord(queued)!.pendingSteers!;
@@ -871,7 +919,7 @@ describe('AgentManager steer', () => {
   it('delivers a running steer\'s images to session.steer as pi ImageContent', async () => {
     const { engine } = makeEngine();
     const mgr = new AgentManager(engine, 2);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await flush();
     expect(await mgr.steer(id, 'look', [PNG])).toBe('steered');
     expect(steerCalls).toEqual([[wrapSteerMessage('look'), [{ type: 'image', data: 'AAAA', mimeType: 'image/png' }]]]);
@@ -881,8 +929,8 @@ describe('AgentManager steer', () => {
   it('buffers a queued steer with its images and flushes them to session.steer when the session opens', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 1);
-    mgr.spawn(spec(0));
-    const queued = mgr.spawn(spec(1));
+    await spawnId(mgr, spec(0));
+    const queued = await spawnId(mgr, spec(1));
     expect(await mgr.steer(queued, '', [PNG])).toBe('queued');
     expect(mgr.getRecord(queued)!.pendingSteers).toEqual([{ text: STEER_INSTRUCTION_PREFIX, images: [PNG] }]);
     await flush();
@@ -897,7 +945,7 @@ describe('AgentManager steer', () => {
   it('reports "finished" (not "steered") when the run settles while steer() is in flight', async () => {
     const { engine } = makeEngine();
     const mgr = new AgentManager(engine, 2);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await flush(); // session created → record.session set
     const record = mgr.getRecord(id)!;
     // Simulate the completion path settling the record during the steer await (steer/finish race).
@@ -909,8 +957,8 @@ describe('AgentManager steer', () => {
   it('drops the undelivered steer buffer and parent-awareness note when a queued agent is aborted', async () => {
     const { engine } = makeEngine();
     const mgr = new AgentManager(engine, 1);
-    mgr.spawn(spec(0)); // fills the slot
-    const queued = mgr.spawn(spec(1)); // queued
+    await spawnId(mgr, spec(0)); // fills the slot
+    const queued = await spawnId(mgr, spec(1)); // queued
     await mgr.steer(queued, 'do X'); // buffers a pending steer
     const record = mgr.getRecord(queued)!;
     record.userSteers = [{ message: 'do X' }]; // PiSession records the parent-awareness note on a queued steer
@@ -958,7 +1006,7 @@ describe('AgentManager thinkingLevel precedence', () => {
     const { engine, gates, captured } = makeCapturingEngine();
     engine.resolveModel = () => ({ thinkingLevel: 'xhigh' });
     const mgr = new AgentManager(engine, 2);
-    mgr.spawn(spec(0));
+    await spawnId(mgr, spec(0));
     await flush();
     expect(captured).toHaveLength(1);
     expect(captured[0]!.thinkingLevel).toBe('xhigh');
@@ -974,7 +1022,7 @@ describe('AgentManager thinkingLevel precedence', () => {
     const posted: ExtensionToWebviewMessage[] = [];
     engine.postMessage = (m) => void posted.push(m);
     const mgr = new AgentManager(engine, 2);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await flush();
 
     expect(customEntries[0]).toMatchObject({ customType: 'damocles-agent-launch', data: { agentId: id, modelLabel: 'sonnet', dollarBilled: false } });
@@ -996,7 +1044,7 @@ describe('AgentManager thinkingLevel precedence', () => {
     const { engine, gates, captured } = makeCapturingEngine();
     engine.resolveModel = () => ({});
     const mgr = new AgentManager(engine, 2);
-    mgr.spawn(spec(0));
+    await spawnId(mgr, spec(0));
     await flush();
     expect(captured[0]).not.toHaveProperty('thinkingLevel');
     gateAt(gates, 0).resolve();
@@ -1035,13 +1083,66 @@ describe('AgentManager resolveRunInBackground', () => {
   });
 });
 
+describe('AgentManager spawn and the agent registry load', () => {
+  /** An engine whose registry load is in flight until `finish` registers `agents` and settles it. */
+  function heldLoad(agents: Map<string, AgentConfig> = new Map()): { engine: SubagentEngine; gates: Gate[]; finish: () => void } {
+    const { engine, gates } = makeEngine();
+    let settle!: () => void;
+    const loaded = new Promise<void>((resolve) => { settle = resolve; });
+    engine.registryLoaded = () => loaded;
+    return { engine, gates, finish: () => { engine.registry.register(agents); settle(); } };
+  }
+
+  it('reads the type and its background default only once the registry holds the load in flight', async () => {
+    const { engine, finish } = heldLoad(new Map([['bg-default', customAgent('bg-default', { runInBackground: true })]]));
+    const mgr = new AgentManager(engine, 2);
+    const spawning = mgr.spawn({ kind: 'spawn', type: 'bg-default', prompt: 'task 0', description: 'd0', toolCallId: 'tc0' });
+    await flush();
+    expect(invocations).toEqual([]);
+
+    finish();
+    const record = await spawning;
+
+    expect(record.background).toBe(true);
+    expect(invocations).toEqual([{ kind: 'subagent', id: record.id, toolCallId: 'tc0', resume: false }]);
+    mgr.dispose();
+  });
+
+  // ESC aborts the Agent call's signal and stops every agent with abortAll, in either order.
+  it.each([
+    ['the call\'s signal aborts', (ac: AbortController, _mgr: AgentManager): void => ac.abort(), true, false],
+    ['ESC stops the agents', (_ac: AbortController, mgr: AgentManager): void => void mgr.abortAll('user'), true, true],
+    ['ESC stops the agents of a background call that has no signal', (_ac: AbortController, mgr: AgentManager): void => void mgr.abortAll('user'), false, true],
+    ['the panel closes', (_ac: AbortController, mgr: AgentManager): void => mgr.dispose(), false, true],
+  ] as const)('starts and records nothing when %s while the registry load is pending', async (_label, stop, withSignal, loadEndsWait) => {
+    const { engine, gates, finish } = heldLoad();
+    const mgr = new AgentManager(engine, 2);
+    const ac = new AbortController();
+    const spawning = mgr.spawn({ ...spec(0), runInBackground: !withSignal, ...(withSignal ? { signal: ac.signal } : {}) });
+    const settled = spawning.then(() => 'started', (err: Error) => err.message);
+    await flush();
+
+    stop(ac, mgr);
+    // the signal alone ends the wait; without it the spawn learns of the stop once the load lands
+    if (loadEndsWait) finish();
+
+    expect(await settled).toBe('The "general-purpose" agent was stopped before it started.');
+    finish();
+    await flush();
+    expect(invocations).toEqual([]);
+    expect(gates).toHaveLength(0);
+    expect(mgr.listActive()).toEqual([]);
+    mgr.dispose();
+  });
+});
+
 describe('AgentManager listActive', () => {
   it('returns only running + queued records with the exact subagent steer-target shape', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 2);
 
     // A background spawn that completes → terminal 'completed', must be excluded.
-    const doneId = mgr.spawn(spec(0));
+    const doneId = await spawnId(mgr, spec(0));
     await flush();
     gateAt(gates, 0).resolve();
     await flush();
@@ -1049,7 +1150,7 @@ describe('AgentManager listActive', () => {
     expect(mgr.getRecord(doneId)!.status).toBe('completed');
 
     // A background spawn that is aborted → terminal 'stopped', must be excluded.
-    const stoppedId = mgr.spawn(spec(1));
+    const stoppedId = await spawnId(mgr, spec(1));
     await flush();
     expect(mgr.abort(stoppedId, 'user')).toBe(true);
     gateAt(gates, 1).resolve(); // let the aborted run settle so its slot frees
@@ -1058,9 +1159,9 @@ describe('AgentManager listActive', () => {
     expect(mgr.getRecord(stoppedId)!.status).toBe('stopped');
 
     // Now build the active set: a background running, a foreground running, and a queued (cap = 2).
-    const bgRunningId = mgr.spawn(spec(2)); // background → isBackground true
-    const fgRunningId = mgr.spawn({ ...spec(3), runInBackground: false }); // foreground → isBackground false
-    const queuedId = mgr.spawn(spec(4)); // over the cap → queued
+    const bgRunningId = await spawnId(mgr, spec(2)); // background → isBackground true
+    const fgRunningId = await spawnId(mgr, { ...spec(3), runInBackground: false }); // foreground → isBackground false
+    const queuedId = await spawnId(mgr, spec(4)); // over the cap → queued
     await flush();
     expect(mgr.getRecord(bgRunningId)!.status).toBe('running');
     expect(mgr.getRecord(fgRunningId)!.status).toBe('running');
@@ -1096,7 +1197,7 @@ describe('AgentManager — per-subagent browser scope', () => {
     };
     const mgr = new AgentManager(engine, 2);
 
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await flush(); // run() builds customTools before creating the session
 
     expect(builtWith).toEqual([id]); // the scope key is the subagent's own record id
@@ -1111,7 +1212,7 @@ describe('AgentManager — per-subagent browser scope', () => {
     engine.disposeBrowserScope = (agentId, closeTabs) => calls.push([agentId, closeTabs]);
     const mgr = new AgentManager(engine, 2);
 
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await flush();
     gates[0]!.resolve(); // completes successfully
     await flush();
@@ -1127,7 +1228,7 @@ describe('AgentManager — per-subagent browser scope', () => {
     engine.disposeBrowserScope = (agentId, closeTabs) => calls.push([agentId, closeTabs]);
     const mgr = new AgentManager(engine, 2);
 
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await flush();
     mgr.abort(id, 'user'); // manual stop → status 'stopped'
     gates[0]!.resolve(); // let the nested run settle so afterComplete fires
@@ -1145,7 +1246,7 @@ describe('AgentManager — per-subagent browser scope', () => {
     engine.disposeBrowserScope = () => order.push('disposeBrowserScope');
     const mgr = new AgentManager(engine, 2);
 
-    mgr.spawn(spec(0));
+    await spawnId(mgr, spec(0));
     await flush();
     gates[0]!.resolve();
     await flush();
@@ -1162,8 +1263,9 @@ describe('AgentManager — per-subagent browser scope', () => {
     engine.disposeBrowserScope = (agentId, closeTabs) => calls.push([agentId, closeTabs]);
     const mgr = new AgentManager(engine, 2);
 
-    // An unknown/disabled type fails in startRecord → finalizeError (no tab was ever opened).
-    const id = mgr.spawn({ ...spec(0), type: 'does-not-exist' as never });
+    // A model that does not resolve fails in startRecord → finalizeError (no tab was ever opened).
+    engine.resolveModel = () => ({ error: 'no model' });
+    const id = await spawnId(mgr, spec(0));
     await flush();
 
     expect(mgr.getRecord(id)!.status).toBe('error');
@@ -1184,7 +1286,7 @@ describe('AgentManager → nested MCP dialogs: attribution at spawn, withdrawal 
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 2);
 
-    const id = mgr.spawn(spec(0)); // type 'general-purpose', no registered config
+    const id = await spawnId(mgr, spec(0)); // type 'general-purpose', no registered config
     await flush();
 
     expect(buildAgentToolsetCalls).toEqual([expect.objectContaining({ agentId: id, agentName: 'general-purpose', mcpDisallowed: expect.any(Set) })]);
@@ -1202,7 +1304,7 @@ describe('AgentManager → nested MCP dialogs: attribution at spawn, withdrawal 
     );
     const mgr = new AgentManager(engine, 2);
 
-    mgr.spawn({ ...spec(0), type: 'CI-AGENT' as never }); // resolved case-insensitively
+    await spawnId(mgr, { ...spec(0), type: 'CI-AGENT' as never }); // resolved case-insensitively
     await flush();
 
     expect(buildAgentToolsetCalls.at(-1)?.agentName).toBe('CI Reviewer');
@@ -1215,7 +1317,7 @@ describe('AgentManager → nested MCP dialogs: attribution at spawn, withdrawal 
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 2);
 
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await flush();
     expect(cancelledDialogs, 'a running subagent`s dialogs must stay open').toEqual([]);
     gates[0]!.resolve();
@@ -1231,7 +1333,7 @@ describe('AgentManager → nested MCP dialogs: attribution at spawn, withdrawal 
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 2);
 
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await flush();
     mgr.abort(id, 'user');
     gates[0]!.resolve();
@@ -1246,9 +1348,10 @@ describe('AgentManager → nested MCP dialogs: attribution at spawn, withdrawal 
     // `finalizeError` is only reachable before `run()`, so no toolset was built and no dialog can
     // exist. A cancel there would be a call with nothing to cancel — noise that hides the real one.
     const { engine } = makeEngine();
+    engine.resolveModel = () => ({ error: 'no model' });
     const mgr = new AgentManager(engine, 2);
 
-    mgr.spawn({ ...spec(0), type: 'does-not-exist' as never });
+    await spawnId(mgr, spec(0));
     await flush();
 
     expect(cancelledDialogs).toEqual([]);
@@ -1270,7 +1373,7 @@ describe('AgentManager → subagent gate context', () => {
     engine.parentFullToolNames = () => ['Read', 'Bash', 'Grep', ...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, 'ToolSearch'];
     const mgr = new AgentManager(engine, 2);
 
-    mgr.spawn({ ...spec(0), type: 'Explore' });
+    await spawnId(mgr, { ...spec(0), type: 'Explore' });
     await flush();
 
     const ctx = gateContexts().at(-1)!;
@@ -1287,7 +1390,7 @@ describe('AgentManager → subagent gate context', () => {
     installPlatform({ ...createFakePlatform(), remote: fake.remote });
     try {
       const mgr = new AgentManager(engine, 2);
-      mgr.spawn(spec(0));
+      await spawnId(mgr, spec(0));
       await flush();
       const ctx = gateContexts().at(-1)!;
       for (const name of BROWSER_PI_TOOL_NAMES) expect(ctx.deferrableToolNames, name).not.toContain(name);
@@ -1306,7 +1409,7 @@ describe('AgentManager → subagent gate context', () => {
       setLocalForgeAccounts(() => hasAccount);
       try {
         const mgr = new AgentManager(engine, 2);
-        mgr.spawn({ ...spec(0), type: 'Explore' });
+        await spawnId(mgr, { ...spec(0), type: 'Explore' });
         await flush();
         const result = { tools: sessionOpts.at(-1)!.tools ?? [], deferrable: gateContexts().at(-1)!.deferrableToolNames };
         mgr.dispose();
@@ -1330,7 +1433,7 @@ describe('AgentManager → subagent gate context', () => {
     engine.parentFullToolNames = () => ['Read', 'Bash', 'Grep', 'Write', 'Edit', 'ToolSearch'];
     const mgr = new AgentManager(engine, 2);
 
-    mgr.spawn({ ...spec(0), type: 'Explore' });
+    await spawnId(mgr, { ...spec(0), type: 'Explore' });
     await flush();
 
     expect(gateContexts().at(-1)!.readOnlyShell).toBe(true);
@@ -1358,7 +1461,7 @@ describe('AgentManager → capability-gated prompt blocks', () => {
       return createSession(opts);
     };
     const mgr = new AgentManager(engine, 2);
-    mgr.spawn({ ...spec(0), type });
+    await spawnId(mgr, { ...spec(0), type });
     await flush();
     mgr.dispose();
     // A silently-never-created session would make every `not.toContain` below vacuously true.
@@ -1469,7 +1572,7 @@ describe('AgentManager → capability-gated prompt blocks', () => {
       return createSession(opts);
     };
     const mgr = new AgentManager(engine, 2);
-    mgr.spawn({ ...spec(0), type: 'plan' });
+    await spawnId(mgr, { ...spec(0), type: 'plan' });
     await flush();
     mgr.dispose();
     expect(captured).toContain('PLAN BODY');
@@ -1608,7 +1711,7 @@ async function spawnAndCapture(
   type: string,
 ): Promise<CapturedSpawn> {
   const before = captured.length;
-  mgr.spawn({ ...spec(0), type });
+  await spawnId(mgr, { ...spec(0), type });
   await flush();
   expect(captured.length, `createSession was never called for ${type}`).toBe(before + 1);
   gates.at(-1)?.resolve();
@@ -1948,7 +2051,7 @@ describe('AgentManager agent records', () => {
       record(data);
     };
 
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     expect(invocations).toEqual([{ kind: 'subagent', id, toolCallId: 'tc0', resume: false }]);
     expect(startedAfterInvocation).toBe(true);
     await flush();
@@ -1982,7 +2085,7 @@ describe('AgentManager agent records', () => {
   ] as const)('abortAll(%s) records the stop reason in the status entry', async (reason, note) => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 2);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await flush();
 
     mgr.abortAll(reason);
@@ -1998,7 +2101,7 @@ describe('AgentManager agent records', () => {
   it('dispose records a shutdown stop at once, without waiting for the aborted run to settle', async () => {
     const { engine } = makeEngine();
     const mgr = new AgentManager(engine, 2);
-    mgr.spawn(spec(0));
+    await spawnId(mgr, spec(0));
     await flush();
 
     mgr.dispose();
@@ -2009,8 +2112,8 @@ describe('AgentManager agent records', () => {
   it('the stop button records a user stop; a queued agent never had a session, so it writes nothing', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 1);
-    const running = mgr.spawn(spec(0));
-    const queued = mgr.spawn(spec(1));
+    const running = await spawnId(mgr, spec(0));
+    const queued = await spawnId(mgr, spec(1));
     await flush();
 
     mgr.abort(queued, 'user');
@@ -2111,9 +2214,9 @@ describe('AgentManager resume', () => {
     ...(message !== undefined ? { message } : {}),
   });
 
-  it('the id validator matches exactly what the generator produces', () => {
+  it('the id validator matches exactly what the generator produces', async () => {
     const mgr = new AgentManager(makeEngine().engine);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     expect(isSubagentId(id)).toBe(true);
     expect(isSubagentId(AGENT)).toBe(true);
     mgr.dispose();
@@ -2148,8 +2251,8 @@ describe('AgentManager resume', () => {
   it('a running or queued agent is still active', async () => {
     const { engine } = resumeEngine();
     const mgr = new AgentManager(engine, 1);
-    const running = mgr.spawn(spec(0));
-    const queued = mgr.spawn(spec(1));
+    const running = await spawnId(mgr, spec(0));
+    const queued = await spawnId(mgr, spec(1));
 
     await expect(mgr.resume({ kind: 'resume', agentId: running, toolCallId: 'tc-r' })).rejects.toThrow(
       `Subagent "${running}" is still running; steer it with SteerSubagent or read it with GetSubagentResult.`,
@@ -2361,7 +2464,7 @@ describe('AgentManager resume', () => {
   it('a resume called right after a stop waits for the stopped run to finish before reading its file', async () => {
     const { engine, gates } = resumeEngine();
     const mgr = new AgentManager(engine);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     branch.unshift({
       type: 'message', id: 'm0', parentId: null, timestamp: new Date().toISOString(),
       message: { role: 'assistant', content: [{ type: 'toolCall', id: 'tc0', name: 'Agent', arguments: { description: 'd0', prompt: 'task 0', subagent_type: 'general-purpose' } }] },
@@ -2432,6 +2535,24 @@ describe('AgentManager resume', () => {
     mgr.dispose();
   });
 
+  it('an agent with no file and no spawn result re-runs in its template\'s mode, read once the registry holds the load in flight', async () => {
+    const { engine } = resumeEngine();
+    let settleLoad!: () => void;
+    const loaded = new Promise<void>((resolve) => { settleLoad = resolve; });
+    engine.registryLoaded = () => loaded;
+    spawnOnBranch({ ...spawnArgs, subagent_type: 'bg-default' });
+    const mgr = new AgentManager(engine);
+
+    const resuming = mgr.resume(resumeReq('tc-r'));
+    await settle();
+    engine.registry.register(new Map([['bg-default', customAgent('bg-default', { runInBackground: true })]]));
+    settleLoad();
+    const record = await resuming;
+
+    expect(record.background).toBe(true);
+    mgr.dispose();
+  });
+
   it('a second ESC during a resume leaves the agent resumable', async () => {
     const { engine, gates, dir } = resumeEngine();
     writeAgentFile(dir, { status: { status: 'stopped', stopReason: 'user' } });
@@ -2459,7 +2580,7 @@ describe('AgentManager resume', () => {
   ] as const)('a live agent stopped for %s is resumable: %s', async (reason, resumable) => {
     const { engine, gates } = resumeEngine();
     const mgr = new AgentManager(engine);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     branch.unshift({
       type: 'message', id: 'm0', parentId: null, timestamp: new Date().toISOString(),
       message: { role: 'assistant', content: [{ type: 'toolCall', id: 'tc0', name: 'Agent', arguments: { description: 'd0', prompt: 'task 0', subagent_type: 'general-purpose' } }] },
@@ -2545,7 +2666,7 @@ describe('AgentManager resume', () => {
     const posted: ExtensionToWebviewMessage[] = [];
     engine.postMessage = (m) => void posted.push(m);
     const mgr = new AgentManager(engine);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await flush();
 
     // pi notifies its listeners, then appends the message, and only then do its totals count it.
@@ -2685,8 +2806,8 @@ describe('AgentManager resume', () => {
   it('an agent whose invocation was rewound off the branch is unknown, even while it runs', async () => {
     const { engine, gates } = resumeEngine();
     const mgr = new AgentManager(engine, 2);
-    const running = mgr.spawn(spec(0));
-    const stopped = mgr.spawn(spec(1));
+    const running = await spawnId(mgr, spec(0));
+    const stopped = await spawnId(mgr, spec(1));
     await vi.waitFor(() => expect(gates.length).toBe(2));
     mgr.abort(stopped, 'user');
     gateAt(gates, 1).resolve();
@@ -2883,7 +3004,7 @@ describe('AgentManager undelivered live results', () => {
   async function finishedBackground(): Promise<{ mgr: AgentManager; id: string; gates: Gate[] }> {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 4);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await flush();
     gateAt(gates, 0).resolve();
     await mgr.waitForBackground();
@@ -2905,8 +3026,8 @@ describe('AgentManager undelivered live results', () => {
   it('a card-stopped background record is deliverable; one stopped by abortAll is discarded', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 4);
-    const card = mgr.spawn(spec(0));
-    const killed = mgr.spawn(spec(1));
+    const card = await spawnId(mgr, spec(0));
+    const killed = await spawnId(mgr, spec(1));
     await flush();
     mgr.abort(card, 'user');
     mgr.abortAll('user');
@@ -2927,8 +3048,8 @@ describe('AgentManager undelivered live results', () => {
 
     const { engine, gates } = makeEngine();
     const other = new AgentManager(engine, 4);
-    other.spawn(spec(1));
-    void other.spawnAndWait({ ...spec(2), runInBackground: false });
+    await other.spawn(spec(1));
+    await other.spawn({ ...spec(2), runInBackground: false });
     await flush();
     expect(other.deliverableLive()).toEqual([]);
     gates.forEach((g) => g.resolve());
@@ -2951,7 +3072,7 @@ describe('AgentManager undelivered live results', () => {
 
   it('GetSubagentResult and SteerSubagent never answer from a record of an invocation this branch does not hold', async () => {
     const { mgr, id } = await finishedBackground();
-    const running = mgr.spawn(spec(1));
+    const running = await spawnId(mgr, spec(1));
     await flush();
     branch.length = 0;
     type Run = (toolCallId: string, params: Record<string, unknown>) => Promise<{ content: Array<{ text: string }>; details?: unknown }>;
@@ -2970,7 +3091,7 @@ describe('AgentManager undelivered live results', () => {
   it('clear drops every record, running ones included', async () => {
     const { engine } = makeEngine();
     const mgr = new AgentManager(engine, 4);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await flush();
     mgr.clear();
     expect(mgr.getRecord(id)).toBeUndefined();
@@ -2982,7 +3103,7 @@ describe('AgentManager undelivered live results', () => {
     const posted: ExtensionToWebviewMessage[] = [];
     engine.postMessage = (m) => void posted.push(m);
     const mgr = new AgentManager(engine, 4);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await flush();
     mgr.abortAll('shutdown');
     const settled = mgr.whenRunsSettled();
@@ -3000,7 +3121,7 @@ describe('AgentManager undelivered live results', () => {
   it('clear writes a retired run its stopped status at once, so a scan after a rebind never sees it unfinished', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 4);
-    mgr.spawn(spec(0));
+    await spawnId(mgr, spec(0));
     await flush();
     mgr.abortAll('shutdown');
     const settled = mgr.whenRunsSettled();
@@ -3020,7 +3141,7 @@ describe('AgentManager undelivered live results', () => {
     const parentBranch = vi.fn(engine.parentBranch);
     engine.parentBranch = parentBranch;
     const mgr = new AgentManager(engine, 4);
-    mgr.spawn(spec(0));
+    await spawnId(mgr, spec(0));
     await flush();
 
     parentBranch.mockClear();
@@ -3049,7 +3170,7 @@ describe('AgentManager Agent result JSON', () => {
     const posted: ExtensionToWebviewMessage[] = [];
     engine.postMessage = (m) => void posted.push(m);
     const mgr = new AgentManager(engine, 4);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await vi.waitFor(() => expect(gates).toHaveLength(1));
 
     mgr.abort(id, 'user');
@@ -3065,7 +3186,7 @@ describe('AgentManager Agent result JSON', () => {
     const posted: ExtensionToWebviewMessage[] = [];
     engine.postMessage = (m) => void posted.push(m);
     const mgr = new AgentManager(engine, 4);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await vi.waitFor(() => expect(gates).toHaveLength(1));
 
     gateAt(gates, 0).resolve();
@@ -3078,14 +3199,14 @@ describe('AgentManager Agent result JSON', () => {
   // An errored card resolves through toolFailed, so the built JSON is only visible at `finish`.
   it.each([
     ['a run that threw', (engine: SubagentEngine) => { engine.createSession = async () => { throw new Error('boom'); }; }, 'general-purpose'],
-    ['a spawn refused before running', () => {}, 'does-not-exist'],
+    ['a spawn refused before running', (engine: SubagentEngine) => { engine.resolveModel = () => ({ error: 'no model' }); }, 'general-purpose'],
   ])('carries the error status for %s', async (_label, breakEngine, type) => {
     const { engine } = makeEngine();
     breakEngine(engine);
     const finish = vi.spyOn(SubagentStreamBridge.prototype, 'finish');
     try {
       const mgr = new AgentManager(engine, 4);
-      const id = mgr.spawn({ ...spec(0), type });
+      const id = await spawnId(mgr, { ...spec(0), type });
       await mgr.getRecord(id)!.promise;
 
       expect(finish).toHaveBeenCalledTimes(1);
@@ -3108,7 +3229,7 @@ describe('AgentManager Agent result JSON', () => {
       prompt: async () => { throw new Error(formatNoApiKeyFoundMessage('cerebras')); },
     });
     const mgr = new AgentManager(engine, 4);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await mgr.getRecord(id)!.promise;
 
     expect(mgr.getRecord(id)).toMatchObject({ status: 'error', error: 'No credential is set up for cerebras, so gpt-oss-120b could not run. Pick a model from a provider you are signed in to.' });
@@ -3127,7 +3248,7 @@ describe('AgentManager Agent result JSON', () => {
     const finish = vi.spyOn(SubagentStreamBridge.prototype, 'finish');
     try {
       const mgr = new AgentManager(engine, 4);
-      const id = mgr.spawn(spec(0));
+      const id = await spawnId(mgr, spec(0));
       await mgr.getRecord(id)!.promise;
 
       const english = 'No Anthropic credential is saved, so Sonnet 5.5 could not run. Sign in or add an API key in Settings › Models & accounts.';
@@ -3168,7 +3289,7 @@ describe('AgentManager → a design chat grants its subagents its verification t
   it('lists the three tools and AskUserQuestion in tools:, hands their names to the build, and briefs the agent', async () => {
     const { engine, gates, inputs } = designEngine(true);
     const mgr = new AgentManager(engine, 2);
-    mgr.spawn(spec(0));
+    await spawnId(mgr, spec(0));
     await flush();
     for (const name of [...VERIFY, 'AskUserQuestion']) expect(sessionOpts[0]!.tools, name).toContain(name);
     expect(sessionOpts[0]!.tools).not.toContain('RecordDecision');
@@ -3183,8 +3304,8 @@ describe('AgentManager → a design chat grants its subagents its verification t
   it('briefs a writing agent on what it writes and how it asks, and a read-only agent on neither', async () => {
     const { engine, gates } = designEngine(true);
     const mgr = new AgentManager(engine, 2);
-    mgr.spawn(spec(0));
-    mgr.spawn({ ...spec(1), type: 'Explore' });
+    await spawnId(mgr, spec(0));
+    await spawnId(mgr, { ...spec(1), type: 'Explore' });
     await flush();
     const [writer, reader] = [sessionOpts[0]!.systemPrompt, sessionOpts[1]!.systemPrompt];
     expect(writer).toContain('You write only design.md, screens/<name>.html');
@@ -3204,7 +3325,7 @@ describe('AgentManager → a design chat grants its subagents its verification t
   it('gives a subagent of a normal chat no design tool and no design block', async () => {
     const { engine, gates, inputs } = designEngine(false);
     const mgr = new AgentManager(engine, 2);
-    mgr.spawn(spec(0));
+    await spawnId(mgr, spec(0));
     await flush();
     for (const name of VERIFY) expect(sessionOpts[0]!.tools, name).not.toContain(name);
     expect(inputs[0]!.designTools).toEqual([]);
@@ -3219,7 +3340,7 @@ describe('AgentManager → a design chat grants its subagents its verification t
     // a reopened run resolves no model of its own: the runtime seats the session on the file's
     engine.resolveModel = () => ({});
     const mgr = new AgentManager(engine, 2);
-    mgr.spawn(spec(0));
+    await spawnId(mgr, spec(0));
     await flush();
     expect(inputs[0]!.model()).toBeUndefined();
     models.current = { id: 'text-only', input: ['text'] };
@@ -3232,7 +3353,7 @@ describe('AgentManager → a design chat grants its subagents its verification t
   it('opens the subagent\'s result with each answer the user gave it, and the decision it recorded', async () => {
     const { engine, gates, inputs } = designEngine(true);
     const mgr = new AgentManager(engine, 2);
-    const id = mgr.spawn(spec(0));
+    const id = await spawnId(mgr, spec(0));
     await flush();
     inputs[0]!.answered([{ question: 'Which accent?', answer: 'Taupe', decisionId: 'D7' }]);
     gateAt(gates, 0).resolve();

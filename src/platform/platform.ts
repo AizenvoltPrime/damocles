@@ -19,6 +19,7 @@ import type { SecretsStore } from './secrets-store';
 import type { SettingsStore } from './settings-store';
 import type { ShellService } from './shell-service';
 import type { TrustService } from './trust-service';
+import type { WalkSettings } from './walk-settings';
 import type { PanelHost, WindowService } from './window-service';
 import type { WorkspaceFolders } from './workspace-folders';
 
@@ -26,6 +27,8 @@ export interface Platform {
   // the affordances this host offers the webview (hostCapabilities handshake); a new host affordance is a flag here
   readonly capabilities: HostCapabilities;
   readonly settings: SettingsStore;
+  // the walk's switches from the host's own search settings, never another host's keys
+  readonly walkSettings: WalkSettings;
   readonly secrets: SecretsStore;
   readonly state: KeyValueState;
   readonly trust: TrustService;

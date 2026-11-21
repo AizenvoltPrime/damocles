@@ -3,7 +3,7 @@ import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { HostMessage, HostRequest, KeptShellSequence, ScreenMark } from '../../pty-host/protocol';
 import type { TerminalData, TerminalInfo, TerminalScreen, TerminalState } from '../../preload/terminal-channels';
 import type { PtyHostExit, PtyHostProcess } from '../../workspace/host-starters';
-import { createTerminalBackend, type LiveTerminal, type TerminalBackend } from '../../workspace/terminal/terminal-backend';
+import { createTerminalBackend, type HostTerminalBackend, type LiveTerminal } from '../../workspace/terminal/terminal-backend';
 import { NONCE_ENV } from '../../workspace/terminal/shell-integration-injection';
 import type { RemoteTerminalRecord } from '../remote/remote-state';
 import { DEFAULT_PERSISTED_TERMINALS, TerminalService, type PersistedTerminals, type TerminalProject, type TerminalServiceSettings } from '../terminal/terminal-service';
@@ -102,7 +102,7 @@ function remoteHarness(live: readonly LiveTerminal[], now?: () => number, saved:
     onExit: () => undefined,
     kill: () => { killed = true; },
   };
-  const backend: TerminalBackend = {
+  const backend: HostTerminalBackend = {
     ...createTerminalBackend({ starters: { startPtyHost: () => host }, platform: 'linux', scriptsDir: '/scripts', zshDotDir: '/zsh', homedir: '/home/me', env: {}, log: () => undefined }),
     list: async () => live,
   };

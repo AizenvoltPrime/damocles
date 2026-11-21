@@ -92,7 +92,8 @@ const isEventsFor = (id: number) => (reply: unknown): boolean => (reply as { kin
 
 beforeAll(async () => {
   bundle = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'dm-watch-worker-')), 'watch-worker.js');
-  await build({ entryPoints: [path.resolve(__dirname, '..', '..', 'watch-worker', 'index.ts')], bundle: true, platform: 'node', format: 'cjs', target: 'node24', outfile: bundle, logLevel: 'silent' });
+  // koffi stays external, as in the app's worker bundle (esbuild.config.ts watchWorkerOptions): it loads its own native module
+  await build({ entryPoints: [path.resolve(__dirname, '..', '..', 'watch-worker', 'index.ts')], bundle: true, platform: 'node', format: 'cjs', target: 'node24', outfile: bundle, external: ['koffi'], logLevel: 'silent' });
 });
 
 afterAll(() => {
@@ -124,7 +125,7 @@ afterEach(async () => {
 describe.runIf(process.platform === 'win32')('the Windows tree on the watch worker', { timeout: 30_000 }, () => {
   it('reports a file created, changed, renamed and deleted under the path main gave', async () => {
     const recorded = recorder();
-    host.start(dir, false, recorded.emit, () => undefined);
+    host.start(dir, false, recorded.emit, () => undefined, dir);
     await live(recorded);
 
     fs.mkdirSync(path.join(dir, 'sub'));
@@ -148,7 +149,7 @@ describe.runIf(process.platform === 'win32')('the Windows tree on the watch work
     fs.writeFileSync(path.join(dir, 'present.txt'), 'x');
     holdListings = true;
     const recorded = recorder();
-    const watch = host.start(dir, false, recorded.emit, () => undefined);
+    const watch = host.start(dir, false, recorded.emit, () => undefined, dir);
     const replies = rawReplies(workers[0]!);
     await once(gate!, 'message');
     let ready = false;
@@ -169,8 +170,8 @@ describe.runIf(process.platform === 'win32')('the Windows tree on the watch work
   it('sends a disposed watch nothing more, while another watch on the same worker goes on', async () => {
     const disposed = recorder();
     const kept = recorder();
-    const watch = host.start(dir, false, disposed.emit, () => undefined);
-    host.start(dir, false, kept.emit, () => undefined);
+    const watch = host.start(dir, false, disposed.emit, () => undefined, dir);
+    host.start(dir, false, kept.emit, () => undefined, dir);
     await live(disposed);
     await live(kept);
 
@@ -187,9 +188,9 @@ describe.runIf(process.platform === 'win32')('the Windows tree on the watch work
     const kept = recorder();
     const dropped = recorder();
     const lost = vi.fn();
-    host.start(dir, false, kept.emit, () => undefined);
+    host.start(dir, false, kept.emit, () => undefined, dir);
     const replies = rawReplies(workers[0]!);
-    host.start(dir, true, dropped.emit, lost).dispose();
+    host.start(dir, true, dropped.emit, lost, dir).dispose();
     fs.writeFileSync(path.join(dir, 'present.txt'), 'x');
     await live(kept);
 
@@ -207,7 +208,7 @@ describe.runIf(process.platform === 'win32')('the Windows tree on the watch work
     fs.writeFileSync(path.join(root, 'a.txt'), 'x');
     fs.writeFileSync(path.join(root, 'sub', 'b.txt'), 'x');
     const recorded = recorder();
-    host.start(root, false, recorded.emit, () => recorded.events.push('lost'));
+    host.start(root, false, recorded.emit, () => recorded.events.push('lost'), root);
     await live(recorded, root);
 
     fs.rmSync(root, { recursive: true });
@@ -222,7 +223,7 @@ describe.runIf(process.platform === 'win32')('the Windows tree on the watch work
     fs.writeFileSync(path.join(dir, 'present.txt'), 'x');
     holdListings = true;
     const recorded = recorder();
-    host.start(dir, true, recorded.emit, () => undefined);
+    host.start(dir, true, recorded.emit, () => undefined, dir);
     const replies = rawReplies(workers[0]!);
     await once(gate!, 'message');
     let exited = false;
@@ -242,7 +243,7 @@ describe.runIf(process.platform === 'win32')('the Windows tree on the watch work
     expect(recorded.events).toEqual([]);
     expect(replies.filter(isEventsFor(0))).toEqual([]);
     expect(replies).toContainEqual({ kind: 'closed' });
-    expect(host.start(dir, true, recorded.emit, () => undefined)).toBeDefined();
+    expect(host.start(dir, true, recorded.emit, () => undefined, dir)).toBeDefined();
     expect(workers).toHaveLength(1);
   });
 
@@ -252,7 +253,7 @@ describe.runIf(process.platform === 'win32')('the Windows tree on the watch work
     fs.writeFileSync(path.join(dir, 'sub', 'nested.txt'), 'x');
     const recorded = recorder();
     const lost = vi.fn();
-    host.start(dir, false, recorded.emit, lost);
+    host.start(dir, false, recorded.emit, lost, dir);
     await live(recorded);
 
     await workers[0]!.terminate();
@@ -327,24 +328,24 @@ describe('the watch worker host', () => {
   });
 
   it('settles ready on the worker\'s ready reply for that watch, and a pending one on a restarted worker\'s', async () => {
-    const first = tree.start(existing, false, () => undefined, () => undefined);
-    const second = tree.start(existing, false, () => undefined, () => undefined);
+    const first = tree.start(existing, false, () => undefined, () => undefined, existing);
+    const second = tree.start(existing, false, () => undefined, () => undefined, existing);
     fakes[0]!.reply({ kind: 'ready', id: 1 });
     expect(await settledSoon(first.ready)).toBe(false);
     expect(await settledSoon(second.ready)).toBe(true);
 
     fakes[0]!.fire('error', new Error('boom'));
-    expect(fakes[1]!.posted).toContainEqual({ kind: 'watch', id: 0, dir: existing, report: false });
+    expect(fakes[1]!.posted).toContainEqual({ kind: 'watch', id: 0, dir: existing, base: existing, report: false });
     expect(await settledSoon(first.ready)).toBe(false);
     fakes[1]!.reply({ kind: 'ready', id: 0 });
     expect(await settledSoon(first.ready)).toBe(true);
   });
 
   it('settles ready when the watch is disposed, failed or lost, and when the host closes', async () => {
-    const disposed = tree.start(existing, false, () => undefined, () => undefined);
-    const failed = tree.start(existing, false, () => undefined, () => undefined);
-    const lost = tree.start(existing, false, () => undefined, () => undefined);
-    const open = tree.start(existing, false, () => undefined, () => undefined);
+    const disposed = tree.start(existing, false, () => undefined, () => undefined, existing);
+    const failed = tree.start(existing, false, () => undefined, () => undefined, existing);
+    const lost = tree.start(existing, false, () => undefined, () => undefined, existing);
+    const open = tree.start(existing, false, () => undefined, () => undefined, existing);
     disposed.dispose();
     fakes[0]!.reply({ kind: 'failed', id: 1, message: 'EPERM: operation not permitted' });
     fakes[0]!.reply({ kind: 'lost', id: 2 });
@@ -359,7 +360,7 @@ describe('the watch worker host', () => {
   it('logs a failed watch whose directory exists and does not report it lost', () => {
     const lost = vi.fn();
     const emit = vi.fn();
-    tree.start(existing, false, emit, lost);
+    tree.start(existing, false, emit, lost, existing);
     fakes[0]!.reply({ kind: 'failed', id: 0, message: 'EPERM: operation not permitted' });
     fakes[0]!.reply({ kind: 'events', id: 0, events: [['create', path.join(existing, 'a')]] });
 
@@ -371,7 +372,7 @@ describe('the watch worker host', () => {
   it('reports a failed watch lost when its directory vanished', () => {
     const lost = vi.fn();
     const gone = path.join(existing, 'gone');
-    tree.start(gone, false, () => undefined, lost);
+    tree.start(gone, false, () => undefined, lost, gone);
     fakes[0]!.reply({ kind: 'failed', id: 0, message: 'ENOENT: no such file or directory' });
 
     expect(lost).toHaveBeenCalledTimes(1);
@@ -381,16 +382,16 @@ describe('the watch worker host', () => {
     const first = vi.fn();
     const second = vi.fn();
     const lost = vi.fn();
-    tree.start(existing, true, first, lost);
-    tree.start(os.tmpdir(), false, () => undefined, lost).dispose();
-    tree.start(existing, false, second, lost);
+    tree.start(existing, true, first, lost, existing);
+    tree.start(os.tmpdir(), false, () => undefined, lost, os.tmpdir()).dispose();
+    tree.start(existing, false, second, lost, existing);
     fakes[0]!.reply({ kind: 'events', id: 0, events: [['renamed', 'x']] });
 
     expect(fakes[0]!.terminated).toBe(true);
     expect(fakes).toHaveLength(2);
     expect(fakes[1]!.posted).toEqual([
-      { kind: 'watch', id: 0, dir: existing, report: false },
-      { kind: 'watch', id: 2, dir: existing, report: false },
+      { kind: 'watch', id: 0, dir: existing, base: existing, report: false },
+      { kind: 'watch', id: 2, dir: existing, base: existing, report: false },
     ]);
     expect(logged).toEqual(['[watcher] the watch worker sent a malformed reply', '[watcher] the watch worker restarted; 2 watches re-established']);
     expect(lost).not.toHaveBeenCalled();
@@ -406,35 +407,35 @@ describe('the watch worker host', () => {
 
   it('treats a closed reply nobody asked for as a failure and keeps every watch', () => {
     const lost = vi.fn();
-    tree.start(existing, false, () => undefined, lost);
+    tree.start(existing, false, () => undefined, lost, existing);
     fakes[0]!.reply({ kind: 'closed' });
 
     expect(logged[0]).toBe('[watcher] the watch worker closed unasked');
     expect(fakes[0]!.terminated).toBe(true);
-    expect(fakes[1]!.posted).toEqual([{ kind: 'watch', id: 0, dir: existing, report: false }]);
+    expect(fakes[1]!.posted).toEqual([{ kind: 'watch', id: 0, dir: existing, base: existing, report: false }]);
     expect(lost).not.toHaveBeenCalled();
   });
 
   it('sends the unwatch of a watch restarted on a fresh worker to that worker', () => {
-    const watch = tree.start(existing, false, () => undefined, () => undefined);
+    const watch = tree.start(existing, false, () => undefined, () => undefined, existing);
     fakes[0]!.fire('error', new Error('boom'));
     watch.dispose();
 
     expect(logged[0]).toBe('[watcher] the watch worker failed: boom');
-    expect(fakes[0]!.posted).toEqual([{ kind: 'watch', id: 0, dir: existing, report: false }]);
+    expect(fakes[0]!.posted).toEqual([{ kind: 'watch', id: 0, dir: existing, base: existing, report: false }]);
     expect(fakes[1]!.posted).toEqual([
-      { kind: 'watch', id: 0, dir: existing, report: false },
+      { kind: 'watch', id: 0, dir: existing, base: existing, report: false },
       { kind: 'unwatch', id: 0 },
     ]);
   });
 
   it('restarts no worker for a host with no watch left; the next watch starts one', async () => {
-    tree.start(existing, false, () => undefined, () => undefined).dispose();
+    tree.start(existing, false, () => undefined, () => undefined, existing).dispose();
     fakes[0]!.fire('exit', 1);
     await sleep(10);
     expect(fakes).toHaveLength(1);
 
-    tree.start(existing, false, () => undefined, () => undefined);
+    tree.start(existing, false, () => undefined, () => undefined, existing);
     expect(fakes).toHaveLength(2);
   });
 
@@ -449,7 +450,7 @@ describe('the watch worker host', () => {
       return fake;
     };
     const dies = createWorkerTreeHost(dying, (line) => logged.push(line));
-    const pending = dies.start(existing, false, () => undefined, lost);
+    const pending = dies.start(existing, false, () => undefined, lost, existing);
 
     await vi.waitFor(() => expect(logged.some((line) => line.includes('not watched until Damocles restarts'))).toBe(true), WAIT);
     await sleep(100);
@@ -458,7 +459,7 @@ describe('the watch worker host', () => {
     expect(logged.filter((line) => line.includes('re-established'))).toHaveLength(MAX_WORKER_RESTARTS);
     expect(lost).not.toHaveBeenCalled();
     expect(await settledSoon(pending.ready)).toBe(true);
-    expect(await settledSoon(dies.start(existing, false, () => undefined, lost).ready)).toBe(true);
+    expect(await settledSoon(dies.start(existing, false, () => undefined, lost, existing).ready)).toBe(true);
     expect(spawned).toBe(MAX_WORKER_RESTARTS + 1);
     await dies.close();
   });

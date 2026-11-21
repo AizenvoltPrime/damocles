@@ -87,7 +87,7 @@ function memory(): MigrationMemory {
 type MigrationRest = Parameters<typeof migrateRenamedToolRules> extends [unknown, ...infer Rest] ? Rest : never;
 
 /** A trusted folder whose personal files apply. */
-const trustedFolder = (folder: string): RuleMigrationFolder => ({ path: folder, personalFiles: true });
+const trustedFolder = (folder: string): RuleMigrationFolder => ({ path: folder, personalFiles: true, trusted: () => true });
 
 /** A run's notices as the folder's panels get them, remembered as the folder runtime remembers them. */
 async function showRun(folder: string, ...rest: MigrationRest): Promise<McpRenamedToolRuleNotice[]> {
@@ -352,10 +352,42 @@ describe('migrateRenamedToolRules', () => {
     expect(read(owned.user()).permissions).toEqual({ allow: [NEW] });
   });
 
-  it('creates no settings file that did not exist', async () => {
-    await migrate(folder, context7(), memory());
+  // The folder's trust is read again inside the write's critical section, so a revoke after the run read it writes nothing there.
+  it('leaves the folder file as it is, and the run not done, when the folder is no longer trusted at its write, and still migrates the user files', async () => {
+    writeSettings(owned.user(), { allow: [OLD] });
+    writeSettings(owned.folderLocal(), { allow: [OLD] });
+
+    await expect(migrateRenamedToolRules({ path: folder, personalFiles: true, trusted: () => false }, context7(), memory())).resolves.toMatchObject({ complete: false });
+
+    expect(read(owned.folderLocal()).permissions).toEqual({ allow: [OLD] });
+    expect(read(owned.user()).permissions).toEqual({ allow: [NEW] });
+  });
+
+  it('creates no settings file that did not exist, and is done with the missing files', async () => {
+    await expect(migrateRenamedToolRules(trustedFolder(folder), context7(), memory())).resolves.toMatchObject({ complete: true });
     expect(existsSync(owned.user())).toBe(false);
     expect(existsSync(owned.folderLocal())).toBe(false);
+  });
+
+  // a folder where the file is: it exists, and reading it fails with EISDIR on every platform
+  it('is not done with an owned file it could not read, and migrates it on the next run once it reads', async () => {
+    mkdirSync(owned.user(), { recursive: true });
+    await expect(migrateRenamedToolRules(trustedFolder(folder), context7(), memory())).resolves.toMatchObject({ complete: false });
+
+    rmSync(owned.user(), { recursive: true });
+    writeSettings(owned.user(), { allow: [OLD] });
+    await expect(migrateRenamedToolRules(trustedFolder(folder), context7(), memory())).resolves.toMatchObject({ complete: true });
+    expect(read(owned.user()).permissions).toEqual({ allow: [NEW] });
+  });
+
+  it('is not done with a listed file it could not read, and lists its rules on the next run once it reads', async () => {
+    const project = join(folder, '.damocles', 'settings.json');
+    mkdirSync(project, { recursive: true });
+    await expect(migrateRenamedToolRules(trustedFolder(folder), context7(), memory())).resolves.toEqual({ notices: [], complete: false });
+
+    rmSync(project, { recursive: true });
+    writeSettings(project, { allow: [OLD] });
+    await expect(migrateRenamedToolRules(trustedFolder(folder), context7(), memory())).resolves.toMatchObject({ notices: [{ path: project, rules: [{ old: OLD, new: NEW }] }], complete: true });
   });
 
   it('leaves an unparseable owned file alone', async () => {
@@ -810,7 +842,7 @@ describe('retired get_* resource tools in places every folder shares', () => {
       writeSettings(projectClaude, { deny: ['mcp__secret__get_passwords'] });
       const before = readFileSync(projectLocal, 'utf-8');
 
-      const { notices } = await migrateRenamedToolRules({ path: folder, personalFiles: false }, renames(), memory());
+      const { notices } = await migrateRenamedToolRules({ path: folder, personalFiles: false, trusted: () => true }, renames(), memory());
 
       expect(readFileSync(projectLocal, 'utf-8')).toBe(before);
       expect(notices).toEqual([]);

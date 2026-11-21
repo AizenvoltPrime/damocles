@@ -69,8 +69,8 @@ export interface RelocationRequest {
 /** ignore: a chat a panel of this core holds does not refuse, since the host closes those chats before it relocates. */
 export interface PreflightRequest extends RelocationRequest {
   readonly heldHere?: 'ignore';
-  // skip: neither folder's repository identity is read, so the answer has no otherRepository notice (feature
-  // projects.preflightSkipIdentity; an older core ignores it and reads them)
+  // skip: neither folder's repository identity is read, so the answer has no otherRepository notice (an older core ignores
+  // it and reads them)
   readonly identity?: 'skip';
 }
 

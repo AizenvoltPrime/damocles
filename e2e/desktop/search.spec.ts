@@ -129,7 +129,7 @@ test('include and exclude globs limit the results, a glob leaving the project is
   await expect(matchRows(shell, 'lib/b.ts').getByTestId('search-row-match')).toHaveText('-e');
 });
 
-test('node_modules is skipped until the exclude toggle is off, and a symlink to a folder outside the project yields nothing', async ({ foreground: _foreground, home, launch }) => {
+test('node_modules is skipped until the exclude toggle is off, and a folder linked from outside the project is searched through the link', async ({ foreground: _foreground, home, launch }) => {
   write(home.project, 'src/a.ts', 'needle\n');
   write(home.project, 'node_modules/pkg/index.js', 'needle\n');
   const outside = path.join(path.dirname(home.project), 'outside');
@@ -139,13 +139,25 @@ test('node_modules is skipped until the exclude toggle is off, and a symlink to 
   await openProjectChat(app, home.project);
   const shell = await openSearch(app);
   await search(shell, 'needle');
-  await expect(resultFiles(shell)).toHaveCount(1);
+  await expect(resultFiles(shell)).toHaveCount(2);
+  await expect(fileRow(shell, 'linked/secret.txt')).toBeVisible();
   await expect(fileRow(shell, 'node_modules/pkg/index.js')).toHaveCount(0);
 
   await openDetails(shell);
   await toggle(shell, 'useExclude', false);
   await expect(fileRow(shell, 'node_modules/pkg/index.js')).toBeVisible();
-  await expect(resultFiles(shell)).toHaveCount(2);
+  await expect(resultFiles(shell)).toHaveCount(3);
+});
+
+test('with Follow symlinks off, a folder linked from outside the project yields nothing', async ({ foreground: _foreground, home, launch }) => {
+  writeUserSettings(home, { 'damocles.desktop.search.followSymlinks': false });
+  write(home.project, 'src/a.ts', 'needle\n');
+  const outside = path.join(path.dirname(home.project), 'outside');
+  write(outside, 'secret.txt', 'outsideneedle\n');
+  fs.symlinkSync(outside, path.join(home.project, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+  const { app } = await launch();
+  await openProjectChat(app, home.project);
+  const shell = await openSearch(app);
 
   await search(shell, 'outsideneedle');
   await expect(shell.getByTestId('search-no-results')).toHaveText('No results found. Review your configured exclusions and check your gitignore files - Open Settings');

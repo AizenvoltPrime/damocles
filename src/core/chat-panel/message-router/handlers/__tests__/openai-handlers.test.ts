@@ -27,9 +27,9 @@ vi.mock("../../../../pi-session/pi-loader", () => ({
 
 // Only the fs-touching seed is stubbed; `cacheWarmingSetting` stays real, since `PiRuntime.init` passes
 // its result to `ensurePiAgentDir`.
+vi.mock("../../../../pi-session/agent-dir-setup", () => ({ ensurePiAgentDir: () => undefined }));
 vi.mock("../../../../pi-session/agent-dir", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../../pi-session/agent-dir")>()),
-  ensurePiAgentDir: () => undefined,
   PI_AGENT_DIR: "/fake/agent",
 }));
 

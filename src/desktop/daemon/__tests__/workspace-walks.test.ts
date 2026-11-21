@@ -5,6 +5,7 @@ import { INVALID } from '../../core-protocol/schema';
 import { CLIENT_TO_WORKSPACE, WORKSPACE_TO_CLIENT, type ClientToWorkspace, type WorkspaceToClient } from '../../workspace/messages';
 import { MOVE_LEFT_LISTED } from '../../workspace/transfer-ops';
 import { WALK_BATCH_FILES } from '../../../core/search-walk';
+import type { LinkRule } from '../../local-services/confine';
 import type { TerminalHub } from '../terminal-hub';
 import { createWorkspaceHost, MAX_WALKS, type WorkspaceModules } from '../workspace-host';
 
@@ -33,14 +34,15 @@ describe('the walks a connection holds open', () => {
         return: async () => ({ done: true, value: undefined }),
       }),
     });
+    const files = { walk: endless };
     const host = createWorkspaceHost({
-      files: { walk: endless },
+      files: { ...files, under: () => files },
       hub: { detach: () => undefined } as unknown as TerminalHub,
       cli: { connected: () => ({ dispose: () => undefined }) },
       watchLimits: { roots: () => [], onReached: () => ({ dispose: () => undefined }), limit: async () => null },
     } as unknown as WorkspaceModules, () => undefined);
     const [clientEnd, hostEnd] = channel();
-    const served = host.serve('test-connection', 'test-client', hostEnd, (reason) => { throw new Error(reason); }, () => undefined, () => false);
+    const served = host.serve('test-connection', 'test-client', hostEnd, (reason) => { throw new Error(reason); }, () => undefined, () => false, () => new Set());
     const endpoint = createEndpoint<ClientToWorkspace, WorkspaceToClient>({ transport: clientEnd, outgoing: CLIENT_TO_WORKSPACE, incoming: WORKSPACE_TO_CLIENT, log: () => undefined, errors: ERROR_CODEC });
     const project = { key: '/srv/app', fsPath: '/srv/app', name: 'app' };
     try {
@@ -56,20 +58,29 @@ describe('the walks a connection holds open', () => {
 });
 
 describe('the workspace host\'s transfer requests', () => {
-  function serve(files: Partial<WorkspaceModules['files']>): { readonly endpoint: ReturnType<typeof createEndpoint<ClientToWorkspace, WorkspaceToClient>>; readonly violations: string[]; dispose(): void } {
+  // rules: the rule each project-path request ran under
+  function serve(files: Partial<WorkspaceModules['files']>): { readonly endpoint: ReturnType<typeof createEndpoint<ClientToWorkspace, WorkspaceToClient>>; readonly violations: string[]; readonly rules: LinkRule[]; dispose(): void } {
+    const rules: LinkRule[] = [];
     const host = createWorkspaceHost({
-      files,
+      files: {
+        ...files,
+        under: (rule: LinkRule) => {
+          rules.push(rule);
+          return files;
+        },
+      },
       hub: { detach: () => undefined } as unknown as TerminalHub,
       cli: { connected: () => ({ dispose: () => undefined }) },
       watchLimits: { roots: () => [], onReached: () => ({ dispose: () => undefined }), limit: async () => null },
     } as unknown as WorkspaceModules, () => undefined);
     const [clientEnd, hostEnd] = channel();
     const violations: string[] = [];
-    const served = host.serve('test-connection', 'test-client', hostEnd, (reason) => violations.push(reason), () => undefined, () => false);
+    const served = host.serve('test-connection', 'test-client', hostEnd, (reason) => violations.push(reason), () => undefined, () => false, () => new Set());
     const endpoint = createEndpoint<ClientToWorkspace, WorkspaceToClient>({ transport: clientEnd, outgoing: CLIENT_TO_WORKSPACE, incoming: WORKSPACE_TO_CLIENT, log: () => undefined, errors: ERROR_CODEC, onViolation: (error) => violations.push(error.message) });
     return {
       endpoint,
       violations,
+      rules,
       dispose: () => {
         endpoint.close('done');
         served.dispose();
@@ -106,7 +117,7 @@ describe('the workspace host\'s transfer requests', () => {
   it('serves a folder\'s mode and the check of a link made within a folder', async () => {
     const made: Array<number | undefined> = [];
     const checked: string[][] = [];
-    const { endpoint, dispose } = serve({
+    const { endpoint, rules, dispose } = serve({
       makeFolder: async (_project, _dir, _name, mode) => {
         made.push(mode);
         return { ok: true };
@@ -122,6 +133,8 @@ describe('the workspace host\'s transfer requests', () => {
       expect(await endpoint.request('files.verifyLink', { project, relativePath: 'dl/a', within: 'dl' })).toEqual({ ok: false, reason: 'outside' });
       expect(made).toEqual([0o700, undefined]);
       expect(checked).toEqual([['dl/a', 'dl']]);
+      expect(await endpoint.request('files.makeFolder', { project, relativeDir: 'linked', name: 'x', links: 'follow' })).toEqual({ ok: true });
+      expect(rules).toEqual(['withinProject', 'withinProject', 'withinProject', 'throughLinks']);
     } finally {
       dispose();
     }
@@ -189,7 +202,7 @@ describe('Search\'s contract', () => {
       watchLimits: { roots: () => [], onReached: () => ({ dispose: () => undefined }), limit: async () => null },
     } as unknown as WorkspaceModules, () => undefined);
     const [clientEnd, hostEnd] = channel();
-    const served = host.serve('test-connection', 'test-client', hostEnd, (reason) => { throw new Error(reason); }, () => undefined, () => false);
+    const served = host.serve('test-connection', 'test-client', hostEnd, (reason) => { throw new Error(reason); }, () => undefined, () => false, () => new Set());
     const endpoint = createEndpoint<ClientToWorkspace, WorkspaceToClient>({ transport: clientEnd, outgoing: CLIENT_TO_WORKSPACE, incoming: WORKSPACE_TO_CLIENT, log: () => undefined, errors: ERROR_CODEC });
     const received: unknown[] = [];
     const ended = new Promise<void>((resolve) => {

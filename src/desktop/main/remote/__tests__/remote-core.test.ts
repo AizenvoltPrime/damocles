@@ -184,7 +184,7 @@ function remote(daemon: ReturnType<typeof fakeDaemon>, lastEpoch: string | null,
   const mcp: RelayedMcpServer[] = [];
   // the welcome features each attach built its host services with
   const serviceFeatures: Array<readonly string[]> = [];
-  const relays = new UserRelays({ resolveCredential: async () => ({ type: 'none' }), forges: async () => [], clientAuth: async () => ({ providers: {} }), voice: true, homedir: '/nonexistent', userSettingKeys: () => [], userValue: () => undefined, hostPolicy: () => ({ allowBypass: false }), savedHost: () => true, engineHalted: () => false, local: { mcpServers: async () => [...mcp] } as unknown as LocalUserScope, log: () => undefined, ...relayDeps });
+  const relays = new UserRelays({ resolveCredential: async () => ({ type: 'none' }), forges: async () => [], clientAuth: async () => ({ providers: {} }), voice: true, homedir: '/nonexistent', userSettingKeys: () => [], userValue: () => undefined, hostPolicy: () => ({ allowBypass: false }), savedHost: () => true, engineHalted: () => false, notifications: { warn: async () => undefined }, local: { mcpServers: async () => [...mcp] } as unknown as LocalUserScope, log: () => undefined, ...relayDeps });
   // the reads main makes at startup, which an older daemon's attach waits for; main logs a failed one
   for (const read of [relays.authChanged(), relays.userChanged(), relays.mcpChanged(), relays.forgesChanged()]) read.catch(() => undefined);
   const core = new RemoteCore({
@@ -307,7 +307,7 @@ describe('RemoteCore', () => {
       const parsed = CLIENT_TO_CONTROL.requests.attachCore.params(structuredClone(daemon.attaches[0]!));
       if (parsed === INVALID) throw new Error('the attach does not parse');
       expect(parsed.features).toEqual(FEATURES);
-      expect(FEATURES).toEqual(expect.arrayContaining(['core.attachFeatures', 'design.capture', 'design.probe', 'design.journey', 'design.replayJourney', 'design.openPreview', 'design.changed']));
+      expect(FEATURES).toEqual(expect.arrayContaining(['design.capture', 'design.probe', 'design.journey', 'design.replayJourney', 'design.openPreview', 'design.changed']));
     }
   });
 

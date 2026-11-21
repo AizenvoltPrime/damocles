@@ -1,7 +1,7 @@
 import { promises as fs, mkdirSync, copyFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { confineExisting, type Project } from '../../local-services/confine';
+import { confineExisting, type LinkRule, type Project } from '../../local-services/confine';
 import type { TerminalLinkKind } from '../../preload/terminal-channels';
 import type { TerminalView } from '../../pty-host/protocol';
 import type { HostStarters, PtyHostProcess } from '../host-starters';
@@ -39,7 +39,7 @@ export interface TerminalBackend {
   injection(request: ShellInjectionRequest): Promise<Omit<Injection, 'filesToCopy'> | undefined>;
   // the terminals kept from before this client attached; a serialize request for one attaches it again
   list(): Promise<readonly LiveTerminal[]>;
-  // what an existing path inside the project is after every link is followed; null for anything else
+  // what an existing project path confined under throughLinks is after every link is followed; null for anything else
   linkKind(project: Project, relativePath: string): Promise<TerminalLinkKind | null>;
   // the host's Windows build, which its pty host's screens and its terminals' views give xterm; null off Windows
   windowsBuild(): Promise<number | null>;
@@ -71,8 +71,34 @@ function copyFiles(files: ReadonlyArray<{ readonly source: string; readonly dest
   }
 }
 
-export function createTerminalBackend(deps: TerminalBackendDeps): TerminalBackend {
+// This host's own backend; under: linkKind confined under rule
+export interface HostTerminalBackend extends TerminalBackend {
+  under(rule: LinkRule): Pick<TerminalBackend, 'linkKind'>;
+}
+
+export function createTerminalBackend(deps: TerminalBackendDeps): HostTerminalBackend {
+  const under = (rule: LinkRule): Pick<TerminalBackend, 'linkKind'> => ({
+    async linkKind(project, relativePath) {
+      const confined = await confineExisting(project, relativePath, rule);
+      if (!confined.ok) {
+        if (confined.reason === 'failed') deps.log(`[terminal] a link inside ${project.name} could not be resolved`);
+        return null;
+      }
+      let stat: Awaited<ReturnType<typeof fs.stat>>;
+      try {
+        stat = await fs.stat(confined.path);
+      } catch (err) {
+        // removed since the realpath
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        throw err;
+      }
+      if (stat.isFile()) return 'file';
+      return stat.isDirectory() ? 'folder' : null;
+    },
+  });
   return {
+    ...under('throughLinks'),
+    under,
     startHost: () => deps.starters.startPtyHost(),
     detectProfiles: () => detectProfiles(systemProfileProbe(deps.env, deps.log)),
     environment: async (locale) => terminalEnvironment(deps.currentEnvironment?.(deps.env) ?? deps.env, { locale, zshDotDir: deps.zshDotDir }),
@@ -90,22 +116,5 @@ export function createTerminalBackend(deps: TerminalBackendDeps): TerminalBacken
     // a local pty host ends with the app, so nothing outlives it to list
     list: async () => [],
     windowsBuild: async () => (deps.platform === 'win32' ? windowsBuildNumber(os.release(), deps.platform) : null),
-    async linkKind(project, relativePath) {
-      const confined = await confineExisting(project, relativePath);
-      if (!confined.ok) {
-        if (confined.reason === 'failed') deps.log(`[terminal] a link inside ${project.name} could not be resolved`);
-        return null;
-      }
-      let stat: Awaited<ReturnType<typeof fs.stat>>;
-      try {
-        stat = await fs.stat(confined.path);
-      } catch (err) {
-        // removed since the realpath
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
-        throw err;
-      }
-      if (stat.isFile()) return 'file';
-      return stat.isDirectory() ? 'folder' : null;
-    },
   };
 }

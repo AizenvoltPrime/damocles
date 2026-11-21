@@ -1,4 +1,5 @@
-import type { WalkHost, WalkIgnore } from '../../core/search-walk';
+import type { WalkHost } from '../../core/search-walk';
+import type { WalkSwitches } from '../../platform/walk-settings';
 import { isRelativeFilePath } from '../../shared/relative-path';
 
 export interface FileListingSink {
@@ -13,8 +14,8 @@ export interface FileListing {
 }
 
 export interface QuickOpenListing {
-  // every file under root the walk lists with ignore's switches and each exclude as a `!` override, `.git` folders included
-  list(root: string, ignore: WalkIgnore, excludes: readonly string[], sink: FileListingSink): FileListing;
+  // every file under root the walk lists with walk's switches and each exclude as a `!` override, `.git` folders included
+  list(root: string, walk: WalkSwitches, excludes: readonly string[], sink: FileListingSink): FileListing;
 }
 
 export interface QuickOpenListingDeps {
@@ -25,11 +26,11 @@ export interface QuickOpenListingDeps {
 /** Quick Open's file listing through the walk host's processes; the caller scores the paths. */
 export function createQuickOpenListing(deps: QuickOpenListingDeps): QuickOpenListing {
   return {
-    list(root, ignore, excludes, sink) {
+    list(root, { ignore, followLinks }, excludes, sink) {
       const controller = new AbortController();
       const { signal } = controller;
       // `.git` is left to the excludes, as rg with --hidden leaves it
-      const walk = deps.walks.walk({ root, requireGit: true, ignore, gitFolders: 'list', overrides: excludes.map((glob) => `!${glob}`) }, signal);
+      const walk = deps.walks.walk({ root, requireGit: true, ignore, gitFolders: 'list', overrides: excludes.map((glob) => `!${glob}`), ...(followLinks ? { followLinks: true } : {}) }, signal);
       void (async () => {
         try {
           for await (const batch of walk) {
@@ -41,7 +42,7 @@ export function createQuickOpenListing(deps: QuickOpenListingDeps): QuickOpenLis
           if (!signal.aborted) sink.end(err instanceof Error ? err.message : String(err));
           return;
         }
-        if (walk.errors.length > 0) deps.log(`[quick-open] listing ${root} skipped folders it could not read: ${walk.errors.join('; ').slice(0, 500)}`);
+        if (walk.errors.length > 0) deps.log(`[quick-open] listing ${root} skipped folders or links it could not read: ${walk.errors.join('; ').slice(0, 500)}`);
         if (!signal.aborted) sink.end();
       })();
       return { kill: () => controller.abort() };

@@ -217,7 +217,7 @@ describe('a remote chat view\'s user-setting writes (main side)', () => {
 
   it('answer a Tools switch for a daemon without tools.setOnHost with a failed result and its toast, and send the pin', async () => {
     const { relay, calls, connections, posted } = fake();
-    connections.set('ssh+other', ['core.attach']);
+    connections.set('ssh+other', ['protocol.resume']);
     relay.fromView('other-view', { type: 'toggleToolGroup', group: 'compass', enabled: true });
     relay.fromView('other-view', { type: 'toggleTool', toolName: 'WebFetch', enabled: false });
     relay.fromView('other-view', { type: 'setPinnedHeaderHidden', hidden: true });

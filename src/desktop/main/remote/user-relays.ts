@@ -2,12 +2,15 @@
 // credentials, which the local core resolves and main checks, and the clientAuth, clientUser, clientPolicy, clientMcp and
 // clientForges mirrors each attach publishes. Nothing here ever carries a refresh token, this computer's environment, a
 // settings file's env, apiKeyHelper, hooks or a stored secret.
-import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import type { ContributedConfiguration } from '../../../core/config/contributed-configuration';
 import { parseSettingsText, type SettingsObject } from '../../../core/config/settings-file';
+import { userConfigBase, type ConfigNotices } from '../../../core/config/local-config-path';
+import { keptRulesText, readRuleFileText, unreadableRulesText } from '../../../core/permission-handler/rule-file-read';
 import { PREFER_API_KEY_SETTINGS } from '../../../core/pi-session/provider-auth';
 import type { Disposable } from '../../../platform/disposable';
+import { englishText } from '../../../shared/localized-text';
+import type { UnreadableRuleFile } from '../../../shared/types/permissions';
 import { PROVIDER_ID_PATTERN } from '../../../shared/types/messages';
 import { CLIENT_FORGES_FEATURE, GIT_HOST, type ClientForges, type ClientForgeServer } from '../../../shared/git-credential';
 import { brokerEnvOf, carriesAnyTag, GLOBAL_MEMORY_APPLY_TIMEOUT_MS, GLOBAL_MEMORY_READ_TIMEOUT_MS, listedAfter, listedMemoryBytes, MAX_BROKER_EXPIRES_IN_MS, MAX_GLOBAL_MEMORY_LIST_BYTES, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, planModelIdsOf, sentClientAuth, type BrokerAnswer, type ClientAuth, type ClientGlobalProfile, type ClientMcp, type ClientPending, type ClientPolicy, type ClientUser, type GlobalMemoryListPage, type GlobalMemoryListRequest, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type GlobalMemoryWrite, type HeldAuth, type HeldAuthEntry, type PermissionRuleLists, type RelayedMcpServer, type SearchedGlobalMemory, type UserRulesDir } from '../../../shared/remote-user';
@@ -22,6 +25,8 @@ export const MAX_RULE_CHARS: number = 4096;
 export const MAX_RULES: number = 2000;
 // how often an unknown provider id may re-read this computer's snapshot
 export const AUTH_REREAD_MS: number = 5000;
+// how often the user rules files are read again while one fails, as a local chat's rules cache expires
+export const RULES_REREAD_MS: number = 5000;
 // a daemon whose welcome does not list it closes the connection on a clientMcp mirror as a violation
 export const CLIENT_MCP_FEATURE = 'clientMcp';
 // a daemon whose welcome does not list it parses no env in an API key answer
@@ -131,10 +136,11 @@ const ruleList = (value: unknown): readonly string[] =>
 
 /**
  * The clientUser allowlist: per user file, in loadPermissionsByPriority's order, only its allow, ask
- * and deny rules and its folder, so a `!` carve-out stays inside its file; and only the given contributed keys' user values.
- * Built up from those fields, so env, apiKeyHelper, hooks or anything else never cross.
+ * and deny rules and its folder, so a `!` carve-out stays inside its file; only the given contributed keys' user values; and
+ * the first user file whose rules cannot be known. Built up from those fields, so env, apiKeyHelper, hooks or anything else
+ * never cross.
  */
-export function clientUserOf(files: readonly UserRulesFile[], userValues: ReadonlyMap<string, unknown>): ClientUser {
+export function clientUserOf(files: readonly UserRulesFile[], userValues: ReadonlyMap<string, unknown>, unreadable?: UnreadableRuleFile): ClientUser {
   const permissionRules: PermissionRuleLists[] = [];
   for (const { dir, settings: file } of files) {
     const permissions = file['permissions'];
@@ -145,7 +151,7 @@ export function clientUserOf(files: readonly UserRulesFile[], userValues: Readon
   }
   const settings: Record<string, unknown> = {};
   for (const [key, value] of userValues) if (value !== undefined) settings[key] = value;
-  return { settings, permissionRules };
+  return { settings, permissionRules, ...(unreadable !== undefined ? { unreadable } : {}) };
 }
 
 /** The three mirrors a remote core attaches with, as values. */
@@ -264,6 +270,8 @@ export interface UserRelaysDeps {
   readonly forges: () => Promise<readonly ClientForgeServer[]>;
   // this computer's engine is halted, so no read of its sign-ins lands before Restart Engine
   readonly engineHalted: () => boolean;
+  // where a user rules file that starts failing to read is told
+  readonly notifications: ConfigNotices;
   readonly log: (line: string) => void;
 }
 
@@ -307,6 +315,10 @@ export class UserRelays implements Disposable {
   private userReadSettled!: () => void;
   private readonly forgesRead: Promise<void>;
   private forgesReadSettled!: () => void;
+  // per user rules file: the settings of its last successful read, and why its latest read failed (undefined: it read)
+  private readonly ruleFiles = new Map<string, { readonly lastGood: SettingsObject | undefined; readonly failure: string | undefined }>();
+  private rulesReread: ReturnType<typeof setTimeout> | undefined;
+  private disposed = false;
 
   constructor(deps: UserRelaysDeps) {
     this.deps = deps;
@@ -551,12 +563,12 @@ export class UserRelays implements Disposable {
     this.userPendingBecause('reading');
     let next: ClientUser;
     try {
-      const files = await Promise.all(userPermissionFiles(this.deps.homedir).map(async ({ dir, file }) => {
-        const settings = await this.readSettingsFile(file);
-        return settings ? [{ dir, settings }] : [];
-      }));
+      const reads = await Promise.all(userPermissionFiles(this.deps.homedir).map(async ({ dir, file }) => ({ dir, read: await this.readRulesFile(file) })));
+      this.scheduleRulesReread();
+      const files = reads.flatMap(({ dir, read }) => ('settings' in read ? [{ dir, settings: read.settings }] : []));
+      const unreadable = reads.flatMap(({ read }) => ('unreadable' in read ? [read.unreadable] : []))[0];
       const values = new Map(this.deps.userSettingKeys().map((key) => [key, this.deps.userValue(key)] as const));
-      next = clientUserOf(files.flat(), values);
+      next = clientUserOf(files, values, unreadable);
     } catch (err) {
       this.userPendingBecause('readFailed');
       throw err;
@@ -581,22 +593,47 @@ export class UserRelays implements Disposable {
   }
 
   dispose(): void {
+    this.disposed = true;
+    clearTimeout(this.rulesReread);
     this.attached.clear();
   }
 
-  private async readSettingsFile(file: string): Promise<SettingsObject | undefined> {
-    let text: string;
-    try {
-      text = await fs.readFile(file, 'utf8');
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') this.deps.log(`[remote] reading ${file} for remote chats failed: ${err instanceof Error ? err.message : String(err)}`);
-      return undefined;
+  // a file whose read failed may answer again with no change a watcher reports (a drive back online), so it is read again
+  private scheduleRulesReread(): void {
+    clearTimeout(this.rulesReread);
+    this.rulesReread = undefined;
+    if (this.disposed || ![...this.ruleFiles.values()].some((record) => record.failure !== undefined)) return;
+    this.rulesReread = setTimeout(() => {
+      this.userChanged().catch((err: unknown) => this.deps.log(`[remote] reading the user settings for remote chats failed: ${err instanceof Error ? err.message : String(err)}`));
+    }, RULES_REREAD_MS);
+    this.rulesReread.unref();
+  }
+
+  /**
+   * A user rules file's settings: a missing file's, and one that does not parse, are empty; one that cannot be checked or read
+   * gives those of its last successful read, else its unreadable marker. The user gets a notice each time it starts failing, and
+   * the log a line then and when it fails for another reason, so the reads again while it fails add none.
+   */
+  private async readRulesFile(file: string): Promise<{ readonly settings: SettingsObject } | { readonly unreadable: UnreadableRuleFile }> {
+    const read = await readRuleFileText(file, userConfigBase(file, this.deps.homedir));
+    if ('unreadable' in read) {
+      const previous = this.ruleFiles.get(file);
+      const lastGood = previous?.lastGood;
+      const failure = englishText(read.unreadable);
+      if (previous?.failure !== failure) this.deps.log(`[remote] ${file} could not be read (${failure}); ${lastGood ? 'remote chats keep the rules it last read' : 'it was never read, so remote chats cannot know its rules'}`);
+      if (previous?.failure === undefined) void this.deps.notifications.warn(lastGood ? keptRulesText(file, read.unreadable) : unreadableRulesText(file, read.unreadable));
+      this.ruleFiles.set(file, { lastGood, failure });
+      return lastGood ? { settings: lastGood } : { unreadable: { file, reason: read.unreadable } };
     }
-    try {
-      return parseSettingsText(text, file);
-    } catch (err) {
-      this.deps.log(`[remote] ${file} is not a settings object, so remote chats get none of its rules: ${err instanceof Error ? err.message : String(err)}`);
-      return undefined;
+    let settings: SettingsObject = {};
+    if ('text' in read) {
+      try {
+        settings = parseSettingsText(read.text, file);
+      } catch (err) {
+        this.deps.log(`[remote] ${file} is not a settings object, so remote chats get none of its rules: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
+    this.ruleFiles.set(file, { lastGood: settings, failure: undefined });
+    return { settings };
   }
 }

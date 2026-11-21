@@ -25,10 +25,18 @@ import type { OpenFolder, WorkspaceFolders } from '../platform/workspace-folders
 import { installPlatform } from '../core/platform-host';
 import { mergeSettingValues } from '../core/config/settings-file';
 import { VSCODE_HOST_CAPABILITIES, type ChatReviewScope, type HostCapabilities, type SettingsFileScope } from '../shared/types/messages';
-import { createVsCodeFileConfinement } from '../vscode/platform/file-confinement';
+import type { FileConfinement } from '../platform/file-confinement';
+import { createVsCodeWalkSettings } from '../vscode/platform/walk-settings';
 import { browserPageHtml, type BrowserPageStrings } from '../shared/browser-page-html';
 import { ERROR_PAGE_STRINGS, type PageSpec } from '../shared/panel-html';
 import { authorityKeyOfProject } from '../shared/project-location';
+
+// The adapter imports local-links, and with it the drive placement modules; loaded at setup, they would bind before a test
+// file's vi.mock of dos-devices or mapped-drives, so the adapter loads at its first call instead.
+const lazyVsCodeFileConfinement: FileConfinement = {
+  confineExisting: async (folder, relativePath, rule) =>
+    (await import('../vscode/platform/file-confinement')).createVsCodeFileConfinement().confineExisting(folder, relativePath, rule),
+};
 
 type SettingsLayer = Readonly<Record<string, unknown>>;
 
@@ -1004,15 +1012,17 @@ export function createFakePlatform(init: FakePlatformInit = {}): FakePlatform {
   };
   const shell = createShell();
   const capabilities = { ...VSCODE_HOST_CAPABILITIES, ...init.capabilities };
+  const settings = createSettingsStore(init.settings);
   return {
     capabilities,
-    settings: createSettingsStore(init.settings),
+    settings,
+    walkSettings: createVsCodeWalkSettings(settings),
     secrets: createFakeSecretsStore(init.secrets, init.secretsPersistent ?? true),
     state,
     trust: createTrustService(init.trusted ?? true, workspaceFolders),
     workspaceFolders,
     fileWatchers: createFileWatcherFactory(workspaceFolders),
-    confinement: createVsCodeFileConfinement(),
+    confinement: lazyVsCodeFileConfinement,
     notifications: createNotificationService(),
     paths: createAppPaths(init.appRoot),
     appInfo: { version: init.version ?? '0.0.0-test', host: init.host ?? 'vscode' },

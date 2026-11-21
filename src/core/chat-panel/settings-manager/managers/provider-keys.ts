@@ -1,7 +1,8 @@
 import type { Platform } from "../../../../platform/platform";
 import { isKeyProviderId, type AccountProviderId, type KeyProviderId } from "../../../../shared/settings-sections";
 import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
-import { customProviderDef, providerKeyStored } from "../../../pi-session/custom-providers";
+import { providerKeyStored } from "../../../pi-session/custom-providers";
+import { customProviderDef } from "../../../pi-session/provider-defs";
 import { PiRuntime } from "../../../pi-session/pi-runtime";
 import { log } from "../../../logger";
 import { clientKeySaved, clientPrefersApiKey } from "../../../client-snapshots";

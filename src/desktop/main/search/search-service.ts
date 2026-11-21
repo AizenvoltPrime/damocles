@@ -18,7 +18,7 @@ import {
 import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import type { SearchBufferWarning, SearchCopyTarget, SearchDone, SearchFileUpdate, SearchResultsBatch, SearchStartResult } from '../../preload/shell-channels';
 import { keepMatchText, lineStarts, type KeptText } from '../../workspace/search/replace';
-import type { WalkIgnore } from '../../../core/search-walk';
+import type { WalkSwitches } from '../../../platform/walk-settings';
 import { parseGlobList, searchRequest } from '../../workspace/search/rg-args';
 import type { RgEvent, SearchRequest, SearchRun, SearchRunEnd } from '../../workspace/search/search-runner';
 import { runWithin } from '../../workspace/search/time-bound';
@@ -58,8 +58,10 @@ export interface SearchServiceDeps {
   readonly workspaces: Workspaces;
   // the OS a project's files are on: this computer's, or its remote host's
   readonly osOf: (projectKey: string) => NodeJS.Platform;
-  // walkIgnoreOf: the search.use*IgnoreFiles switches
-  readonly ignore: () => WalkIgnore;
+  // the walk settings port's switches (Platform.walkSettings)
+  readonly walk: () => WalkSwitches;
+  // what a search through links shows on a project whose host cannot walk through links, localized; undefined where it can
+  readonly linksNotSearched: (projectKey: string) => string | undefined;
   // the true entries of damocles.desktop.files.exclude and damocles.desktop.search.exclude
   readonly excludeSettings: () => readonly string[];
   readonly settings: () => SearchSettings;
@@ -77,6 +79,7 @@ export interface EditorRunResult {
   readonly limitHit: boolean;
   readonly error?: string;
   readonly bufferWarning?: SearchBufferWarning;
+  readonly linksNotSearched?: string;
 }
 
 // A Search Editor searches its own project's folder; the view searches the selected project's.
@@ -125,6 +128,8 @@ interface Run extends RecordedSearch {
   limitHit: boolean;
   // the buffers' regex ran out of its time once; no buffer is searched for this run again
   bufferWarning: SearchBufferWarning | undefined;
+  // SearchDone.linksNotSearched
+  linksNotSearched: string | undefined;
   // characters of preview and context lines a Search Editor run holds; past EDITOR_CONFIRM_DOCUMENT_BYTES it stops as at the limit
   editorChars: number;
   onEditorDone?: (result: EditorRunResult) => void;
@@ -462,9 +467,11 @@ export class SearchService {
       resultCount: 0,
       limitHit: false,
       bufferWarning: admitted.ok ? undefined : 'timedOut',
+      linksNotSearched: undefined,
       editorChars: 0,
     };
     this.runs.set(ownerId, run);
+    const walk = this.deps.walk();
     const request = query.onlyOpenEditors
       ? undefined
       : searchRequest({
@@ -472,9 +479,11 @@ export class SearchService {
         include: include.globs,
         exclude: exclude.globs,
         excludeSettings,
-        ignore: this.deps.ignore(),
+        ignore: walk.ignore,
+        followLinks: walk.followLinks,
         contextLines: owner.kind === 'editor' ? owner.contextLines : 0,
       });
+    if (request?.walk.followLinks) run.linksNotSearched = this.deps.linksNotSearched(folder.projectKey);
     const begin = (): void => {
       run.debounce = undefined;
       this.searchBuffers(run, admittedBuffers);
@@ -768,6 +777,7 @@ export class SearchService {
         ...(error !== undefined ? { error } : {}),
         ...(cancelled ? { cancelled: true as const } : {}),
         ...(run.bufferWarning !== undefined ? { bufferWarning: run.bufferWarning } : {}),
+        ...(run.linksNotSearched !== undefined ? { linksNotSearched: run.linksNotSearched } : {}),
       };
       run.sending = run.sending.then(() => {
         if (!run.discarded) this.deps.sendDone(done);
@@ -785,6 +795,7 @@ export class SearchService {
         limitHit: run.limitHit,
         ...(error !== undefined ? { error } : {}),
         ...(run.bufferWarning !== undefined ? { bufferWarning: run.bufferWarning } : {}),
+        ...(run.linksNotSearched !== undefined ? { linksNotSearched: run.linksNotSearched } : {}),
       });
     });
   }
