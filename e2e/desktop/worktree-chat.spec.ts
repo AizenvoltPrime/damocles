@@ -12,7 +12,7 @@ import { activeTab, DOCUMENT_END, editorShows, editorState, openInEditor } from 
 import { setSection, submenuItem } from './support/scm';
 import { setContentSize } from './support/settings';
 import { addProject, chatInput } from './support/ui';
-import { clickSectionAction } from './support/shell-ui';
+import { clickSectionAction, listChats } from './support/shell-ui';
 import { worktreeRepo, worktreesRoot } from './support/worktree-repo';
 import { chatRowFrames, largestLogo, recordChatRow, type ChatRowFrame } from './support/chat-row-frames';
 import { CHIP_START, chatRow, chatRows, closeNewMenu, edit, filesChip, HELD_SETUP, liveRecords, NEW_IN_WORKTREE_KEYS, newMenu, openNewMenu, openRowWorktreeMenu, optIn, QUICK_SETUP, send, setupReview, shownFolder, withStub } from './support/worktree-chat';
@@ -338,6 +338,8 @@ test('Delete worktree from the chat row leaves read-only history: "Worktree dele
     const [record] = liveRecords(home);
     const shell = await shellPage(app);
     const row = chatRow(shell, 'Short lived worktree');
+    // the menu offers the finish actions as they stood when it opened, and the turn still settles after its reply shows
+    await expect.poll(async () => (await listChats(app)).chats.find((chat) => chat.title === 'Short lived worktree')?.worktree?.finish?.busy, { timeout: 60_000 }).toBe(false);
     // the row goes from live to deleted with no frame between as a plain chat (its time and model line)
     await recordChatRow(shell, 'Short lived worktree');
     // every chat page from here on is recorded from its first frame, the one the delete reloads included

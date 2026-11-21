@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { activeChat, expect, nextChat, test } from './support/fixtures';
+import { activeChat, expect, test } from './support/fixtures';
 import { seedStubModel } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { selectedProjectKey, shellState } from './support/shell';
@@ -90,6 +90,8 @@ test('a project added while core still sets the home chat up takes that chat at 
   const overlay = await readyOverlay(app);
   const shell = await readyShell(app);
   const homeKey = await selectedProjectKey(app);
+  const homeChatId = (await shellState(app)).selected.chatId;
+  expect(homeChatId).toBeDefined();
 
   // The shell asks for the home folder's chats by the state it holds, and main adds the project before the request arrives:
   // the shell's page is paused in the debugger between reading its state and asking.
@@ -105,8 +107,11 @@ test('a project added while core still sets the home chat up takes that chat at 
   await paused;
   await answerOpenDialog(app, home.project);
   await clickMenu(app, 'damocles.addProject');
+  // the trust question comes before the folder joins the project list
   const question = confirmDialog(overlay);
   await expect(question).toBeVisible();
+  await question.getByRole('button', { name: 'Trust Folder' }).click();
+  await expect(question).toHaveCount(0);
   // main's state names the home folder until core's folder targets, which it mirrors, take the added project
   await expect.poll(() => app.evaluate((_electron, before) => {
     const key = (globalThis as LaunchHold).__damoclesE2e!.defaultProjectKey();
@@ -116,22 +121,19 @@ test('a project added while core still sets the home chat up takes that chat at 
   expect(await crossed).toBeNull();
   await debug.detach();
 
-  // While the trust question is open, the selected project's chat list loads and holds the selected chat.
+  // While core's restore is held, the added project's chat list loads and holds the home chat.
   const alphaKey = await projectKeyOf(app, 'alpha');
-  const homeChatId = (await shellState(app)).selected.chatId;
-  expect(homeChatId).toBeDefined();
-  const listed = await listChats(app);
-  expect(listed.projectKey).toBe(alphaKey);
+  const listed = await listChats(app, alphaKey);
   expect(listed.chats.map((chat) => chat.id)).toContain(homeChatId);
   await expect(chatRow(shell, homeChatId!)).toBeVisible();
   await expect(shell.getByTestId('chats-load-failed')).toHaveCount(0);
 
+  // Add Project's new chat, opened in the added project, loads once core's restore goes on
   await app.evaluate(() => (globalThis as LaunchHold).__damoclesE2e!.launchRestore!.release());
-  const homeChat = await activeChat(app);
-  await expect.poll(() => homeChat.evaluate(() => (window.damoclesBridge?.getState() as { workspaceFolderKey?: string } | null | undefined)?.workspaceFolderKey)).toBe(alphaKey);
-
-  await question.getByRole('button', { name: 'Trust Folder' }).click();
-  await expect(question).toHaveCount(0);
-  await expect(chatInput(await nextChat(app, [homeChat]))).toBeVisible();
-  expect((await shellState(app)).selected.projectKey).toBe(alphaKey);
+  const added = await activeChat(app);
+  await expect(chatInput(added)).toBeVisible();
+  await expect.poll(() => added.evaluate(() => (window.damoclesBridge?.getState() as { workspaceFolderKey?: string } | null | undefined)?.workspaceFolderKey)).toBe(alphaKey);
+  const selected = (await shellState(app)).selected;
+  expect(selected.projectKey).toBe(alphaKey);
+  expect(selected.chatId).not.toBe(homeChatId);
 });

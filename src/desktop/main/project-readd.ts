@@ -29,6 +29,8 @@ export interface ReaddDeps {
   // Locate of the missing project onto the added folder, without its picker, confirmation or trust question
   readonly moveChats: (key: string, folder: string) => Promise<LocateOutcome>;
   readonly newChat: (folder: string) => Promise<void>;
+  // the quit's store flush waits for work (shutdown.ts QuitJoins)
+  readonly joinQuit: <T>(work: Promise<T>) => Promise<T>;
   readonly t: Translate;
 }
 
@@ -39,17 +41,23 @@ const NOT_NOW = 'notNow';
  * declined trust question still adds the folder, which then matches by its remotes only.
  */
 export async function addProjectAt(folder: string, deps: ReaddDeps): Promise<'added' | 'moving'> {
+  // the grant lands before the folder is listed, so a quit in between keeps both or neither
+  const chosen = await deps.joinQuit(listAfterTrust(folder, deps));
+  if (chosen && (await deps.moveChats(chosen.key, folder)).kind === 'started') return 'moving';
+  await deps.newChat(folder);
+  return 'added';
+}
+
+// The trust question, then the match and the folder's listing; resolves the missing project whose chats move here, if any.
+async function listAfterTrust(folder: string, deps: ReaddDeps): Promise<MissingProject | undefined> {
   const trust = await deps.askTrust(folder);
   // a failure before the folder is listed takes back the grant this question made
-  const chosen = await undoOnThrow(trust.undo, async () => {
+  return undoOnThrow(trust.undo, async () => {
     const candidates = await deps.candidates(folder);
     const picked = candidates.length > 0 ? await askToMove(folder, candidates, deps) : undefined;
     await deps.add(folder);
     return picked;
   });
-  if (chosen && (await deps.moveChats(chosen.key, folder)).kind === 'started') return 'moving';
-  await deps.newChat(folder);
-  return 'added';
 }
 
 /** One candidate: a question with Move Chats and Not Now; several: a pick list ending in Not Now. undefined: not now. */

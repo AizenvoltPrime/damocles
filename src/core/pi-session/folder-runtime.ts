@@ -766,6 +766,9 @@ export class FolderRuntime {
     else this._lastAttachedInstanceDetach = null;
     this.applyAssetResources();
     this.logPiWarnings();
+    // pi rebuilds a live session's prompt sections (context files, skills) from this loader only when the session's tools are
+    // set (agent-session.js `_rebuildSystemPrompt` in pi 1.5.2); a session-bound reload leaves it to the binding session
+    if (binding === 'bare') this.refreshActiveTools();
   }
 
   /**

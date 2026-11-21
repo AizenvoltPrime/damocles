@@ -101,7 +101,7 @@ import { chatTitle, panelTitle, storedTitle } from './chat-title';
 import { chatActions, refusesMirrored } from './chat-actions';
 import { parseCliPathAction, parseUserDataDir } from './cli';
 import { CoreHost } from './core-host';
-import { bounded, detachRemotes, QuitLifecycle, shutDown } from './shutdown';
+import { bounded, createQuitJoins, detachRemotes, QuitLifecycle, shutDown } from './shutdown';
 import {
   DEFAULT_FILES_EXCLUDE,
   DEFAULT_SEARCH_EXCLUDE,
@@ -404,6 +404,8 @@ const APP_NAME = app.isPackaged ? 'damocles' : 'damocles-dev';
 const DISPOSE_TIMEOUT_MS = 10_000;
 // within DISPOSE_TIMEOUT_MS: the wait for the window to close and its pages' requests to settle
 const CLOSE_TIMEOUT_MS = 3_000;
+// within DISPOSE_TIMEOUT_MS: the store flush's wait for the work the quit joined
+const QUIT_JOIN_WAIT_MS = 3_000;
 // characters of a Files transfer's details in its dialog, under the overlay's MAX_OVERLAY_TEXT_LENGTH
 const MESSAGE_DETAIL_BUDGET = 1800;
 const CHAT_PANEL: PanelOptions = { kind: 'chat', title: 'Damocles', localResourceRoots: [] };
@@ -906,6 +908,7 @@ class DesktopApp {
   private removeEntry = (absolutePath: string): Promise<void> => fs.promises.rm(absolutePath, { recursive: true });
   // Runs as a quit's store flush begins; the e2e hooks hold it open.
   private beforeStoreFlush = (): Promise<void> => Promise.resolve();
+  private readonly quitJoins = createQuitJoins();
   // Runs as a core dispose begins; the e2e hooks hold it open.
   private beforeCoreDispose = (): Promise<void> => Promise.resolve();
   // Runs as each restore recorded in chatRestores begins; the e2e hooks hold it open or fail it.
@@ -3031,6 +3034,7 @@ class DesktopApp {
       },
       moveChats: (key, added) => this.locateProject(key, added),
       newChat: (added) => this.newChat(folderKey(added)),
+      joinQuit: (work) => this.quitJoins.join(work),
       t: (message, ...args) => t(message, ...args),
     });
     log(`[projects] Add Project of ${folder}: ${outcome}`);
@@ -4040,6 +4044,7 @@ class DesktopApp {
           this.locateRefusals.set(projectKey, refusal);
           this.shellStateChanged();
         },
+        joinQuit: (work) => this.quitJoins.join(work),
         t: (message, ...args) => t(message, ...args),
       }, offered);
       log(`[projects] Locate of ${key}: ${outcome.kind === 'refused' ? `refused (${outcome.refusal.code})` : outcome.kind}`);
@@ -7929,6 +7934,7 @@ class DesktopApp {
       holdTrust: (projectKey, added) => this.trustPending.hold(authorityKey, { folderKey: folderKeyOf(projectKey), fsPath: added }),
       missingProjectOf: (added) => this.remoteMissingProjectOf(authorityKey, added),
       moveChats: (key, added) => this.locateProject(key, added),
+      joinQuit: (work) => this.quitJoins.join(work),
     }, authorityKey, folder);
   }
 
@@ -10257,6 +10263,7 @@ class DesktopApp {
   // each flush also waits for a write queued while it runs. Core settles its own writes in core.shutdown.
   private async flushStores(): Promise<void> {
     await this.beforeStoreFlush();
+    await bounded(this.quitJoins.settled(), QUIT_JOIN_WAIT_MS, () => log(`[shutdown] the work the quit joined did not settle within ${QUIT_JOIN_WAIT_MS} ms; flushing anyway`));
     await Promise.all([
       this.states.flush(),
       this.windowLayout.flush(),

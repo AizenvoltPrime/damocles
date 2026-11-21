@@ -729,6 +729,28 @@ describe('unbound extension instances', () => {
     expect(registeredCount(folder)).toBe(1);
   });
 
+  it('re-applies every live session’s tools once a bare reload reloaded the loader, so pi rebuilds their prompts from it', async () => {
+    const folder = bareFolder(made);
+    attachFakeServices(folder);
+    const loader = (folder as unknown as { _services: { resourceLoader: { reload(): Promise<void> } } })._services.resourceLoader;
+    const reload = loader.reload;
+    let reloaded = 0;
+    loader.reload = async () => {
+      await reload();
+      reloaded++;
+    };
+    const seen: string[] = [];
+    folder.registerActiveToolRefresher('sess-a', () => seen.push(`a after ${reloaded}`));
+    folder.registerActiveToolRefresher('sess-b', () => seen.push(`b after ${reloaded}`));
+
+    await folder.reloadBare();
+    expect(seen).toEqual(['a after 1', 'b after 1']);
+
+    // a session-bound reload: the session about to bind builds its prompt from the reloaded loader itself
+    await folder.prepareSessionExtensions();
+    expect(seen).toEqual(['a after 1', 'b after 1']);
+  });
+
   it('overlapping reloads serialize, so neither adopts the other’s instance', async () => {
     // A billing toggle (bare) and a panel starting (session-bound) can be issued in the same tick; each
     // reload reads "the instance I just minted" from one slot, so they must not interleave.

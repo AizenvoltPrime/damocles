@@ -50,6 +50,8 @@ function setup(world: Partial<World> = {}) {
     requestTrust: async () => false,
   });
   const published: string[] = [];
+  // the trail when each work the quit joined started and when it settled
+  const joined: Array<{ from: string[]; to?: string[] }> = [];
   mirror.onDidChange(({ granted, revoked }) => {
     if (granted.length > 0) published.push(`grant:${granted.join(',')}`);
     if (revoked.length > 0) published.push(`revoke:${revoked.join(',')}`);
@@ -103,8 +105,16 @@ function setup(world: Partial<World> = {}) {
       if (w.failAt === 'move') throw new Error('Locate failed');
       return w.moved;
     },
+    joinQuit: (work) => {
+      const join: { from: string[]; to?: string[] } = { from: [...trail] };
+      joined.push(join);
+      // registered ahead of the caller's own await, so the snapshot holds nothing that follows the work
+      const settle = (): void => { join.to = [...trail]; };
+      void work.then(settle, settle);
+      return work;
+    },
   };
-  return { w, deps, trail, pending, published, mirror };
+  return { w, deps, trail, pending, published, mirror, joined };
 }
 
 describe('addRemoteProjectAt', () => {
@@ -116,6 +126,15 @@ describe('addRemoteProjectAt', () => {
     expect(pending.folders(AUTHORITY)).toEqual([]);
     // the listed project holds the folder once trustPending lets go
     expect(published).toEqual([`grant:${FOLDER}`]);
+  });
+
+  it('holds a quit\'s store flush from the trust question until the folder is listed, or a failed add took the grant back', async () => {
+    const added = setup();
+    await addRemoteProjectAt(added.deps, AUTHORITY, FOLDER);
+    expect(added.joined).toEqual([{ from: [`trust:${KEY}`], to: [`trust:${KEY}`, 'hold', `movedFrom:${FOLDER} mirror:${FOLDER} published:grant:${FOLDER}`, 'add'] }]);
+    const failed = setup({ failAt: 'add' });
+    await expect(addRemoteProjectAt(failed.deps, AUTHORITY, FOLDER)).rejects.toThrow('remote-hosts.json is read-only');
+    expect(failed.joined.map((join) => join.to?.slice(-2))).toEqual([['add', 'undo']]);
   });
 
   it('selects a folder that is a project already, asking nothing', async () => {

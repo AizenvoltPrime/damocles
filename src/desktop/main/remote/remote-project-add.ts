@@ -16,6 +16,8 @@ export interface RemoteProjectAddDeps {
   readonly missingProjectOf: (folder: string) => Promise<MissingProject | undefined>;
   // Locate of the missing project onto the added folder, without its picker, confirmation or trust question
   readonly moveChats: (key: string, folder: string) => Promise<LocateOutcome>;
+  // the quit's store flush waits for work (shutdown.ts QuitJoins)
+  readonly joinQuit: <T>(work: Promise<T>) => Promise<T>;
 }
 
 /**
@@ -28,15 +30,18 @@ export async function addRemoteProjectAt(deps: RemoteProjectAddDeps, authorityKe
     await deps.opening.select(projectKey);
     return projectKey;
   }
-  const trust = await deps.askTrust(projectKey, folder);
   let release: (() => void) | undefined;
   try {
-    const chosen = await undoOnThrow(trust.undo, async () => {
-      release = deps.holdTrust(projectKey, folder);
-      const picked = await deps.missingProjectOf(folder);
-      await deps.opening.add(authorityKey, folder, projectKey, undefined);
-      return picked;
-    });
+    // the grant lands before the folder is listed, so a quit in between keeps both or neither
+    const chosen = await deps.joinQuit((async () => {
+      const trust = await deps.askTrust(projectKey, folder);
+      return undoOnThrow(trust.undo, async () => {
+        release = deps.holdTrust(projectKey, folder);
+        const picked = await deps.missingProjectOf(folder);
+        await deps.opening.add(authorityKey, folder, projectKey, undefined);
+        return picked;
+      });
+    })());
     deps.opening.added(authorityKey);
     if (!chosen || (await deps.moveChats(chosen.key, folder)).kind !== 'started') await deps.opening.select(projectKey);
     return projectKey;

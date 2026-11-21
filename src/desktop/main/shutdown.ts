@@ -36,6 +36,33 @@ export async function bounded(work: Promise<unknown>, ms: number, onTimeout: () 
 }
 
 /**
+ * Work the quit's store flush waits for, as VS Code's ShutdownEvent.join: a change that writes a store only after an await,
+ * which a flush begun meanwhile would settle without. Join only work a quit settles: its questions answer Cancel once the
+ * window closes, and its core calls fail once the core stops.
+ */
+export interface QuitJoins {
+  // resolves as work does
+  join<T>(work: Promise<T>): Promise<T>;
+  // settles once every joined work settled, work joined meanwhile included
+  settled(): Promise<void>;
+}
+
+export function createQuitJoins(): QuitJoins {
+  const pending = new Set<Promise<void>>();
+  return {
+    join: (work) => {
+      const done = work.then(() => undefined, () => undefined);
+      pending.add(done);
+      void done.then(() => pending.delete(done));
+      return work;
+    },
+    settled: async () => {
+      while (pending.size > 0) await Promise.all(pending);
+    },
+  };
+}
+
+/**
  * The quit's teardown once nothing can cancel it. The windows close first, so no page can call into a service being
  * disposed (VS Code's onWillShutdown fires only after the last window closed, lifecycleMainService.ts); then the core, the
  * terminals, the file watchers and the walk processes, and the stores last. Both the teardown and its wait for the windows

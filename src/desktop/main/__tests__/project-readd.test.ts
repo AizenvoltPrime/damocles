@@ -22,10 +22,12 @@ interface World {
   trail: string[];
   confirms: LocateConfirm[];
   picks: Array<{ placeholder: string; items: readonly OverlayQuickPickItem[] }>;
+  // the trail when each work the quit joined started and when it settled
+  joined: Array<{ from: string[]; to?: string[] }>;
 }
 
 function setup(world: Partial<World> = {}) {
-  const w: World = { candidates: [], confirmed: true, picked: undefined, trust: 'granted', moved: { kind: 'started', id: 'r1' }, failAt: undefined, trail: [], confirms: [], picks: [], ...world };
+  const w: World = { candidates: [], confirmed: true, picked: undefined, trust: 'granted', moved: { kind: 'started', id: 'r1' }, failAt: undefined, trail: [], confirms: [], picks: [], joined: [], ...world };
   const deps: ReaddDeps = {
     askTrust: async (folder): Promise<TrustAnswer> => {
       w.trail.push(`trust:${folder}`);
@@ -56,6 +58,14 @@ function setup(world: Partial<World> = {}) {
       return w.moved;
     },
     newChat: async () => { w.trail.push('newChat'); },
+    joinQuit: (work) => {
+      const join: World['joined'][number] = { from: [...w.trail] };
+      w.joined.push(join);
+      // registered ahead of the caller's own await, so the snapshot holds nothing that follows the work
+      const settle = (): void => { join.to = [...w.trail]; };
+      void work.then(settle, settle);
+      return work;
+    },
     t,
   };
   return { w, deps };
@@ -136,6 +146,18 @@ describe('addProjectAt', () => {
     const { w, deps } = setup({ trust, failAt: 'add' });
     await expect(addProjectAt(ADDED, deps)).rejects.toThrow('projects.json is read-only');
     expect(w.trail).not.toContain('undo');
+  });
+
+  it('holds a quit\'s store flush from the trust question until the folder is listed, never through the chat it opens', async () => {
+    const { w, deps } = setup({ candidates: [ACME] });
+    await addProjectAt(ADDED, deps);
+    expect(w.joined).toEqual([{ from: [`trust:${ADDED}`], to: [`trust:${ADDED}`, `candidates:${ADDED}`, 'ask', 'add'] }]);
+  });
+
+  it('holds a quit\'s store flush until a failed add took the grant back', async () => {
+    const { w, deps } = setup({ failAt: 'add' });
+    await expect(addProjectAt(ADDED, deps)).rejects.toThrow('projects.json is read-only');
+    expect(w.joined).toEqual([{ from: [`trust:${ADDED}`], to: [`trust:${ADDED}`, `candidates:${ADDED}`, 'add', 'undo'] }]);
   });
 
   it('keeps the grant once the folder is listed', async () => {

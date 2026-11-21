@@ -353,10 +353,11 @@ test('menu accelerators work while focus is in the chat view: New Chat, Next and
     await pressKeys(app, urlOf(third.page), 'K', [PRIMARY]);
     await expect.poll(async () => (await hostMessages(third.page, 'togglePromptNavigator')).length).toBe(1);
 
-    // Browser DevTools (F12) is bound only while a page tab is the active editor tab, and New Browser Page only with the browser feature on.
+    // Browser DevTools (F12) is bound only while a page tab is the active editor tab, and New Browser Page only with the browser
+    // feature on, as it is by default.
     expect(await menuItemEnabled(app, 'damocles.togglePromptNavigator')).toBe(true);
     expect(await menuItemEnabled(app, 'damocles.browser.toggleDevTools')).toBe(false);
-    expect(await menuItemEnabled(app, 'damocles.browser.newPage')).toBe(false);
+    expect(await menuItemEnabled(app, 'damocles.browser.newPage')).toBe(true);
   } finally {
     await stub.close();
   }

@@ -29,6 +29,8 @@ interface World {
   preflights: PreflightRequest[];
   interrupted: LocatePrepared[];
   stated: string[];
+  // the trail when each work the quit joined started and when it settled
+  joined: Array<{ from: string[]; to?: string[] }>;
 }
 
 const OK: PreflightAnswer = { ok: true, mode: 'locate', chats: 3, worktrees: 0, notices: [] };
@@ -36,7 +38,7 @@ const OK: PreflightAnswer = { ok: true, mode: 'locate', chats: 3, worktrees: 0, 
 function setup(world: Partial<World> = {}) {
   const w: World = {
     presence: 'missing', picked: NEW, answer: OK, afterTrust: undefined, confirmed: true, editorAnswers: new Map(), killConfirmed: true, trust: 'trusted', held: [], busy: [],
-    relocated: { id: 'r1' }, trail: [], confirms: [], refusals: [], preflights: [], interrupted: [], stated: [], ...world,
+    relocated: { id: 'r1' }, trail: [], confirms: [], refusals: [], preflights: [], interrupted: [], stated: [], joined: [], ...world,
   };
   const deps: LocateProjectDeps = {
     project: () => ({ name: 'acme', fsPath: OLD }),
@@ -90,6 +92,14 @@ function setup(world: Partial<World> = {}) {
     started: (id) => w.trail.push(`started:${id}`),
     interrupted: (prepared) => w.interrupted.push(prepared),
     refused: (_, refusal) => w.refusals.push(refusal),
+    joinQuit: (work) => {
+      const join: World['joined'][number] = { from: [...w.trail] };
+      w.joined.push(join);
+      // registered ahead of the caller's own await, so the snapshot holds nothing that follows the work
+      const settle = (): void => { join.to = [...w.trail]; };
+      void work.then(settle, settle);
+      return work;
+    },
     t,
   };
   return { w, deps };
@@ -227,6 +237,15 @@ describe('locateProject', () => {
     const { w, deps } = setup({ trust, confirmed: false });
     expect(await locateProject('acme-key', deps)).toEqual({ kind: 'cancelled' });
     expect(w.trail).not.toContain('undo');
+  });
+
+  it('holds a quit\'s store flush from the trust question until the move started or the grant was taken back', async () => {
+    const started = setup({ trust: 'granted' });
+    await locateProject('acme-key', started.deps);
+    expect(started.w.joined).toEqual([{ from: [PICK, 'precheck', TRUST], to: [PICK, 'precheck', TRUST, 'preflight', 'confirm', 'editors', 'terminals', 'closeChats', 'relocate', 'started:r1'] }]);
+    const refused = setup({ trust: 'granted', relocated: { refusal: { code: 'pendingRelocation' } } });
+    await locateProject('acme-key', refused.deps);
+    expect(refused.w.joined.map((join) => join.to?.slice(-2))).toEqual([['relocate', 'undo']]);
   });
 
   it('keeps the grant once the move started, and once relocate was sent and failed without an answer', async () => {

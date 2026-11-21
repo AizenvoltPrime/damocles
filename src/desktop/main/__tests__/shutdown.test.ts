@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { detachRemotes, QuitLifecycle, shutDown, type QuitApp, type ShutdownSteps } from '../shutdown';
+import { createQuitJoins, detachRemotes, QuitLifecycle, shutDown, type QuitApp, type ShutdownSteps } from '../shutdown';
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
@@ -174,6 +174,35 @@ function lifecycle(answers: boolean[]): { quit: QuitLifecycle; app: ReturnType<t
   app.lifecycle = quit;
   return { quit, app, asked: () => asked, answer: (proceed) => pending.shift()!(proceed), disposed: () => disposed };
 }
+
+describe('the work a quit joins', () => {
+  it('settles once every joined work settled, a failed one and one joined while it waited included', async () => {
+    const joins = createQuitJoins();
+    const first = deferred();
+    const failing = deferred();
+    const late = deferred();
+    void joins.join(first.promise);
+    joins.join(failing.promise.then(() => Promise.reject(new Error('projects.json is read-only')))).catch(() => undefined);
+    let settled = false;
+    const waiting = joins.settled().then(() => (settled = true));
+    first.resolve();
+    // work joined while the flush waits, as an add queued once the grant it awaited landed
+    void joins.join(late.promise);
+    failing.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+    late.resolve();
+    await waiting;
+    expect(settled).toBe(true);
+  });
+
+  it('hands the caller the work\'s own result and error', async () => {
+    const joins = createQuitJoins();
+    await expect(joins.join(Promise.resolve('listed'))).resolves.toBe('listed');
+    await expect(joins.join(Promise.reject(new Error('undo failed')))).rejects.toThrow('undo failed');
+    await expect(joins.settled()).resolves.toBeUndefined();
+  });
+});
 
 describe('QuitLifecycle', () => {
   it('shares one question among every close and quit that arrives while it is open', async () => {

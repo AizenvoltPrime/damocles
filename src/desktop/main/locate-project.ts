@@ -63,6 +63,8 @@ export interface LocateProjectDeps {
   readonly interrupted: (prepared: LocatePrepared) => void;
   // the row shows why the move was refused
   readonly refused: (key: string, refusal: Coded) => void;
+  // the quit's store flush waits for work (shutdown.ts QuitJoins)
+  readonly joinQuit: <T>(work: Promise<T>) => Promise<T>;
   readonly t: Translate;
 }
 
@@ -96,6 +98,12 @@ export async function locateProject(key: string, deps: LocateProjectDeps, offere
     const early = await refusalBeforeTrust(key, project, to, deps);
     if (early) return refuse(early);
   }
+  // a grant that lands is either kept by a started move or taken back, so a quit in between waits for that end
+  return deps.joinQuit(moveAfterTrust(key, project, to, deps, offered, refuse));
+}
+
+// From the trust question to a started move, or to the end that takes back the grant the question made.
+async function moveAfterTrust(key: string, project: { readonly name: string; readonly fsPath: string }, to: string, deps: LocateProjectDeps, offered: string | undefined, refuse: (refusal: Coded) => LocateOutcome): Promise<LocateOutcome> {
   // declining trust keeps the move going, as Add Project keeps the folder
   const asked = offered === undefined ? await deps.askTrust(to) : undefined;
   let release: (() => void) | undefined;
