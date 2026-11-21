@@ -280,17 +280,16 @@ describe('runWalkedRg', () => {
     const original = launcher.launch.bind(launcher);
     let running = 0;
     let most = 0;
-    let listedWhileRunning = 0;
+    // the root and its folders
+    const toList = folders + 1;
+    let askedAtFirstRun: number | undefined;
     const lengths: number[] = [];
     const launch = vi.spyOn(launcher, 'launch').mockImplementation((spec) => {
       lengths.push([spec.file, ...spec.args].reduce((sum, arg) => sum + commandLineCost(arg), 0));
+      askedAtFirstRun ??= new Set(listing.read).size;
       const child = original(spec);
       most = Math.max(most, ++running);
-      const readBefore = listing.read.length;
-      void child.exited.then(() => {
-        running--;
-        listedWhileRunning += listing.read.length - readBefore;
-      });
+      void child.exited.then(() => running--);
       return child;
     });
     try {
@@ -298,7 +297,9 @@ describe('runWalkedRg', () => {
       expect(lengths.length).toBeGreaterThan(1);
       for (const length of lengths) expect(length).toBeLessThanOrEqual(BATCH_COMMAND_LINE);
       expect(most).toBeLessThanOrEqual(walkedRgRuns());
-      expect(listedWhileRunning).toBeGreaterThan(0);
+      expect(new Set(listing.read).size).toBe(toList);
+      // an ordering, not an overlap of a run with a read: reads start in bursts, and a fast rg can start and end between two
+      expect(askedAtFirstRun).toBeLessThan(toList);
       expect(events.filter((event) => event.type === 'match')).toHaveLength(folders * 5);
       expect(ends.every((end) => end.code === 0 && end.summary)).toBe(true);
     } finally {
