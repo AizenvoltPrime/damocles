@@ -7,14 +7,14 @@ import { activeChat, chatById, expect, test } from './support/fixtures';
 import { git, initRepo } from './support/git';
 import { writeAuth, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { activePageTab, browserTabs, chromeEnv, PAGE_TIMEOUT, systemChrome } from './support/browser';
-import { openInEditor } from './support/editor';
+import { followEditorLink, openInEditor } from './support/editor';
 import { chatRow, projectRow } from './support/shell-ui';
 import { attachDaemonLogs, credentialRequests, filesHolding, mergeJson, newLoopbackChat, sendPrompt, servedProviders, startLoopbackStub, systemPrompts, targetAgentDir, targetDamoclesDir, witnessCommand, witnessed, WITNESS } from './support/loopback-agent';
 import { cleanUp, daemonPid, endLeftoverDaemon, filesUnder, listRuns, LOCAL_DAEMON, loopbackHome, LOOPBACK_ENV, LOOPBACK_TAG, processTree, REVIEW_SHOTS, shutdownDaemon } from './support/loopback';
 import { chatRequests, type OpenAIStub, type StubReply } from './support/openai-stub';
 import { readyOverlay } from './support/overlay';
 import { openProjectChat, setReducedMotion, showShellTheme, THEMES } from './support/screenshots';
-import { holdToast, overlayPage, popupPage, popupToasts, recordedToasts, recordLaunchSelection, recordShellMouse, recordToasts, setWindowFocused, shellPage, shellState } from './support/shell';
+import { holdToast, overlayPage, popupPage, popupToasts, recordedToasts, recordLaunchSelection, recordToasts, setWindowFocused, shellPage, shellState } from './support/shell';
 import { awaitTurnEnd, chatInput, clickMenu, hostMessages, postFromWebview, recordHostMessages } from './support/ui';
 import { openTerminal } from './support/terminal';
 import { openedExternally, recordOpenExternal } from './support/updates';
@@ -743,12 +743,7 @@ test('on a loopback chat voice records in this computer\'s core and fills the re
     await expect.poll(() => linksOpened('/')).toBe(1);
     // and so does a Ctrl+click on a link in the file's source, which Monaco would otherwise open as a window of its own
     expect(await openInEditor(app, { projectKey: remoteKey, relativePath: 'README.md', as: 'source' })).toMatchObject({ ok: true });
-    // on Windows runners this click has seen a first trusted mouse event outside the shell, so the event log goes with a failure
-    const shellMouse = await recordShellMouse(app);
-    await (await shellPage(app)).locator('.monaco-editor .detected-link').first().click({ modifiers: [process.platform === 'darwin' ? 'Meta' : 'Control'] }).catch(async (error: unknown) => {
-      await testInfo.attach('shell-mouse-events.json', { body: await shellMouse(), contentType: 'application/json' });
-      throw error;
-    });
+    await followEditorLink(await shellPage(app));
     await expect.poll(() => linksOpened('/')).toBe(2);
     if (REVIEW_SHOTS !== undefined) {
       const popup = await popupPage(app);

@@ -105,6 +105,20 @@ export async function editorShows(shell: Page, text: string): Promise<void> {
   await expect(codeEditor(shell).locator('.view-line', { hasText: text }).first()).toBeVisible();
 }
 
+/**
+ * Follows the first link in the editor's text as a user does: the modifier held, the pointer on the link, a click. Monaco
+ * draws the line again once the modifier is held over a link, which replaces the link's node, so the click goes to the
+ * active link's node, never to the node the pointer first met.
+ */
+export async function followEditorLink(shell: Page): Promise<void> {
+  const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+  const editor = shell.locator('.monaco-editor');
+  await shell.keyboard.down(modifier);
+  await editor.locator('.detected-link, .detected-link-active').first().hover();
+  await editor.locator('.detected-link-active').click();
+  await shell.keyboard.up(modifier);
+}
+
 /** The text of the active editor's model, read through Monaco's own view of the buffer. */
 export async function bufferText(shell: Page): Promise<string> {
   return codeEditor(shell).locator('.view-lines').evaluate((lines) => [...lines.querySelectorAll('.view-line')]

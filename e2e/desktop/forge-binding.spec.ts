@@ -213,14 +213,14 @@ test('choose and remember: two gitlab.com accounts show Choose account; the choi
   test.setTimeout(300_000);
   let run = await launchForge(launch, home);
   await signIn(run, ['alexios-s', 'work-alexios']);
-  // account chip loading: the access check takes a while, so the chip waits as a skeleton
-  run.stub.gitlab.accessDelayMs = 4000;
+  // account chip loading: the stub holds the access check, so the chip waits as a skeleton
+  const answerAccess = run.stub.gitlab.holdAccess();
   const dir = await project(home, 'personal-site', { origin: `https://${GITLAB}/alexios-s/damocles.git` }, 'origin');
   let shell = await openScmProject(run.app, dir);
   await expect(chipLoading(shell)).toBeVisible();
   await expect(chipLoading(shell)).toHaveAttribute('aria-busy', 'true');
+  answerAccess();
   await expect(accountChip(shell)).toHaveAccessibleName(`Accounts: ${GITLAB}, no account chosen`, CHECKED);
-  run.stub.gitlab.accessDelayMs = 0;
   await expect(accountChip(shell)).toHaveAttribute('data-state', 'choose');
   // room for the chip's words, which fold to its icon where they would be cut
   await widenSidebar(shell, 200);
@@ -324,7 +324,10 @@ test('account chip empty: a server with no account shows a muted Sign in chip wh
   await expect(accountChip(back).getByTestId('forge-account-chip-label')).toContainText('· sign in again');
 });
 
-/** A project whose push needs the ask-once dialog: both gitlab.com accounts can push to the stub's alexios-s/damocles. */
+/**
+ * A project whose push needs the ask-once dialog: both gitlab.com accounts can push to the stub's alexios-s/damocles.
+ * uncheckedPush returns with the stub still failing the access check, which the caller ends.
+ */
 async function askOnceProject(run: ForgeRun, home: HermeticHome, uncheckedPush = false): Promise<{ readonly shell: Page; readonly dir: string }> {
   await signIn(run, ['alexios-s', 'work-alexios']);
   // an unreachable answer is not kept, so the push checks access again
@@ -335,10 +338,7 @@ async function askOnceProject(run: ForgeRun, home: HermeticHome, uncheckedPush =
   await git(home, dir, 'commit', '-m', 'Ahead of origin');
   const shell = await openScmProject(run.app, dir);
   await expect(accountChip(shell)).toHaveAccessibleName(`Accounts: ${GITLAB}, no account chosen`, CHECKED);
-  if (uncheckedPush) {
-    await expect(scmSection(shell).getByTestId('forge-check-failed')).toBeVisible();
-    run.stub.gitlab.failAccess = false;
-  }
+  if (uncheckedPush) await expect(scmSection(shell).getByTestId('forge-check-failed')).toBeVisible();
   return { shell, dir };
 }
 
@@ -370,19 +370,21 @@ test('Choose account: the dialog opens checking and its rows follow the check; E
   const dialog = overlay.getByRole('alertdialog', { name: `Which ${GITLAB} account should damocles use?`, exact: true });
   const list = overlay.getByRole('listbox', { name: `Account for ${GITLAB}`, exact: true });
 
-  // checking: the access check answers after the 1 s fast path, so the dialog opens with spinners that turn into access
-  run.stub.gitlab.accessDelayMs = 3000;
+  // checking: the stub holds the access check from the step that stops failing it, so no check of core's other readers is
+  // answered and kept before the push's; the dialog opens after the 1 s fast path with spinners that turn into access
+  const answerAccess = run.stub.gitlab.holdAccess();
+  run.stub.gitlab.failAccess = false;
   await clickMenu(run.app, 'damocles.git.push');
   await expect(dialog).toBeVisible(CHECKED);
   await expect(list).toBeFocused();
   const checking = overlay.getByTestId('forge-ask-checking').filter({ visible: true });
   await expect(checking).toHaveCount(2);
+  answerAccess();
   await expect(checking).toHaveCount(0, CHECKED);
   await expect(list.getByRole('option', { name: /^alexios-s/ })).toHaveAccessibleName(/can push/);
   await expect(list).toBeFocused();
   await overlay.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
-  run.stub.gitlab.accessDelayMs = 0;
 
   // the scrim cancels too
   await clickMenu(run.app, 'damocles.git.push');

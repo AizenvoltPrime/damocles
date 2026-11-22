@@ -317,6 +317,8 @@ export interface StubServer {
   accessDelayMs: number;
   /** GET /repos and GET /projects/:path drop the connection while set (the account chip's check failure). */
   failAccess: boolean;
+  /** GET /repos and GET /projects/:path stay unanswered from this call until the returned function is called: a state a test reads before the answer. */
+  holdAccess(): () => void;
   /** Logins whose every token the API and git refuse with 401 (an account that must sign in again). */
   readonly refusedLogins: Set<string>;
   /** The REST and GraphQL APIs drop every connection while set (a server that does not answer); git is untouched. */
@@ -519,6 +521,8 @@ async function startServer(spec: StubServerSpec, options: ForgeStubOptions, logS
     const levels = levelsOf(repoPath, login);
     return levels ? Math.max(levels.project ?? 0, levels.group ?? 0, levels.shared ?? 0) : undefined;
   };
+  // settles when holdAccess's caller lets the held access requests answer
+  let accessHeld: Promise<void> | undefined;
   // each fork's polls left before it answers ready, and GitLab's numeric ids of the projects the stub made
   const forkPollsLeft = new Map<string, number>();
   const madeIds = new Map<number, string>();
@@ -659,6 +663,7 @@ async function startServer(spec: StubServerSpec, options: ForgeStubOptions, logS
     const gitlab = spec.kind === 'gitlab' ? /^\/projects\/([^/]+)$/.exec(path) : null;
     if (!github && !gitlab) return false;
     if (server.accessDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, server.accessDelayMs));
+    await accessHeld;
     if (server.failAccess) {
       response.socket?.destroy();
       return true;
@@ -819,6 +824,7 @@ async function startServer(spec: StubServerSpec, options: ForgeStubOptions, logS
     if (parsed.query?.includes('project(fullPath:')) {
       server.accessChecks.push(parsed.variables?.fullPath ?? '');
       if (server.accessDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, server.accessDelayMs));
+      await accessHeld;
       if (server.failAccess) {
         response.socket?.destroy();
         return;
@@ -1303,6 +1309,15 @@ async function startServer(spec: StubServerSpec, options: ForgeStubOptions, logS
     projectAccess: new Map(Object.entries(spec.projects ?? {}).map(([path, logins]) => [path, new Map(Object.entries(logins))])),
     accessDelayMs: 0,
     failAccess: false,
+    holdAccess() {
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      accessHeld = held;
+      return () => {
+        if (accessHeld === held) accessHeld = undefined;
+        release();
+      };
+    },
     refusedLogins: new Set(),
     unreachable: false,
     listingDelayMs: 0,
