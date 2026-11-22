@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Page } from '@playwright/test';
 import { activeChat, expect, nextChat, panelIdOf, test } from './support/fixtures';
+import { graphRow } from './support/forge-history';
 import { git } from './support/git';
 import { writeUserSettings } from './support/hermetic';
 import { chatRequests } from './support/openai-stub';
@@ -62,6 +63,29 @@ test('a default New Chat creates no worktree and keeps Files on the project fold
     await closeNewMenu(overlay);
   }
   expect(liveRecords(home)).toEqual([]);
+});
+
+test('a press on the worktree toggle\'s subtitle while it swaps for the loaded one, released after it left, turns the toggle on', async ({ foreground: _foreground, home, launch }) => {
+  const repo = await worktreeRepo(home, path.join(home.root, 'acme'));
+  const { app } = await launch();
+  await openProjectChat(app, repo.project);
+  // the Graph's first load repaints the sidebar, which ends the header hover the New menu's button needs
+  await expect(graphRow(await shellPage(app), 'Initial commit')).toBeVisible({ timeout: 30_000 });
+  const overlay = await readyOverlay(app);
+  // the subtitle's exit lasts until the press is down, so the press lands on the leaving side whatever the runner's pace
+  const exitHeld = await overlay.addStyleTag({ content: '.t-swap-leave-active{animation-duration:1000s !important}' });
+  await openNewMenu(app);
+  const toggle = overlay.getByTestId('new-chat-menu-worktree');
+  const leaving = toggle.locator('.t-swap-leave-active');
+  await expect(leaving).toBeVisible();
+  const box = (await leaving.boundingBox())!;
+  await overlay.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await overlay.mouse.down();
+  await exitHeld.evaluate((style) => (style as HTMLStyleElement).remove());
+  await expect(leaving).toHaveCount(0);
+  await overlay.mouse.up();
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  await expect(overlay.getByTestId('new-chat-menu-options')).toBeVisible();
 });
 
 test('D63 options, an opt-in left before sending, then the first send: setup review, the held prompt, copies, the prefixed branch and the views on the worktree', async ({ foreground: _foreground, home, launch }) => {

@@ -121,13 +121,14 @@
 .t-pop-top-leave-active{animation:d-pop-top-out .12s ease-in both}
 .t-up-enter-active{animation:d-up .3s var(--ease-out)}
 .t-up-leave-active{animation:o-up-out .16s ease-in both}
+/* A swap's leaving side takes no pointer: Chromium sends no click for a press whose node is removed before the release. */
 .t-swap-enter-active{display:inline-block;animation:d-swap-in .2s var(--ease-out)}
-.t-swap-leave-active{display:inline-block;animation:d-swap-out .12s ease-in both}
+.t-swap-leave-active{display:inline-block;pointer-events:none;animation:d-swap-out .12s ease-in both}
 .t-swap-down-enter-active{display:inline-block;animation:d-swap-in-down .2s var(--ease-out)}
-.t-swap-down-leave-active{display:inline-block;animation:d-swap-out-down .12s ease-in both}
+.t-swap-down-leave-active{display:inline-block;pointer-events:none;animation:d-swap-out-down .12s ease-in both}
 /* The swap for an element that is already a box (a flex line): t-swap's inline-block would undo its layout mid-swap. */
 .t-swap-box-enter-active{animation:d-swap-in .2s var(--ease-out)}
-.t-swap-box-leave-active{animation:d-swap-out .12s ease-in both}
+.t-swap-box-leave-active{pointer-events:none;animation:d-swap-out .12s ease-in both}
 /* Both sides share one grid cell, so the swap is a crossfade in place. */
 .t-morph-enter-active{animation:d-morph-in .26s var(--ease-out)}
 .t-morph-leave-active{pointer-events:none;animation:d-morph-out .16s ease-in both}
