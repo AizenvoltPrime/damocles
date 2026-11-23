@@ -14,6 +14,14 @@ export interface LocalizedText {
   readonly args?: readonly LocalizedArg[];
 }
 
+/**
+ * View-facing text: `message` is the English source text, the key of l10n/bundle.l10n*.json, which each view or host renders
+ * in its own language. Core never renders user-facing text itself.
+ */
+export function l(message: string, ...args: LocalizedArg[]): LocalizedText {
+  return args.length === 0 ? { message } : { message, args };
+}
+
 // {0}, {1}, ... are replaced by the positional args in one pass; an index with no arg stays as written, as vscode.l10n.t does.
 export function fillMessage(template: string, args: ReadonlyArray<string | number | boolean>): string {
   return template.replace(/\{(\d+)\}/g, (match, index: string) => {

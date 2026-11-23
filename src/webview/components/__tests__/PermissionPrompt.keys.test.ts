@@ -51,14 +51,28 @@ afterEach(() => {
 });
 
 describe('the numbered permission card', () => {
-  it('answers Yes, Yes and accept all, and No with 1, 2 and 3 from anywhere outside an editable field', () => {
+  it('answers Yes, Yes and accept all, and No with 1, 2 and 3 from anywhere outside an editable field', async () => {
     const wrapper = card();
 
+    // each press answers its request, and the page then shows the next one
     press('1');
+    await wrapper.setProps({ toolUseId: 'p-2' });
     press('2');
+    await wrapper.setProps({ toolUseId: 'p-3' });
     press('3');
 
     expect(wrapper.emitted('approve')).toEqual([[true], [true, { acceptAll: true }], [false]]);
+  });
+
+  it('answers a request once, so a second press before the page shows the next request answers nothing', async () => {
+    const wrapper = card();
+
+    press('1');
+    press('3');
+    await wrapper.get('[data-testid="permission-option-no"]').trigger('click');
+    press('Escape', wrapper.get('[data-testid="permission-options"]').element);
+
+    expect(wrapper.emitted('approve')).toEqual([[true]]);
   });
 
   it('numbers the options in order, so a suggested rule shifts No to 3 on a shell prompt', async () => {

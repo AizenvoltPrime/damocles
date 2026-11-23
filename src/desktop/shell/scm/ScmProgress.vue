@@ -257,12 +257,12 @@ function endShift(event: AnimationEvent): void {
             <span
               v-if="row.phase === 'failed'"
               aria-hidden="true"
-              class="absolute inset-0 bg-(--d-danger)/12"
+              class="absolute inset-0 bg-(--d-danger-fill)/12"
             />
             <span
               v-else-if="row.phase === 'warning'"
               aria-hidden="true"
-              class="absolute inset-0 bg-(--d-warning)/12"
+              class="absolute inset-0 bg-(--d-warning-fill)/12"
             />
           </Transition>
           <span class="relative inline-flex size-3.25 shrink-0">
@@ -310,7 +310,7 @@ function endShift(event: AnimationEvent): void {
               variant="ghost"
               size="sm"
               data-testid="scm-progress-cancel"
-              class="d-press relative h-5.5 shrink-0 rounded-5 px-2 text-11.5 font-normal text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 aria-disabled:cursor-default aria-disabled:opacity-50"
+              class="d-press relative h-5.5 shrink-0 rounded-5 px-2 text-11.5 font-normal text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 aria-disabled:cursor-default aria-disabled:opacity-50"
               :aria-describedby="labelId(index)"
               :aria-disabled="row.cancelling || undefined"
               @click="cancel(row)"
@@ -325,7 +325,7 @@ function endShift(event: AnimationEvent): void {
               :aria-labelledby="labelId(index)"
               class="absolute inset-x-0 bottom-0 h-0.5"
             >
-              <div class="d-sweep-bar size-full bg-(--d-accent)/15 text-(--d-accent)" />
+              <div class="d-sweep-bar size-full bg-(--d-accent-fill)/15 [--tone:var(--d-accent-fill)]" />
             </div>
           </Transition>
         </div>

@@ -286,7 +286,7 @@ watch(() => selectedAgent.value?.status, (newStatus, oldStatus) => {
             class="flex justify-end"
             data-testid="agent-steer-message"
           >
-            <div class="max-w-[85%] rounded-[0.875rem_0.875rem_0.3125rem_0.875rem] border border-[color-mix(in_srgb,var(--d-warning)_35%,transparent)] bg-[color-mix(in_srgb,var(--d-warning)_7%,transparent)] px-3 pt-2 pb-2.25">
+            <div class="max-w-[85%] rounded-14 rounded-br-5 border border-[color-mix(in_srgb,var(--d-warning-fill)_35%,transparent)] bg-[color-mix(in_srgb,var(--d-warning-fill)_7%,transparent)] px-3 pt-2 pb-2.25">
               <div class="mb-0.5 flex items-center gap-1.5 text-11 font-semibold text-(--d-warning-text)">
                 <Send
                   class="size-2.75"
@@ -314,7 +314,7 @@ watch(() => selectedAgent.value?.status, (newStatus, oldStatus) => {
               :class="peerMessage(msg)!.color.avatar"
               aria-hidden="true"
             >{{ peerMessage(msg)!.from.charAt(0).toUpperCase() }}</span>
-            <div class="min-w-0 max-w-[85%] flex-1 rounded-[0.3125rem_0.875rem_0.875rem_0.875rem] border border-(--d-border) bg-(--d-card) px-2.75 pt-1.75 pb-2">
+            <div class="min-w-0 max-w-[85%] flex-1 rounded-14 rounded-tl-5 border border-(--d-border) bg-(--d-card) px-2.75 pt-1.75 pb-2">
               <div
                 class="mb-0.5 text-11 font-semibold"
                 :class="peerMessage(msg)!.color.text"

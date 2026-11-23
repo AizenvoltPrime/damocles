@@ -35,9 +35,9 @@ describe('motion source', () => {
     expect(elsewhere).toEqual([]);
   });
 
-  it('leaves no renderer source on tailwindcss-animate or a Tailwind built-in animation', () => {
+  it('leaves no renderer source on tailwindcss-animate or a Tailwind animation utility, built in or arbitrary', () => {
     // Only class tokens: motion.css's own `d-fade-in` and Tailwind's `cursor-zoom-in` are preceded by a hyphen.
-    const utility = /(?<![\w-])(?:animate-(?:in|out|spin|pulse|ping|bounce)|(?:fade|zoom|spin)-(?:in|out)|slide-(?:in-from|out-to)-[a-z]+)(?!\w)/g;
+    const utility = /(?<![\w-])(?:animate-[\w[]+|(?:fade|zoom|spin)-(?:in|out)|slide-(?:in-from|out-to)-[a-z]+)(?!\w)/g;
     const offenders = [...files(join(ROOT, 'src/webview')), ...files(join(ROOT, 'src/desktop'))]
       .flatMap((path) => [...readFileSync(path, 'utf8').matchAll(utility)].map(([name]) => `${relative(ROOT, path)}: ${name}`));
     expect(offenders).toEqual([]);
@@ -99,6 +99,35 @@ describe('motion source', () => {
     expect(positioned.get('d-ring')).toBe('relative');
     expect(positioned.get('d-sweep-bar')).toBe('relative');
     expect(offenders).toEqual([]);
+  });
+
+  // Each rule is matched with every space taken out, so a reformat of the stylesheet changes nothing here.
+  const squeezed = (path: string): string => read(path).replace(/\s+/g, '');
+
+  it('steps a character strip by its whole width, and nothing else', () => {
+    const motion = squeezed('src/webview/styles/motion.css');
+    expect(motion).toContain('@keyframesd-sprite{from{transform:translateX(0)}to{transform:translateX(-100%)}}');
+    expect(motion).toContain('.d-sprite{animation:d-spritevar(--sprite-duration,1s)steps(var(--sprite-frames,1))infinite}');
+  });
+
+  it('stops a character strip under reduce motion, either source, under forced colors, and away from the pointer in hover mode', () => {
+    const motion = squeezed('src/webview/styles/motion.css');
+    expect(motion).toContain('@media(prefers-reduced-motion:reduce){.d-sprite{animation:none}}');
+    expect(motion).toContain('[data-reduced-motion].d-sprite{animation:none}');
+    expect(motion).toContain('@media(forced-colors:active){.d-sprite{animation:none}}');
+    expect(motion).toContain('.d-sprite[data-sprite-hover]:not(:hover,[data-character-host]:hover.d-sprite){animation:none}');
+  });
+
+  // the shell's own stylesheet swaps an animated image for its still frame under the pointer; the same three conditions hold it
+  it('keeps an animated character on its still frame under reduce motion, either source, and under forced colors', () => {
+    const shell = squeezed('src/desktop/shell/style.css');
+    const still = '.project-character:hover.project-character-still,[data-character-host]:hover.project-character-still{display:block;}';
+    const moving = '.project-character:hover.project-character-moving,[data-character-host]:hover.project-character-moving{display:none;}';
+    expect(shell).toContain(`@media(prefers-reduced-motion:reduce),(forced-colors:active){${still}${moving}}`);
+    expect(shell).toContain('[data-reduced-motion].project-character:hover.project-character-still,[data-reduced-motion][data-character-host]:hover.project-character-still{display:block;}');
+    expect(shell).toContain('[data-reduced-motion].project-character:hover.project-character-moving,[data-reduced-motion][data-character-host]:hover.project-character-moving{display:none;}');
+    // the holds come after the swap they hold, which has the same specificity
+    expect(shell.indexOf('@media(prefers-reduced-motion:reduce),(forced-colors:active){.project-character:hover')).toBeGreaterThan(shell.indexOf('[data-character-host]:hover.project-character-moving{display:block;}'));
   });
 
   it('keeps the easing curves outside the --d- token family', () => {

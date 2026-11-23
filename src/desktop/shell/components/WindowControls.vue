@@ -9,11 +9,13 @@ const { t } = useI18n();
 const maximizeLabel = computed(() => (props.windowState === 'maximized' ? t('titleBar.restore') : t('titleBar.maximize')));
 </script>
 
-<!-- Out of the Tab order, as native window controls are; Alt+F4 and Win+arrows stay the keyboard path. -->
+<!-- Out of the Tab order, as native window controls are; Alt+F4 and Win+arrows stay the keyboard path. The trusted --d-panel
+     backdrop keeps their text readable over a title bar wallpaper, which the trusted palette's text rules are checked against. -->
 <template>
   <div
     data-testid="window-controls"
-    class="flex h-full shrink-0 items-stretch"
+    data-trusted
+    class="flex h-full shrink-0 items-stretch bg-(--d-panel)"
   >
     <button
       type="button"
@@ -76,7 +78,7 @@ const maximizeLabel = computed(() => (props.windowState === 'maximized' ? t('tit
       type="button"
       tabindex="-1"
       data-testid="window-close"
-      class="title-bar-control flex w-11.5 items-center justify-center text-(--d-muted) transition-colors duration-100 hover:bg-(--d-danger) hover:text-(--d-on-danger) active:opacity-80"
+      class="title-bar-control flex w-11.5 items-center justify-center text-(--d-muted) transition-colors duration-100 hover:bg-(--d-danger-fill) hover:text-(--d-on-danger) active:bg-(--d-danger-fill)/80"
       :aria-label="t('titleBar.close')"
       :title="t('titleBar.close')"
       @click="api.windowControl('close')"

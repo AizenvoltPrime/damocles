@@ -155,6 +155,159 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ---
 
+## Material Color Utilities
+
+The desktop app's theme render page (`dist/desktop-shell/assets/theme-render.js`) bundles @material/material-color-utilities 0.4.0 to propose a theme's colors from a wallpaper (`src/desktop/shell/themes/wallpaper-palette.ts`). No other bundle includes it.
+
+- **Source**: https://github.com/material-foundation/material-color-utilities
+- **License**: Apache License 2.0 (full text under "Apache License 2.0" below)
+
+```
+Copyright 2021 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```
+
+---
+
+## fflate
+
+Damocles Core (`dist/extension.cjs` and the desktop app's `dist/core-host.js`) bundles fflate 0.8.3's zip reader, writer and streaming inflate to read and write `.damocles-theme` files and read a VS Code `.vsix` (`src/core/themes/archive.ts`, `src/core/themes/vscode-import.ts`). It reads no file itself.
+
+- **Source**: https://github.com/101arrowz/fflate
+- **License**: MIT
+
+```
+MIT License
+
+Copyright (c) 2026 Arjun Barrett
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## jsonc-parser
+
+Damocles Core (`dist/extension.cjs` and the desktop app's `dist/core-host.js`) bundles jsonc-parser 3.3.1 to read VS Code color themes written as JSON with comments (`src/core/themes/vscode-import.ts`). It reads no file itself.
+
+- **Source**: https://github.com/microsoft/node-jsonc-parser
+- **License**: MIT
+
+```
+The MIT License (MIT)
+
+Copyright (c) Microsoft
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## CSSTree
+
+Damocles Core (`dist/extension.cjs` and the desktop app's `dist/core-host.js`), the desktop main process and the shell page bundle css-tree 3.2.1's parser, walker and generator to sanitize a theme's custom CSS (`src/shared/themes/css-sanitizer.ts`). Its generator brings source-map-js 1.2.1 (BSD-3-Clause, below). css-tree's lexer and its mdn-data definitions are not bundled.
+
+- **Source**: https://github.com/csstree/csstree
+- **License**: MIT
+
+```
+Copyright (C) 2016-2026 by Roman Dvornov
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+### source-map-js
+
+- **Source**: https://github.com/7rulnik/source-map-js
+- **License**: BSD-3-Clause
+
+```
+Copyright (c) 2009-2011, Mozilla Foundation and contributors
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the names of the Mozilla Foundation nor the names of project
+  contributors may be used to endorse or promote products derived from this
+  software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+---
+
 ## pi-anthropic-auth
 
 Each server package ships the pi extension `@gotgenes/pi-anthropic-auth` at the commit pinned in `src/core/pi-session/subscription-pin.json`, in `dist/subscription-plugin/` with this licence beside it. A daemon's core sends a Claude subscription request through it when the client behind the request chose the included allowance.
@@ -216,7 +369,7 @@ The English ASR model used by the wake-word path is NVIDIA's
 `nemo_toolkit[asr]` is the inference framework loading Parakeet.
 
 - **Source**: https://github.com/NVIDIA/NeMo
-- **License**: Apache License 2.0
+- **License**: Apache License 2.0 (full text under "Apache License 2.0" below)
 - **Use**: `engines/asr_parakeet.py` imports `nemo.collections.asr`.
 
 ### sherpa-onnx (k2-fsa) — Apache-2.0
@@ -227,7 +380,7 @@ The wake-phrase detector: streaming keyword spotting for the phrase set in
 `sherpa-onnx-core`, below.
 
 - **Source**: https://github.com/k2-fsa/sherpa-onnx
-- **License**: Apache License 2.0
+- **License**: Apache License 2.0 (full text under "Apache License 2.0" below)
 - **Use**: the sidecar's wake engine imports `sherpa_onnx` and runs its
   keyword spotter on the bundled model below.
 
@@ -240,7 +393,8 @@ build of onnxruntime (MIT, see below), installed into the sidecar venv.
 - **Source**: https://github.com/k2-fsa/sherpa-onnx
 - **Package**: https://pypi.org/project/sherpa-onnx-core/1.13.8/
 - **License**: Apache License 2.0 (`License: Apache-2.0` in the wheel's
-  metadata; the repository's `LICENSE` is the Apache License 2.0)
+  metadata; the repository's `LICENSE` is the Apache License 2.0; full text
+  under "Apache License 2.0" below)
 - **Use**: loaded by `sherpa_onnx` when the wake engine creates its
   keyword spotter.
 
@@ -253,7 +407,8 @@ model's BPE pieces.
 - **Package**: https://pypi.org/project/sentencepiece/0.2.2/ (pinned at
   0.2.2)
 - **License**: Apache License 2.0 (`License-Expression: Apache-2.0` in the
-  wheel's metadata; the `LICENSE` at tag v0.2.2 is the Apache License 2.0)
+  wheel's metadata; the `LICENSE` at tag v0.2.2 is the Apache License 2.0;
+  full text under "Apache License 2.0" below)
 - **Use**: the wake engine encodes the phrase with the bundled
   `bpe.model` through `sentencepiece.SentencePieceProcessor`.
 
@@ -271,7 +426,7 @@ bundled in
   (size and SHA-256 of the archive and of each file pinned in
   `MODEL_MANIFEST.json`'s `wake_model`)
 - **License**: Apache License 2.0. The model's authors license the weights
-  under Apache-2.0.
+  under Apache-2.0 (full text under "Apache License 2.0" below).
 - **Training data**: trained on GigaSpeech XL
   (https://github.com/SpeechColab/GigaSpeech), whose dataset terms permit
   non-commercial research and education use. Those terms govern the
@@ -302,7 +457,7 @@ The tensor + inference backend for VibeVoice and Parakeet.
 VibeVoice's `from_pretrained` plumbing.
 
 - **Source**: https://github.com/huggingface/transformers
-- **License**: Apache License 2.0
+- **License**: Apache License 2.0 (full text under "Apache License 2.0" below)
 - **Use**: vendored VibeVoice modules subclass `PreTrainedModel`.
 
 ### diffusers + accelerate (Hugging Face) — Apache-2.0
@@ -311,7 +466,7 @@ The DPM-Solver scheduler used by VibeVoice's diffusion head.
 
 - **Sources**: https://github.com/huggingface/diffusers,
   https://github.com/huggingface/accelerate
-- **License**: Apache License 2.0
+- **License**: Apache License 2.0 (full text under "Apache License 2.0" below)
 
 ### websockets (Aymeric Augustin) — BSD-3-Clause
 
@@ -377,7 +532,7 @@ when the runtime detects a CUDA-capable GPU and selects the cu121
 torch channel; absent on CPU-only installs.
 
 - **Source**: https://github.com/NVIDIA/cuda-python
-- **License**: Apache License 2.0
+- **License**: Apache License 2.0 (full text under "Apache License 2.0" below)
 - **Use**: imported transitively by `nemo.collections.asr` for
   conditional graphs on Parakeet's TDT decoder.
 
@@ -856,7 +1011,15 @@ physically ships in the VSIX. Listed here for attribution and marketplace compli
   — HTML → markdown conversion of the extracted article.
 
 The Apache-2.0 components (`@mozilla/readability` and the vendored pdf.js) are distributed under the
-following license:
+Apache License 2.0, whose full text is the next section.
+
+---
+
+## Apache License 2.0
+
+Every component this file lists as Apache-2.0 is distributed under the following license: Material Color
+Utilities, `@mozilla/readability`, the vendored pdf.js, and the voice sidecar's NeMo Toolkit, sherpa-onnx,
+sherpa-onnx-core, SentencePiece, wake model, Hugging Face Transformers, diffusers, accelerate and cuda-python.
 
 ```
                                  Apache License

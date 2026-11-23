@@ -28,7 +28,7 @@ const emit = defineEmits<{
     :class="[
       iconOnly ? 'w-7.5 justify-center px-0' : 'px-2.75 @max-[34.9375rem]/overlay:w-7.5 @max-[34.9375rem]/overlay:justify-center @max-[34.9375rem]/overlay:px-0',
       primary
-        ? 'border-(--d-accent) bg-(--d-accent) text-(--d-on-accent) enabled:hover:brightness-[1.08]'
+        ? 'border-(--d-accent-fill) bg-(--d-accent-fill) text-(--d-on-accent) enabled:hover:brightness-[1.08]'
         : 'border-(--d-border2) bg-transparent text-(--d-text) enabled:hover:bg-(--d-hover)',
     ]"
     :aria-label="iconOnly ? label : undefined"

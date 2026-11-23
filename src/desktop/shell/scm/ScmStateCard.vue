@@ -30,7 +30,7 @@ defineProps<{ card: ScmStateCard }>();
       v-if="card.primary"
       type="button"
       data-testid="scm-state-action"
-      class="d-press h-7 w-full rounded-7 bg-(--d-accent) text-xs font-semibold text-(--d-on-accent) hover:bg-(--d-accent) hover:brightness-[1.08]"
+      class="d-press h-7 w-full rounded-7 bg-(--d-accent-fill) text-xs font-semibold text-(--d-on-accent) hover:bg-(--d-accent-fill) hover:brightness-[1.08]"
       @click="card.primary.run()"
     >
       {{ card.primary.label }}

@@ -28,7 +28,7 @@ export interface DesktopCore {
 }
 
 export interface CoreConnectionDeps
-  extends Pick<HostServicesDeps, 'terminalToggle' | 'resolveProxy' | 'createView' | 'foreignOwner' | 'servedFile' | 'clientNetwork' | 'git' | 'e2eHooks' | 'e2eForgeServers' | 'paths' | 'logs' | 'language' | 'power' | 'ui' | 'divert' | 'render' | 'log' | 'showSession' | 'openDesignPreview' | 'designRender'> {
+  extends Pick<HostServicesDeps, 'terminalToggle' | 'resolveProxy' | 'createView' | 'foreignOwner' | 'servedFile' | 'clientNetwork' | 'git' | 'e2eHooks' | 'e2eForgeServers' | 'e2eThemeDownloads' | 'e2eThemeStore' | 'themesOwner' | 'paths' | 'logs' | 'language' | 'power' | 'ui' | 'divert' | 'render' | 'log' | 'showSession' | 'openDesignPreview' | 'designRender' | 'themes'> {
   // main's platform: what core's proxies reach
   readonly platform: DesktopPlatform;
   readonly trust: TrustStore;
@@ -81,7 +81,7 @@ export function startDesktopCore(deps: CoreConnectionDeps, start: CoreStart): De
     child.kill();
   }, undefined, deps.render);
   const trust = { trustedKeys: () => deps.trust.trustedFolders().map((folder) => folderKey(folder)), onDidChange: deps.trust.onDidChange.bind(deps.trust), requestTrust: deps.trust.requestTrust.bind(deps.trust) };
-  const hostServices = createHostServices({ ...deps, trust, endpoint, state: deps.platform.state, endedCores: start.endedCores, ...(start.restarted === true ? { restarted: true } : {}), worktreeRecords: start.worktreeRecords, user: NO_USER_RELAYS, refusedPosts: new Set() });
+  const hostServices = createHostServices({ ...deps, trust, endpoint, state: deps.platform.state, endedCores: start.endedCores, ...(start.restarted === true ? { restarted: true } : {}), worktreeRecords: start.worktreeRecords, user: NO_USER_RELAYS, refusedPosts: new Set(), textOnlyPosts: new Set() });
   // The init is the channel's first message; core parses everything after it with the protocol's tables.
   child.transport.post(hostServices.init);
   const client = new CoreClient(endpoint, (view, attach) => hostServices.adopt(view, attach), LOCAL_PROJECT_KEYS);

@@ -342,7 +342,7 @@ const pickerGroupClass = 'p-0 [&>:first-child]:px-2.25 [&>:first-child]:pt-1.25 
               :title="startTitle"
               :aria-label="`${t('worktree.newMenu.startFrom')}: ${nameOf(start)}`"
               data-testid="new-chat-menu-start"
-              class="flex h-7 cursor-pointer items-center gap-1.5 rounded-7 border border-(--d-border2) bg-(--d-card) px-2.25 font-mono text-11.5 outline-none transition-colors hover:border-(--d-accent) focus:border-(--d-accent)"
+              class="flex h-7 cursor-pointer items-center gap-1.5 rounded-7 border border-(--d-border2) bg-(--d-card) px-2.25 font-mono text-11.5 outline-none transition-colors hover:border-(--d-accent-fill) focus:border-(--d-accent-fill)"
               @click="openPicker('branch')"
               @keydown="onRowKeydown($event, () => openPicker('branch'), 'own')"
             >
@@ -385,7 +385,7 @@ const pickerGroupClass = 'p-0 [&>:first-child]:px-2.25 [&>:first-child]:pt-1.25 
                   :checked="bringChanges"
                   tabindex="-1"
                   aria-hidden="true"
-                  class="pointer-events-none mt-0.5 size-3.75 rounded-xs border-(--d-border2) data-[state=checked]:border-(--d-accent) data-[state=checked]:bg-(--d-accent) data-[state=checked]:text-(--d-on-accent) [&_svg]:size-2.75"
+                  class="pointer-events-none mt-0.5 size-3.75 rounded-xs border-(--d-border2) data-[state=checked]:border-(--d-accent-fill) data-[state=checked]:bg-(--d-accent-fill) data-[state=checked]:text-(--d-on-accent) [&_svg]:size-2.75"
                 />
                 <span class="flex min-w-0 flex-col">
                   <span>{{ t('worktree.newMenu.bring') }}</span>

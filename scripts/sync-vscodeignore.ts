@@ -696,7 +696,7 @@ export function applyDistBlock(original: string, block: string): string {
  * (vite.config.ts emits all of it under `dist/webview/assets/monaco-`), the desktop build output and
  * packaging config, the end-to-end suite and its output, typecheck-only stubs, the Windows icon file, the terminal's
  * shell-integration scripts, the askpass helper and its scripts, the daemon, its git credential relay and the server
- * packages, and logs.
+ * packages, the desktop themes' built-in examples and JSON Schema, and logs.
  * Each must appear verbatim as a line of `.vscodeignore`; the syntax is limited to `*` and `**`.
  */
 export const DESKTOP_EXCLUDE_RULES = [
@@ -727,6 +727,8 @@ export const DESKTOP_EXCLUDE_RULES = [
   'resources/shell-integration/**',
   'resources/askpass/**',
   'resources/git-credential/**',
+  'resources/themes/**',
+  'schemas/**',
 ];
 
 /** Why .vscodeignore could let a desktop-only file into the VSIX; empty when every exclusion holds. */

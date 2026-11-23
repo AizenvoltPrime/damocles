@@ -1,89 +1,21 @@
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { checkWallpaper } from '../../../core/themes/assets';
+import { checkSprite } from '../../../core/themes/characters';
+import { SAFE_STRIP_FPS } from '../../../shared/themes/characters';
 
-import { DARK_THEME, LIGHT_THEME, type ThemePalette } from '../../theme-palettes';
+import { BUILTIN_EXAMPLE_IDS, BUILTIN_THEME } from '../../../shared/themes/builtin';
+import { validateTheme } from '../../../shared/themes/schema';
+import { AA, checkPalette, colorMix, contrast, contrastPairs, describeIssue, luminance, over, parse, TRANSPARENT } from '../../../shared/themes/contrast';
+import { deriveLook } from '../../../shared/themes/derive';
+import { LOOK_KINDS } from '../../../shared/themes/tokens';
+import { THEME_PALETTES } from '../../theme-palettes';
 
-// WCAG 2.2 AA for normal-size text (D21). docs/invariants.md "Design tokens" lists every value adjusted to reach it.
-const AA = 4.5;
-const TEXT_TOKENS = ['--d-text', '--d-muted', '--d-faint', '--d-accent', '--d-success', '--d-warning', '--d-danger', '--d-info', '--d-design'] as const;
-const SYNTAX_TOKENS = ['--s-kw', '--s-str', '--s-num', '--s-com', '--s-fn', '--s-type'] as const;
-const SURFACES = ['--d-bg', '--d-panel', '--d-card', '--d-code'] as const;
-const TONES = ['accent', 'success', 'warning', 'danger', 'info', 'design'] as const;
-const TINTED_SURFACES = ['--d-bg', '--d-panel', '--d-card', '--d-hover', '--d-code'] as const;
-// The strongest tint of its own tone that a tone's text sits on; docs/invariants.md "Design tokens" states it.
-const MAX_TINT = 0.22;
-// The translucent rows (selected, added, deleted) and the text drawn on each; a hovered row is the opaque --d-hover.
-const ROW_TEXT = ['--d-text', '--d-muted', '--d-faint-text'] as const;
-const TINTED_ROWS = {
-  '--d-accent-soft': [...ROW_TEXT, '--d-accent-text'],
-  '--d-add': [...ROW_TEXT, '--d-success-text'],
-  '--d-del': [...ROW_TEXT, '--d-danger-text'],
-} as const;
-// Any row may take --d-hover under the pointer, so plain faint text must pass there too.
-const HOVER_TEXT = [...ROW_TEXT, '--d-faint', ...TONES.map((tone) => `--d-${tone}-text`)];
+const REPO = path.resolve(__dirname, '..', '..', '..', '..');
 
-/** sRGB channels and alpha, each 0 to 1. */
-type Rgba = readonly [number, number, number, number];
-const TRANSPARENT: Rgba = [0, 0, 0, 0];
-
-function color(palette: ThemePalette, token: string): Rgba {
-  const value = palette[token as `--d-${string}`];
-  if (value === undefined || !/^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(value)) throw new Error(`${token} is ${value}, not a #rrggbb or #rrggbbaa color`);
-  return parse(value);
-}
-
-function parse(hex: string): Rgba {
-  const channel = (i: number): number => (i < hex.length ? Number.parseInt(hex.slice(i, i + 2), 16) / 255 : 1);
-  return [channel(1), channel(3), channel(5), channel(7)];
-}
-
-function opaque(palette: ThemePalette, token: string): Rgba {
-  const value = color(palette, token);
-  if (value[3] !== 1) throw new Error(`${token} is translucent`);
-  return value;
-}
-
-// color-mix(in srgb, a p, b): interpolates premultiplied channels, so mixing toward transparent keeps a's color at alpha p.
-function colorMix(a: Rgba, p: number, b: Rgba): Rgba {
-  const alpha = a[3] * p + b[3] * (1 - p);
-  if (alpha === 0) return TRANSPARENT;
-  const channel = (i: 0 | 1 | 2): number => (a[i] * a[3] * p + b[i] * b[3] * (1 - p)) / alpha;
-  return [channel(0), channel(1), channel(2), alpha];
-}
-
-/** A translucent color painted over an opaque surface. */
-function over(top: Rgba, surface: Rgba): Rgba {
-  return colorMix([top[0], top[1], top[2], 1], top[3], surface);
-}
-
-function luminance(c: Rgba): number {
-  const [r, g, b] = [c[0], c[1], c[2]].map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)) as [number, number, number];
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
-
-function contrast(a: Rgba | string, b: Rgba | string): number {
-  const [hi, lo] = [a, b].map((c) => luminance(typeof c === 'string' ? parse(c) : c)).sort((x, y) => y - x) as [number, number];
-  return (hi + 0.05) / (lo + 0.05);
-}
-
-function failures(palette: ThemePalette, foregrounds: readonly string[], backgrounds: readonly string[]): string[] {
-  return foregrounds.flatMap((fg) => backgrounds.flatMap((bg) => {
-    const ratio = contrast(opaque(palette, fg), opaque(palette, bg));
-    return ratio >= AA ? [] : [`${fg} on ${bg}: ${ratio.toFixed(2)}`];
-  }));
-}
-
-/** `text` on each `tint` painted over every tinted surface; a tint is a palette token or a [label, color] pair. */
-function tintFailures(palette: ThemePalette, text: string, tints: readonly (string | readonly [string, Rgba])[]): string[] {
-  const fg = opaque(palette, text);
-  return tints.flatMap((tint) => {
-    const [label, top] = typeof tint === 'string' ? [tint, color(palette, tint)] : tint;
-    return TINTED_SURFACES.flatMap((surface) => {
-      const ratio = contrast(fg, over(top, opaque(palette, surface)));
-      return ratio >= AA ? [] : [`${text} on ${label} over ${surface}: ${ratio.toFixed(2)}`];
-    });
-  });
-}
-
+// The rules live in checkPalette (src/shared/themes/contrast.ts); docs/invariants.md "Design tokens" lists every value adjusted to reach them.
 describe('desktop palette contrast', () => {
   it('computes WCAG ratios', () => {
     expect(contrast('#000000', '#ffffff')).toBeCloseTo(21, 5);
@@ -103,52 +35,79 @@ describe('desktop palette contrast', () => {
     expect(contrast(on, fill)).toBeGreaterThanOrEqual(AA);
   });
 
-  describe.each([
-    ['dark', DARK_THEME, '--d-ansi-0'],
-    ['light', LIGHT_THEME, '--d-ansi-15'],
-  ] as const)('%s', (_kind, palette, backgroundAnsi) => {
-    it('text and syntax tokens reach AA on bg, panel, card and code', () => {
-      expect(failures(palette, [...TEXT_TOKENS, ...SYNTAX_TOKENS], SURFACES)).toEqual([]);
+  describe.each(LOOK_KINDS)('the built-in %s look', (kind) => {
+    const palette = THEME_PALETTES[kind];
+
+    it('is the built-in theme derived with its overrides', () => {
+      const look = BUILTIN_THEME.looks[kind]!;
+      expect(palette).toEqual(deriveLook(look.colors, kind, look.tokens));
     });
 
-    it.each(TONES)('text on a solid %s fill reaches AA', (tone) => {
-      expect(failures(palette, [`--d-on-${tone}`], [`--d-${tone}`])).toEqual([]);
+    it('passes every contrast rule, warnings included', () => {
+      expect(checkPalette(palette, kind).map(describeIssue)).toEqual([]);
     });
 
-    it.each(TONES)('--d-%s-text reaches AA on its tone tinted up to MAX_TINT over every surface', (tone) => {
-      const tint = [`--d-${tone} ${MAX_TINT * 100}%`, colorMix(color(palette, `--d-${tone}`), MAX_TINT, TRANSPARENT)] as const;
-      expect(tintFailures(palette, `--d-${tone}-text`, [tint])).toEqual([]);
+    // Guards the rule set itself: an emptied pair list would pass every palette.
+    it.each(['text', 'on-fill', 'tint-text', 'row-text', 'hover-text', 'menu-hint', 'design-strip', 'switch-knob', 'ansi', 'safety', 'fill'] as const)('checks the %s rule', (rule) => {
+      expect(contrastPairs(kind).some((pair) => pair.rule === rule)).toBe(true);
+    });
+  });
+
+  // The built-in examples ship as packed files; each look derives from its colors alone and passes every rule.
+  describe.each(BUILTIN_EXAMPLE_IDS)('the built-in example %s', (id) => {
+    const json: unknown = JSON.parse(fs.readFileSync(path.join(REPO, 'resources', 'themes', id, 'theme.json'), 'utf8'));
+    const result = validateTheme(json, { builtin: true, folder: id });
+
+    it('is a valid built-in theme', () => {
+      expect(result.ok ? [] : result.errors).toEqual([]);
     });
 
-    it.each(Object.entries(TINTED_ROWS))('text on a %s row reaches AA over every surface', (row, texts) => {
-      expect(texts.flatMap((text) => tintFailures(palette, text, [row]))).toEqual([]);
+    it.each(LOOK_KINDS)('passes every contrast rule in its %s look, warnings included, when it has one', (kind) => {
+      const look = result.ok ? result.theme.looks[kind] : undefined;
+      if (!look) return;
+      expect(checkPalette(deriveLook(look.colors, kind, look.tokens), kind).map(describeIssue)).toEqual([]);
     });
+  });
 
-    it('text on a hovered row reaches AA', () => {
-      expect(failures(palette, HOVER_TEXT, ['--d-hover'])).toEqual([]);
-    });
+  // Its wallpapers are packed files named by their sha256, which the generator writes (scripts/generate-theme-art.ts).
+  it('ships Aurora as a dark and a light look, each with one image across every panel, packed under its sha256 and within the caps', () => {
+    const dir = path.join(REPO, 'resources', 'themes', 'damocles-aurora');
+    const aurora = validateTheme(JSON.parse(fs.readFileSync(path.join(dir, 'theme.json'), 'utf8')), { builtin: true, folder: 'damocles-aurora' });
+    if (!aurora.ok) throw new Error(aurora.errors.join('\n'));
+    for (const kind of LOOK_KINDS) {
+      const set = aurora.theme.looks[kind]?.wallpapers?.[0];
+      expect(set?.span?.panels).toEqual(['titlebar', 'sidebar', 'chat', 'editor', 'terminal']);
+      const bytes = fs.readFileSync(path.join(dir, `${set!.span!.asset}.png`));
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(set!.span!.asset);
+      expect(bytes.length).toBeLessThan(512 * 1024);
+      expect(checkWallpaper(bytes, 'aurora.png')).toMatchObject({ width: aurora.theme.assets![set!.span!.asset]!.width, height: aurora.theme.assets![set!.span!.asset]!.height });
+    }
+  });
 
-    // A menu row's hint (ContextMenu.vue) is faint-text on the card at rest; it alone tells same-named projects apart.
-    it('a menu row hint reaches AA on the card', () => {
-      expect(failures(palette, ['--d-faint-text'], ['--d-card'])).toEqual([]);
-    });
+  // Its sprites are pixel grids the generator makes into strips (scripts/generate-theme-art.ts), packed under their sha256.
+  it('ships Arcade as a dark look with characters in every state, each a sprite strip within the caps that steps too slowly to flash', () => {
+    const dir = path.join(REPO, 'resources', 'themes', 'damocles-arcade');
+    const arcade = validateTheme(JSON.parse(fs.readFileSync(path.join(dir, 'theme.json'), 'utf8')), { builtin: true, folder: 'damocles-arcade' });
+    if (!arcade.ok) throw new Error(arcade.errors.join('\n'));
+    expect(arcade.theme.looks.light).toBeUndefined();
+    expect(arcade.theme.characters?.characters.length).toBeGreaterThanOrEqual(4);
+    for (const character of arcade.theme.characters!.characters) {
+      for (const state of ['idle', 'running', 'waiting'] as const) {
+        const frame = character.states[state];
+        if (!frame || !('strip' in frame)) throw new Error(`${character.name} has no ${state} strip`);
+        expect(frame.strip.fps).toBeLessThanOrEqual(SAFE_STRIP_FPS);
+        const bytes = fs.readFileSync(path.join(dir, `${frame.strip.asset}.svg`));
+        expect(createHash('sha256').update(bytes).digest('hex')).toBe(frame.strip.asset);
+        expect(checkSprite(bytes, 'sprite.svg', { frames: frame.strip.frames, fps: frame.strip.fps })).toMatchObject({ width: frame.strip.frameWidth * frame.strip.frames, height: frame.strip.frameHeight });
+        expect(bytes.toString('utf8')).toContain('shape-rendering="crispEdges"');
+      }
+    }
+  });
 
-    // DESIGN_STRIP (design-strip.ts): the design hue at 5% over the chat background, under the design header's labels.
-    it('faint text on the design header strip reaches AA', () => {
-      const strip = colorMix(opaque(palette, '--d-design'), 0.05, opaque(palette, '--d-bg'));
-      const failing = ROW_TEXT.filter((text) => contrast(opaque(palette, text), strip) < AA);
-      expect(failing).toEqual([]);
-    });
-
-    // ToggleSwitch's knob on its off track (WCAG 1.4.11 non-text contrast).
-    it('the switch knob (on-accent) reaches 3:1 on the off track (faint)', () => {
-      expect(contrast(opaque(palette, '--d-on-accent'), opaque(palette, '--d-faint'))).toBeGreaterThanOrEqual(3);
-    });
-
-    // The ANSI slot of the background's own polarity (black on dark, bright white on light) is a fill, not text.
-    it('every ANSI color used as text reaches AA on bg, panel and card', () => {
-      const ansi = Array.from({ length: 16 }, (_, i) => `--d-ansi-${i}`).filter((token) => token !== backgroundAnsi);
-      expect(failures(palette, ansi, ['--d-bg', '--d-panel', '--d-card'])).toEqual([]);
-    });
+  it('ships Paper as a light look with square corners, density 0.9, a 40rem chat column and Damocles\' fonts', () => {
+    const paper = validateTheme(JSON.parse(fs.readFileSync(path.join(REPO, 'resources', 'themes', 'damocles-paper', 'theme.json'), 'utf8')), { builtin: true, folder: 'damocles-paper' });
+    expect(paper.ok && paper.theme.looks.dark).toBeUndefined();
+    expect(paper.ok && paper.theme.looks.light).toBeDefined();
+    expect(paper.ok && paper.theme.style).toEqual({ radius: 0, density: 0.9, chatColumn: 40 });
   });
 });

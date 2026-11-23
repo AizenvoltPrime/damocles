@@ -61,9 +61,9 @@ describe('Ports rows', () => {
     const dot = (port: number) => rowOf(wrapper, port).get('[data-testid="port-dot"]');
     expect([5173, 8000, 5432, 9, 7].map((port) => dot(port).attributes('data-shape'))).toEqual(['live', 'idle', 'detected', 'ignored', 'error']);
     expect(dot(5173).attributes()).toMatchObject({ role: 'img', 'aria-label': 'Forwarding, 2 open connections' });
-    expect(dot(5173).classes()).toContain('text-(--d-success)');
+    expect(dot(5173).get('circle').classes()).toContain('fill-(--d-success-fill)');
     expect(dot(8000).attributes('aria-label')).toBe('Forwarded, no open connections');
-    expect(dot(8000).classes()).not.toContain('text-(--d-success)');
+    expect(dot(8000).html()).not.toContain('--d-success');
     expect(portDotShape({ ...HTTP, liveConnections: 1 })).toBe('live');
   });
 

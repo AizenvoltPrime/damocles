@@ -287,7 +287,7 @@ function renderTokens(tokens: Token[]): VNode[] {
   background-color: var(--d-hover);
   color: var(--d-accent-text);
   padding: 0.0625rem 0.375rem;
-  border-radius: 0.3125rem;
+  border-radius: var(--radius-5);
   font-family: var(--d-mono);
   font-size: 0.89em;
 }
@@ -327,15 +327,15 @@ function renderTokens(tokens: Token[]): VNode[] {
   margin: 0.5rem 0;
   padding: 0.5rem 0.75rem;
   color: var(--d-text);
-  background: var(--d-code);
-  border-radius: 0 0.25rem 0.25rem 0;
+  background: var(--surface-code);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
 }
 
 .markdown-renderer :deep(.table-wrapper) {
   overflow-x: auto;
   margin: 0.5rem 0;
-  background: var(--d-code);
-  border-radius: 0.75rem;
+  background: var(--surface-code);
+  border-radius: var(--radius-xl);
   border: 1px solid var(--d-border);
   box-shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.25), 0 2px 6px -1px rgba(0, 0, 0, 0.2);
 }
@@ -353,7 +353,8 @@ function renderTokens(tokens: Token[]): VNode[] {
 }
 
 .markdown-renderer :deep(th) {
-  background-color: var(--d-card);
+  /* translucent, so the header shows the table's own ground at every surface opacity */
+  background-color: color-mix(in srgb, var(--d-text) 8%, transparent);
   color: var(--d-text);
   font-weight: 600;
 }
@@ -384,7 +385,7 @@ function renderTokens(tokens: Token[]): VNode[] {
 
 .markdown-renderer :deep(.markdown-image) {
   max-width: 100%;
-  border-radius: 0.25rem;
+  border-radius: var(--radius-md);
 }
 
 .markdown-renderer :deep(.markdown-image-blocked) {
@@ -395,6 +396,6 @@ function renderTokens(tokens: Token[]): VNode[] {
   font-size: 0.85em;
   color: var(--d-muted);
   border: 1px dashed var(--d-border);
-  border-radius: 0.25rem;
+  border-radius: var(--radius-md);
 }
 </style>

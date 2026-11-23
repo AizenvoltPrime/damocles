@@ -223,7 +223,7 @@ onBeforeUnmount(() => {
             size="sm"
             variant="outline"
             data-testid="diff-open-anyway"
-            class="d-press mt-1 h-7 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-3 text-12 hover:border-(--d-accent) hover:bg-(--d-card) [&_svg]:size-3.5"
+            class="d-press mt-1 h-7 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-3 text-12 hover:border-(--d-accent-fill) hover:bg-(--d-card) [&_svg]:size-3.5"
             @click="api.editorTab({ action: 'openFile', tabId: tab.id })"
           >
             <ExternalLink aria-hidden="true" />{{ t('editor.notDisplayed.openAnyway') }}

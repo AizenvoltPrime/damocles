@@ -221,7 +221,7 @@ onUnmounted(() => {
         type="search"
         :placeholder="t('history.search')"
         :aria-label="t('history.search')"
-        class="h-8 w-full rounded-lg border border-(--d-border) bg-(--d-input) ps-8 pe-8 text-12.5 text-(--d-text) outline-none transition-colors placeholder:text-(--d-faint) focus:border-(--d-accent) [&::-webkit-search-cancel-button]:hidden"
+        class="h-8 w-full rounded-lg border border-(--d-border) bg-(--d-input) ps-8 pe-8 text-12.5 text-(--d-text) outline-none transition-colors placeholder:text-(--d-faint) focus:border-(--d-accent-fill) [&::-webkit-search-cancel-button]:hidden"
         data-testid="history-search"
         @input="handleSearchInput"
       >
@@ -266,7 +266,7 @@ onUnmounted(() => {
             :ref="(el) => { renameInputRef = el as HTMLInputElement | null }"
             v-model="renameInputValue"
             type="text"
-            class="h-7 min-w-0 flex-1 rounded-md border border-(--d-border2) bg-(--d-input) px-2 text-xs text-(--d-text) outline-none focus:border-(--d-accent)"
+            class="h-7 min-w-0 flex-1 rounded-md border border-(--d-border2) bg-(--d-input) px-2 text-xs text-(--d-text) outline-none focus:border-(--d-accent-fill)"
             :placeholder="t('session.enterNewName')"
             :aria-label="t('session.renameSession')"
             @keyup.enter="submitRename"
@@ -306,7 +306,7 @@ onUnmounted(() => {
             :ref="(el) => { tagInputRef = el as HTMLInputElement | null }"
             v-model="tagInputValue"
             type="text"
-            class="h-7 min-w-0 flex-1 rounded-md border border-(--d-border2) bg-(--d-input) px-2 text-xs text-(--d-text) outline-none focus:border-(--d-accent)"
+            class="h-7 min-w-0 flex-1 rounded-md border border-(--d-border2) bg-(--d-input) px-2 text-xs text-(--d-text) outline-none focus:border-(--d-accent-fill)"
             :placeholder="t('session.tagPlaceholder')"
             :aria-label="t('session.tagSession')"
             @keyup.enter="submitTag"
@@ -359,7 +359,7 @@ onUnmounted(() => {
             <span
               v-else
               class="size-1.5 shrink-0 rounded-full"
-              :class="selectedSessionId === session.id ? 'bg-(--d-accent)' : 'bg-(--d-faint)'"
+              :class="selectedSessionId === session.id ? 'bg-(--d-accent-fill)' : 'bg-(--d-faint)'"
               aria-hidden="true"
             />
             <span class="flex min-w-0 flex-1 flex-col">
@@ -449,7 +449,7 @@ onUnmounted(() => {
         </button>
         <div
           v-else
-          class="animate-[d-pulse_1.4s_ease-in-out_infinite] text-xs text-(--d-muted)"
+          class="d-pulsing text-xs text-(--d-muted)"
         >
           {{ t('common.loading') }}
         </div>

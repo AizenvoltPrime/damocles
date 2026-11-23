@@ -44,10 +44,10 @@ const ringDash = computed(() => {
 
 const band = computed(() => {
   const { hard, soft, warning } = contextWarningBands(currentSettings.value.autoCompact.triggerPercent);
-  if (contextPercentage.value >= hard) return { color: 'var(--d-danger)', note: t('context.critical') };
-  if (contextPercentage.value >= soft) return { color: 'color-mix(in srgb, var(--d-warning) 50%, var(--d-danger))', note: t('context.soft') };
-  if (contextPercentage.value >= warning) return { color: 'var(--d-warning)', note: t('context.warning') };
-  return { color: 'var(--d-success)', note: null };
+  if (contextPercentage.value >= hard) return { stroke: 'var(--d-danger-fill)', note: t('context.critical') };
+  if (contextPercentage.value >= soft) return { stroke: 'color-mix(in srgb, var(--d-warning-fill) 50%, var(--d-danger-fill))', note: t('context.soft') };
+  if (contextPercentage.value >= warning) return { stroke: 'var(--d-warning-fill)', note: t('context.warning') };
+  return { stroke: 'var(--d-success-fill)', note: null };
 });
 
 const contextLabel = computed(() => `${formatNumber(totalContext.value)} / ${formatNumber(props.stats.contextWindowSize)} · ${contextPercentage.value}%`);
@@ -120,7 +120,7 @@ function formatNumber(num: number): string {
               cy="8"
               :r="RING_RADIUS"
               fill="none"
-              :stroke="band.color"
+              :stroke="band.stroke"
               stroke-width="2.4"
               stroke-linecap="round"
               :stroke-dasharray="ringDash"

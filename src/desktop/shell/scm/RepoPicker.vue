@@ -62,7 +62,7 @@ async function open(): Promise<void> {
     aria-haspopup="menu"
     :aria-label="t('scm.picker.label', { name: visibleText(selected.label), index: selectedIndex + 1, count: view.repos.length })"
     :title="t('scm.picker.title')"
-    class="h-6.5 w-full justify-start gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-2 text-xs font-normal transition-colors hover:border-(--d-accent) hover:bg-(--d-card) [&_svg]:size-3.25"
+    class="h-6.5 w-full justify-start gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-2 text-xs font-normal transition-colors hover:border-(--d-accent-fill) hover:bg-(--d-card) [&_svg]:size-3.25"
     @click="open"
   >
     <FolderGit2

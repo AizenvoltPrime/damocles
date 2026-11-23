@@ -3,11 +3,12 @@ import { useDevicePixelRatio } from '@vueuse/core';
 import { computed } from 'vue';
 import type { IndicatorBox } from '@/composables/useSlidingIndicator';
 
+// The caller sets the fill as --tone on the indicator (`[--tone:var(--d-accent-fill)]`), never as a text color.
 // `solid`: two fixed caps and a middle scaled on X, so only transform moves and the corners never stretch;
-// its currentColor must be opaque, because the pieces overlap by 1px to hide seams.
-// `ring`: currentColor border and tinted fill for a vertical list. Fixed top and bottom caps and a middle scaled on Y,
+// its --tone must be opaque, because the pieces overlap by 1px to hide seams.
+// `ring`: --tone border and tinted fill for a vertical list. Fixed top and bottom caps and a middle scaled on Y,
 // so rows of different heights animate by transform alone; a width change snaps.
-// `soft`: the ring's pieces filled with currentColor and no border; currentColor may be translucent, as those pieces never overlap.
+// `soft`: the ring's pieces filled with --tone and no border; --tone may be translucent, as those pieces never overlap.
 const props = withDefaults(defineProps<{
   box: IndicatorBox | null;
   /** px at the default font, scaled with the root font size like the rem radii it matches; `pill` is half the box height. */
@@ -61,11 +62,11 @@ const pieceClass = computed(() => [
 
 const ringFill = computed(() => (props.variant === 'ring'
   ? {
-    top: 'border border-b-0 border-current bg-[color-mix(in_srgb,currentColor_12%,transparent)]',
-    middle: 'border-x border-current bg-[color-mix(in_srgb,currentColor_12%,transparent)]',
-    bottom: 'border border-t-0 border-current bg-[color-mix(in_srgb,currentColor_12%,transparent)]',
+    top: 'border border-b-0 border-(--tone) bg-(--tone)/12',
+    middle: 'border-x border-(--tone) bg-(--tone)/12',
+    bottom: 'border border-t-0 border-(--tone) bg-(--tone)/12',
   }
-  : { top: 'bg-current', middle: 'bg-current', bottom: 'bg-current' }));
+  : { top: 'bg-(--tone)', middle: 'bg-(--tone)', bottom: 'bg-(--tone)' }));
 </script>
 
 <template>
@@ -96,17 +97,17 @@ const ringFill = computed(() => (props.variant === 'ring'
   >
     <span
       :class="pieceClass"
-      class="bg-current"
+      class="bg-(--tone)"
       :style="{ width: pieces.cap, height: pieces.height, borderTopLeftRadius: pieces.cap, borderBottomLeftRadius: pieces.cap, transform: pieces.start }"
     />
     <span
       :class="pieceClass"
-      class="bg-current"
+      class="bg-(--tone)"
       :style="{ width: `${middleBase}px`, height: pieces.height, transform: pieces.middle }"
     />
     <span
       :class="pieceClass"
-      class="bg-current"
+      class="bg-(--tone)"
       :style="{ width: pieces.cap, height: pieces.height, borderTopRightRadius: pieces.cap, borderBottomRightRadius: pieces.cap, transform: pieces.end }"
     />
   </span>

@@ -142,7 +142,7 @@ onUnmounted(() => {
         <button
           type="button"
           :aria-label="thumbnails[index]?.caption ? t('toolOverlay.openResultImageCaption', { caption: thumbnails[index]?.caption }) : t('toolOverlay.openResultImage', { index: index + 1, count: urls.length })"
-          :class="[BOX, !thumbnails[index]?.style && 'h-28', 'cursor-zoom-in transition-opacity hover:opacity-85 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--d-accent)']"
+          :class="[BOX, !thumbnails[index]?.style && 'h-28', 'cursor-zoom-in transition-opacity hover:opacity-85 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--d-accent-fill)']"
           :style="thumbnails[index]?.style"
           @click="emit('open', url)"
         >

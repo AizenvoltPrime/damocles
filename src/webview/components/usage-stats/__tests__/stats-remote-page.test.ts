@@ -26,6 +26,7 @@ window.damoclesBridge = {
   onConnection: () => () => undefined,
   allowYolo: async () => false,
   queueAction: () => undefined,
+  setModalOpen: () => undefined,
 };
 
 const { default: StatsBreakdown } = await import('../StatsBreakdown.vue');

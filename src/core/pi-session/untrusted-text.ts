@@ -47,6 +47,7 @@ export function stripBidiControls(value: string): string {
   return value.replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '');
 }
 
+// ONE_LINE_NAME in src/shared/themes/limits.ts must refuse exactly the characters the two strips above remove.
 /** Model, server or provider text flattened to one line a person reads, capped by code point; undefined when nothing is left. */
 export function oneLine(text: string, max: number): string | undefined {
   const flat = stripBidiControls(stripControlChars(text)).replace(/\s+/g, ' ').trim();

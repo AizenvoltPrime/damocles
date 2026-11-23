@@ -154,6 +154,10 @@ describe('relayedUserSettingKeys', () => {
     for (const key of [...PREFER_API_KEY_SETTINGS, ...contributed.hostKeys, ...contributed.clientMachineKeys]) expect(keys).not.toContain(key);
     expect(keys).toContain('damocles.memory.judge');
   });
+
+  it("relays the theme tools' switch, which a remote core reads as this computer's before it reaches the theme tools", () => {
+    expect(relayedUserSettingKeys(contributed)).toContain('damocles.desktop.themes.agentTools');
+  });
 });
 
 describe('UserRelays', () => {

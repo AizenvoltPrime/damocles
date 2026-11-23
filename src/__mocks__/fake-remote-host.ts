@@ -4,6 +4,8 @@ import type { ClientSnapshots, ClientTopic, RemoteHost } from '../platform/remot
 import type { PanelHost, TerminalToggle } from '../platform/window-service';
 import type { BrokerAnswer, ClientPending, ClientPolicy, ClientUser, HeldAuth, RelayedMcpServer } from '../shared/remote-user';
 import type { ClientForges } from '../shared/git-credential';
+import type { ThemeShowEnded } from '../shared/themes/relay';
+import type { ThemeInstallPreview, ThemeInstallProgress } from '../shared/themes/install';
 
 type Change = { readonly topic: ClientTopic; readonly clientId?: string; readonly before?: unknown; readonly detached?: true };
 
@@ -20,6 +22,7 @@ export function createFakeRemoteHost(answer: (provider: string, clientId: string
     clientLanguage: new Map<string, { readonly language: 'en' | 'el' }>(),
     clientMcp: new Map<string, readonly RelayedMcpServer[]>(),
     clientForges: new Map<string, ClientForges>(),
+    clientFeatures: new Map<string, readonly string[]>(),
   };
   const mcpPending = new Map<string, ClientPending>();
   const listeners = new Set<(change: Change) => void>();
@@ -44,6 +47,7 @@ export function createFakeRemoteHost(answer: (provider: string, clientId: string
     mcpPending: (id) => mcpPending.get(id),
     mcpClients: () => [...maps.clientMcp.keys()],
     forges: (id) => maps.clientForges.get(id),
+    features: (id) => maps.clientFeatures.get(id),
     onDidChange: (cb) => {
       listeners.add(cb);
       return { dispose: () => { listeners.delete(cb); } };
@@ -56,6 +60,11 @@ export function createFakeRemoteHost(answer: (provider: string, clientId: string
   });
   // a target with no agent proxy until setAgentFolder names one
   let agentFolder: string | undefined;
+  const showEndedListeners = new Set<(ended: ThemeShowEnded & { readonly clientId: string }) => void>();
+  const screenshotGoneListeners = new Set<(gone: { readonly clientId: string; readonly shotId: string }) => void>();
+  const installUpdatedListeners = new Set<(updated: { readonly clientId: string; readonly preview: ThemeInstallPreview }) => void>();
+  const installProgressListeners = new Set<(progress: ThemeInstallProgress & { readonly clientId: string }) => void>();
+  const installExpiredListeners = new Set<(expired: { readonly clientId: string; readonly installId: string }) => void>();
   const remote: RemoteHost = {
     hostId: 'host-1',
     clients,
@@ -79,6 +88,27 @@ export function createFakeRemoteHost(answer: (provider: string, clientId: string
     forgeDescribe: vi.fn(async () => ({ ok: true as const, project: '', target: { serverId: '', repoPath: '', accountId: '' } })),
     mcpResources: vi.fn(async () => ({ resources: [] })),
     mcpReadResource: vi.fn(async () => ({ contents: [] })),
+    themeCall: vi.fn(async () => undefined) as unknown as RemoteHost['themeCall'],
+    onThemeShowEnded: (listener) => {
+      showEndedListeners.add(listener);
+      return { dispose: () => { showEndedListeners.delete(listener); } };
+    },
+    onThemeScreenshotGone: (listener) => {
+      screenshotGoneListeners.add(listener);
+      return { dispose: () => { screenshotGoneListeners.delete(listener); } };
+    },
+    onThemeInstallUpdated: (listener) => {
+      installUpdatedListeners.add(listener);
+      return { dispose: () => { installUpdatedListeners.delete(listener); } };
+    },
+    onThemeInstallProgress: (listener) => {
+      installProgressListeners.add(listener);
+      return { dispose: () => { installProgressListeners.delete(listener); } };
+    },
+    onThemeInstallExpired: (listener) => {
+      installExpiredListeners.add(listener);
+      return { dispose: () => { installExpiredListeners.delete(listener); } };
+    },
   };
   const set = <K extends keyof typeof maps>(topic: K, clientId: string, value: (typeof maps)[K] extends Map<string, infer V> ? V | undefined : never): void => {
     const map = maps[topic] as Map<string, unknown>;
@@ -116,6 +146,24 @@ export function createFakeRemoteHost(answer: (provider: string, clientId: string
     },
     setAgentFolder: (folder: string | undefined): void => {
       agentFolder = folder;
+    },
+    // a client's user.theme.showEnded, as the daemon delivers it with that client as the actor
+    themeShowEnded: (ended: ThemeShowEnded & { readonly clientId: string }): void => {
+      for (const listener of [...showEndedListeners]) listener(ended);
+    },
+    // a client's user.theme.screenshotGone, as the daemon delivers it with that client as the actor
+    themeScreenshotGone: (gone: { readonly clientId: string; readonly shotId: string }): void => {
+      for (const listener of [...screenshotGoneListeners]) listener(gone);
+    },
+    // a client's user.theme.installUpdated and installProgress, as the daemon delivers them with that client as the actor
+    themeInstallUpdated: (updated: { readonly clientId: string; readonly preview: ThemeInstallPreview }): void => {
+      for (const listener of [...installUpdatedListeners]) listener(updated);
+    },
+    themeInstallProgress: (progress: ThemeInstallProgress & { readonly clientId: string }): void => {
+      for (const listener of [...installProgressListeners]) listener(progress);
+    },
+    themeInstallExpired: (expired: { readonly clientId: string; readonly installId: string }): void => {
+      for (const listener of [...installExpiredListeners]) listener(expired);
     },
   };
 }

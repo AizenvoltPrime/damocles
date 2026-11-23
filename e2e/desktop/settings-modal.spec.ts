@@ -458,6 +458,8 @@ test('on a fresh install with no project the modal opens on the chat main create
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole('textbox')).toHaveAttribute('type', 'password');
   await dialog.getByRole('textbox').fill('sk-e2e-fresh-install-prompt');
+  // a trusted dialog takes no answer until it has been shown for its hold
+  await expect(dialog.getByTestId('extension-ui-body')).toHaveAttribute('data-trusted-ready', 'true');
   await dialog.getByRole('textbox').press('Enter');
   await expect(dialog).toBeHidden();
   expect(await hostPromptAnswer(app)).toBe('sk-e2e-fresh-install-prompt');

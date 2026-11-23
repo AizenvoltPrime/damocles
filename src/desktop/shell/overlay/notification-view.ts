@@ -35,11 +35,11 @@ interface ToneClasses {
 }
 
 export const TONE_CLASSES: Readonly<Record<Tone, ToneClasses>> = {
-  warning: { cardLead: 'text-(--d-warning)', rowLead: 'text-(--d-warning-text)', badge: 'bg-(--d-warning)', lifeBar: 'bg-(--d-warning)', pill: 'bg-(--d-warning)/16', pillText: 'text-(--d-warning-text)' },
-  accent: { cardLead: 'text-(--d-accent)', rowLead: 'text-(--d-accent-text)', badge: 'bg-(--d-accent)', lifeBar: 'bg-(--d-accent)', pill: 'bg-(--d-accent)/16', pillText: 'text-(--d-accent-text)' },
-  info: { cardLead: 'text-(--d-info)', rowLead: 'text-(--d-info-text)', badge: 'bg-(--d-info)', lifeBar: 'bg-(--d-info)', pill: 'bg-(--d-info)/16', pillText: 'text-(--d-info-text)' },
-  success: { cardLead: 'text-(--d-success)', rowLead: 'text-(--d-success-text)', badge: 'bg-(--d-success)', lifeBar: 'bg-(--d-success)', pill: 'bg-(--d-success)/16', pillText: 'text-(--d-success-text)' },
-  danger: { cardLead: 'text-(--d-danger)', rowLead: 'text-(--d-danger-text)', badge: 'bg-(--d-danger)', lifeBar: 'bg-(--d-danger)', pill: 'bg-(--d-danger)/16', pillText: 'text-(--d-danger-text)' },
+  warning: { cardLead: 'text-(--d-warning)', rowLead: 'text-(--d-warning-text)', badge: 'bg-(--d-warning-fill)', lifeBar: 'bg-(--d-warning-fill)', pill: 'bg-(--d-warning-fill)/16', pillText: 'text-(--d-warning-text)' },
+  accent: { cardLead: 'text-(--d-accent)', rowLead: 'text-(--d-accent-text)', badge: 'bg-(--d-accent-fill)', lifeBar: 'bg-(--d-accent-fill)', pill: 'bg-(--d-accent-fill)/16', pillText: 'text-(--d-accent-text)' },
+  info: { cardLead: 'text-(--d-info)', rowLead: 'text-(--d-info-text)', badge: 'bg-(--d-info-fill)', lifeBar: 'bg-(--d-info-fill)', pill: 'bg-(--d-info-fill)/16', pillText: 'text-(--d-info-text)' },
+  success: { cardLead: 'text-(--d-success)', rowLead: 'text-(--d-success-text)', badge: 'bg-(--d-success-fill)', lifeBar: 'bg-(--d-success-fill)', pill: 'bg-(--d-success-fill)/16', pillText: 'text-(--d-success-text)' },
+  danger: { cardLead: 'text-(--d-danger)', rowLead: 'text-(--d-danger-text)', badge: 'bg-(--d-danger-fill)', lifeBar: 'bg-(--d-danger-fill)', pill: 'bg-(--d-danger-fill)/16', pillText: 'text-(--d-danger-text)' },
 };
 
 // The prototype's NT_KIND: badge icon, colour and action per kind.

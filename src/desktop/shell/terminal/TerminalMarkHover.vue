@@ -97,7 +97,7 @@ watch([() => props.hover, () => props.width, () => props.height], async ([hover]
           <span
             aria-hidden="true"
             class="size-1.5 shrink-0 rounded-full"
-            :class="hover.status === 'running' ? 'bg-(--d-accent)' : hover.status === 'success' ? 'bg-(--d-success)' : 'bg-(--d-danger)'"
+            :class="hover.status === 'running' ? 'bg-(--d-accent-fill)' : hover.status === 'success' ? 'bg-(--d-success-fill)' : 'bg-(--d-danger-fill)'"
           />
           <span
             data-testid="terminal-mark-hover-status"

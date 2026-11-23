@@ -40,7 +40,7 @@ function focusCancel(event: Event): void {
   (cancelButton.value?.$el as HTMLElement | undefined)?.focus();
 }
 
-const CHECKBOX = 'size-3.75 shrink-0 rounded-xs border-(--d-border2) data-[state=checked]:border-(--d-accent) data-[state=checked]:bg-(--d-accent) data-[state=checked]:text-(--d-on-accent) [&_svg]:size-2.75';
+const CHECKBOX = 'size-3.75 shrink-0 rounded-xs border-(--d-border2) data-[state=checked]:border-(--d-accent-fill) data-[state=checked]:bg-(--d-accent-fill) data-[state=checked]:text-(--d-on-accent) [&_svg]:size-2.75';
 </script>
 
 <template>
@@ -50,7 +50,7 @@ const CHECKBOX = 'size-3.75 shrink-0 rounded-xs border-(--d-border2) data-[state
   >
     <AlertDialogContent
       data-testid="remove-server-dialog"
-      class="max-w-lg gap-0 overflow-hidden border-(--d-danger)/50 p-0"
+      class="max-w-lg gap-0 overflow-hidden border-(--d-danger-fill)/50 p-0"
       @open-auto-focus="focusCancel"
     >
       <ConfirmDialogLayout

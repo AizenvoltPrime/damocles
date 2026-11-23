@@ -2,8 +2,27 @@
 // Desktop-only settings, merged into the desktop settings store's contributed set; they never enter package.json.
 
 export const THEME_SETTING = 'damocles.desktop.theme';
+// Must match PREFERRED_LOOK_SETTINGS in src/core/themes/index.ts, whose picks write them.
+export const THEMES_DARK_SETTING = 'damocles.desktop.themes.dark';
+export const THEMES_LIGHT_SETTING = 'damocles.desktop.themes.light';
+// equals TOOL_GROUP_SETTINGS.theme in shared/types/tools.ts
+export const THEMES_AGENT_TOOLS_SETTING = 'damocles.desktop.themes.agentTools';
+// equals THEMES_APPLY_MODE_SETTING in core/pi-session/tools/theme-tools.ts, and THEME_APPLY_MODES in shared/themes/agent.ts
+export const THEMES_APPLY_MODE_SETTING = 'damocles.desktop.themes.applyMode';
+export const THEMES_APPLY_MODES = ['preview', 'onTheFly'] as const;
+// equals SHOW_WALLPAPERS_SETTING in core/themes/index.ts, whose agent change may only turn it off
+export const SHOW_WALLPAPERS_SETTING = 'damocles.desktop.themes.showWallpapers';
+export const WALLPAPER_CONTRAST_SETTING = 'damocles.desktop.themes.wallpaperContrast';
+export const WALLPAPER_CONTRAST_MODES = ['raiseDim', 'warn'] as const;
+// Must match CHARACTER_MOTIONS in src/shared/themes/characters.ts; this file imports nothing.
+export const CHARACTER_MOTION_SETTING = 'damocles.desktop.themes.characterMotion';
+export const CHARACTER_MOTIONS = ['always', 'hover', 'active'] as const;
+// Must match THEMES_STORE_SETTING in src/core/themes/store/install.ts.
+export const THEMES_STORE_SETTING = 'damocles.desktop.themes.store';
 export const REDUCE_MOTION_SETTING = 'damocles.desktop.reduceMotion';
 export const FILE_ICON_THEME_SETTING = 'damocles.desktop.fileIconTheme';
+// Must match TEXT_SIZE_RANGE in src/shared/themes/style.ts; this file imports nothing.
+export const TEXT_SIZE_SETTING = 'damocles.desktop.textSize';
 export const LANGUAGE_SETTING = 'damocles.desktop.language';
 export const RESTORE_LAYOUT_SETTING = 'damocles.desktop.restoreLayout';
 export const NOTIFICATIONS_SETTING = 'damocles.desktop.notifications.enabled';
@@ -242,6 +261,78 @@ export const DESKTOP_CONFIGURATION: Readonly<Record<string, DesktopSettingProper
     default: 'system',
     scope: 'application',
     description: 'Color theme of the desktop app.',
+  },
+  [THEMES_DARK_SETTING]: {
+    type: 'string',
+    default: 'damocles',
+    scope: 'application',
+    description: 'The theme whose dark look shows when the desktop app is dark: damocles, or the id of a theme in ~/.damocles/themes/themes. A missing or broken theme shows the Damocles look.',
+  },
+  [THEMES_LIGHT_SETTING]: {
+    type: 'string',
+    default: 'damocles',
+    scope: 'application',
+    description: 'The theme whose light look shows when the desktop app is light: damocles, or the id of a theme in ~/.damocles/themes/themes. A missing or broken theme shows the Damocles look.',
+  },
+  [THEMES_AGENT_TOOLS_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: "The agent's theme tools: reading the desktop app's themes and proposing theme changes and schedules. The agent loads them when it needs them; a change reaches the window only through a card you answer or the keep-changes banner.",
+  },
+  [THEMES_APPLY_MODE_SETTING]: {
+    type: 'string',
+    enum: THEMES_APPLY_MODES,
+    enumDescriptions: [
+      "Preview first: the agent's theme change waits on a card with Apply, Discard and Change.",
+      'Apply on the fly: the change shows at once with a 15 second banner to keep or revert it. In plan mode the card shows instead.',
+    ],
+    default: 'preview',
+    scope: 'application',
+    description: "How the agent's theme changes reach the window. Yours alone: the agent cannot change it.",
+  },
+  [SHOW_WALLPAPERS_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: "Show the wallpapers of the shown theme behind the window's panels. Ctrl+Alt+Shift+W (Cmd+Alt+Shift+W on macOS) turns them off or on from anywhere. The agent may turn them off, never on. Wallpapers stay off under Windows contrast themes, without GPU compositing and in safe start.",
+  },
+  [WALLPAPER_CONTRAST_SETTING]: {
+    type: 'string',
+    enum: WALLPAPER_CONTRAST_MODES,
+    enumDescriptions: [
+      'Raise dim: a wallpaper is dimmed further until muted text over it reads at 4.5:1.',
+      'Warn only: the wallpaper keeps its dim and the theme editor says where text reads below 4.5:1.',
+    ],
+    default: 'raiseDim',
+    scope: 'application',
+    description: 'How text stays readable over wallpapers. Yours alone: the agent cannot change it.',
+  },
+  [CHARACTER_MOTION_SETTING]: {
+    type: 'string',
+    enum: CHARACTER_MOTIONS,
+    enumDescriptions: [
+      'Always: every project character moves with its state.',
+      'On hover: a character moves while the pointer is over it or its row.',
+      "Selected project: only the selected project's character moves.",
+    ],
+    default: 'always',
+    scope: 'application',
+    description: "When a theme's project characters move. Reduce motion and Windows contrast themes hold every character on its first frame. Yours alone: the agent cannot change it.",
+  },
+  [THEMES_STORE_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: "The community theme store: the Browse tab of Settings › Appearance lists its signed list from GitHub, and while a store theme is installed the list is checked beside the app's own update check: the automatic checks, under \"Check for updates automatically\", and Help › Check for Updates… and About's check. Off: Damocles never fetches the store list.",
+  },
+  [TEXT_SIZE_SETTING]: {
+    type: 'integer',
+    default: 13,
+    minimum: 11,
+    maximum: 20,
+    scope: 'application',
+    description: 'Text size of the desktop app, in pixels. Spacing and layout scale with it. Yours alone: a theme changes fonts, spacing and corners, never the size of text.',
   },
   [REDUCE_MOTION_SETTING]: {
     type: 'boolean',

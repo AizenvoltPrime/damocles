@@ -2,10 +2,10 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication, Page } from '@playwright/test';
 import { expect, test } from './support/fixtures';
-import { overlayPage, selectedProjectKey, shellPage, shellState } from './support/shell';
+import { overlayPage, selectedProjectKey, shellPage, shellState, viewBounds } from './support/shell';
 import { chooseMenuItem, overlayMenu } from './support/overlay';
 import { closeSettingsModal, openSettingsModal, setContentSize, settingsRow } from './support/settings';
-import { openProjectChat, settled } from './support/screenshots';
+import { hostMessage, openProjectChat, settled } from './support/screenshots';
 import { activeTabTopRow, openInEditor, toggleTerminal } from './support/editor';
 import { initRepo } from './support/git';
 import { openScmProject, scmSection } from './support/scm';
@@ -15,17 +15,6 @@ import { DEFAULT_GRID_LAYOUT, MIN_SECTION_SIZE, type GridPane, type GridSlot } f
 
 async function slots(app: ElectronApplication): Promise<Record<GridSlot, GridPane>> {
   return { ...(await shellState(app)).layout.grid.slots };
-}
-
-/** The selected chat view's bounds in window DIPs, as main placed it. */
-async function chatViewBounds(app: ElectronApplication, chat: Page): Promise<Electron.Rectangle> {
-  return app.evaluate(({ BaseWindow }, url) => {
-    for (const window of BaseWindow.getAllWindows()) {
-      const view = (window.contentView.children as Electron.WebContentsView[]).find((child) => child.webContents?.getURL() === url);
-      if (view) return view.getBounds();
-    }
-    throw new Error(`no view for ${url}`);
-  }, chat.url());
 }
 
 /**
@@ -62,9 +51,32 @@ test('the default grid is chat in main, editor in side, terminal hidden in botto
   await expect(shell.getByTestId('editor-empty')).toContainText('Click a file in the sidebar to open it here.');
   const slot = await shell.getByTestId('chat-slot').boundingBox();
   await expect.poll(async () => {
-    const bounds = await chatViewBounds(app, chat);
+    const bounds = await viewBounds(app, chat);
     return Math.abs(bounds.x - slot!.x) <= 2 && Math.abs(bounds.width - slot!.width) <= 2;
   }).toBe(true);
+});
+
+test("a chat page's modal layer scrims the grip gutter beside it, which takes no input until the layer closes", async ({ home, launch }) => {
+  const { app } = await launch();
+  const chat = await openProjectChat(app, home.project);
+  const shell = await shellPage(app);
+  const gutter = shell.getByTestId('chat-gutter');
+  const scrim = shell.getByTestId('chat-gutter-scrim');
+  await expect(scrim).toHaveCount(0);
+
+  await hostMessage(app, chat, { type: 'extensionUiRequest', requestId: 'e2e-modal', kind: 'confirm', title: 'Proceed?' });
+  await expect(chat.getByTestId('extension-ui-dialog')).toBeVisible();
+  await expect(scrim).toBeVisible();
+  await expect(gutter).toHaveAttribute('inert', '');
+  // the whole gutter, the grip's header cell included, in the page scrim's own color
+  expect(await scrim.boundingBox()).toEqual(await gutter.boundingBox());
+  const pageScrim = await chat.locator('.d-scrim').first().evaluate((element) => getComputedStyle(element).backgroundColor);
+  expect(await scrim.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(pageScrim);
+
+  await hostMessage(app, chat, { type: 'extensionUiCancel', requestId: 'e2e-modal' });
+  await expect(chat.getByTestId('extension-ui-dialog')).toBeHidden();
+  await expect(scrim).toHaveCount(0);
+  await expect(gutter).not.toHaveAttribute('inert');
 });
 
 test('at a larger font the grid never reaches past a window narrower than every minimum; its two columns share the room', async ({ home, launch }) => {

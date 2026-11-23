@@ -185,9 +185,9 @@ const deleteOffsets = computed(() => {
   return { submodules, commits: submodules + request.submoduleChanges.length };
 });
 
-const DIALOG_BUTTON = 'd-press h-6.5 shrink-0 gap-1 rounded-7 border-(--d-border2) bg-transparent px-2 text-11.5 font-normal text-(--d-text) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 [&_svg]:size-3';
+const DIALOG_BUTTON = 'd-press h-6.5 shrink-0 gap-1 rounded-7 border-(--d-border2) bg-transparent px-2 text-11.5 font-normal text-(--d-text) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 [&_svg]:size-3';
 // Prune and Delete remove what cannot be brought back; danger text on a danger tint within D48's 22%.
-const DANGER_BUTTON = `${DIALOG_BUTTON} border-(--d-danger)/40 text-(--d-danger-text) hover:border-(--d-danger) hover:bg-(--d-danger)/12 hover:text-(--d-danger-text)`;
+const DANGER_BUTTON = `${DIALOG_BUTTON} border-(--d-danger-fill)/40 text-(--d-danger-text) hover:border-(--d-danger-fill) hover:bg-(--d-danger-fill)/12 hover:text-(--d-danger-text)`;
 </script>
 
 <template>
@@ -285,7 +285,7 @@ const DANGER_BUTTON = `${DIALOG_BUTTON} border-(--d-danger)/40 text-(--d-danger-
           :disabled="request.deleteBranchLocked"
           :aria-describedby="request.deleteBranchLocked ? lockedId : undefined"
           data-testid="worktree-dialog-delete-branch"
-          class="mt-0.5 size-3.75 shrink-0 rounded-xs border-(--d-border2) data-[state=checked]:border-(--d-accent) data-[state=checked]:bg-(--d-accent) data-[state=checked]:text-(--d-on-accent) [&_svg]:size-2.75"
+          class="mt-0.5 size-3.75 shrink-0 rounded-xs border-(--d-border2) data-[state=checked]:border-(--d-accent-fill) data-[state=checked]:bg-(--d-accent-fill) data-[state=checked]:text-(--d-on-accent) [&_svg]:size-2.75"
           @update:checked="deleteBranch = $event"
         />
         <label
@@ -333,14 +333,14 @@ const DANGER_BUTTON = `${DIALOG_BUTTON} border-(--d-danger)/40 text-(--d-danger-
           :placeholder="t('worktree.dialog.commitMessage')"
           :aria-busy="generating || undefined"
           :readonly="generating"
-          class="block min-h-0 w-full resize-none rounded-8 border-(--d-border2) bg-(--d-input) px-2.5 py-2 text-12.5 text-(--d-text) placeholder:text-(--d-faint) focus-visible:border-(--d-accent) focus-visible:ring-0 focus-visible:ring-offset-0"
+          class="block min-h-0 w-full resize-none rounded-8 border-(--d-border2) bg-(--d-input) px-2.5 py-2 text-12.5 text-(--d-text) placeholder:text-(--d-faint) focus-visible:border-(--d-accent-fill) focus-visible:ring-0 focus-visible:ring-offset-0"
           @update:model-value="message = String($event)"
           @keydown.ctrl.enter.prevent="choose(1)"
           @keydown.meta.enter.prevent="choose(1)"
         />
         <span
           v-if="generating"
-          class="d-sheen text-(--d-accent)"
+          class="d-sheen [--tone:var(--d-accent-fill)]"
           aria-hidden="true"
         />
       </div>

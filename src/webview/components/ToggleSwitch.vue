@@ -21,7 +21,7 @@ const emit = defineEmits<{
   <SwitchRoot
     :model-value="checked"
     :disabled="disabled === true"
-    class="relative flex flex-none items-center rounded-full bg-(--d-faint) p-0.75 before:absolute before:inset-0 before:rounded-full before:bg-(--d-accent) before:opacity-0 before:transition-opacity before:duration-200 data-[state=checked]:before:opacity-100 disabled:opacity-45"
+    class="relative flex flex-none items-center rounded-full bg-(--d-faint) p-0.75 before:absolute before:inset-0 before:rounded-full before:bg-(--d-accent-fill) before:opacity-0 before:transition-opacity before:duration-200 data-[state=checked]:before:opacity-100 disabled:opacity-45"
     :class="size === 'md' ? 'h-5.5 w-9.5' : 'h-5 w-8.5'"
     @update:model-value="(value: boolean) => emit('update:checked', value)"
   >

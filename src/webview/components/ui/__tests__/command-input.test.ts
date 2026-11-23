@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
-import { defineComponent, h } from 'vue';
-import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
+import { defineComponent, h, ref } from 'vue';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { stackLayout } from './list-layout';
 
 const platform = vi.hoisted(() => ({ mac: false }));
@@ -225,3 +225,55 @@ function highlightedInView(viewPx: number): boolean {
   const rect = document.querySelector('[data-highlighted]')!.getBoundingClientRect();
   return rect.top >= 0 && rect.bottom <= viewPx;
 }
+
+describe('CommandEmpty', () => {
+  /** A Command whose caller filters: the input's text is bound, and the caller renders only the items that match. */
+  function callerFiltered(): { type: (text: string) => Promise<void> } {
+    const search = ref('');
+    const host = defineComponent({
+      setup: () => () => h(Command, { modelValue: '' }, () => [
+        h(CommandInput, { modelValue: search.value, 'onUpdate:modelValue': (value: string) => { search.value = value; } }),
+        h(CommandList, () => [
+          h(CommandEmpty, () => 'Nothing matches'),
+          h(CommandGroup, () => VALUES.filter((value) => value.includes(search.value)).map((value) => h(CommandItem, { key: value, value }, () => value))),
+        ]),
+      ]),
+    });
+    mounted.push(mount(host, { attachTo: document.body }));
+    return {
+      type: async (text) => {
+        input().value = text;
+        input().dispatchEvent(new Event('input', { bubbles: true }));
+        await flushPromises();
+      },
+    };
+  }
+
+  it('shows for a caller that filters its own items once the typed text leaves none, and not while the field is empty', async () => {
+    const list = callerFiltered();
+    await flushPromises();
+    expect(document.body.textContent).not.toContain('Nothing matches');
+    await list.type('zz');
+    expect(document.querySelectorAll('[role="option"]')).toHaveLength(0);
+    expect(document.body.textContent).toContain('Nothing matches');
+    await list.type('al');
+    expect([...document.querySelectorAll('[role="option"]')].map((option) => option.textContent?.trim())).toEqual(['alpha']);
+    expect(document.body.textContent).not.toContain('Nothing matches');
+  });
+
+  it('shows for the list\'s own filter when the search matches nothing', async () => {
+    const host = defineComponent({
+      setup: () => () => h(Command, { modelValue: '' }, () => [
+        h(CommandInput, { placeholder: 'Filter' }),
+        h(CommandList, () => [h(CommandEmpty, () => 'Nothing matches'), h(CommandGroup, () => VALUES.map((value) => h(CommandItem, { key: value, value }, () => value)))]),
+      ]),
+    });
+    mounted.push(mount(host, { attachTo: document.body }));
+    await flushPromises();
+    expect(document.body.textContent).not.toContain('Nothing matches');
+    input().value = 'zz';
+    input().dispatchEvent(new Event('input', { bubbles: true }));
+    await flushPromises();
+    expect(document.body.textContent).toContain('Nothing matches');
+  });
+});

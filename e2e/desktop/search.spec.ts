@@ -11,6 +11,7 @@ import { writeUserSettings } from './support/hermetic';
 import { selectedProjectKey } from './support/shell';
 import { clickSectionAction, sectionAction } from './support/shell-ui';
 import { setSection } from './support/scm';
+import { cssToken, glyphButtons, menuItemHeight, useCompactTheme } from './support/themes';
 
 const searchQuery = (shell: Page): Locator => shell.getByTestId('search-query');
 const fileRow = (shell: Page, relativePath: string): Locator => shell.locator(`[data-testid="search-row"][data-row-kind="file"][data-path="${relativePath}"]`);
@@ -662,4 +663,35 @@ test('Find in Folder... on a Files folder opens Search with that folder as files
   await filesRow(shell, 'src').focus();
   await shell.keyboard.press('Shift+Alt+F');
   await expect(shell.getByTestId('search-include')).toHaveValue('./src');
+});
+
+test('in a compact theme a result\'s replace and dismiss buttons keep their size inside its row, and the row\'s menu offers both at full size', async ({ foreground: _foreground, home, launch }) => {
+  useCompactTheme(home);
+  write(home.project, 'src/a.ts', 'needle one\nneedle two\n');
+  const { app } = await launch();
+  await openProjectChat(app, home.project);
+  const shell = await openSearch(app, true);
+  await expect.poll(() => cssToken(shell, '--d-hit-min')).toBe('1.5rem');
+  await search(shell, 'needle');
+  const row = matchRows(shell, 'src/a.ts').first();
+  await row.hover();
+  await expect(row.getByTestId('search-row-dismiss')).toBeVisible();
+  await shell.screenshot({ path: test.info().outputPath('compact-search-rows.png') });
+  // the row is 1.375rem; its glyph buttons opt out of the 1.5rem floor and stay 1.25rem, as in the default theme
+  expect(await glyphButtons(row)).toEqual([{ size: 1.25, inRow: true }, { size: 1.25, inRow: true }]);
+  // what the floor does to a button without the opt-out: taller than its row
+  await row.evaluate((element) => {
+    for (const button of element.querySelectorAll('button')) button.classList.remove('d-hit-free');
+  });
+  expect(await glyphButtons(row)).toEqual([{ size: 1.5, inRow: false }, { size: 1.5, inRow: false }]);
+
+  // the same two commands in the row's menu, whose items do keep the floor
+  const overlay = await overlayPage(app);
+  await row.click({ button: 'right' });
+  await expect(overlayMenu(overlay)).toBeVisible();
+  await expect(menuItem(overlay, 'replace')).toBeVisible();
+  await expect(menuItem(overlay, 'dismiss')).toBeVisible();
+  expect(await menuItemHeight(overlay)).toBeGreaterThanOrEqual(1.5 - 0.01);
+  await menuItem(overlay, 'dismiss').click();
+  await expect(matchRows(shell, 'src/a.ts')).toHaveCount(1);
 });

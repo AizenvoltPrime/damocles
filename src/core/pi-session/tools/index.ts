@@ -54,6 +54,8 @@ import { createGenerateImageTool, type ImageToolDeps } from './image-tools';
 import { IMAGE_PI_TOOL_NAMES } from './image-tool-specs';
 import { FORGE_PI_TOOL_NAMES } from './forge-tool-specs';
 import { buildForgeTools, type ForgeToolsPort } from './forge-tools';
+import { THEME_PI_TOOL_NAMES } from './theme-tool-specs';
+import { buildThemeToolsOn, type ThemeBackend, type ThemeFlowDeps } from './theme-tools';
 import { createBrowserRequestInputTool } from './browser-request-input-tool';
 import { buildWebPiTools } from '../web-access';
 import { buildSubagentTools, NO_USER_INPUT, type UserInput } from './subagent-tools';
@@ -128,6 +130,8 @@ export interface CustomToolDeps {
   imageGeneration?: Pick<ImageToolDeps, 'getRuntime' | 'getModelId'>;
   /** The chat's GitHub and GitLab tools; built while inert, like the web tools, for the chat and every agent it starts. */
   forgeTools?: ForgeToolsPort;
+  /** The desktop theme tools; only the primary session of this computer's desktop core passes it, never a nested agent. */
+  themeTools?: ThemeFlowDeps & { readonly backend: ThemeBackend };
   /** Whether the multi-agent Team feature is live (`teamService` present AND `damocles.team.enabled`).
    *  Selects whether the team rung appears in the EnterPlanMode guidance's delivery-mechanism ladder. */
   isTeamEnabled?: () => boolean;
@@ -187,6 +191,8 @@ export interface ModuleToolNameDeps {
   imageEligible: boolean;
   /** The chat has GitHub and GitLab tools (a desktop core) AND `damocles.desktop.forge.agentTools`, computed by the caller. */
   forgeEligible: boolean;
+  /** The chat has the theme tools (this computer's desktop core) AND `damocles.desktop.themes.agentTools`, computed by the caller. */
+  themeEligible: boolean;
 }
 
 /**
@@ -300,6 +306,12 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
     tools.push(...buildForgeTools(deps.forgeTools).map(abortableTool));
   }
 
+  // Built while inert: whether they are active follows the setting. Not wrapped in abortableTool: each ends its own waits on
+  // the turn's abort and settles its card, its stage and its draft, which an orphaned call would leave behind.
+  if (deps.themeTools) {
+    tools.push(...buildThemeToolsOn(deps.themeTools.backend, deps.themeTools));
+  }
+
   // Built while inert, like the web tools: whether they are active follows the resource servers.
   if (mcpResources) {
     tools.push(...createMcpResourceTools({
@@ -352,5 +364,6 @@ export function moduleToolNames(deps: ModuleToolNameDeps): string[] {
   if (deps.browserEnabled) names.push(...BROWSER_PI_TOOL_NAMES);
   if (deps.imageEligible) names.push(...IMAGE_PI_TOOL_NAMES);
   if (deps.forgeEligible) names.push(...FORGE_PI_TOOL_NAMES);
+  if (deps.themeEligible) names.push(...THEME_PI_TOOL_NAMES);
   return names;
 }

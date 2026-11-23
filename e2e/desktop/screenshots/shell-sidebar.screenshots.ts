@@ -7,7 +7,7 @@ import { startOpenAIStub } from '../support/openai-stub';
 import { answerTagPicker, confirmDialog, overlayMenu, readyOverlay } from '../support/overlay';
 import { openProjectChat, saveScreenshot, settled, showTheme, THEMES } from '../support/screenshots';
 import { setContentSize } from '../support/settings';
-import { shellState } from '../support/shell';
+import { onMainWindow, shellState } from '../support/shell';
 import { chatRow, clickChat, clickRowAction, clickSectionAction, readyShell } from '../support/shell-ui';
 import { chatInput, sendAndAwaitEcho } from '../support/ui';
 
@@ -43,7 +43,7 @@ async function captureOverlay(app: ElectronApplication, overlay: Page, testInfo:
   await saveScreenshot(overlay, testInfo, name);
   await overlay.keyboard.press('Escape');
   await expect(popup(overlay)).toHaveCount(0);
-  await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.webContents.isFocused())).toBe(true);
+  await expect.poll(() => onMainWindow(app, (win) => win.webContents.isFocused())).toBe(true);
 }
 
 test('the sidebar in Dark and Light, its row actions, chat menus and delete warnings', async ({ foreground: _foreground, home, launch }, testInfo) => {

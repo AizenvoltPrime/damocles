@@ -6,10 +6,10 @@
  */
 
 /** Subsystem a tool belongs to. `core` tools are always on; the rest gate on a subsystem flag. */
-export type ToolGroup = 'core' | 'memory' | 'compass' | 'browser' | 'web' | 'image' | 'forge' | 'subagents' | 'team' | 'design';
+export type ToolGroup = 'core' | 'memory' | 'compass' | 'browser' | 'web' | 'image' | 'forge' | 'theme' | 'subagents' | 'team' | 'design';
 
 /** The groups with a master switch. */
-export type SwitchableToolGroup = Extract<ToolGroup, 'memory' | 'compass' | 'browser' | 'web' | 'team' | 'image' | 'forge' | 'design'>;
+export type SwitchableToolGroup = Extract<ToolGroup, 'memory' | 'compass' | 'browser' | 'web' | 'team' | 'image' | 'forge' | 'theme' | 'design'>;
 
 /** The damocles.* setting each group's master switch writes. */
 export const TOOL_GROUP_SETTINGS: Readonly<Record<SwitchableToolGroup, string>> = {
@@ -21,6 +21,8 @@ export const TOOL_GROUP_SETTINGS: Readonly<Record<SwitchableToolGroup, string>> 
   image: 'damocles.imageGeneration.enabled',
   // equals FORGE_AGENT_TOOLS_SETTING in desktop/local-services/desktop-configuration.ts, which takes no imports
   forge: 'damocles.desktop.forge.agentTools',
+  // equals THEMES_AGENT_TOOLS_SETTING in desktop/local-services/desktop-configuration.ts
+  theme: 'damocles.desktop.themes.agentTools',
   design: 'damocles.design.enabled',
 };
 
@@ -56,8 +58,9 @@ export function toolsDisabledWith(held: unknown, toolName: string, enabled: bool
 /**
  * Why a group cannot run. Image: no model chosen, a model pi's image catalog does not have, or no OpenRouter credential.
  * GitHub and GitLab: no account on the computer whose accounts the chat uses, or that computer's servers are not read yet.
+ * Theme, in a chat on a remote host: the Damocles app the tools change is closed, or too old to be changed from there.
  */
-export type ToolGroupUnavailableReason = 'noModel' | 'unknownModel' | 'noOpenRouterKey' | 'noForgeAccount' | 'forgeServersUnread';
+export type ToolGroupUnavailableReason = 'noModel' | 'unknownModel' | 'noOpenRouterKey' | 'noForgeAccount' | 'forgeServersUnread' | 'themeAppClosed' | 'themeAppOutdated';
 
 /** A tool's static identity: its active-set name, panel label, blurb, group, and whether it toggles. */
 export interface ToolCatalogEntry {
@@ -84,7 +87,7 @@ export interface ToolGroupStatus {
   enabled: boolean;
   /** Whether the subsystem is wired into this session (always true for core). */
   available: boolean;
-  /** Set only on the image and forge groups, and only when `available` is false. */
+  /** Set only on the image, forge and theme groups, and only when `available` is false. */
   unavailableReason?: ToolGroupUnavailableReason;
   /** Set only on a daemon's core, when the host's own settings file holds the group's key: the switch cannot change it there. */
   setOnHost?: true;

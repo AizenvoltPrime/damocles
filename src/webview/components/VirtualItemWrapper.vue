@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, computed } from 'vue';
+import { onMounted, onUnmounted, provide, ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { CircleAlert, Loader } from 'lucide-vue-next';
 import type { VirtualItem } from '@/composables/useVirtualizedMessages';
@@ -24,6 +24,7 @@ import DesignResultCard from './design/DesignResultCard.vue';
 import DesignBriefNote from './design/DesignBriefNote.vue';
 import { errorRowText } from '@/composables/useLocalizedText';
 import { useForgeRefusalStore } from '@/stores/useForgeRefusalStore';
+import { IN_TRANSCRIPT } from '@/composables/transcript-scope';
 
 const { t } = useI18n();
 
@@ -50,6 +51,8 @@ const emit = defineEmits<{
   (e: 'unmounted'): void;
 }>();
 
+provide(IN_TRANSCRIPT, true);
+
 const wrapperRef = ref<HTMLElement | null>(null);
 
 const forgeRefusals = useForgeRefusalStore();
@@ -62,9 +65,7 @@ const userMessageId = computed<string | null>(() => {
 
 const animationClass = computed(() => {
   if (!props.arriving) return '';
-  if (props.item.isStreaming) return 'animate-[o-fade_.2s_var(--ease-out)]';
-  if (props.item.type === 'design-result') return 'animate-[d-up_.3s_var(--ease-out)_both]';
-  return 'd-arrive';
+  return props.item.isStreaming ? 'd-fade-in' : 'd-arrive';
 });
 
 onMounted(() => {
@@ -99,34 +100,52 @@ onUnmounted(() => {
       @toggle-expanded="emit('toggleUserMessageExpanded')"
     />
 
-    <div v-else-if="item.type === 'compact-marker' && item.marker">
+    <!-- Each content block is a transcript scope root (data-theme-scope), never this row or the list: a tool card that is
+         trusted UI (ExitPlanModeToolCard) must have no scoped ancestor. -->
+    <div
+      v-else-if="item.type === 'compact-marker' && item.marker"
+      data-theme-scope="transcript"
+    >
       <CompactMarker
         :marker="item.marker"
         @rewind-to-compaction="(entryId: string) => emit('rewindToCompaction', entryId)"
       />
     </div>
 
-    <div v-else-if="item.type === 'cache-miss-notice' && item.notice">
+    <div
+      v-else-if="item.type === 'cache-miss-notice' && item.notice"
+      data-theme-scope="transcript"
+    >
       <CacheMissNotice :notice="item.notice" />
     </div>
 
-    <div v-else-if="item.type === 'compaction-aborted-notice' && item.compactionAborted">
+    <div
+      v-else-if="item.type === 'compaction-aborted-notice' && item.compactionAborted"
+      data-theme-scope="transcript"
+    >
       <CompactionAbortedNotice :notice="item.compactionAborted" />
     </div>
 
-    <div v-else-if="item.type === 'thinking-dropped-notice' && item.thinkingDropped">
+    <div
+      v-else-if="item.type === 'thinking-dropped-notice' && item.thinkingDropped"
+      data-theme-scope="transcript"
+    >
       <ThinkingDroppedNotice :notice="item.thinkingDropped" />
     </div>
 
     <ThinkingIndicator
       v-else-if="item.type === 'thinking-block'"
+      data-theme-scope="transcript"
       :thinking="item.message.thinking || item.message.thinkingContent"
       :is-streaming="item.message.isThinkingPhase"
       :duration="item.message.thinkingDuration"
       :effort="item.effort"
     />
 
-    <div v-else-if="item.type === 'text-block'">
+    <div
+      v-else-if="item.type === 'text-block'"
+      data-theme-scope="transcript"
+    >
       <EffortBadge
         v-if="item.effort"
         :effort="item.effort"
@@ -139,7 +158,10 @@ onUnmounted(() => {
       />
     </div>
 
-    <div v-else-if="item.type === 'streaming-text'">
+    <div
+      v-else-if="item.type === 'streaming-text'"
+      data-theme-scope="transcript"
+    >
       <EffortBadge
         v-if="item.effort"
         :effort="item.effort"
@@ -165,28 +187,40 @@ onUnmounted(() => {
       <ForgeRefusedNotice
         v-if="forgeRefusal"
         :refusal="forgeRefusal"
+        data-theme-scope="transcript"
       />
     </div>
 
-    <DesignResultCard
+    <!-- A wrapper, not the card: theme CSS reaches only a root's descendants, and the card's frame is the card's own root.
+         A root clips what it holds, so the padding is the room of the card's shadow; it overlaps the rows around it and takes no pointer. -->
+    <div
       v-else-if="item.type === 'design-result' && item.designCard?.kind === 'result'"
-      :result="item.designCard.result"
-      :entry-id="item.designCard.entryId"
-    />
+      class="pointer-events-none -mx-3 -mt-2 -mb-6 px-3 pt-2 pb-6"
+      data-theme-scope="transcript"
+    >
+      <DesignResultCard
+        class="pointer-events-auto"
+        :result="item.designCard.result"
+        :entry-id="item.designCard.entryId"
+      />
+    </div>
 
     <DesignBriefNote
       v-else-if="item.type === 'design-brief' && item.designCard?.kind === 'brief'"
       :brief="item.designCard.brief"
+      data-theme-scope="transcript"
     />
 
     <AuthFailureNotice
       v-else-if="item.type === 'error-message' && item.message.authFailure"
       :failure="item.message.authFailure"
       :details="errorRowText(item.message)"
+      data-theme-scope="transcript"
     />
 
     <TranscriptNotice
       v-else-if="item.type === 'error-message'"
+      data-theme-scope="transcript"
       tone="danger"
       :icon="CircleAlert"
       :title="t('common.error')"
@@ -201,13 +235,15 @@ onUnmounted(() => {
       v-else-if="item.type === 'refusal-message'"
       :explanation="item.message.refusalExplanation ?? null"
       :category="item.message.refusalCategory ?? null"
+      data-theme-scope="transcript"
     />
 
     <div
       v-else-if="item.type === 'background-label'"
       class="mb-1 flex items-center gap-2"
+      data-theme-scope="transcript"
     >
-      <span class="inline-flex items-center gap-1.5 rounded-full bg-[color-mix(in_srgb,var(--d-info)_14%,transparent)] px-2.5 py-1 text-xs font-medium text-(--d-info-text)">
+      <span class="inline-flex items-center gap-1.5 rounded-full bg-[color-mix(in_srgb,var(--d-info-fill)_14%,transparent)] px-2.5 py-1 text-xs font-medium text-(--d-info-text)">
         <Loader
           class="size-3"
           aria-hidden="true"

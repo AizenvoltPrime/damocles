@@ -25,6 +25,7 @@ import { signInStubOAuth } from '../../core/pi-session/e2e-stub-oauth';
 import type { ChatActivity } from '../../core/pi-session/session-state';
 import type { ForgeService } from '../../core/forge';
 import type { ChatRepository } from '../../shared/forge/tools';
+import type { ThemeAgentHost } from '../../core/pi-session/tools/theme-tools';
 import { setupAutoDisable } from '../../core/voice/auto-disable';
 import { e2eVoiceRecorder, fakeVoiceForE2e } from '../../core/voice/recorder';
 import { settingsFolderOf, type FolderTarget } from '../../core/workspace-folders/folder-registry';
@@ -70,6 +71,8 @@ export interface CoreServiceOptions {
   readonly forge?: ForgeService;
   // a chat's repository for the GitHub and GitLab tools, read by this core's source control (core-host/forge-repository.ts)
   readonly forgeRepositories: (folder: string) => Promise<ChatRepository>;
+  // this computer's core: the agent's theme tools (core-host/themes.ts)
+  readonly themeTools?: ThemeAgentHost;
 }
 
 export interface CoreService {
@@ -95,7 +98,13 @@ export function startCoreService(platform: CorePlatform, options: CoreServiceOpt
   setCheckpointGitAvailability(platform.init.git.available ? { available: true } : { available: false, reason: platform.init.git.reason ?? '' });
   setMcpSecretStorage(platform.secrets);
 
-  const provider = new ChatPanelProvider(platform, { subscriptions, createCompassViews: () => NO_COMPASS_VIEWS, ...(options.forge ? { forge: options.forge } : {}), forgeRepositories: options.forgeRepositories });
+  const provider = new ChatPanelProvider(platform, {
+    subscriptions,
+    createCompassViews: () => NO_COMPASS_VIEWS,
+    ...(options.forge ? { forge: options.forge } : {}),
+    forgeRepositories: options.forgeRepositories,
+    ...(options.themeTools ? { themeTools: options.themeTools } : {}),
+  });
   // e2e only: names the proxies resolve to fixed answers, each lookup taking the next one
   const fixedAnswers = new Map<string, { readonly answers: readonly (readonly string[])[]; next: number }>();
   const resolveForProxy: AddressResolver = (name) => {

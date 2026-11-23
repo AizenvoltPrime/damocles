@@ -626,7 +626,7 @@ export function browserPageHtml(parts: BrowserPageParts): string {
     pointer-events: none;
     z-index: 100;
     background: var(--d-card, var(--vscode-editor-background, #1e1e1e));
-    border: 1px solid var(--d-accent, var(--vscode-focusBorder, #007fd4));
+    border: 1px solid var(--d-accent-fill, var(--vscode-focusBorder, #007fd4));
     border-radius: 4px;
     padding: 6px 10px;
     font-family: monospace;

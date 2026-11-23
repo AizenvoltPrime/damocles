@@ -16,6 +16,9 @@ import type { UserContentBlock } from '../../shared/types/content';
 import type { ChatPlace, ChatReviewScope, ExtensionToWebviewMessage, WebviewToExtensionMessage, WorktreeFinishAction } from '../../shared/types/messages';
 import type { StoredSession } from '../../shared/types/session';
 import type { BrokerAnswer, GlobalMemorySearchFilters, HeldAuth, HeldMemoryQueue } from '../../shared/remote-user';
+import type { ThemeShowEndReason } from '../../shared/themes/agent';
+import type { ThemeShowEnded } from '../../shared/themes/relay';
+import type { ThemeInstallPreview, ThemeInstallProgress } from '../../shared/themes/install';
 import type { CoreEvents, MirrorHostOs, PushedCredential } from '../core-protocol/messages';
 import type { DesignPreviewAnswer, DesignPreviewFile } from '../../shared/types/design';
 import type { MarkupJsonInput } from '../../shared/design-markup';
@@ -609,6 +612,11 @@ export class CoreClient implements Disposable {
     return this.endpoint.request('user.forge.describe', params, signal);
   }
 
+  // a remote chat's theme tool on this computer's store, after main's checks (remote/theme-relay.ts); the remote caller's signal ends it
+  themeRelay<M extends Extract<keyof MainRequests, `themes.relay.${string}`>>(method: M, params: Params<M>, signal: AbortSignal): Promise<Result<M>> {
+    return (this.endpoint.request as (name: M, params: Params<M>, signal: AbortSignal) => Promise<Result<M>>)(method, params, signal);
+  }
+
   // the remote caller's signal ends the request on this computer's core
   mcpCall(server: string, tool: string, args: Readonly<Record<string, unknown>>, signal: AbortSignal): Promise<unknown> {
     return this.endpoint.request('user.mcp.call', { server, tool, args }, signal);
@@ -749,6 +757,10 @@ export class CoreClient implements Disposable {
     return this.request('e2e.relocationPauseAfter', { sessions, mode });
   }
 
+  e2eThemeStoreFetches(): Promise<Result<'e2e.themeStoreFetches'>> {
+    return this.request('e2e.themeStoreFetches', {});
+  }
+
   e2eFakeVoice(transcript: string): Promise<{ readonly pid: number }> {
     return this.request('e2e.fakeVoice', { transcript });
   }
@@ -790,6 +802,222 @@ export class CoreClient implements Disposable {
 
   onForgeChooseAccountRows(listener: (rows: CoreEvents['forge.chooseAccountRows']) => void): Disposable {
     return this.endpoint.onEvent('forge.chooseAccountRows', listener);
+  }
+
+  // this computer's core wrote a theme file
+  onThemesChanged(listener: () => void): Disposable {
+    return this.endpoint.onEvent('themes.changed', () => listener());
+  }
+
+  themesList(): Promise<Result<'themes.list'>> {
+    return this.request('themes.list', {});
+  }
+
+  themesDuplicate(themeId: string, name: string): Promise<Result<'themes.duplicate'>> {
+    return this.request('themes.duplicate', { themeId, name });
+  }
+
+  themesDelete(themeId: string): Promise<void> {
+    return this.request('themes.delete', { themeId });
+  }
+
+  themesRename(themeId: string, name: string): Promise<void> {
+    return this.request('themes.rename', { themeId, name });
+  }
+
+  themesPick(params: Params<'themes.pick'>): Promise<{ readonly recorded: boolean }> {
+    return this.request('themes.pick', params);
+  }
+
+  themesReset(projectKey?: string): Promise<void> {
+    return this.request('themes.reset', projectKey !== undefined ? { projectKey } : {});
+  }
+
+  themesProjectLooks(): Promise<Result<'themes.projectLooks'>> {
+    return this.request('themes.projectLooks', {});
+  }
+
+  themesSetProjectLook(params: Params<'themes.setProjectLook'>): Promise<void> {
+    return this.request('themes.setProjectLook', params);
+  }
+
+  themesRelocateProject(fromKey: string, toKey: string): Promise<void> {
+    return this.request('themes.relocateProject', { fromKey, toKey });
+  }
+
+  themesForgetProject(projectKey: string): Promise<void> {
+    return this.request('themes.forgetProject', { projectKey });
+  }
+
+  themesForgetHost(authorityKey: string): Promise<void> {
+    return this.request('themes.forgetHost', { authorityKey });
+  }
+
+  themesKeepHosts(authorityKeys: readonly string[]): Promise<void> {
+    return this.request('themes.keepHosts', { authorityKeys });
+  }
+
+  themesSetMode(params: Params<'themes.setMode'>): Promise<void> {
+    return this.request('themes.setMode', params);
+  }
+
+  themesSetScheduleMode(params: Params<'themes.setScheduleMode'>): Promise<void> {
+    return this.request('themes.setScheduleMode', params);
+  }
+
+  themesSetScheduleRules(params: Params<'themes.setScheduleRules'>): Promise<void> {
+    return this.request('themes.setScheduleRules', params);
+  }
+
+  themesResumeSchedule(): Promise<void> {
+    return this.request('themes.resumeSchedule', {});
+  }
+
+  themesHold(params: Params<'themes.hold'>): Promise<void> {
+    return this.request('themes.hold', params);
+  }
+
+  themesSaveTheme(params: Params<'themes.saveTheme'>): Promise<Result<'themes.saveTheme'>> {
+    return this.request('themes.saveTheme', params);
+  }
+
+  themesBaseHash(themeId: string): Promise<Result<'themes.baseHash'>> {
+    return this.request('themes.baseHash', { themeId });
+  }
+
+  themesHistory(): Promise<Result<'themes.history'>> {
+    return this.request('themes.history', {});
+  }
+
+  // expected: the entry the caller means, refused when another change was made since
+  themesUndo(expected?: string): Promise<Result<'themes.undo'>> {
+    return this.request('themes.undo', expected === undefined ? {} : { expected });
+  }
+
+  // the keep-changes banner's revert of its own entry
+  themesUndoPending(entryId: string): Promise<Result<'themes.undoPending'>> {
+    return this.request('themes.undoPending', { entryId });
+  }
+
+  // the keep-changes banner's Keep
+  themesKeep(entryId: string): Promise<void> {
+    return this.request('themes.keep', { entryId });
+  }
+
+  // a card's Show in window ended in main
+  themesShowEnded(promptId: string, reason: ThemeShowEndReason): Promise<void> {
+    return this.request('themes.showEnded', { promptId, reason });
+  }
+
+  // main let go of a screenshot to hold newer ones, while its card may still show it
+  themesScreenshotGone(shotId: string): Promise<void> {
+    return this.request('themes.screenshotGone', { shotId });
+  }
+
+  // a daemon's core: this computer's window let go of a screenshot it took for a card that core raised
+  themeScreenshotGoneRemote(shotId: string): Promise<void> {
+    return this.endpoint.request('user.theme.screenshotGone', { shotId });
+  }
+
+  // a daemon's core: this computer's window ended the Show in window of a card that core raised
+  themeShowEndedRemote(ended: ThemeShowEnded): Promise<void> {
+    return this.endpoint.request('user.theme.showEnded', ended);
+  }
+
+  // a remote core's ThemeSet install this computer staged: its new preview and its flash checks' progress
+  themeInstallUpdatedRemote(preview: ThemeInstallPreview): Promise<void> {
+    return this.endpoint.request('user.theme.installUpdated', { preview });
+  }
+
+  themeInstallProgressRemote(progress: ThemeInstallProgress): Promise<void> {
+    return this.endpoint.request('user.theme.installProgress', progress);
+  }
+
+  themeInstallExpiredRemote(installId: string): Promise<void> {
+    return this.endpoint.request('user.theme.installExpired', { installId });
+  }
+
+  themesAnalyzeProgress(sha256: string, fraction: number): Promise<void> {
+    return this.request('themes.analyzeProgress', { sha256, fraction });
+  }
+
+  themesInstallAllowFlash(installId: string, sha256: string): Promise<Result<'themes.install.allowFlash'>> {
+    return this.request('themes.install.allowFlash', { installId, sha256 });
+  }
+
+  onThemesInstallProgress(listener: (progress: CoreEvents['themes.install.progress']) => void): Disposable {
+    return this.endpoint.onEvent('themes.install.progress', listener);
+  }
+
+  themesRestore(params: Params<'themes.restore'>): Promise<Result<'themes.restore'>> {
+    return this.request('themes.restore', params);
+  }
+
+  themesImportFont(bytes: Uint8Array): Promise<Result<'themes.importFont'>> {
+    return this.request('themes.importFont', { bytes });
+  }
+
+  themesImportImage(file: string): Promise<Result<'themes.importImage'>> {
+    return this.request('themes.importImage', { file });
+  }
+
+  themesImportSprite(params: Params<'themes.importSprite'>): Promise<Result<'themes.importSprite'>> {
+    return this.request('themes.importSprite', params);
+  }
+
+  themesAllowFlash(sha256: string): Promise<Result<'themes.allowFlash'>> {
+    return this.request('themes.allowFlash', { sha256 });
+  }
+
+  themesInstallPrepare(params: Params<'themes.install.prepare'>, signal?: AbortSignal): Promise<Result<'themes.install.prepare'>> {
+    return this.endpoint.request('themes.install.prepare', params, signal);
+  }
+
+  themesInstallCommit(params: Params<'themes.install.commit'>): Promise<Result<'themes.install.commit'>> {
+    return this.request('themes.install.commit', params);
+  }
+
+  themesInstallCancel(installId: string): Promise<Result<'themes.install.cancel'>> {
+    return this.request('themes.install.cancel', { installId });
+  }
+
+  themesExportPlan(params: Params<'themes.export.plan'>): Promise<Result<'themes.export.plan'>> {
+    return this.request('themes.export.plan', params);
+  }
+
+  themesExportWrite(params: Params<'themes.export.write'>): Promise<Result<'themes.export.write'>> {
+    return this.request('themes.export.write', params);
+  }
+
+  // a staged install waited too long and core dropped it
+  onThemesInstallExpired(listener: (installId: string) => void): Disposable {
+    return this.endpoint.onEvent('themes.install.expired', ({ installId }) => listener(installId));
+  }
+
+  // a staged install's preview changed, as a wallpaper's flash check ended
+  onThemesInstallUpdated(listener: (preview: CoreEvents['themes.install.updated']['preview']) => void): Disposable {
+    return this.endpoint.onEvent('themes.install.updated', ({ preview }) => listener(preview));
+  }
+
+  themesStoreList(refresh: boolean): Promise<Result<'themes.store.list'>> {
+    return this.request('themes.store.list', { refresh });
+  }
+
+  themesStoreInstall(entryId: string, signal?: AbortSignal): Promise<Result<'themes.store.install'>> {
+    return this.endpoint.request('themes.store.install', { entryId }, signal);
+  }
+
+  themesStoreBackgroundCheck(): Promise<Result<'themes.store.backgroundCheck'>> {
+    return this.request('themes.store.backgroundCheck', {});
+  }
+
+  themesStoreSetEnabled(enabled: boolean): Promise<Result<'themes.store.setEnabled'>> {
+    return this.request('themes.store.setEnabled', { enabled });
+  }
+
+  // the store view after a list was read (listRead) or an installed theme changed
+  onThemesStoreUpdated(listener: (view: CoreEvents['themes.store.updated']['view'], listRead: boolean) => void): Disposable {
+    return this.endpoint.onEvent('themes.store.updated', ({ view, listRead }) => listener(view, listRead === true));
   }
 
   forgeRepoAccounts(input: Params<'forge.repoAccounts'>): Promise<Result<'forge.repoAccounts'>> {

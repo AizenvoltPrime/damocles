@@ -91,7 +91,7 @@ onUnmounted(() => {
     @close="store.setActivePanel(null)"
   >
     <div class="sticky top-0 z-3 flex flex-col gap-2 border-b border-(--d-border) bg-(--d-bg) px-4 pt-3 pb-2.5">
-      <label class="flex h-8.5 items-center gap-2 rounded-10 border border-(--d-border2) bg-(--d-input) px-2.75 focus-within:border-(--d-accent)">
+      <label class="flex h-8.5 items-center gap-2 rounded-10 border border-(--d-border2) bg-(--d-input) px-2.75 focus-within:border-(--d-accent-fill)">
         <Search
           class="size-3.25 flex-none text-(--d-faint)"
           aria-hidden="true"
@@ -109,7 +109,7 @@ onUnmounted(() => {
       <SegmentedToggle
         :model-value="kindKey"
         :options="kindOptions"
-        indicator-class="text-(--d-card)"
+        indicator-class="[--tone:var(--d-card)]"
         class="self-start bg-(--d-hover)"
         :aria-label="t('compass.search.kindFilter')"
         @update:model-value="(key: string) => selectKind(key === 'all' ? null : (key as CompassNodeKind))"

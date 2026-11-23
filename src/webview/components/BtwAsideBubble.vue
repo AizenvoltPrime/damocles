@@ -103,7 +103,7 @@ function ask(): void {
         class="flex flex-none items-center gap-2 border-t border-(--d-border) px-3.5 py-3"
         @submit.prevent="ask"
       >
-        <label class="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-10 border border-(--d-border) bg-(--d-input) px-3 focus-within:border-(--d-accent)">
+        <label class="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-10 border border-(--d-border) bg-(--d-input) px-3 focus-within:border-(--d-accent-fill)">
           <MessageSquare
             class="size-3.5 flex-none text-(--d-faint)"
             aria-hidden="true"
@@ -119,7 +119,7 @@ function ask(): void {
         </label>
         <button
           type="submit"
-          class="d-press flex size-9 flex-none items-center justify-center rounded-10 bg-(--d-accent) text-(--d-on-accent) transition-opacity disabled:opacity-40"
+          class="d-press flex size-9 flex-none items-center justify-center rounded-10 bg-(--d-accent-fill) text-(--d-on-accent) transition-opacity disabled:opacity-40"
           :disabled="!followUp.trim()"
           :aria-label="t('overlays.btw.ask')"
         >

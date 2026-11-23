@@ -33,7 +33,7 @@ function onKeydown(event: KeyboardEvent): void {
     :aria-label="t('editor.enterPage')"
     :aria-disabled="shows ? undefined : 'true'"
     data-testid="page-stand-in"
-    class="absolute inset-0 rounded-[inherit] outline-none focus-visible:ring-2 focus-visible:ring-(--d-accent) focus-visible:ring-inset"
+    class="absolute inset-0 rounded-[inherit] outline-none focus-visible:ring-2 focus-visible:ring-(--d-accent-fill) focus-visible:ring-inset"
     @focus="onFocus"
     @keydown="onKeydown"
   />

@@ -11,6 +11,9 @@ import { usePermissionStore } from '@/stores/usePermissionStore';
 import { useQuestionStore } from '@/stores/useQuestionStore';
 import type { FormFieldSchema, FormValues } from '@shared/types/forms';
 import { useAttentionCard } from '@/composables/useAttention';
+import { useDockCardVisibility } from '@/composables/useDockCardVisibility';
+import { useShownRequest } from '@/composables/useDockPrompt';
+import TrustedCheckingNote from './TrustedCheckingNote.vue';
 
 defineProps<{
   visible: boolean;
@@ -108,6 +111,7 @@ function stringModel(field: FormFieldSchema): string {
 
 const rootRef = ref<HTMLElement | null>(null);
 useAttentionCard('input', rootRef);
+const { isVisible, explain } = useDockCardVisibility(rootRef);
 
 function focusFirstField() {
   nextTick(() => {
@@ -124,7 +128,10 @@ function focusField(id: string) {
   });
 }
 
+const showsRequest = useShownRequest(() => store.pendingForm?.toolUseId);
+
 function handleSubmit() {
+  if (!showsRequest()) return;
   showErrors.value = true;
   if (!canSubmit.value) {
     // Click-surfaces-errors model: reveal the inline errors and move focus to the first invalid field
@@ -145,6 +152,7 @@ function handleSubmit() {
 }
 
 function handleCancel() {
+  if (!showsRequest()) return;
   clearValues();
   showErrors.value = false;
   emit('cancel');
@@ -208,192 +216,209 @@ onBeforeUnmount(() => {
 });
 
 const nativeControlClass =
-  'flex h-8.5 w-full rounded-[0.625rem] border border-(--d-border2) bg-(--d-input) px-2.75 text-12.5 text-(--d-text) placeholder:text-(--d-faint) focus-visible:border-(--d-accent) focus-visible:outline-none disabled:cursor-default disabled:opacity-50';
+  'flex h-8.5 w-full rounded-10 border border-(--d-border2) bg-(--d-input) px-2.75 text-12.5 text-(--d-text) placeholder:text-(--d-faint) focus-visible:border-(--d-accent-fill) focus-visible:outline-none disabled:cursor-default disabled:opacity-50';
 </script>
 
 <template>
   <div
     v-if="visible && form"
-    ref="rootRef"
-    class="overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--d-accent)_45%,var(--d-border))] bg-(--d-card) text-(--d-text) shadow-(--d-shadow) [--attention-ring:var(--d-accent)]"
-    role="region"
-    :aria-label="t('form.ariaLabel')"
-    data-dock-prompt
-    data-testid="form-card"
-    @keydown="onRootKeydown"
+    class="d-dock-shadow rounded-14"
+    data-trusted
   >
-    <header class="flex items-center gap-2.5 border-b border-(--d-border) bg-linear-to-b from-[color-mix(in_srgb,var(--d-accent)_10%,transparent)] to-transparent px-3 py-2">
-      <span
-        class="d-ring flex size-6.5 flex-none items-center justify-center rounded-lg bg-(--d-accent-soft) text-(--d-accent)"
-        aria-hidden="true"
-      >
-        <FormInput class="size-3.5" />
-      </span>
-      <div class="min-w-0 flex-1">
-        <div class="truncate font-semibold">
-          {{ form.title || t('form.ariaLabel') }}
-        </div>
-        <div
-          v-if="form.description"
-          class="text-xs text-pretty text-(--d-muted)"
-        >
-          {{ form.description }}
-        </div>
-      </div>
-      <span
-        v-if="hasAgentDescription"
-        class="flex min-w-0 items-center gap-1.5 truncate rounded-full bg-(--d-accent-soft) px-2 py-0.5 text-11 font-medium text-(--d-accent-text)"
-      >
-        <Bot
-          class="size-3 flex-none"
-          aria-hidden="true"
-        />
-        <span class="truncate">{{ agentDescription }}</span>
-      </span>
-    </header>
-
-    <div class="max-h-[60vh] space-y-3 overflow-y-auto px-3.5 py-3">
-      <div
-        v-for="field in fields"
-        :key="field.id"
-        class="flex flex-col gap-1"
-      >
-        <label
-          :for="field.type === 'radio' ? undefined : `form-field-${field.id}`"
-          class="flex items-center gap-1.5 text-xs font-medium text-(--d-muted)"
-        >
-          <IconLock
-            v-if="field.sensitive || field.type === 'password'"
-            class="size-3 shrink-0 text-(--d-faint)"
-          />
-          <span>{{ field.label }}</span>
-          <span
-            v-if="field.required"
-            class="text-(--d-danger)"
-            aria-hidden="true"
-          >*</span>
-        </label>
-
-        <!-- text / password / number / date / email / url / tel -->
-        <Input
-          v-if="inputFieldTypes.has(field.type)"
-          :id="`form-field-${field.id}`"
-          :type="inputType(field)"
-          :model-value="stringModel(field)"
-          :placeholder="field.placeholder"
-          :aria-invalid="showErrors && isMissing(field)"
-          autocomplete="off"
-          :class="showErrors && isMissing(field) ? 'border-(--d-danger) focus-visible:ring-(--d-danger)' : ''"
-          @update:model-value="(v: string | number) => (values[field.id] = String(v))"
-        />
-
-        <!-- textarea -->
-        <Textarea
-          v-else-if="field.type === 'textarea'"
-          :id="`form-field-${field.id}`"
-          :model-value="stringModel(field)"
-          :placeholder="field.placeholder"
-          :aria-invalid="showErrors && isMissing(field)"
-          class="min-h-20 max-h-40 resize-none"
-          :class="showErrors && isMissing(field) ? 'border-(--d-danger) focus-visible:ring-(--d-danger)' : ''"
-          @update:model-value="(v) => (values[field.id] = String(v))"
-        />
-
-        <!-- select -->
-        <select
-          v-else-if="field.type === 'select'"
-          :id="`form-field-${field.id}`"
-          :value="stringModel(field)"
-          :aria-invalid="showErrors && isMissing(field)"
-          :class="[nativeControlClass, showErrors && isMissing(field) ? 'border-(--d-danger) focus-visible:ring-(--d-danger)' : '']"
-          @change="(e) => (values[field.id] = (e.target as HTMLSelectElement).value)"
-        >
-          <option
-            value=""
-            disabled
-          >
-            {{ field.placeholder ?? t('form.selectPlaceholder') }}
-          </option>
-          <option
-            v-for="opt in field.options ?? []"
-            :key="opt.value"
-            :value="opt.value"
-          >
-            {{ opt.label }}
-          </option>
-        </select>
-
-        <!-- checkbox -->
-        <div
-          v-else-if="field.type === 'checkbox'"
-          class="flex items-center gap-2"
-        >
-          <Checkbox
-            :id="`form-field-${field.id}`"
-            :checked="values[field.id] === true"
-            @update:checked="(v: boolean) => (values[field.id] = v)"
-          />
-          <label
-            :for="`form-field-${field.id}`"
-            class="text-xs text-(--d-text) cursor-pointer"
-          >
-            {{ field.placeholder ?? field.label }}
-          </label>
-        </div>
-
-        <!-- radio group -->
-        <div
-          v-else-if="field.type === 'radio'"
-          class="flex flex-col gap-1.5"
-          role="radiogroup"
-          :aria-label="field.label"
-        >
-          <label
-            v-for="opt in field.options ?? []"
-            :key="opt.value"
-            class="flex items-center gap-2 text-xs text-(--d-text) cursor-pointer"
-          >
-            <input
-              type="radio"
-              :name="`form-field-${field.id}`"
-              :value="opt.value"
-              :checked="values[field.id] === opt.value"
-              class="cursor-pointer accent-(--d-accent)"
-              @change="() => (values[field.id] = opt.value)"
-            >
-            <span>{{ opt.label }}</span>
-          </label>
-        </div>
-
-        <!-- required hint -->
+    <!-- One bounded element that scrolls inside itself under its answers, so the whole card always fits the page. -->
+    <!-- Keyed by the request: the next request is a new element, which starts held (useTrustedVisibility). -->
+    <div
+      ref="rootRef"
+      :key="store.pendingForm?.toolUseId"
+      class="max-h-[70dvh] overflow-x-hidden overflow-y-auto rounded-14 border border-[color-mix(in_srgb,var(--d-accent-fill)_45%,var(--d-border))] bg-(--d-card) text-(--d-text) [--attention-ring:var(--d-accent-fill)]"
+      role="region"
+      :aria-label="t('form.ariaLabel')"
+      data-dock-prompt
+      data-trusted
+      data-testid="form-card"
+      @keydown="onRootKeydown"
+    >
+      <header class="flex items-center gap-2.5 border-b border-(--d-border) bg-linear-to-b from-[color-mix(in_srgb,var(--d-accent-fill)_10%,transparent)] to-transparent px-3 py-2">
         <span
-          v-if="showErrors && isMissing(field)"
-          class="text-xs text-(--d-danger)"
-        >
-          {{ t('form.requiredField') }}
-        </span>
-      </div>
-    </div>
-
-    <div class="flex justify-end gap-2 border-t border-(--d-border) bg-(--d-panel) px-3.5 py-2.5">
-      <button
-        type="button"
-        class="d-press flex h-7.5 items-center rounded-9 border border-(--d-border2) px-3 text-12.5 transition-colors hover:bg-(--d-hover)"
-        @click="handleCancel"
-      >
-        {{ t('form.cancel') }}
-      </button>
-      <button
-        type="button"
-        class="d-press flex h-7.5 items-center gap-1.5 rounded-9 bg-(--d-accent) px-3.5 text-12.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110"
-        @click="handleSubmit"
-      >
-        <SendHorizontal
-          class="size-3.25"
+          class="d-ring [--tone:var(--d-accent-fill)] flex size-6.5 flex-none items-center justify-center rounded-lg bg-(--d-accent-soft) text-(--d-accent)"
           aria-hidden="true"
-        />
-        {{ submitLabel }}
-      </button>
+        >
+          <FormInput class="size-3.5" />
+        </span>
+        <div class="min-w-0 flex-1">
+          <div class="truncate font-semibold">
+            {{ form.title || t('form.ariaLabel') }}
+          </div>
+          <div
+            v-if="form.description"
+            class="text-xs text-pretty text-(--d-muted)"
+          >
+            {{ form.description }}
+          </div>
+        </div>
+        <span
+          v-if="hasAgentDescription"
+          class="flex min-w-0 items-center gap-1.5 truncate rounded-full bg-(--d-accent-soft) px-2 py-0.5 text-11 font-medium text-(--d-accent-text)"
+        >
+          <Bot
+            class="size-3 flex-none"
+            aria-hidden="true"
+          />
+          <span class="truncate">{{ agentDescription }}</span>
+        </span>
+      </header>
+      <TrustedCheckingNote
+        overlay
+        class="bottom-0"
+        :shown="explain"
+        :text="t('trusted.checkingVisible')"
+      />
+
+      <div class="space-y-3 px-3.5 py-3">
+        <div
+          v-for="field in fields"
+          :key="field.id"
+          class="flex flex-col gap-1"
+        >
+          <label
+            :for="field.type === 'radio' ? undefined : `form-field-${field.id}`"
+            class="flex items-center gap-1.5 text-xs font-medium text-(--d-muted)"
+          >
+            <IconLock
+              v-if="field.sensitive || field.type === 'password'"
+              class="size-3 shrink-0 text-(--d-faint)"
+            />
+            <span>{{ field.label }}</span>
+            <span
+              v-if="field.required"
+              class="text-(--d-danger)"
+              aria-hidden="true"
+            >*</span>
+          </label>
+
+          <!-- text / password / number / date / email / url / tel -->
+          <Input
+            v-if="inputFieldTypes.has(field.type)"
+            :id="`form-field-${field.id}`"
+            :type="inputType(field)"
+            :model-value="stringModel(field)"
+            :placeholder="field.placeholder"
+            :aria-invalid="showErrors && isMissing(field)"
+            autocomplete="off"
+            :class="showErrors && isMissing(field) ? 'border-(--d-danger-fill) focus-visible:ring-(--d-danger-fill)' : ''"
+            @update:model-value="(v: string | number) => (values[field.id] = String(v))"
+          />
+
+          <!-- textarea -->
+          <Textarea
+            v-else-if="field.type === 'textarea'"
+            :id="`form-field-${field.id}`"
+            :model-value="stringModel(field)"
+            :placeholder="field.placeholder"
+            :aria-invalid="showErrors && isMissing(field)"
+            class="min-h-20 max-h-40 resize-none"
+            :class="showErrors && isMissing(field) ? 'border-(--d-danger-fill) focus-visible:ring-(--d-danger-fill)' : ''"
+            @update:model-value="(v) => (values[field.id] = String(v))"
+          />
+
+          <!-- select -->
+          <select
+            v-else-if="field.type === 'select'"
+            :id="`form-field-${field.id}`"
+            :value="stringModel(field)"
+            :aria-invalid="showErrors && isMissing(field)"
+            :class="[nativeControlClass, showErrors && isMissing(field) ? 'border-(--d-danger-fill) focus-visible:ring-(--d-danger-fill)' : '']"
+            @change="(e) => (values[field.id] = (e.target as HTMLSelectElement).value)"
+          >
+            <option
+              value=""
+              disabled
+            >
+              {{ field.placeholder ?? t('form.selectPlaceholder') }}
+            </option>
+            <option
+              v-for="opt in field.options ?? []"
+              :key="opt.value"
+              :value="opt.value"
+            >
+              {{ opt.label }}
+            </option>
+          </select>
+
+          <!-- checkbox -->
+          <div
+            v-else-if="field.type === 'checkbox'"
+            class="flex items-center gap-2"
+          >
+            <Checkbox
+              :id="`form-field-${field.id}`"
+              :checked="values[field.id] === true"
+              @update:checked="(v: boolean) => (values[field.id] = v)"
+            />
+            <label
+              :for="`form-field-${field.id}`"
+              class="text-xs text-(--d-text) cursor-pointer"
+            >
+              {{ field.placeholder ?? field.label }}
+            </label>
+          </div>
+
+          <!-- radio group -->
+          <div
+            v-else-if="field.type === 'radio'"
+            class="flex flex-col gap-1.5"
+            role="radiogroup"
+            :aria-label="field.label"
+          >
+            <label
+              v-for="opt in field.options ?? []"
+              :key="opt.value"
+              class="flex items-center gap-2 text-xs text-(--d-text) cursor-pointer"
+            >
+              <input
+                type="radio"
+                :name="`form-field-${field.id}`"
+                :value="opt.value"
+                :checked="values[field.id] === opt.value"
+                class="cursor-pointer accent-(--d-accent-fill)"
+                @change="() => (values[field.id] = opt.value)"
+              >
+              <span>{{ opt.label }}</span>
+            </label>
+          </div>
+
+          <!-- required hint -->
+          <span
+            v-if="showErrors && isMissing(field)"
+            class="text-xs text-(--d-danger)"
+          >
+            {{ t('form.requiredField') }}
+          </span>
+        </div>
+      </div>
+
+      <div class="sticky bottom-0 flex justify-end gap-2 border-t border-(--d-border) bg-(--d-card) bg-linear-to-b from-(--d-panel) to-(--d-panel) px-3.5 py-2.5">
+        <button
+          type="button"
+          class="d-press flex h-7.5 items-center rounded-9 border border-(--d-border2) px-3 text-12.5 transition-colors hover:bg-(--d-hover)"
+          :aria-disabled="!isVisible || undefined"
+          @click="handleCancel"
+        >
+          {{ t('form.cancel') }}
+        </button>
+        <button
+          type="button"
+          class="d-press flex h-7.5 items-center gap-1.5 rounded-9 bg-(--d-accent-fill) px-3.5 text-12.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110"
+          :aria-disabled="!isVisible || undefined"
+          @click="handleSubmit"
+        >
+          <SendHorizontal
+            class="size-3.25"
+            aria-hidden="true"
+          />
+          {{ submitLabel }}
+        </button>
+      </div>
     </div>
   </div>
 </template>

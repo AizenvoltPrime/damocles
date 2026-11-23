@@ -322,7 +322,7 @@ function toggleSection(key: string): void {
               data-testid="context-legend-row"
             >
               <span
-                class="size-2.25 flex-none rounded-[0.1875rem]"
+                class="size-2.25 flex-none rounded-[calc(0.1875rem*var(--d-radius-scale,1))]"
                 :style="{ backgroundColor: cat.color }"
                 aria-hidden="true"
               />
@@ -372,7 +372,7 @@ function toggleSection(key: string): void {
                 <span class="text-muted-foreground flex-1 truncate">{{ row.label }}</span>
                 <div class="w-20 h-1.5 rounded-full bg-muted/30 overflow-hidden shrink-0">
                   <div
-                    class="d-bar h-full rounded-full bg-(--d-info)"
+                    class="d-bar h-full rounded-full bg-(--d-info-fill)"
                     :style="{ width: `${row.pct}%` }"
                   />
                 </div>
@@ -491,7 +491,7 @@ function toggleSection(key: string): void {
                 :key="idx"
                 :type="(item.onOpen || item.filePath) ? 'button' : undefined"
                 class="flex w-full items-center gap-2 rounded py-0.5 text-left text-xs"
-                :class="(item.onOpen || item.filePath) ? 'hover:text-(--d-accent) focus-visible:outline-2 focus-visible:outline-(--d-accent)' : ''"
+                :class="(item.onOpen || item.filePath) ? 'hover:text-(--d-accent) focus-visible:outline-2 focus-visible:outline-(--d-accent-fill)' : ''"
                 :title="item.title ?? item.filePath ?? item.name"
                 :data-testid="(item.onOpen || item.filePath) ? 'context-row-open' : undefined"
                 data-context-row

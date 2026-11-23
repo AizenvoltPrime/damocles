@@ -1,7 +1,8 @@
 import * as crypto from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { decode, encode } from '../codec';
-import { acceptConnection, authenticateBridge, HANDSHAKE_MAX_BYTES, sayHello, type Accepted, type HelloAnswer, type HostFacts } from '../handshake';
+import { acceptConnection, authenticateBridge, HANDSHAKE_MAX_BYTES, isFeatureName, MAX_FEATURES, sayHello, type Accepted, type HelloAnswer, type HostFacts } from '../handshake';
+import { FEATURES } from '../protocol-version';
 import { createPersistentProtocol, type PersistentProtocol } from '../persistent-protocol';
 import { fakeSocket, message, parseHeader, socketPair } from './sockets';
 
@@ -55,6 +56,22 @@ describe('handshake', () => {
     expect(outcome.welcome.facts).toEqual(FACTS);
     expect(Math.abs(outcome.skewMs - 5 * 60_000)).toBeLessThan(1000);
     expect(vi.mocked(crypto.timingSafeEqual)).toHaveBeenCalledTimes(2);
+  });
+
+  // The handshake is frozen, so a FEATURES list past its bounds refuses every daemon's welcome.
+  it('carries every FEATURES name in a welcome the app accepts', async () => {
+    expect(FEATURES.length).toBeLessThanOrEqual(MAX_FEATURES);
+    expect(new Set(FEATURES).size).toBe(FEATURES.length);
+    expect(FEATURES.filter((name) => !isFeatureName(name))).toEqual([]);
+    const { bridge, daemon } = pair();
+    const full = welcome();
+    if (full.kind !== 'welcome') throw new Error('welcome() answers welcome');
+    daemonSide(daemon, () => ({ kind: 'welcome', welcome: { ...full.welcome, features: FEATURES, coreEpoch: 'e'.repeat(64) } }));
+    await authenticateBridge(bridge, TOKEN);
+    const outcome = await sayHello(bridge, { appVersion: '1.2.3', protocolVersion: 1, clientId: 'client-a', deviceName: 'laptop' });
+    expect(outcome.kind).toBe('welcome');
+    if (outcome.kind !== 'welcome') return;
+    expect(outcome.welcome.features).toEqual(FEATURES);
   });
 
   it('attaches the next listeners before a message pipelined behind hello is read', async () => {

@@ -1,6 +1,46 @@
+/* Layers rank by first appearance, so a theme's custom CSS (damocles-user) can never come before the protected layer, whose
+   !important declarations beat every later layer. Only @layer statements may precede @import, so the protected rules follow
+   the imports. The build checks the order (scripts/protected-layer.ts); why: docs/invariants.md "Theme CSS and trusted regions". */
+@layer damocles-protected, theme, base, components, utilities, damocles-user;
 @import "tailwindcss";
 @import "./styles/tokens.css";
 @import "./styles/motion.css";
+
+/* Must match the scope roots and marks the sanitizer's @scope names (src/shared/themes/css-sanitizer.ts). Trusted roots and
+   marks take --d-font and --d-mono as Damocles' own stacks from main's trusted CSS; VS Code keeps its own font there. */
+@layer damocles-protected {
+  /* the clip margin is the global focus ring, a 2px outline at a 2px offset, in px at every text size */
+  [data-theme-scope] {
+    contain: paint !important;
+    isolation: isolate !important;
+    overflow-clip-margin: 4px !important;
+  }
+  [data-trusted],
+  [data-trusted-mark] {
+    opacity: 1 !important;
+    visibility: visible !important;
+    filter: none !important;
+    letter-spacing: normal !important;
+    text-shadow: none !important;
+    font-family: var(--d-font) !important;
+    font-style: normal !important;
+    font-variant: normal !important;
+    font-feature-settings: normal !important;
+    text-transform: none !important;
+  }
+  /* a mark paints above the content of its scope root, where a theme can make no stacking context; outside a root it keeps
+     the page's own stacking, below dialogs and popovers */
+  [data-theme-scope] [data-trusted-mark] {
+    position: relative !important;
+    z-index: 1 !important;
+    /* inherited, so a themed ancestor's cursor would reach the mark */
+    cursor: default !important;
+  }
+  /* a mark that is itself a control (the Untrusted badge) */
+  [data-theme-scope] [data-trusted-mark][data-mark-action] {
+    cursor: pointer !important;
+  }
+}
 
 @theme {
   --color-background: var(--background);
@@ -23,23 +63,51 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
 
-  --color-success: var(--d-success);
-  --color-warning: var(--d-warning);
-  --color-error: var(--d-danger);
-  --color-info: var(--d-info);
+  /* Status and shadcn color aliases are fills; text in a tone reads --d-<tone> directly (tone-roles.test.ts). */
+  --color-success: var(--d-success-fill);
+  --color-warning: var(--d-warning-fill);
+  --color-error: var(--d-danger-fill);
+  --color-info: var(--d-info-fill);
   --color-switch-track: var(--switch-track);
 
-  --radius-lg: var(--radius);
-  --radius-md: calc(var(--radius) - 0.125rem);
-  --radius-sm: calc(var(--radius) - 0.25rem);
+  /* A theme's spacing, corners and line spacing: Tailwind computes every spacing utility (padding, margin, gap, width, height,
+     size) as calc(var(--spacing) * n) at runtime, so density scales them all; text sizes never scale. */
+  --spacing: calc(0.25rem * var(--d-density, 1));
+
+  /* `rounded` with no size */
+  --radius: calc(0.25rem * var(--d-radius-scale, 1));
+  --radius-lg: calc(0.375rem * var(--d-radius-scale, 1));
+  --radius-md: calc(0.25rem * var(--d-radius-scale, 1));
+  --radius-sm: calc(0.125rem * var(--d-radius-scale, 1));
+  --radius-xs: calc(0.125rem * var(--d-radius-scale, 1));
+  --radius-xl: calc(0.75rem * var(--d-radius-scale, 1));
+  --radius-2xl: calc(1rem * var(--d-radius-scale, 1));
+  --radius-3xl: calc(1.5rem * var(--d-radius-scale, 1));
+  --radius-4xl: calc(2rem * var(--d-radius-scale, 1));
   /* The reference's recurring radii, named like the `--text-*` ramp by their px at the default host font. */
-  --radius-5: 0.3125rem;
-  --radius-6: 0.375rem;
-  --radius-7: 0.4375rem;
-  --radius-8: 0.5rem;
-  --radius-9: 0.5625rem;
-  --radius-10: 0.625rem;
-  --radius-11: 0.6875rem;
+  --radius-5: calc(0.3125rem * var(--d-radius-scale, 1));
+  --radius-6: calc(0.375rem * var(--d-radius-scale, 1));
+  --radius-7: calc(0.4375rem * var(--d-radius-scale, 1));
+  --radius-8: calc(0.5rem * var(--d-radius-scale, 1));
+  --radius-9: calc(0.5625rem * var(--d-radius-scale, 1));
+  --radius-10: calc(0.625rem * var(--d-radius-scale, 1));
+  --radius-11: calc(0.6875rem * var(--d-radius-scale, 1));
+  --radius-14: calc(0.875rem * var(--d-radius-scale, 1));
+
+  --leading-tight: calc(1.25 * var(--d-line-scale, 1));
+  --leading-snug: calc(1.375 * var(--d-line-scale, 1));
+  --leading-normal: calc(1.5 * var(--d-line-scale, 1));
+  --leading-relaxed: calc(1.625 * var(--d-line-scale, 1));
+  --leading-loose: calc(2 * var(--d-line-scale, 1));
+  /* The transcript's prose and the composer's draft. */
+  --leading-prose: calc(1.65 * var(--d-line-scale, 1));
+  --leading-draft: calc(1.55 * var(--d-line-scale, 1));
+  --text-xs--line-height: calc(1 / 0.75 * var(--d-line-scale, 1));
+  --text-sm--line-height: calc(1.25 / 0.875 * var(--d-line-scale, 1));
+  --text-base--line-height: calc(1.5 * var(--d-line-scale, 1));
+  --text-lg--line-height: calc(1.75 / 1.125 * var(--d-line-scale, 1));
+  --text-xl--line-height: calc(1.75 / 1.25 * var(--d-line-scale, 1));
+  --text-2xl--line-height: calc(2 / 1.5 * var(--d-line-scale, 1));
 
   /* The reference's font sizes off Tailwind's ramp, named by their px at the default 13px host font (1rem = 16px). */
   --text-10: 0.625rem;
@@ -75,6 +143,8 @@
   :disabled,
   [aria-disabled="true"],
   [data-disabled],
+  /* a trusted card that is held (useTrustedVisibility) takes no answer */
+  [data-trusted-ready="false"] :is(button, [role="option"]):not([data-view-only]),
   label:has(input:disabled, [role="switch"]:disabled) {
     cursor: default;
   }
@@ -90,7 +160,10 @@
 }
 
 @layer base {
-  :root {
+  /* A custom property inherits its value already resolved, so trusted UI, whose --d-* the trusted palette sets again, sets
+     every alias of them again too. */
+  :root,
+  [data-trusted] {
     --background: var(--d-bg);
     --foreground: var(--d-text);
     --card: var(--d-panel);
@@ -101,9 +174,9 @@
     --muted-foreground: var(--d-muted);
     --border: var(--d-border);
     --input: var(--d-input);
-    --ring: var(--d-accent);
+    --ring: var(--d-accent-fill);
 
-    --primary: var(--d-accent);
+    --primary: var(--d-accent-fill);
     --primary-foreground: var(--d-on-accent);
     --accent: var(--d-hover);
     --accent-foreground: var(--d-text);
@@ -111,28 +184,96 @@
     --secondary: var(--d-hover);
     --secondary-foreground: var(--d-text);
 
-    --destructive: var(--d-danger);
+    --destructive: var(--d-danger-fill);
     --destructive-foreground: var(--d-on-danger);
 
     --switch-track: color-mix(in srgb, var(--d-text) 20%, var(--d-bg));
 
+    /* Bubbles, the composer, code blocks, quotes, tables and tool cards over a wallpaper: their color at the surface alpha, a
+       background alpha and never an `opacity`; a pane inside one of them stays opaque. Trusted UI's surface alpha has a floor of 0.92. */
+    --surface-card: rgb(from var(--d-card) r g b / var(--d-surface-alpha, 1));
+    --surface-input: rgb(from var(--d-input) r g b / var(--d-surface-alpha, 1));
+    --surface-code: rgb(from var(--d-code) r g b / var(--d-surface-alpha, 1));
+
     /* Series colors in rank order; /stats assigns them by a model's cost rank so the chart and tables agree. */
-    --chart-1: var(--d-accent);
-    --chart-2: var(--d-danger);
-    --chart-3: var(--d-warning);
-    --chart-4: color-mix(in oklab, var(--d-danger) 50%, var(--d-warning));
-    --chart-5: var(--d-success);
-    --chart-6: color-mix(in oklab, var(--d-info) 50%, var(--d-danger));
+    --chart-1: var(--d-accent-fill);
+    --chart-2: var(--d-danger-fill);
+    --chart-3: var(--d-warning-fill);
+    --chart-4: color-mix(in oklab, var(--d-danger-fill) 50%, var(--d-warning-fill));
+    --chart-5: var(--d-success-fill);
+    --chart-6: color-mix(in oklab, var(--d-info-fill) 50%, var(--d-danger-fill));
     --chart-7: var(--d-muted);
-    --chart-8: color-mix(in oklab, var(--d-accent) 50%, var(--d-success));
+    --chart-8: color-mix(in oklab, var(--d-accent-fill) 50%, var(--d-success-fill));
     --chart-grid: color-mix(in srgb, var(--d-muted) 50%, transparent);
-
-    --radius: 0.375rem;
-
+  }
+  [data-trusted] {
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-destructive-foreground: var(--destructive-foreground);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+    --color-success: var(--d-success-fill);
+    --color-warning: var(--d-warning-fill);
+    --color-error: var(--d-danger-fill);
+    --color-info: var(--d-info-fill);
+    --color-switch-track: var(--switch-track);
+    /* Trusted UI keeps the trusted palette's density, corners and line spacing while a preview paints the window, and
+       Damocles' fonts; each value must equal its @theme one (default-scale.test.ts). */
+    --spacing: calc(0.25rem * var(--d-density, 1));
+    --radius: calc(0.25rem * var(--d-radius-scale, 1));
+    --radius-lg: calc(0.375rem * var(--d-radius-scale, 1));
+    --radius-md: calc(0.25rem * var(--d-radius-scale, 1));
+    --radius-sm: calc(0.125rem * var(--d-radius-scale, 1));
+    --radius-xs: calc(0.125rem * var(--d-radius-scale, 1));
+    --radius-xl: calc(0.75rem * var(--d-radius-scale, 1));
+    --radius-2xl: calc(1rem * var(--d-radius-scale, 1));
+    --radius-3xl: calc(1.5rem * var(--d-radius-scale, 1));
+    --radius-4xl: calc(2rem * var(--d-radius-scale, 1));
+    --radius-5: calc(0.3125rem * var(--d-radius-scale, 1));
+    --radius-6: calc(0.375rem * var(--d-radius-scale, 1));
+    --radius-7: calc(0.4375rem * var(--d-radius-scale, 1));
+    --radius-8: calc(0.5rem * var(--d-radius-scale, 1));
+    --radius-9: calc(0.5625rem * var(--d-radius-scale, 1));
+    --radius-10: calc(0.625rem * var(--d-radius-scale, 1));
+    --radius-11: calc(0.6875rem * var(--d-radius-scale, 1));
+    --radius-14: calc(0.875rem * var(--d-radius-scale, 1));
+    --leading-tight: calc(1.25 * var(--d-line-scale, 1));
+    --leading-snug: calc(1.375 * var(--d-line-scale, 1));
+    --leading-normal: calc(1.5 * var(--d-line-scale, 1));
+    --leading-relaxed: calc(1.625 * var(--d-line-scale, 1));
+    --leading-loose: calc(2 * var(--d-line-scale, 1));
+    --leading-prose: calc(1.65 * var(--d-line-scale, 1));
+    --leading-draft: calc(1.55 * var(--d-line-scale, 1));
+    --text-xs--line-height: calc(1 / 0.75 * var(--d-line-scale, 1));
+    --text-sm--line-height: calc(1.25 / 0.875 * var(--d-line-scale, 1));
+    --text-base--line-height: calc(1.5 * var(--d-line-scale, 1));
+    --text-lg--line-height: calc(1.75 / 1.125 * var(--d-line-scale, 1));
+    --text-xl--line-height: calc(1.75 / 1.25 * var(--d-line-scale, 1));
+    --text-2xl--line-height: calc(2 / 1.5 * var(--d-line-scale, 1));
+    color: var(--d-text);
+    font-family: var(--d-font);
+    /* the root's line-height inherits already resolved, at the page's line scale; this must equal the :root one */
+    line-height: calc(1.5 * var(--d-line-scale, 1));
+  }
+  :root {
     /* 1rem equals the reference's 16px at the 13px base font, and the whole rem scale follows the host's font size. */
     font-size: calc(var(--d-font-size) * 16 / 13);
     font-family: var(--d-font);
-    line-height: 1.5;
+    line-height: calc(1.5 * var(--d-line-scale, 1));
   }
 }
 
@@ -141,9 +282,29 @@
   .chat-column {
     box-sizing: border-box;
     width: 100%;
-    max-width: 50rem;
+    /* a theme's chat column: 36 to 80rem, or 100% for the slot's full width */
+    max-width: var(--d-chat-column, 50rem);
     margin-inline: auto;
     padding-inline: 1rem;
+  }
+
+  /* A dock item: a wrapper with its body's radius around that body. The shadow's z-index -1 resolves in the isolated dock, under
+     every body's z-index 1, so no item's shadow paints over another (docs/invariants.md "Theme CSS and trusted regions"). */
+  .d-dock-shadow {
+    position: relative;
+  }
+  .d-dock-shadow::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    box-shadow: var(--d-shadow);
+    pointer-events: none;
+  }
+  .d-dock-shadow > * {
+    position: relative;
+    z-index: 1;
   }
 
   /* The header's and composer's icon and pill buttons: hover recolours and never moves the control. */
@@ -156,7 +317,7 @@
     height: 1.75rem;
     min-width: 1.875rem;
     padding-inline: 0.375rem;
-    border-radius: 0.4375rem;
+    border-radius: var(--radius-7);
     white-space: nowrap;
     color: var(--d-muted);
     transition: background-color 0.15s, color 0.15s;
@@ -173,27 +334,27 @@
   /* A label on a tint of a tone chosen at runtime: the tint mixes from --tone, the tone itself, and the text takes its AA shade;
      --tone-on is the text on a solid --tone fill. */
   .d-tone-accent {
-    --tone: var(--d-accent);
+    --tone: var(--d-accent-fill);
     --tone-on: var(--d-on-accent);
     color: var(--d-accent-text);
   }
   .d-tone-success {
-    --tone: var(--d-success);
+    --tone: var(--d-success-fill);
     --tone-on: var(--d-on-success);
     color: var(--d-success-text);
   }
   .d-tone-warning {
-    --tone: var(--d-warning);
+    --tone: var(--d-warning-fill);
     --tone-on: var(--d-on-warning);
     color: var(--d-warning-text);
   }
   .d-tone-danger {
-    --tone: var(--d-danger);
+    --tone: var(--d-danger-fill);
     --tone-on: var(--d-on-danger);
     color: var(--d-danger-text);
   }
   .d-tone-info {
-    --tone: var(--d-info);
+    --tone: var(--d-info-fill);
     --tone-on: var(--d-on-info);
     color: var(--d-info-text);
   }
@@ -204,8 +365,34 @@
     --tone-on: color(from color-mix(in srgb, rgb(var(--host-rgb)) calc(var(--host-alpha) * 100%), var(--tone-surface, var(--d-panel))) srgb-linear clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) / 1);
     color: var(--d-text);
   }
+  /* A host's tone from hostColorLook: its stripe, chip, tints and their labels keep the built-in tone whatever the theme. */
+  .d-safety.d-tone-accent {
+    --tone: var(--d-safety-accent);
+    --tone-on: var(--d-safety-on-accent);
+    color: var(--d-safety-accent-text);
+  }
+  .d-safety.d-tone-success {
+    --tone: var(--d-safety-success);
+    --tone-on: var(--d-safety-on-success);
+    color: var(--d-safety-success-text);
+  }
+  .d-safety.d-tone-warning {
+    --tone: var(--d-safety-warning);
+    --tone-on: var(--d-safety-on-warning);
+    color: var(--d-safety-warning-text);
+  }
+  .d-safety.d-tone-danger {
+    --tone: var(--d-safety-danger);
+    --tone-on: var(--d-safety-on-danger);
+    color: var(--d-safety-danger-text);
+  }
+  .d-safety.d-tone-info {
+    --tone: var(--d-safety-info);
+    --tone-on: var(--d-safety-on-info);
+    color: var(--d-safety-info-text);
+  }
   .d-tone-design {
-    --tone: var(--d-design);
+    --tone: var(--d-design-fill);
     --tone-on: var(--d-on-design);
     color: var(--d-design-text);
   }
@@ -244,7 +431,8 @@ body {
   padding: 0;
   height: 100%;
   width: 100%;
-  background-color: var(--d-bg);
+  /* the chat pane's token: a see-through chat view shows the shell's wallpaper through it */
+  background-color: var(--d-pane-chat);
   color: var(--d-text);
   overflow: hidden;
 }
@@ -280,6 +468,7 @@ body {
 
   *::-webkit-scrollbar-track {
     background: transparent;
+    /* stylelint-disable-next-line declaration-property-value-disallowed-list -- a scrollbar keeps its shape in every theme */
     border-radius: 0.625rem;
   }
 
@@ -289,6 +478,7 @@ body {
 
   *::-webkit-scrollbar-thumb {
     background: rgba(100, 116, 139, 0.5);
+    /* stylelint-disable-next-line declaration-property-value-disallowed-list -- a scrollbar keeps its shape in every theme */
     border-radius: 0.375rem;
     border: 1px solid rgba(255, 255, 255, 0.15);
     backdrop-filter: blur(8px);
@@ -321,7 +511,7 @@ body {
 @layer base {
   pre {
     background: var(--d-code);
-    border-radius: 0.25rem;
+    border-radius: var(--radius-md);
     padding: 0.75rem;
     overflow-x: auto;
     margin: 0.5rem 0;
@@ -335,7 +525,21 @@ body {
   :not(pre) > code {
     background: var(--d-code);
     padding: 0.125rem 0.25rem;
-    border-radius: 0.1875rem;
+    border-radius: calc(0.1875rem * var(--d-radius-scale, 1));
+  }
+}
+
+/* A control's least size: auto (no floor) unless a theme's density below 1 raises it to a 1.5rem target. */
+@layer base {
+  :where(button, [role="button"], [role="tab"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"], summary, select):not([role="switch"]) {
+    min-height: var(--d-hit-min, auto);
+    min-width: var(--d-hit-min, auto);
+  }
+
+  /* A glyph button in a list row whose height script fixes: the row cannot grow, so the button keeps its size and a menu item does the same (docs/invariants.md "Design tokens"). */
+  .d-hit-free {
+    min-height: 0;
+    min-width: 0;
   }
 }
 
@@ -397,7 +601,7 @@ a:hover {
   right: 0.5rem !important;
   background: color-mix(in srgb, var(--foreground) 5%, transparent) !important;
   border: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent) !important;
-  border-radius: 0.375rem !important;
+  border-radius: var(--radius-6) !important;
   width: 1.5rem !important;
   height: 1.5rem !important;
   color: color-mix(in srgb, var(--foreground) 50%, transparent) !important;
@@ -423,22 +627,22 @@ a:hover {
 
 .toast-icon-success {
   background: color-mix(in srgb, var(--color-success) 20%, transparent);
-  color: var(--color-success);
+  color: var(--d-success);
 }
 
 .toast-icon-error {
   background: color-mix(in srgb, var(--color-error) 20%, transparent);
-  color: var(--color-error);
+  color: var(--d-danger);
 }
 
 .toast-icon-warning {
   background: color-mix(in srgb, var(--color-warning) 20%, transparent);
-  color: var(--color-warning);
+  color: var(--d-warning);
 }
 
 .toast-icon-info {
   background: color-mix(in srgb, var(--color-info) 20%, transparent);
-  color: var(--color-info);
+  color: var(--d-info);
 }
 
 .toast-icon-loading {

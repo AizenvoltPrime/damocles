@@ -294,9 +294,11 @@ const tabLabel = (terminal: TerminalInfo): string => [terminal.title, terminal.d
       @commit="onCommit"
       @dblclick="resetWidth"
     />
+    <!-- The list, not the root with its resize sash, is the terminalChrome scope root. -->
     <div
       ref="list"
       role="tablist"
+      data-theme-scope="terminalChrome"
       aria-orientation="vertical"
       :aria-label="t('terminal.listLabel')"
       :data-drop="panelEndDrop ? 'true' : undefined"
@@ -307,14 +309,14 @@ const tabLabel = (terminal: TerminalInfo): string => [terminal.title, terminal.d
       @drop="onListDrop"
     >
       <SlidingIndicator
-        class="text-(--d-hover)"
+        class="[--tone:var(--d-hover)]"
         :box="box"
         :radius="6"
         :animate="animate"
         variant="soft"
       />
       <SlidingIndicator
-        class="text-(--d-accent)"
+        class="[--tone:var(--d-accent-fill)]"
         data-testid="terminal-list-indicator"
         :box="barBox"
         :radius="1"
@@ -382,7 +384,7 @@ const tabLabel = (terminal: TerminalInfo): string => [terminal.title, terminal.d
               aria-hidden="true"
               data-testid="terminal-row-status"
               class="terminal-status-dot absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full"
-              :class="terminal.status === 'running' ? 'bg-(--d-success)' : terminal.exitCode === 0 ? 'bg-(--d-faint)' : 'bg-(--d-danger)'"
+              :class="terminal.status === 'running' ? 'bg-(--d-success-fill)' : terminal.exitCode === 0 ? 'bg-(--d-faint)' : 'bg-(--d-danger-fill)'"
             />
           </span>
           <TerminalRename
@@ -446,7 +448,7 @@ const tabLabel = (terminal: TerminalInfo): string => [terminal.title, terminal.d
           aria-hidden="true"
           data-testid="terminal-list-drop-line"
           :data-drop="shownLine.kind"
-          class="terminal-drop-line pointer-events-none absolute inset-x-1 top-0 h-0.5 rounded-full bg-(--d-accent)"
+          class="terminal-drop-line pointer-events-none absolute inset-x-1 top-0 h-0.5 rounded-full bg-(--d-accent-fill)"
           :style="{ transform: `translateY(${shownLine.y - 1}px)` }"
         />
       </Transition>

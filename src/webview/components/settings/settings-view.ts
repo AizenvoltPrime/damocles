@@ -27,12 +27,22 @@ export interface SettingsPage {
   hide(id: string): void;
   /** Whether a group's heading belongs on the page: no search runs and one of its rows is on screen. */
   groupShown(ids: readonly string[]): boolean;
+  /** The sub-page the section shows in place of its rows (Appearance's schedule); undefined on the section's own rows. */
+  readonly subPage: string | undefined;
+  /** Goes to `section`, ending a search, and shows its sub-page; undefined shows the section's rows again. */
+  openSubPage(section: SettingsSectionId, subPage: string | undefined): void;
+}
+
+/** The modal's navigation as a page reads and moves it. */
+export interface SettingsPageNav {
+  subPage(): string | undefined;
+  openSubPage(section: SettingsSectionId, subPage: string | undefined): void;
 }
 
 const PAGE: InjectionKey<SettingsPage> = Symbol('settingsPage');
 
 // rows is read on each lookup, since a host section may arrive after the page mounted.
-export function provideSettingsPage(query: () => string, rows: () => ReadonlyMap<string, SettingsRowMeta>, listed: () => ((meta: SettingsRowMeta) => boolean) | undefined = () => undefined): SettingsPage {
+export function provideSettingsPage(query: () => string, rows: () => ReadonlyMap<string, SettingsRowMeta>, nav: SettingsPageNav, listed: () => ((meta: SettingsRowMeta) => boolean) | undefined = () => undefined): SettingsPage {
   let index = 0;
   // Runs before the rows' watchers and before the rows the new query mounts, which take their slots from zero.
   watch(query, () => (index = 0));
@@ -56,6 +66,10 @@ export function provideSettingsPage(query: () => string, rows: () => ReadonlyMap
       shown.value = next;
     },
     groupShown: (ids) => query() === '' && ids.some((id) => shown.value.has(id)),
+    get subPage() {
+      return nav.subPage();
+    },
+    openSubPage: nav.openSubPage,
   };
   provide(PAGE, page);
   return page;

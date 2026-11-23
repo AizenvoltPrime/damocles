@@ -11,7 +11,7 @@ import { seedStubModel, writeUserSettings, type HermeticHome } from './support/h
 import { agentRequests, call, chatRequests, startOpenAIStub, type OpenAIStub } from './support/openai-stub';
 import { openProjectChat } from './support/screenshots';
 import { setContentSize } from './support/settings';
-import { awaitTurnEnd, chatInput, postFromWebview } from './support/ui';
+import { awaitTurnEnd, chatInput, postFromWebview, promptReady } from './support/ui';
 
 // The agent's GitHub and GitLab tools, deferred behind ToolSearch and scoped to the chat's project,
 // and the design's approval card for a forge write. The stub's gitlab.com stands in for the design's gitlab.indigital.gr and
@@ -146,6 +146,7 @@ test('ForgeComment asks in default and acceptEdits, is blocked in plan mode, and
     run.openai.replies.push(call('ForgeComment', { number: MR.number, body: `asked in ${mode}` }), { chunks: [`Posted in ${mode}.`] });
     await send(tab, `comment in ${mode}`);
     await expect(options(tab)).toBeVisible(CHECKED);
+    await promptReady(card(tab));
     await options(tab).press('Enter');
     await expect(tab.getByText(allowedOnce('alexios-s'), { exact: true })).toBeVisible();
     await expect(tab.getByText(`Posted in ${mode}.`, { exact: true })).toBeVisible(CHECKED);
@@ -220,6 +221,7 @@ for (const width of [768, 1280]) {
     expect(await content.evaluate((node) => node.textContent)).toBe(COMMENT);
     await expect(content.locator('b')).toHaveCount(0);
 
+    await promptReady(card(tab));
     await options(tab).press('Enter');
     await expect(tab.getByText(allowedOnce('work-alexios'), { exact: true })).toBeVisible();
     await expect(tab.getByRole('status').filter({ hasText: allowedOnce('work-alexios') })).toBeVisible();
@@ -239,6 +241,7 @@ test('forge write approval card: the feedback field refuses with its text, and o
   await expect(options(tab)).toBeVisible(CHECKED);
   const feedback = card(tab).getByRole('textbox', { name: 'Tell Damocles what to do instead', exact: true });
   await feedback.fill('Wait until the pipeline passes');
+  await promptReady(card(tab));
   await feedback.press('Enter');
   await expect(tab.getByText('Waiting.', { exact: true })).toBeVisible(CHECKED);
   await awaitTurnEnd(tab);

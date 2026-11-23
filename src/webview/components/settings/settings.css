@@ -34,7 +34,7 @@
   max-width: 66.25rem;
   height: 100%;
   max-height: 47.5rem;
-  border-radius: 1.125rem;
+  border-radius: calc(1.125rem * var(--d-radius-scale, 1));
   border: 1px solid var(--d-border2);
   background: var(--d-bg);
   box-shadow: var(--d-shadow);
@@ -105,13 +105,13 @@
   height: 2rem;
   padding: 0 0.625rem;
   margin-bottom: 0.625rem;
-  border-radius: 0.5625rem;
+  border-radius: var(--radius-9);
   border: 1px solid var(--d-border2);
   background: var(--d-input);
 }
 
 .sm-search:focus-within {
-  border-color: var(--d-accent);
+  border-color: var(--d-accent-fill);
 }
 
 .sm-search svg {
@@ -145,7 +145,7 @@
   justify-content: center;
   width: 1.25rem;
   height: 1.25rem;
-  border-radius: 0.375rem;
+  border-radius: var(--radius-6);
   color: var(--d-faint);
 }
 
@@ -178,7 +178,7 @@
   height: 2.125rem;
   flex: none;
   padding: 0 0.625rem;
-  border-radius: 0.5625rem;
+  border-radius: var(--radius-9);
   color: var(--d-text);
   text-align: left;
   cursor: pointer;
@@ -234,7 +234,7 @@
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 0.625rem;
-  border-radius: 0.5rem;
+  border-radius: var(--radius-8);
   font-size: 0.71875rem;
   color: var(--d-faint);
   text-align: left;
@@ -297,7 +297,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 0.5625rem;
+  border-radius: var(--radius-9);
   color: var(--d-muted);
   transition: transform 0.12s var(--ease-out);
 }
@@ -355,14 +355,14 @@
   flex-wrap: wrap;
   margin: 0.25rem 0 0.625rem;
   padding: 0.625rem 0.75rem;
-  border-radius: 0.625rem;
+  border-radius: var(--radius-10);
   border: 1px solid var(--d-border2);
   background: var(--d-accent-soft);
   animation: d-up 0.3s var(--ease-out) both;
 }
 
 .sm-banner-warning {
-  background: color-mix(in srgb, var(--d-warning) 12%, transparent);
+  background: color-mix(in srgb, var(--d-warning-fill) 12%, transparent);
   color: var(--d-warning-text);
 }
 
@@ -424,7 +424,7 @@
   font-family: var(--d-mono);
   font-weight: 400;
   padding: 0 0.375rem;
-  border-radius: 0.3125rem;
+  border-radius: var(--radius-5);
   line-height: 1rem;
   background: var(--d-hover);
   color: var(--d-faint);
@@ -473,7 +473,7 @@
   flex: 1 1 100%;
   min-width: 0;
   padding: 0.75rem 0.875rem;
-  border-radius: 0.625rem;
+  border-radius: var(--radius-10);
   border: 1px solid var(--d-border);
   background: var(--d-panel);
   animation: d-up 0.24s var(--ease-out) both;
@@ -483,7 +483,7 @@
 mark.sm-mark {
   margin: 0;
   padding: 0;
-  border-radius: 0.125rem;
+  border-radius: var(--radius-sm);
   background: var(--d-accent-soft);
   color: var(--d-accent-text);
   font: inherit;
@@ -493,7 +493,7 @@ mark.sm-mark {
 /* Every control: the 2px accent focus ring with a 2px offset (M10). */
 .sm-root :is(button, input, [tabindex]):focus-visible,
 .sm-popper :is([role="option"]):focus-visible {
-  outline: 2px solid var(--d-accent);
+  outline: 2px solid var(--d-accent-fill);
   outline-offset: 2px;
 }
 
@@ -511,7 +511,7 @@ mark.sm-mark {
   max-width: 20rem;
   height: 2rem;
   padding: 0 0.625rem;
-  border-radius: 0.5625rem;
+  border-radius: var(--radius-9);
   border: 1px solid var(--d-border2);
   background: var(--d-input);
   color: var(--d-text);
@@ -522,7 +522,7 @@ mark.sm-mark {
 .sm-select:hover:not(:disabled),
 .sm-select:focus-visible,
 .sm-select[data-state="open"] {
-  border-color: var(--d-accent);
+  border-color: var(--d-accent-fill);
 }
 
 .sm-select:disabled {
@@ -557,7 +557,7 @@ mark.sm-mark {
   min-width: var(--reka-select-trigger-width);
   max-height: min(21.25rem, var(--reka-select-content-available-height));
   overflow: hidden;
-  border-radius: 0.6875rem;
+  border-radius: var(--radius-11);
   border: 1px solid var(--d-border2);
   background: var(--d-card);
   color: var(--d-text);
@@ -577,7 +577,7 @@ mark.sm-mark {
   gap: 0.5rem;
   min-height: 1.875rem;
   padding: 0.25rem 0.5rem;
-  border-radius: 0.4375rem;
+  border-radius: var(--radius-7);
   cursor: pointer;
   outline: none;
 }
@@ -635,7 +635,7 @@ mark.sm-mark {
 .sm-slider input::-webkit-slider-runnable-track {
   height: 0.25rem;
   border-radius: 999rem;
-  background: linear-gradient(to right, var(--d-accent) var(--sm-fill), var(--d-border2) var(--sm-fill));
+  background: linear-gradient(to right, var(--d-accent-fill) var(--sm-fill), var(--d-border2) var(--sm-fill));
 }
 
 .sm-slider input::-webkit-slider-thumb {
@@ -644,7 +644,7 @@ mark.sm-mark {
   height: 0.875rem;
   margin-top: -0.3125rem;
   border-radius: 999rem;
-  border: 2px solid var(--d-accent);
+  border: 2px solid var(--d-accent-fill);
   background: var(--d-bg);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
   transition: transform 0.15s var(--ease-out);
@@ -673,7 +673,7 @@ mark.sm-mark {
   height: 2rem;
   flex: none;
   padding: 0 0.625rem;
-  border-radius: 0.5625rem;
+  border-radius: var(--radius-9);
   border: 1px solid var(--d-border2);
   background: var(--d-input);
 }
@@ -684,11 +684,11 @@ mark.sm-mark {
 }
 
 .sm-input:focus-within {
-  border-color: var(--d-accent);
+  border-color: var(--d-accent-fill);
 }
 
 .sm-input[data-invalid] {
-  border-color: var(--d-danger);
+  border-color: var(--d-danger-fill);
 }
 
 .sm-input-affix {
@@ -711,7 +711,8 @@ mark.sm-mark {
   color: var(--d-faint);
 }
 
-/* Buttons */
+/* Buttons: the settings pages' one button look, which no shadcn Button variant carries; SettingButton and the pages' own
+   buttons that need an element ref both wear it. */
 .sm-button {
   display: inline-flex;
   align-items: center;
@@ -719,7 +720,7 @@ mark.sm-mark {
   gap: 0.375rem;
   flex: none;
   padding: 0.375rem 0.75rem;
-  border-radius: 0.5rem;
+  border-radius: var(--radius-8);
   border: 1px solid var(--d-border2);
   font-size: 0.75rem;
   font-weight: 500;
@@ -729,27 +730,27 @@ mark.sm-mark {
   transition: transform 0.12s var(--ease-out);
 }
 
-.sm-button:hover:not(:disabled) {
-  border-color: var(--d-accent);
+.sm-button:hover:not(:disabled, [aria-disabled="true"]) {
+  border-color: var(--d-accent-fill);
   color: var(--d-accent);
 }
 
-.sm-button:active:not(:disabled) {
+.sm-button:active:not(:disabled, [aria-disabled="true"]) {
   transform: scale(0.97);
 }
 
-.sm-button:disabled {
+.sm-button:is(:disabled, [aria-disabled="true"]) {
   opacity: 0.5;
   cursor: default;
 }
 
 .sm-button-primary {
-  border-color: var(--d-accent);
-  background: var(--d-accent);
+  border-color: var(--d-accent-fill);
+  background: var(--d-accent-fill);
   color: var(--d-on-accent);
 }
 
-.sm-button-primary:hover:not(:disabled) {
+.sm-button-primary:hover:not(:disabled, [aria-disabled="true"]) {
   color: var(--d-on-accent);
 }
 
@@ -757,8 +758,8 @@ mark.sm-mark {
   color: var(--d-danger);
 }
 
-.sm-button-danger:hover:not(:disabled) {
-  border-color: var(--d-danger);
+.sm-button-danger:hover:not(:disabled, [aria-disabled="true"]) {
+  border-color: var(--d-danger-fill);
   color: var(--d-danger);
 }
 
@@ -794,7 +795,7 @@ mark.sm-mark {
 .sm-account-dot {
   width: 0.4375rem;
   height: 0.4375rem;
-  border-radius: 0.5625rem;
+  border-radius: var(--radius-9);
   background: currentColor;
 }
 
@@ -862,5 +863,5 @@ mark.sm-mark {
 
 .sm-choice input {
   margin-top: 0.125rem;
-  accent-color: var(--d-accent);
+  accent-color: var(--d-accent-fill);
 }

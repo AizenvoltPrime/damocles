@@ -24,7 +24,7 @@ const { t } = useI18n();
     </div>
     <Button
       type="button"
-      class="d-press h-7 shrink-0 gap-1.5 rounded-7 bg-(--d-accent) px-2.75 text-xs font-semibold text-(--d-on-accent) hover:bg-(--d-accent) hover:brightness-110 focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 [&_svg]:size-3.25"
+      class="d-press h-7 shrink-0 gap-1.5 rounded-7 bg-(--d-accent-fill) px-2.75 text-xs font-semibold text-(--d-on-accent) hover:bg-(--d-accent-fill) hover:brightness-110 focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 [&_svg]:size-3.25"
       data-testid="worktree-new-chat-in-project"
       @click="emit('newChat')"
     >

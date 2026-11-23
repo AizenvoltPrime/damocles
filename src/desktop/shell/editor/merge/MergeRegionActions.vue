@@ -49,7 +49,7 @@ const ACTIONS: ReadonlyArray<{ readonly choice: ConflictChoice; readonly label: 
           >|</span>
           <button
             type="button"
-            class="cursor-pointer rounded-5 px-0.5 text-(--d-accent-text) outline-none hover:underline focus-visible:shadow-[0_0_0_1px_var(--d-accent)]"
+            class="cursor-pointer rounded-5 px-0.5 text-(--d-accent-text) outline-none hover:underline focus-visible:shadow-[0_0_0_1px_var(--d-accent-fill)]"
             :data-testid="`merge-accept-${action.choice}`"
             @click="emit('accept', action.choice)"
           >

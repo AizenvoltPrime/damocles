@@ -14,6 +14,9 @@ import type { AuthorAvatars, ContainingChange, HistoryAuthor, HistoryForgeContex
 import type { FlowStart, ForkState, PublishOwnersAnswer, PublishState } from '../../../shared/forge/publish';
 import type { BranchNameCheck, ProtectedPushState } from '../../../shared/forge/protected-push';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
+import { BUILTIN_THEME } from '../../../shared/themes/builtin';
+import type { ThemeInstallPreview, ThemeInstallProgress } from '../../../shared/themes/install';
+import type { OverlayInstallCurrent, OverlayStoreResult, OverlayStoreView, OverlayThemesResult, ThemeInstallStart } from '../../preload/overlay-channels';
 
 // VS Code's search.* defaults, as main publishes them.
 export const SEARCH_SETTINGS: ShellSearchSettings = {
@@ -44,6 +47,7 @@ export const STATE: ShellState = {
   ],
   selected: { projectKey: 'p1', chatId: 'c1' },
   chatViewShown: true,
+  chatModal: false,
   selectedChat: { id: 'c1', title: 'Fix login', status: 'idle' },
   effectiveTheme: 'dark',
   layout: {
@@ -58,6 +62,8 @@ export const STATE: ShellState = {
     graph: {},
   },
   layoutRevision: 0,
+  dockInset: 0,
+  dockPeek: false,
   shortcuts: { newChat: 'Ctrl+N', newChatInWorktree: 'Shift+Alt+N', toggleSidebar: 'Ctrl+B', settings: 'Ctrl+,', quickOpen: 'Ctrl+P', toggleTerminal: 'Ctrl+`', newTerminal: 'Ctrl+Shift+`', splitTerminal: 'Ctrl+Shift+5', closeEditor: 'Ctrl+W', searchAgain: 'Ctrl+Shift+R', toggleQueryDetails: 'Ctrl+Shift+J', focusNextSearchResult: 'F4',
     editorMenu: { goToDefinition: 'F12', goToReferences: 'Shift+F12', renameSymbol: 'F2', changeAllOccurrences: 'Ctrl+F2', formatDocument: 'Shift+Alt+F', cut: 'Ctrl+X', copy: 'Ctrl+C', paste: 'Ctrl+V', commandPalette: 'Ctrl+Shift+P' } },
   notifications: { unseen: 0, doNotDisturb: false, popupsOff: false, attention: 0 },
@@ -405,6 +411,7 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     locateProject: vi.fn(async () => undefined),
     retryRelocation: vi.fn(async () => undefined),
     abandonRelocation: vi.fn(async () => undefined),
+    projectLook: vi.fn(async () => ({ kind: 'cancelled' as const })),
     selectProject: vi.fn(async () => {}),
     grantTrust: vi.fn(async () => {}),
     listChats: vi.fn(async (projectKey: string, _stateRevision: number): Promise<ShellChatList | null> => list(projectKey)),
@@ -452,6 +459,14 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     showSidebar: vi.fn(async () => {}),
     windowControl: vi.fn(async () => {}),
     reportContentBounds: vi.fn(),
+    reportThemeDockBounds: vi.fn(),
+    reportPageMotion: vi.fn(),
+    reportTimeZone: vi.fn(),
+    endThemeDockPeek: vi.fn(async () => undefined),
+    useMyTheme: vi.fn(async () => undefined),
+    keepThemeChanges: vi.fn(async () => undefined),
+    revertThemeChanges: vi.fn(async () => undefined),
+    stopShowingProposal: vi.fn(async () => undefined),
     reportSidebarLayout: vi.fn(),
     reportGridSizes: vi.fn(),
     reportFocusedPart: vi.fn(),
@@ -657,6 +672,15 @@ export type FakeOverlayApi = DamoclesOverlayApi & {
   forgeForkState: (state: ForkState) => void;
   // main's state pushes while a forgeProtectedBranch request is open
   forgeProtectedState: (state: ProtectedPushState) => void;
+  // the install card main holds while the settings modal is open, each followed by main's push that it changed: a
+  // damocles:// link's card, the open card's new preview, and the open card's install expiring
+  installOpen: (preview: ThemeInstallPreview) => void;
+  installUpdated: (preview: ThemeInstallPreview) => void;
+  installExpired: (installId: string) => void;
+  installClosed: () => void;
+  installProgress: (progress: ThemeInstallProgress) => void;
+  // main's push of the community store's view while the settings modal is open
+  storeUpdated: (view: OverlayStoreView) => void;
 };
 
 // A control's name from its content as assistive technology computes it: text and img names outside aria-hidden, parts apart.
@@ -721,6 +745,14 @@ export function fakeOverlayApi(): FakeOverlayApi {
   const settingsAway = emitter<OverlaySettingsAwayState | null>();
   const remoteHosts: { list: readonly RemoteHostEntry[] } = { list: [] };
   const worktree: FakeOverlayApi['worktree'] = { options: opened({ available: false, reason: 'notGit' }), continue: opened([]), message: opened(null) };
+  const installCard: { current: OverlayInstallCurrent } = { current: {} };
+  const installChanged = emitter<void>();
+  const setInstallCard = (current: OverlayInstallCurrent): void => {
+    installCard.current = current;
+    installChanged.emit();
+  };
+  const installProgress = emitter<ThemeInstallProgress>();
+  const storeUpdated = emitter<OverlayStoreView>();
   return {
     getState: vi.fn(async () => ({ locale: 'en' as const, platform: 'win32' as const })),
     onState: vi.fn((listener) => { stateListeners.add(listener); return () => stateListeners.delete(listener); }),
@@ -757,6 +789,56 @@ export function fakeOverlayApi(): FakeOverlayApi {
     setPref: vi.fn(async () => opened({ ok: true as const, file: '/home/u/.damocles/settings.json' })),
     relaunch: vi.fn(async () => opened(undefined)),
     resetLayout: vi.fn(async () => opened(undefined)),
+    getThemes: vi.fn(async () => opened<OverlayThemesResult>({
+      ok: true,
+      themes: [{ status: 'ok' as const, id: BUILTIN_THEME.id, name: BUILTIN_THEME.name, builtin: true, theme: BUILTIN_THEME }],
+      shown: { themeId: BUILTIN_THEME.id, kind: 'dark', decidedBy: 'system' },
+      preferred: { dark: BUILTIN_THEME.id, light: BUILTIN_THEME.id },
+      mode: 'system',
+      schedule: { schedule: { enabled: false, rules: [] }, now: 0, zone: 'UTC', osKind: 'dark', systemLocale: 'en-GB' },
+      history: [],
+    })),
+    themeAction: vi.fn(async () => opened({ ok: true as const })),
+    projectLookImage: vi.fn(async () => opened({ ok: false as const, cancelled: true as const })),
+    onThemesChanged: vi.fn(() => () => undefined),
+    importTheme: vi.fn(async () => opened({ ok: false as const, cancelled: true as const })),
+    installFromUrl: vi.fn(async () => opened({ ok: false as const, error: 'No theme there.' })),
+    installCommit: vi.fn(async () => opened({ ok: false as const, error: 'No install card is open.' })),
+    installCancel: vi.fn(async () => opened(undefined)),
+    installAllowFlash: vi.fn(async () => opened(true)),
+    exportPlan: vi.fn(async () => opened({ ok: false as const, error: 'No such theme.' })),
+    exportSave: vi.fn(async () => opened({ ok: false as const, cancelled: true as const })),
+    installCurrent: vi.fn(async () => opened(installCard.current)),
+    onInstallChanged: vi.fn(installChanged.listen),
+    onInstallProgress: vi.fn(installProgress.listen),
+    storeList: vi.fn(async () => opened<OverlayStoreResult>({ ok: true, view: { state: 'off', entries: [] } })),
+    storeInstall: vi.fn(async () => opened<ThemeInstallStart>({ ok: false, error: 'No such entry.' })),
+    cancelPrepare: vi.fn(async () => opened(undefined)),
+    onStoreUpdated: vi.fn(storeUpdated.listen),
+    themeEditor: {
+      getSession: vi.fn(async () => null),
+      onSession: vi.fn(() => () => undefined),
+      onPreviewTakenOver: vi.fn(() => () => undefined),
+      onPreviewRefused: vi.fn(() => () => undefined),
+      preview: vi.fn(),
+      save: vi.fn(async () => ({ ok: true as const })),
+      duplicate: vi.fn(async () => ({ ok: true as const })),
+      close: vi.fn(),
+      setDirty: vi.fn(),
+      onMoveAsked: vi.fn(() => () => undefined),
+      answerMove: vi.fn(),
+      captureArrangement: vi.fn(async () => ({ ok: true as const, arrangement: {} })),
+      onOutside: vi.fn(() => () => undefined),
+      reload: vi.fn(),
+      peek: vi.fn(),
+      openSettings: vi.fn(),
+      importFontFile: vi.fn(async () => ({ ok: false as const, cancelled: true as const })),
+      importFontBytes: vi.fn(async () => ({ ok: false as const, error: 'closed' })),
+      importImageFile: vi.fn(async () => ({ ok: false as const, cancelled: true as const })),
+      onImportProgress: vi.fn(() => () => undefined),
+      allowFlash: vi.fn(async () => ({ ok: false as const, error: 'closed' })),
+      importSpriteFile: vi.fn(async () => ({ ok: false as const, cancelled: true as const })),
+    },
     getUpdate: vi.fn(async () => opened(DISABLED_UPDATE)),
     onUpdate: vi.fn((listener) => { updateListeners.add(listener); return () => updateListeners.delete(listener); }),
     checkForUpdates: vi.fn(async () => opened(undefined)),
@@ -893,6 +975,12 @@ export function fakeOverlayApi(): FakeOverlayApi {
     terminalPick,
     pushTerminalProfiles: (report) => { terminalProfiles.report = report; profilesChanged.emit(report); },
     dropZonesPointer: pointer.emit,
+    installOpen: (preview) => setInstallCard({ preview }),
+    installUpdated: (preview) => setInstallCard({ preview }),
+    installExpired: (installId) => setInstallCard({ expired: installId }),
+    installClosed: () => setInstallCard({}),
+    installProgress: installProgress.emit,
+    storeUpdated: storeUpdated.emit,
   };
 }
 

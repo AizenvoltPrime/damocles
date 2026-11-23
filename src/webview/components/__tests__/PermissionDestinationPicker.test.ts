@@ -2,6 +2,7 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { nextTick } from 'vue';
 import { enableAutoUnmount, mount } from '@vue/test-utils';
+import { createPinia, setActivePinia } from 'pinia';
 import PermissionDestinationPicker from '../PermissionDestinationPicker.vue';
 import { i18n } from '@/i18n';
 
@@ -9,6 +10,7 @@ import { i18n } from '@/i18n';
 
 enableAutoUnmount(afterEach);
 beforeEach(() => {
+  setActivePinia(createPinia());
   document.body.innerHTML = '';
 });
 

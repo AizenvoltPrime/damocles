@@ -440,9 +440,9 @@ const FAINT = 'text-(--d-faint) group-hover:text-(--d-faint-text) group-data-hig
 const HINT = 'ms-auto flex-none self-center rounded-7 border border-(--d-border2) px-2 py-0.5 text-11 text-(--d-muted) group-aria-disabled:opacity-50';
 const HEADING = 'px-3 pt-0 pb-1 text-11 font-semibold tracking-wide text-(--d-faint) uppercase';
 const ROW_BUTTON = 'h-7 rounded-lg px-3 text-xs';
-const FIELD = 'h-8 rounded-9 border-(--d-border2) bg-(--d-input) px-2.75 text-13 text-(--d-text) placeholder:text-(--d-faint) focus-visible:border-(--d-accent) focus-visible:ring-0 focus-visible:ring-offset-0';
+const FIELD = 'h-8 rounded-9 border-(--d-border2) bg-(--d-input) px-2.75 text-13 text-(--d-text) placeholder:text-(--d-faint) focus-visible:border-(--d-accent-fill) focus-visible:ring-0 focus-visible:ring-offset-0';
 const STATUS = 'px-3 py-2 text-xs text-(--d-muted) empty:py-0';
-const ERROR = 'rounded-9 border border-[color-mix(in_srgb,var(--d-danger)_30%,transparent)] bg-[color-mix(in_srgb,var(--d-danger)_8%,transparent)] px-3 py-2 text-xs text-(--d-danger-text)';
+const ERROR = 'rounded-9 border border-[color-mix(in_srgb,var(--d-danger-fill)_30%,transparent)] bg-[color-mix(in_srgb,var(--d-danger-fill)_8%,transparent)] px-3 py-2 text-xs text-(--d-danger-text)';
 </script>
 
 <template>
@@ -566,7 +566,7 @@ const ERROR = 'rounded-9 border border-[color-mix(in_srgb,var(--d-danger)_30%,tr
         <Button
           :id="`${ids}-template-attach`"
           type="submit"
-          :class="[ROW_BUTTON, 'self-end bg-(--d-accent) text-(--d-on-accent) hover:bg-(--d-accent) aria-disabled:opacity-50']"
+          :class="[ROW_BUTTON, 'self-end bg-(--d-accent-fill) text-(--d-on-accent) hover:bg-(--d-accent-fill) aria-disabled:opacity-50']"
           :disabled="!formComplete"
           :aria-disabled="attaching !== null || undefined"
           data-testid="mcp-template-attach"
@@ -583,7 +583,7 @@ const ERROR = 'rounded-9 border border-[color-mix(in_srgb,var(--d-danger)_30%,tr
           <CommandInput
             :id="`${ids}-filter`"
             v-model="filter"
-            wrapper-class="h-8.5 rounded-10 border border-(--d-border2) bg-(--d-input) px-2.75 text-(--d-faint) transition-colors focus-within:border-(--d-accent)"
+            wrapper-class="h-8.5 rounded-10 border border-(--d-border2) bg-(--d-input) px-2.75 text-(--d-faint) transition-colors focus-within:border-(--d-accent-fill)"
             class="h-full min-w-0 flex-1 py-0 text-13 text-(--d-text) placeholder:text-(--d-faint)"
             :placeholder="t('mcp.resourcePicker.filter')"
             :aria-label="t('mcp.resourcePicker.filter')"

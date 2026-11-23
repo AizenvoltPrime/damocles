@@ -20,6 +20,9 @@ const MAX_REDIRECTS = 5;
 /** A fetch the guard refused: a blocked scheme or address, too many redirects, a body over its cap, or a refused redirect. */
 export class FetchRefusedError extends Error {}
 
+/** A body `readBodyCapped` stopped reading at its cap. */
+export class ResponseTooLargeError extends FetchRefusedError {}
+
 /** A redirect `safeFetch` did not follow because its caller refused the target (`SafeFetchOptions.redirectRefused`). */
 export class RedirectRefusedError extends FetchRefusedError {
   readonly from: string;
@@ -223,7 +226,7 @@ export async function safeFetch(initialUrl: string, init: RequestInit, options: 
  * which keeps the cap honest (we never buffer-before-checking, even on that path).
  */
 export async function readBodyCapped(response: Response, maxBytes: number): Promise<Uint8Array> {
-  const tooLarge = (): Error => new FetchRefusedError(`Response too large (>${Math.ceil(maxBytes / 1024 / 1024)}MB)`);
+  const tooLarge = (): Error => new ResponseTooLargeError(`Response too large (>${Math.ceil(maxBytes / 1024 / 1024)}MB)`);
   const body = response.body;
   if (!body) return new Uint8Array(0);
   const reader = body.getReader();

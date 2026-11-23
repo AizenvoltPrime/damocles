@@ -1,6 +1,7 @@
+import type { ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
 import { test as base, expect, type ElectronApplication, type Page, type TestInfo } from '@playwright/test';
-import { attachDiagnostics, launchDesktop, type DesktopApp, type LaunchOptions } from './app';
+import { attachDiagnostics, killTree, launchDesktop, spawnSecondLaunch, type DesktopApp, type LaunchOptions } from './app';
 import { CLIPBOARD_LOCK_WAIT_MS, withClipboardLock, type E2eClipboard } from './clipboard';
 import { PACKAGED_SPECS } from './packaged-app';
 import { FOREGROUND_WAIT_MS, holdingForeground, openingApp, withForeground } from './foreground';
@@ -38,6 +39,11 @@ export interface DesktopFixtures {
   home: HermeticHome;
   /** Launches the app on `home`; every launch is closed and its logs attached after the test. */
   launch: (options?: LaunchOptions) => Promise<DesktopApp>;
+  /**
+   * Starts the app again on `home` while a launch runs: it hands `args` to the running app and exits, and this resolves with
+   * its exit code. A child still alive when the test ends is killed, so a second launch that hangs cannot outlive its test.
+   */
+  secondLaunch: (args?: readonly string[], env?: Record<string, string>) => Promise<number | null>;
   /**
    * The OS clipboard, held exclusively across workers for the whole test with the foreground, since a paste needs keyboard
    * focus; scripts/__tests__/e2e-clipboard.test.ts requires it.
@@ -91,6 +97,15 @@ export const test = base.extend<DesktopFixtures>({
       if (handlerErrors.length > 0) record(new Error(`launch ${i}: main threw in an IPC handler:\n${handlerErrors.join('\n')}`));
     }
     if (firstError) throw firstError.error;
+  },
+  secondLaunch: async ({ home }, use) => {
+    const children: ChildProcess[] = [];
+    await use(async (args, env) => {
+      const child = await spawnSecondLaunch(home, args, env);
+      children.push(child);
+      return new Promise<number | null>((resolve) => child.once('exit', (code) => resolve(code)));
+    });
+    for (const child of children) await killTree(child);
   },
   // A test lists it first, so it locks before any app launches and unlocks after every app closed; the waits have their own
   // timeout. The clipboard is taken before the foreground, and no test takes both fixtures, so no two workers wait on each other.

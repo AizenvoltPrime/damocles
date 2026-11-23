@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n';
 import type { DamoclesOverlayApi, InputBrowseResult, OverlayAnswer, OverlayRequest, OverlayState, PaletteCommand, QuickOpenResponse, QuickOpenScope } from '../../preload/overlay-channels';
 import type { ShellPlatform } from '../../preload/shell-channels';
 import { applyShellLocale, createLocaleHold } from '../i18n';
+import { setPageCharacters } from '../characters';
 import { answerOf } from './popup-answer';
 import ContextMenu from './components/ContextMenu.vue';
 import ConfirmDialog from './components/ConfirmDialog.vue';
@@ -23,6 +24,7 @@ import CloseRemoteDialog from './components/CloseRemoteDialog.vue';
 import GitConsentDialog from './components/GitConsentDialog.vue';
 import DevcontainerTrustDialog from './components/DevcontainerTrustDialog.vue';
 import AllowYoloDialog from './components/AllowYoloDialog.vue';
+import ProjectLookEditor from './settings/themes/ProjectLookEditor.vue';
 import ClientCertificateDialog from './components/ClientCertificateDialog.vue';
 import ForgeChooseAccountDialog from './components/ForgeChooseAccountDialog.vue';
 import ForgePublishDialog from './components/ForgePublishDialog.vue';
@@ -49,6 +51,7 @@ function applyState(state: OverlayState): void {
   void applyShellLocale(state.locale);
   void applySettingsLocale(state.locale);
   platform.value = state.platform;
+  setPageCharacters(state.characters);
 }
 
 // In arrival order; the last one is on top and receives Escape. shown settles once main has been told the popup is on screen.
@@ -89,7 +92,7 @@ function onAfterLeave(element: Element): void {
 // Kinds that handle Escape themselves, so the window's handler leaves it to them: the settings modal and the dialogs through
 // the overlay stack (a search query clears first, a dialog above the modal cancels without closing it), the Connect dialog, the dev container confirmation
 // and the Allow YOLO question through their reka dialogs, and Quick Open, New Terminal, the quick pick, the clone picker and the input box in their own keydown.
-const OWN_ESCAPE: ReadonlySet<OverlayRequest['kind']> = new Set(['settings', 'connect', 'closeRemote', 'gitCredentialConsent', 'devcontainerTrust', 'allowYolo', 'clientCertificate', 'forgeChooseAccount', 'forgePublish', 'forgeFork', 'forgeProtectedBranch', 'confirm', 'message', 'worktreeDialog', 'quickOpen', 'newTerminal', 'quickPick', 'input', 'cloneFromAccount']);
+const OWN_ESCAPE: ReadonlySet<OverlayRequest['kind']> = new Set(['settings', 'connect', 'closeRemote', 'gitCredentialConsent', 'devcontainerTrust', 'allowYolo', 'projectLook', 'clientCertificate', 'forgeChooseAccount', 'forgePublish', 'forgeFork', 'forgeProtectedBranch', 'confirm', 'message', 'worktreeDialog', 'quickOpen', 'newTerminal', 'quickPick', 'input', 'cloneFromAccount']);
 
 // Quick Open asks main for each query; the last answer names the files a pick may choose and how main parsed the query. A
 // query starting with ">" is the command palette, as in VS Code: it lists main's commands once per open request.
@@ -344,6 +347,19 @@ onBeforeUnmount(() => {
             @answer="answer(entry.id, $event)"
           />
         </div>
+        <!-- The wrapper's leave plays the dialog's exit, which renders in place for it. -->
+        <div
+          v-else-if="entry.request.kind === 'projectLook'"
+          :key="entry.id"
+          :data-overlay-id="entry.id"
+          class="project-look-overlay"
+        >
+          <ProjectLookEditor
+            :api="api"
+            :request="entry.request"
+            @answer="answer(entry.id, $event)"
+          />
+        </div>
         <WorktreeDialog
           v-else-if="entry.request.kind === 'worktreeDialog'"
           :key="entry.id"
@@ -414,7 +430,7 @@ onBeforeUnmount(() => {
             v-else-if="entry.request.kind === 'quickOpen'"
             :label="paletteMode ? t('palette.label') : entry.request.scope ? t('quickOpen.scopedLabel', { scope: scopeName(entry.request.scope) }) : t('quickOpen.label')"
             :placeholder="paletteMode ? t('palette.placeholder') : entry.request.scope ? t('quickOpen.scopedPlaceholder') : t('quickOpen.placeholder')"
-            :scope="!paletteMode && entry.request.scope ? { project: entry.request.scope.projectName, label: scopeName(entry.request.scope) } : undefined"
+            :scope="!paletteMode && entry.request.scope ? { project: entry.request.scope.projectName, projectKey: entry.request.scope.projectKey, label: scopeName(entry.request.scope) } : undefined"
             :empty-text="paletteMode ? t('palette.empty') : undefined"
             :initial-query="entry.request.mode === 'commands' ? PALETTE_PREFIX : ''"
             :load="loadQuickOpen"

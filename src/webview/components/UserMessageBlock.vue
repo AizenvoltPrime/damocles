@@ -15,6 +15,7 @@ import { ArrowUp, Check, ChevronDown, ChevronRight, ChevronUp, Copy, Database, P
 import { formatClock } from "@/utils/clock";
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard";
 import { useUserMessageMaxHeight } from "@/composables/useUserMessageMaxHeight";
+import { spacedRemPx } from "@/composables/useRemPx";
 import { useMessageHighlightStore } from "@/stores/useMessageHighlightStore";
 import { USER_PROMPT_FILTER } from "@/composables/useEnrichedPrompts";
 
@@ -66,8 +67,8 @@ const { flashedMessageId } = storeToRefs(useMessageHighlightStore());
 const isHighlighted = computed(() => flashedMessageId.value === props.message.id);
 
 const borderColorClass = computed(() => {
-  if (isHighlighted.value) return "border-(--d-accent)";
-  if (isInjectedOrQueued.value) return "border-[color-mix(in_srgb,var(--d-warning)_35%,var(--d-border2))]";
+  if (isHighlighted.value) return "border-(--d-accent-fill)";
+  if (isInjectedOrQueued.value) return "border-[color-mix(in_srgb,var(--d-warning-fill)_35%,var(--d-border2))]";
   return "border-(--d-border2)";
 });
 
@@ -80,25 +81,22 @@ function handleCopy(): void {
 const isPinned = computed(() => props.mode === "pinned");
 const showScrollUp = computed(() => isPinned.value && props.offset === 0);
 
-/** `max-h-40`, the collapsed card's height. */
+/** `max-h-40`, the collapsed card's height at density 1; the class scales with the theme's density, so every use here does. */
 const COLLAPSED_REM = 10;
 const cardRef = ref<HTMLElement | null>(null);
 const contentRef = ref<HTMLElement | null>(null);
 const naturalHeight = ref<number>(0);
 // A markup card shows whole: its image and marks are the message.
-const isOverflowing = computed(() => !props.message.designMarkup && naturalHeight.value > COLLAPSED_REM * parseFloat(getComputedStyle(document.documentElement).fontSize));
+const isOverflowing = computed(() => !props.message.designMarkup && naturalHeight.value > spacedRemPx(COLLAPSED_REM));
 const isCollapsed = computed(() => !props.expanded && isOverflowing.value);
 
 const surfaceClass = computed(() =>
-  isInjectedOrQueued.value ? "bg-[color-mix(in_srgb,var(--d-warning)_8%,var(--d-card))]" : "bg-(--d-card)",
-);
-const fadeFromClass = computed(() =>
-  isInjectedOrQueued.value ? "from-[color-mix(in_srgb,var(--d-warning)_8%,var(--d-card))]" : "from-(--d-card)",
+  isInjectedOrQueued.value ? "bg-[color-mix(in_srgb,var(--d-warning-fill)_8%,var(--surface-card))]" : "bg-(--surface-card)",
 );
 
 const { maxHeightVh, clamp: clampVh } = useUserMessageMaxHeight();
 const scrollAreaStyle = computed(() =>
-  isCollapsed.value ? undefined : { maxHeight: `max(${maxHeightVh.value}vh, ${COLLAPSED_REM}rem)` },
+  isCollapsed.value ? undefined : { maxHeight: `max(${maxHeightVh.value}vh, calc(var(--spacing) * ${COLLAPSED_REM * 4}))` },
 );
 
 let dragStartY = 0;
@@ -153,7 +151,12 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div :class="isPinned ? '' : 'flex justify-end pt-1.5'">
+  <!-- The transcript scope root, so theme CSS reaches the bubble as a descendant. Its paint containment would clip the pinned
+       bubble's outer shadow and entrance, so the pinned root, which has the bubble's box, carries them. -->
+  <div
+    data-theme-scope="transcript"
+    :class="isPinned ? 'rounded-14 shadow-(--d-shadow) d-pop-in' : 'flex justify-end pt-1.5'"
+  >
     <div
       ref="cardRef"
       class="group relative min-w-0 border bubble-fade-transitions"
@@ -162,8 +165,8 @@ onUnmounted(() => {
         borderColorClass,
         isHighlighted && 'is-highlighted',
         isPinned
-          ? 'w-full rounded-[0.875rem] px-3.5 pt-2.25 pb-2.75 shadow-(--d-shadow) animate-[d-pop_.18s_var(--ease-out)]'
-          : 'max-w-[88%] rounded-[1rem_1rem_0.3125rem_1rem] px-3.75 pt-2.75 pb-3 shadow-[inset_0_1px_0_rgba(255,255,255,.03)]',
+          ? 'w-full rounded-14 px-3.5 pt-2.25 pb-2.75'
+          : 'max-w-[88%] rounded-2xl rounded-br-5 px-3.75 pt-2.75 pb-3 shadow-[inset_0_1px_0_rgba(255,255,255,.03)]',
       ]"
     >
       <div
@@ -188,23 +191,23 @@ onUnmounted(() => {
         <template v-if="isInjectedOrQueued">
           <span
             v-if="message.steerTarget"
-            class="max-w-[16rem] truncate rounded-5 bg-[color-mix(in_srgb,var(--d-warning)_14%,transparent)] px-1.5 font-medium text-(--d-warning-text)"
+            class="max-w-3xs truncate rounded-5 bg-[color-mix(in_srgb,var(--d-warning-fill)_14%,transparent)] px-1.5 font-medium text-(--d-warning-text)"
           >
             {{ t("steerCommand.youSteered", { agent: message.steerTarget.description ?? message.steerTarget.agentId.slice(0, 8) }) }}
           </span>
           <span
             v-else-if="message.isCommandEcho"
-            class="rounded-5 bg-[color-mix(in_srgb,var(--d-warning)_14%,transparent)] px-1.5 font-medium text-(--d-warning-text)"
+            class="rounded-5 bg-[color-mix(in_srgb,var(--d-warning-fill)_14%,transparent)] px-1.5 font-medium text-(--d-warning-text)"
             data-user-label="command"
           >{{ t("welcome.commandEcho") }}</span>
           <template v-else>
             <span
-              class="rounded-5 bg-[color-mix(in_srgb,var(--d-warning)_14%,transparent)] px-1.5 font-medium text-(--d-warning-text)"
+              class="rounded-5 bg-[color-mix(in_srgb,var(--d-warning-fill)_14%,transparent)] px-1.5 font-medium text-(--d-warning-text)"
               data-user-label="mid-stream"
             >{{ t("welcome.sentMidStream") }}</span>
             <span
               v-if="message.isQueued"
-              class="rounded-5 bg-[color-mix(in_srgb,var(--d-warning)_14%,transparent)] px-1.5 font-medium text-(--d-warning-text)"
+              class="rounded-5 bg-[color-mix(in_srgb,var(--d-warning-fill)_14%,transparent)] px-1.5 font-medium text-(--d-warning-text)"
             >{{ t("welcome.queued") }}</span>
           </template>
         </template>
@@ -297,9 +300,11 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <!-- The collapsed text fades out through a mask: the bubble is translucent over a wallpaper, so no color can cover it. -->
       <div
         class="relative"
-        :class="isCollapsed && 'max-h-40 overflow-hidden'"
+        :class="isCollapsed && 'max-h-40 overflow-hidden mask-b-from-[calc(100%-var(--spacing)*8.5)]'"
+        data-testid="user-message-body"
       >
         <div
           ref="contentRef"
@@ -359,12 +364,6 @@ onUnmounted(() => {
             class="text-(--d-text)"
           />
         </div>
-        <div
-          v-if="isCollapsed"
-          aria-hidden="true"
-          class="pointer-events-none absolute inset-x-0 bottom-0 h-8.5 bg-linear-to-t to-transparent"
-          :class="fadeFromClass"
-        />
       </div>
 
       <div
@@ -374,7 +373,7 @@ onUnmounted(() => {
         data-testid="user-message-resize"
         @pointerdown="onResizeStart"
       >
-        <div class="h-1 w-10 rounded-full bg-(--d-border2) transition-colors group-hover/resize:bg-(--d-accent)" />
+        <div class="h-1 w-10 rounded-full bg-(--d-border2) transition-colors group-hover/resize:bg-(--d-accent-fill)" />
       </div>
 
       <span
@@ -388,7 +387,7 @@ onUnmounted(() => {
       <button
         v-if="!isInjectedOrQueued && !isCollapsed"
         type="button"
-        class="mt-2.25 inline-flex max-w-full items-center gap-1.5 rounded-full bg-(--d-accent-soft) px-2.25 py-0.5 text-11 font-medium text-(--d-accent-text) transition-colors hover:bg-[color-mix(in_srgb,var(--d-accent)_22%,transparent)]"
+        class="mt-2.25 inline-flex max-w-full items-center gap-1.5 rounded-full bg-(--d-accent-soft) px-2.25 py-0.5 text-11 font-medium text-(--d-accent-text) transition-colors hover:bg-[color-mix(in_srgb,var(--d-accent-fill)_22%,transparent)]"
         :title="t('contextInjection.viewContext')"
         data-testid="user-message-context"
         @click.stop="emit('viewContext', promptIndex)"

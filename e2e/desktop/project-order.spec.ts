@@ -192,7 +192,7 @@ test('By host groups the projects under This computer, collapse and the view out
 
 const HEADER_TEXTS = [
   { lang: 'en-US', title: 'Projects', connect: 'Connect to host', viewByHost: 'View by Host', viewAsList: 'View as List' },
-  { lang: 'el-GR', title: 'Έργα', connect: 'Σύνδεση σε υπολογιστή', viewByHost: 'Προβολή ανά υπολογιστή', viewAsList: 'Προβολή ως λίστα' },
+  { lang: 'el-GR', title: 'Έργα', connect: 'Σύνδεση σε απομακρυσμένο υπολογιστή', viewByHost: 'Προβολή ανά υπολογιστή', viewAsList: 'Προβολή ως λίστα' },
 ] as const;
 
 for (const texts of HEADER_TEXTS) {

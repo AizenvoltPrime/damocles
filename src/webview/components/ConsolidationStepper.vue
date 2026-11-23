@@ -91,16 +91,16 @@ const rows = computed(() =>
       >
         <div
           class="relative col-span-2 row-start-2 h-1 overflow-hidden rounded-full bg-(--d-hover)"
-          :class="row.sweep && 'd-sweep-bar text-(--d-accent)'"
+          :class="row.sweep && 'd-sweep-bar [--tone:var(--d-accent-fill)]'"
           aria-hidden="true"
         >
           <div
             v-if="!row.sweep"
             class="absolute inset-0 origin-left rounded-full transition-transform duration-500 ease-out rtl:origin-right"
             :class="{
-              'bg-(--d-success)': row.status === 'done',
-              'bg-(--d-accent)': row.status === 'active',
-              'bg-(--d-danger)': row.status === 'failed',
+              'bg-(--d-success-fill)': row.status === 'done',
+              'bg-(--d-accent-fill)': row.status === 'active',
+              'bg-(--d-danger-fill)': row.status === 'failed',
               'bg-(--d-border2)': row.status === 'skipped' || row.status === 'pending',
             }"
             :style="{ transform: `scaleX(${row.fill})` }"

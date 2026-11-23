@@ -144,19 +144,19 @@ function onScrim(): void {
 
 const BADGE: Readonly<Record<DialogSeverity, { readonly icon: Component; readonly classes: string }>> = {
   accent: { icon: Info, classes: 'bg-(--d-accent-soft) text-(--d-accent-text)' },
-  info: { icon: Info, classes: 'bg-(--d-info)/15 text-(--d-info)' },
-  warning: { icon: TriangleAlert, classes: 'bg-(--d-warning)/15 text-(--d-warning)' },
-  danger: { icon: OctagonAlert, classes: 'bg-(--d-danger)/15 text-(--d-danger)' },
-  success: { icon: Check, classes: 'bg-(--d-success)/15 text-(--d-success)' },
+  info: { icon: Info, classes: 'bg-(--d-info-fill)/15 text-(--d-info)' },
+  warning: { icon: TriangleAlert, classes: 'bg-(--d-warning-fill)/15 text-(--d-warning)' },
+  danger: { icon: OctagonAlert, classes: 'bg-(--d-danger-fill)/15 text-(--d-danger)' },
+  success: { icon: Check, classes: 'bg-(--d-success-fill)/15 text-(--d-success)' },
 };
 // accent and success name no severity: the title says it all
 const named = computed(() => props.severity !== 'accent' && props.severity !== 'success');
 const FILL: Readonly<Record<DialogSeverity, string>> = {
-  accent: 'bg-(--d-accent) text-(--d-on-accent)',
-  info: 'bg-(--d-accent) text-(--d-on-accent)',
-  warning: 'bg-(--d-accent) text-(--d-on-accent)',
-  danger: 'bg-(--d-danger) text-(--d-on-danger)',
-  success: 'bg-(--d-accent) text-(--d-on-accent)',
+  accent: 'bg-(--d-accent-fill) text-(--d-on-accent)',
+  info: 'bg-(--d-accent-fill) text-(--d-on-accent)',
+  warning: 'bg-(--d-accent-fill) text-(--d-on-accent)',
+  danger: 'bg-(--d-danger-fill) text-(--d-on-danger)',
+  success: 'bg-(--d-accent-fill) text-(--d-on-accent)',
 };
 </script>
 
@@ -188,7 +188,7 @@ const FILL: Readonly<Record<DialogSeverity, string>> = {
         :aria-labelledby="named ? `${severityId} ${titleId}` : titleId"
         :aria-describedby="message || $slots.default ? messageId : undefined"
         :class="wide ? 'w-[min(31rem,100%)]' : 'w-[min(27.5rem,100%)]'"
-        class="overlay-dialog-panel flex flex-col gap-3.5 rounded-[0.875rem] border border-(--d-border2) bg-(--d-card) px-4.5 pt-4.5 pb-4 text-(--d-text) shadow-(--d-shadow) outline-none"
+        class="overlay-dialog-panel flex flex-col gap-3.5 rounded-14 border border-(--d-border2) bg-(--d-card) px-4.5 pt-4.5 pb-4 text-(--d-text) shadow-(--d-shadow) outline-none"
         @open-auto-focus="onOpenAutoFocus"
         @close-auto-focus.prevent
       >

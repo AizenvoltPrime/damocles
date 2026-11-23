@@ -96,6 +96,7 @@ watch([() => crumbs.value.join('\n'), placeLabel, () => props.place?.kind, rowRe
 <template>
   <div
     data-testid="editor-breadcrumbs"
+    data-theme-scope="editorChrome"
     class="flex h-6.5 shrink-0 items-center gap-2 border-b border-(--d-border) bg-(--d-bg) px-3.5 text-11.5 text-(--d-faint-text)"
   >
     <Breadcrumb
@@ -147,7 +148,7 @@ watch([() => crumbs.value.join('\n'), placeLabel, () => props.place?.kind, rowRe
                 <button
                   type="button"
                   :aria-label="t('editor.breadcrumbsHidden')"
-                  class="flex h-4 items-center rounded-5 px-0.5 transition-colors duration-150 ease-out hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:outline-1 focus-visible:outline-(--d-accent) data-[state=delayed-open]:text-(--d-text) data-[state=instant-open]:text-(--d-text)"
+                  class="flex h-4 items-center rounded-5 px-0.5 transition-colors duration-150 ease-out hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:outline-1 focus-visible:outline-(--d-accent-fill) data-[state=delayed-open]:text-(--d-text) data-[state=instant-open]:text-(--d-text)"
                 >
                   <BreadcrumbEllipsis class="size-auto">
                     <Ellipsis class="size-3" />

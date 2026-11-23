@@ -8,6 +8,7 @@ import { parseSettingsText, type SettingsObject } from '../../../core/config/set
 import { userConfigBase, type ConfigNotices } from '../../../core/config/local-config-path';
 import { keptRulesText, readRuleFileText, unreadableRulesText } from '../../../core/permission-handler/rule-file-read';
 import { PREFER_API_KEY_SETTINGS } from '../../../core/pi-session/provider-auth';
+import { THEMES_AGENT_TOOLS_SETTING } from '../../local-services/desktop-configuration';
 import type { Disposable } from '../../../platform/disposable';
 import { englishText } from '../../../shared/localized-text';
 import type { UnreadableRuleFile } from '../../../shared/types/permissions';
@@ -49,7 +50,8 @@ export function userPermissionFiles(homedir: string): ReadonlyArray<{ readonly d
 /** The contributed keys a remote core reads from this computer's user layer: no machine scoped key, and no Prefer API key flag, whose one copy there is clientAuth's. */
 export function relayedUserSettingKeys(contributed: Pick<ContributedConfiguration, 'keys' | 'clientMachineKeys' | 'hostKeys'>): string[] {
   const prefer = new Set(PREFER_API_KEY_SETTINGS);
-  return contributed.keys.filter((key) => !contributed.clientMachineKeys.has(key) && !contributed.hostKeys.has(key) && !prefer.has(key));
+  // a remote core reaches the theme tools only while this computer has them on (UserScopeReach.theme)
+  return [...contributed.keys.filter((key) => !contributed.clientMachineKeys.has(key) && !contributed.hostKeys.has(key) && !prefer.has(key)), THEMES_AGENT_TOOLS_SETTING];
 }
 
 const boundedString = (value: unknown, max: number, what: string): string => {

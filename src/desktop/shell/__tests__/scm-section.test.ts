@@ -191,6 +191,14 @@ describe('the Source control tree', () => {
     expect(wrapper.get('[data-testid="scm-stash-apply"]').element.parentElement!.classList.contains('d-actions-in')).toBe(true);
   });
 
+  it('gives a change row one background class per state, so a selected row keeps its tint under the pointer', async () => {
+    const { wrapper } = await mountSection([snapshot('r1', { workingTree: [change('a.ts'), change('b.ts')] })], 'list', ['r1']);
+    await wrapper.get('[data-row-key="workingTree:a.ts"]').trigger('click');
+    const grounds = (key: string): string[] => wrapper.get(`[data-row-key="${key}"]`).classes().filter((name) => /(^|:)bg-/.test(name));
+    expect(grounds('workingTree:a.ts')).toEqual(['bg-(--d-accent-soft)']);
+    expect(grounds('workingTree:b.ts')).toEqual(['hover:bg-(--d-hover)']);
+  });
+
   it('restarts the list fade on each repository switch, across a reflow', async () => {
     const { wrapper, scm } = await mountSection([snapshot('r1', { workingTree: [change('a.ts')] }), snapshot('r2', { workingTree: [change('b.ts')] })], 'list', ['r1', 'r2']);
     const list = tree(wrapper).element.firstElementChild as HTMLElement;

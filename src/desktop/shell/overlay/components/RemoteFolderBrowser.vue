@@ -238,7 +238,7 @@ onMounted(async () => {
           :placeholder="fileMode ? t('remote.pick.filter') : t('remote.folders.filter')"
           autocomplete="off"
           spellcheck="false"
-          class="h-7 rounded-7 border-(--d-border2) bg-(--d-input) pr-2 pl-6.5 text-12 text-(--d-text) focus-visible:border-(--d-accent) focus-visible:ring-3 focus-visible:ring-(--d-accent-soft) focus-visible:ring-offset-0"
+          class="h-7 rounded-7 border-(--d-border2) bg-(--d-input) pr-2 pl-6.5 text-12 text-(--d-text) focus-visible:border-(--d-accent-fill) focus-visible:ring-3 focus-visible:ring-(--d-accent-soft) focus-visible:ring-offset-0"
           @update:model-value="select(0)"
         />
       </span>
@@ -247,7 +247,7 @@ onMounted(async () => {
       v-if="problem"
       role="alert"
       data-testid="folder-browser-problem"
-      class="mx-4.5 mb-2 rounded-8 bg-(--d-warning)/12 px-2.5 py-2 text-12 text-(--d-warning-text)"
+      class="mx-4.5 mb-2 rounded-8 bg-(--d-warning-fill)/12 px-2.5 py-2 text-12 text-(--d-warning-text)"
     >
       {{ problem }}
     </p>
@@ -262,7 +262,7 @@ onMounted(async () => {
       :aria-label="fileMode ? t('remote.pick.list') : t('remote.folders.list')"
       :aria-busy="loading ? 'true' : undefined"
       :aria-activedescendant="activeIndex >= 0 ? optionId(activeIndex) : undefined"
-      class="group/list mx-4.5 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto rounded-10 border border-(--d-border) p-1 focus-visible:border-(--d-accent) focus-visible:outline-none"
+      class="group/list mx-4.5 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto rounded-10 border border-(--d-border) p-1 focus-visible:border-(--d-accent-fill) focus-visible:outline-none"
       @keydown="onListKeydown"
     >
       <p
@@ -280,8 +280,8 @@ onMounted(async () => {
         :data-kind="entry.kind"
         :aria-selected="entry.name === selected"
         :data-project-key="entry.projectKey"
-        class="folder-row flex h-8 shrink-0 cursor-pointer items-center gap-2 rounded-8 px-2.5 text-13 transition-colors select-none hover:bg-(--d-hover)"
-        :class="entry.name === selected ? 'bg-(--d-accent-soft) group-focus-visible/list:outline group-focus-visible/list:-outline-offset-1 group-focus-visible/list:outline-(--d-accent)' : ''"
+        class="folder-row flex h-8 shrink-0 cursor-pointer items-center gap-2 rounded-8 px-2.5 text-13 transition-colors select-none"
+        :class="entry.name === selected ? 'bg-(--d-accent-soft) group-focus-visible/list:outline group-focus-visible/list:-outline-offset-1 group-focus-visible/list:outline-(--d-accent-fill)' : 'hover:bg-(--d-hover)'"
         :style="{ '--row-index': Math.min(index, 8) }"
         @click="selected = entry.name"
         @dblclick="enter(entry)"

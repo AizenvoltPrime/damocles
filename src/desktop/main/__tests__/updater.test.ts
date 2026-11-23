@@ -57,6 +57,7 @@ let stored: Map<string, unknown>;
 let resume: (() => void) | undefined;
 let automatic: boolean;
 let services: UpdateService[];
+let storeChecks: number;
 
 function deps(overrides: Partial<UpdaterDeps> = {}): UpdaterDeps {
   const notify = (severity: string) => (message: string, ...actions: string[]): Promise<string | undefined> => {
@@ -84,6 +85,10 @@ function deps(overrides: Partial<UpdaterDeps> = {}): UpdaterDeps {
       },
     },
     checkAutomatically: () => automatic,
+    storeCheck: async () => {
+      storeChecks++;
+      return { fetched: true };
+    },
     onResume: (listener) => {
       resume = listener;
       return { dispose: () => { resume = undefined; } };
@@ -136,6 +141,7 @@ beforeEach(() => {
   resume = undefined;
   automatic = true;
   services = [];
+  storeChecks = 0;
 });
 
 afterEach(() => {
@@ -837,5 +843,92 @@ describe('versionInfoText', () => {
   it('lists the versions and the platform', () => {
     expect(versionInfoText({ version: '3.4.0', packaged: true, platform: 'win32', arch: 'x64', electron: '39.2.0', chromium: '142.0.1', node: '24.11.0' }))
       .toBe('Damocles 3.4.0\nElectron 39.2.0\nChromium 142.0.1\nNode.js 24.11.0\nwin32 x64');
+  });
+});
+
+describe('community store check', () => {
+  it('rides on the automatic checks: at start, every CHECK_INTERVAL_MS and on a due resume', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'], now: 0 });
+    updater.checkResult = upToDate();
+    startUpdater();
+    await settle();
+    expect(storeChecks).toBe(1);
+    vi.advanceTimersByTime(CHECK_INTERVAL_MS);
+    await settle();
+    expect(storeChecks).toBe(2);
+    vi.setSystemTime(2 * CHECK_INTERVAL_MS - 1);
+    resume!();
+    await settle();
+    expect(storeChecks).toBe(2);
+    vi.setSystemTime(3 * CHECK_INTERVAL_MS);
+    resume!();
+    await settle();
+    expect(storeChecks).toBe(3);
+  });
+
+  it('runs on no automatic check with "Check for updates automatically" off, only on a Help or About check', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    automatic = false;
+    updater.checkResult = upToDate();
+    const service = startUpdater();
+    await settle();
+    vi.advanceTimersByTime(2 * CHECK_INTERVAL_MS);
+    resume!();
+    await settle();
+    expect(storeChecks).toBe(0);
+    expect(await service.checkStore()).toEqual({ ran: false, fetched: false });
+    expect(storeChecks).toBe(0);
+    service.check('help');
+    // a second press while the first check runs adds no store check
+    service.check('about');
+    await settle();
+    expect(updater.checkForUpdates).toHaveBeenCalledTimes(1);
+    expect(storeChecks).toBe(1);
+    service.check('about');
+    await settle();
+    expect(storeChecks).toBe(2);
+  });
+
+  it('runs on a Help check while an update waits and the app check is skipped', async () => {
+    updater.checkResult = available('2.37.0');
+    const service = startUpdater();
+    await settle();
+    expect(storeChecks).toBe(1);
+    service.check('help');
+    await settle();
+    expect(lines).toContain('[updater] help check skipped while ready');
+    expect(storeChecks).toBe(2);
+  });
+
+  it('keeps running on the schedule while an update waits and the app check is skipped', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    updater.checkResult = available('2.37.0');
+    startUpdater();
+    await settle();
+    vi.advanceTimersByTime(CHECK_INTERVAL_MS);
+    await settle();
+    expect(lines).toContain('[updater] auto check skipped while ready');
+    expect(storeChecks).toBe(2);
+  });
+
+  it('runs nothing on its own in the unpackaged app, where only the e2e hooks call it, under the same switch', async () => {
+    const service = startUpdater({ isPackaged: false });
+    await settle();
+    service.check('help');
+    await settle();
+    expect(storeChecks).toBe(0);
+    expect(await service.checkStore()).toEqual({ ran: true, fetched: true });
+    expect(storeChecks).toBe(1);
+    automatic = false;
+    expect(await service.checkStore()).toEqual({ ran: false, fetched: false });
+    expect(storeChecks).toBe(1);
+  });
+
+  it('logs a failed store check without stopping the app check', async () => {
+    updater.checkResult = upToDate();
+    startUpdater({ storeCheck: () => Promise.reject(new Error('engine not running')) });
+    await settle();
+    expect(updater.checkForUpdates).toHaveBeenCalledOnce();
+    expect(lines.some((line) => line.startsWith('[updater] the community store check failed: Error: engine not running'))).toBe(true);
   });
 });

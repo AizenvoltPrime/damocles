@@ -109,6 +109,7 @@ function buildSubagentActivationPort(
       mcpGroups,
       ...(directMcpGroups?.size ? { directMcpGroups } : {}),
       ...(design() ? { design: true } : {}),
+      nested: true,
     }),
     // Additive only: pi diffs the active set around `execute`, and any REMOVAL forces its safe fallback
     // of resending the full active set.

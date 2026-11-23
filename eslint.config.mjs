@@ -187,6 +187,7 @@ const NO_CORE_HOST_IN_MAIN = 'Desktop main reaches Damocles Core only through th
 const NO_HOST_IN_REMOTE = 'The wire (src/remote) runs in the app and on every target: it imports only Node built-ins, never vscode, electron, src/core or src/desktop.';
 const NO_ELECTRON_CLI = 'The damocles command runs as Node outside the app (dist/cli.js, dist/cli-remote.js), so it never imports electron or desktop main.';
 const NO_ELECTRON_NODE_HOST = 'The pty and formatter hosts also run as plain Node children of the daemon on a target, so they never import electron.';
+const NO_ELECTRON_VALIDATOR_LAUNCHER = 'dist/theme-validate.js runs as Node and starts its Electron host (theme-validate/host.ts); requiring electron there downloads a missing binary onto the verdict\'s stdout.';
 
 // no-restricted-imports misses dynamic import(), typeof import() and vi.mock, so these selectors close the same boundary.
 function moduleSyntax(pattern, message) {
@@ -222,6 +223,7 @@ const IN_WORKER = electronBan(NO_ELECTRON_WORKER);
 const IN_CORE_HOST = electronBan(NO_ELECTRON_CORE);
 const IN_NODE_HOST = electronBan(NO_ELECTRON_NODE_HOST);
 const IN_CLI = electronBan(NO_ELECTRON_CLI);
+const IN_VALIDATOR_LAUNCHER = electronBan(NO_ELECTRON_VALIDATOR_LAUNCHER);
 // desktop main by any relative path; an esquery regex cannot contain a raw slash, hence \u002F
 const MAIN_FROM_CORE = {
   pattern: { regex: '^(?:\\.\\./)+(?:desktop/)?main(?:/|$)', message: NO_MAIN_IN_CORE },
@@ -287,6 +289,8 @@ export const PROCESS_STARTERS_DAEMON = ['src/desktop/daemon/process-starts.ts'];
 export const PROCESS_STARTERS_CLI = ['src/desktop/cli/cli.ts'];
 // main's start of the design renderer, whose IPC channel belongs to main's thread (docs/perf.md "Starts outside the launcher")
 export const PROCESS_STARTERS_MAIN = ['src/desktop/main/design/design-renderer-start.ts'];
+// the theme validator's launcher, a program of the store's CI that starts its Electron host (docs/perf.md "Starts outside the launcher")
+export const PROCESS_STARTERS_THEME_VALIDATOR = ['src/desktop/theme-validate/cli.ts', 'src/desktop/theme-validate/launcher.ts'];
 const testsUnder = (root) => [`${root}/**/__tests__/**`, `${root}/**/*.test.ts`, `${root}/**/*.bench.ts`];
 const WORKER_ROOTS = ['src/desktop/quick-open-worker', 'src/desktop/watch-worker', 'src/desktop/askpass'];
 // Damocles Core, its protocol, the per-process services both main and Core load, the host-neutral workspace modules and the
@@ -362,6 +366,10 @@ export const MAIN_CORE_IMPORTS = [
   'served-pages/root-files',
   'served-pages/serve-policy',
   'system-tools',
+  // the network rule main's own reads of the theme files follow
+  'themes/network-rule',
+  // a sprite's header, which main reads again before it serves the blob or hands it to the theme renderer
+  'themes/sprite-header',
   'volatile-secrets-notice',
   // literalGlob: the glob of a linked folder's Files watch, which every host's watcher narrows to that folder
   'watch-root',
@@ -433,6 +441,12 @@ const PX_CLASS = [
   String.raw`(?:^|:)(?!!?-?${PX_EXEMPT}(?:\/[\w.-]+)?!?$)[^:\[]*\[[^\]]*${NONZERO_PX}[^\]]*\][^:]*$`,
 ].join('|');
 const PX_MESSAGE = 'Use rem (px / 16) so the size follows the host font; px is only for border, ring and outline widths up to 1.5px, blur and shadows (docs/invariants.md "Design tokens").';
+// A corner follows the theme's radius scale, so an arbitrary radius names the ramp (--radius-*) or the scale itself.
+const RAW_RADIUS = String.raw`(?:^|:)!?rounded(?:-[a-z]+)*-\[(?![^\]]*(?:--d-radius-scale|--radius))[^\]]*\d(?:rem|em|px)[^\]]*\]`;
+const RAW_RADIUS_MESSAGE = 'Use a radius ramp class (rounded-md, rounded-5, ...) or scale the value by var(--d-radius-scale,1), so the corner follows the theme (docs/invariants.md "Design tokens").';
+// Motion comes from a class of src/webview/styles/motion.css or a renderer stylesheet, never from a Tailwind animation utility.
+const ANIMATE_CLASS = String.raw`(?:^|:)!?animate-`;
+const ANIMATE_MESSAGE = 'Use a motion class from src/webview/styles/motion.css (d-fade-in, d-pop-in, d-pulsing, ...) instead of a Tailwind animation utility (docs/invariants.md "Design tokens").';
 // A viewport variant compiles to a media query, whose rem ignores the root font; a container variant (@…) follows it.
 const VIEWPORT_VARIANT = String.raw`(?:^|:)(?:(?:max-)?(?:sm|md|lg|xl|2xl)|(?:min|max)-\[[^\]]*\]|\[@media[^\]]*\]):`;
 const VIEWPORT_MESSAGE = 'Use a container variant (@min-[…]/app: for the panel width) instead of a viewport one: a media query ignores the host font (docs/invariants.md "Design tokens").';
@@ -474,7 +488,7 @@ function remSizing(files, entryPoint, syntax) {
       // Tailwind folds a 0.25rem radius into rounded-lg, which is 6px in this theme; the 4px radius is rounded-md.
       'better-tailwindcss/enforce-canonical-classes': ['error', { ignore: [String.raw`^(?:.*:)?rounded(?:-[a-z]+)?-\[0?\.25rem\]$`] }],
       'better-tailwindcss/no-restricted-classes': ['error', {
-        restrict: [{ pattern: PX_CLASS, message: PX_MESSAGE }, { pattern: VIEWPORT_VARIANT, message: VIEWPORT_MESSAGE }],
+        restrict: [{ pattern: PX_CLASS, message: PX_MESSAGE }, { pattern: VIEWPORT_VARIANT, message: VIEWPORT_MESSAGE }, { pattern: RAW_RADIUS, message: RAW_RADIUS_MESSAGE }, { pattern: ANIMATE_CLASS, message: ANIMATE_MESSAGE }],
       }],
       'vue/no-restricted-v-bind': ['error', { argument: 'size', element: NOT_SIZE_VARIANT, message: ICON_SIZE_MESSAGE }],
       'vue/no-restricted-static-attribute': ['error', { key: 'size', value: '/^[0-9]/', message: ICON_SIZE_MESSAGE }],
@@ -686,6 +700,17 @@ export default [
         patterns: [IN_CLI.pattern, MAIN_FROM_CORE.pattern],
       }],
       'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_CLI.syntax, ...MAIN_FROM_CORE.syntax, ...FS_BUILTIN_BAN],
+    },
+  },
+  {
+    // dist/theme-validate.js starts Electron and keeps the vscode ban and an electron ban of its own
+    files: PROCESS_STARTERS_THEME_VALIDATOR,
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        paths: [{ name: 'vscode', message: VSCODE_ONLY }, IN_VALIDATOR_LAUNCHER.path],
+        patterns: [IN_VALIDATOR_LAUNCHER.pattern],
+      }],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...IN_VALIDATOR_LAUNCHER.syntax, ...FS_BUILTIN_BAN],
     },
   },
   {

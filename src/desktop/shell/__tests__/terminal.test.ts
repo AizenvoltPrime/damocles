@@ -99,7 +99,7 @@ describe('new-terminal quick pick', () => {
     const model = terminalProjectsModel(projects, '', projectLabels);
     expect(model.rows.map((row) => (row.kind === 'separator' ? `# ${row.label}` : `${row.item.id} ${row.item.description} ${row.item.iconColor} ${row.item.disabled === true}`))).toEqual([
       '# This computer', 'a /alpha var(--d-muted) false',
-      '# prod', 'ssh+h|/api /api var(--d-danger-text) false',
+      '# prod', 'ssh+h|/api /api var(--d-safety-danger-text) false',
       '# Ubuntu', 'wsl+U|/web Not connected var(--d-muted) true',
     ]);
     // a custom colour has no contrast floor, so it shows as a dot on the muted icon, as the Projects group icon draws it

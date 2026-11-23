@@ -24,17 +24,22 @@ export function watchHostTheme(apply: () => void): () => void {
   return () => observer.disconnect();
 }
 
-/** The xterm theme from the page's design tokens as they compute now; a theme switch calls it again. */
-export function terminalTheme(style: CSSStyleDeclaration): ITheme {
+/**
+ * The xterm theme from the page's design tokens as they compute now; a theme switch calls it again. The background is the pane
+ * token of the panel the terminal sits in, transparent while that panel shows a wallpaper. xterm's API asks for
+ * allowTransparency before open() for a non-opaque background, so every terminal sets it; only a GPU renderer addon reads it.
+ */
+export function terminalTheme(style: CSSStyleDeclaration, pane: '--d-pane-terminal' | '--d-pane-editor' = '--d-pane-terminal'): ITheme {
   const token = (name: string): string => style.getPropertyValue(name).trim();
   const accent = token('--d-accent');
+  const accentFill = token('--d-accent-fill');
   const muted = token('--d-muted');
   const theme: ITheme = {
-    background: token('--d-bg'),
+    background: token(pane),
     foreground: token('--d-text'),
     cursor: accent,
     cursorAccent: token('--d-bg'),
-    selectionBackground: withAlpha(accent, 0.3),
+    selectionBackground: withAlpha(accentFill, 0.3),
     selectionInactiveBackground: withAlpha(muted, 0.25),
     // The editor tab strip's slider alphas (style.css), so both scrollbars read alike.
     scrollbarSliderBackground: withAlpha(muted, 0.4),
@@ -49,8 +54,8 @@ export function terminalTheme(style: CSSStyleDeclaration): ITheme {
 
 /** Find's match highlights: every match tinted in the warning hue, the current one in the accent, as Monaco's find shows them. */
 export function searchDecorations(style: CSSStyleDeclaration): ISearchDecorationOptions {
-  const warning = style.getPropertyValue('--d-warning').trim();
-  const accent = style.getPropertyValue('--d-accent').trim();
+  const warning = style.getPropertyValue('--d-warning-fill').trim();
+  const accent = style.getPropertyValue('--d-accent-fill').trim();
   return {
     matchBackground: withAlpha(warning, 0.3),
     matchOverviewRuler: warning,

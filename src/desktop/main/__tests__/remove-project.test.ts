@@ -51,12 +51,22 @@ function setup(world: Partial<World> = {}) {
     forgetAccounts: vi.fn(async () => {
       w.trail.push('forgetAccounts');
     }),
+    forgetLook: vi.fn(async () => undefined),
     t,
   };
   return { w, deps };
 }
 
 describe('removeProject', () => {
+  it("drops the project's own look and character pins once it is removed, and keeps them when the question is cancelled", async () => {
+    const removed = setup();
+    expect(await removeProject('acme-key', removed.deps)).toEqual({ ok: true, removed: true });
+    expect(removed.deps.forgetLook).toHaveBeenCalledWith('acme-key');
+    const cancelled = setup({ terminals: new Map([['term-1', { name: 'PowerShell', command: 'npm run dev' }]]), answer: undefined });
+    expect(await removeProject('acme-key', cancelled.deps)).toEqual({ ok: true, removed: false });
+    expect(cancelled.deps.forgetLook).not.toHaveBeenCalled();
+  });
+
   it('removes a project with no waiting first message after only the terminal question it always asked', async () => {
     const { w, deps } = setup({ terminals: new Map([['term-1', { name: 'PowerShell', command: 'npm run dev' }]]) });
     expect(await removeProject('acme-key', deps)).toEqual({ ok: true, removed: true });

@@ -475,7 +475,7 @@ const CURSOR: Record<MarkupSession['tool'], string> = { pen: 'cursor-crosshair',
       :aria-describedby="helpId"
       data-testid="design-markup-canvas"
       :data-tool="tool"
-      class="relative touch-none outline-none select-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--d-accent)"
+      class="relative touch-none outline-none select-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--d-accent-fill)"
       :class="sending ? 'pointer-events-none cursor-progress' : draggingPin !== null ? 'cursor-grabbing' : CURSOR[tool]"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"
@@ -544,19 +544,19 @@ const CURSOR: Record<MarkupSession['tool'], string> = { pen: 'cursor-crosshair',
         v-if="snap"
         data-testid="design-markup-snap"
         :data-element="snap.element"
-        class="pointer-events-none absolute rounded-[0.125rem] bg-[color-mix(in_srgb,var(--d-design)_7%,transparent)] outline-[1.5px] outline-(--d-design)"
+        class="pointer-events-none absolute rounded-sm bg-[color-mix(in_srgb,var(--d-design-fill)_7%,transparent)] outline-[1.5px] outline-(--d-design-fill)"
         :style="rectStyle(snap)"
       >
         <span
           v-if="halo > 0"
           :key="halo"
           aria-hidden="true"
-          class="absolute inset-0 animate-[d-flash_.6s_var(--ease-out)_both] rounded-[0.125rem] shadow-[0_0_0_3px_color-mix(in_srgb,var(--d-design)_35%,transparent)]"
+          class="absolute inset-0 d-flash rounded-sm shadow-[0_0_0_3px_color-mix(in_srgb,var(--d-design-fill)_35%,transparent)]"
         />
         <span
           dir="ltr"
-          class="absolute left-0 h-4.5 max-w-full truncate bg-(--d-design) px-1.5 font-mono text-10.5/4.5 text-(--d-on-design)"
-          :class="snapTagInside ? 'top-0 rounded-br-[0.25rem]' : '-top-4.5 rounded-t-[0.25rem]'"
+          class="absolute left-0 h-4.5 max-w-full truncate bg-(--d-design-fill) px-1.5 font-mono text-10.5/4.5 text-(--d-on-design)"
+          :class="snapTagInside ? 'top-0 rounded-br-md' : '-top-4.5 rounded-t-md'"
         >{{ snap.element }}</span>
       </div>
       <TransitionGroup
@@ -586,14 +586,14 @@ const CURSOR: Record<MarkupSession['tool'], string> = { pen: 'cursor-crosshair',
                 :data-kind="pin.kind"
                 :data-element="pin.anchor?.element"
                 :class="cn(
-                  'flex size-full items-center justify-center rounded-full text-11 leading-none font-semibold tabular-nums ring-2 ring-(--d-bg) transition-[box-shadow,background-color,color] duration-150 outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent)',
+                  'flex size-full items-center justify-center rounded-full text-11 leading-none font-semibold tabular-nums ring-2 ring-(--d-bg) transition-[box-shadow,background-color,color] duration-150 outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent-fill)',
                   draggingPin === pin.id ? 'cursor-grabbing' : 'cursor-pointer',
                   pin.kind === 'change'
-                    ? 'bg-(--d-design) text-(--d-on-design) shadow-[0_0.125rem_0.5rem_-0.125rem_var(--d-scrim)] hover:shadow-[0_0_0_4px_color-mix(in_srgb,var(--d-design)_30%,transparent),0_0.125rem_0.5rem_-0.125rem_var(--d-scrim)]'
-                    : 'bg-(--d-bg) text-(--d-design-text) shadow-[inset_0_0_0_2px_var(--d-design),0_0.125rem_0.5rem_-0.125rem_var(--d-scrim)] hover:shadow-[inset_0_0_0_2px_var(--d-design),0_0_0_4px_color-mix(in_srgb,var(--d-design)_30%,transparent),0_0.125rem_0.5rem_-0.125rem_var(--d-scrim)]',
+                    ? 'bg-(--d-design-fill) text-(--d-on-design) shadow-[0_0.125rem_0.5rem_-0.125rem_var(--d-scrim)] hover:shadow-[0_0_0_4px_color-mix(in_srgb,var(--d-design-fill)_30%,transparent),0_0.125rem_0.5rem_-0.125rem_var(--d-scrim)]'
+                    : 'bg-(--d-bg) text-(--d-design-text) shadow-[inset_0_0_0_2px_var(--d-design-fill),0_0.125rem_0.5rem_-0.125rem_var(--d-scrim)] hover:shadow-[inset_0_0_0_2px_var(--d-design-fill),0_0_0_4px_color-mix(in_srgb,var(--d-design-fill)_30%,transparent),0_0.125rem_0.5rem_-0.125rem_var(--d-scrim)]',
                   openPin === pin.id && (pin.kind === 'change'
-                    ? 'shadow-[0_0_0_4px_color-mix(in_srgb,var(--d-design)_45%,transparent),0_0.125rem_0.5rem_-0.125rem_var(--d-scrim)]'
-                    : 'shadow-[inset_0_0_0_2px_var(--d-design),0_0_0_4px_color-mix(in_srgb,var(--d-design)_45%,transparent),0_0.125rem_0.5rem_-0.125rem_var(--d-scrim)]'),
+                    ? 'shadow-[0_0_0_4px_color-mix(in_srgb,var(--d-design-fill)_45%,transparent),0_0.125rem_0.5rem_-0.125rem_var(--d-scrim)]'
+                    : 'shadow-[inset_0_0_0_2px_var(--d-design-fill),0_0_0_4px_color-mix(in_srgb,var(--d-design-fill)_45%,transparent),0_0.125rem_0.5rem_-0.125rem_var(--d-scrim)]'),
                 )"
                 @pointerdown="onPinPointerDown($event, pin)"
                 @pointermove="onPinPointerMove($event, pin)"
@@ -627,7 +627,7 @@ const CURSOR: Record<MarkupSession['tool'], string> = { pen: 'cursor-crosshair',
                 <span
                   aria-hidden="true"
                   class="flex size-4 flex-none items-center justify-center rounded-full text-10 font-semibold tabular-nums"
-                  :class="pin.kind === 'change' ? 'bg-(--d-design) text-(--d-on-design)' : 'bg-(--d-bg) text-(--d-design-text) shadow-[inset_0_0_0_1.5px_var(--d-design)]'"
+                  :class="pin.kind === 'change' ? 'bg-(--d-design-fill) text-(--d-on-design)' : 'bg-(--d-bg) text-(--d-design-text) shadow-[inset_0_0_0_1.5px_var(--d-design-fill)]'"
                 >{{ numbers.get(pin.id) }}</span>
                 <span
                   dir="ltr"
@@ -644,7 +644,7 @@ const CURSOR: Record<MarkupSession['tool'], string> = { pen: 'cursor-crosshair',
                 :maxlength="MAX_MARKUP_PIN_TEXT"
                 rows="3"
                 data-testid="design-markup-text"
-                class="max-h-40 min-h-18 resize-none border-(--d-border) bg-(--d-input) text-12.5 field-sizing-content focus-visible:border-(--d-accent) focus-visible:ring-3 focus-visible:ring-(--d-accent-soft) focus-visible:ring-offset-0"
+                class="max-h-40 min-h-18 resize-none border-(--d-border) bg-(--d-input) text-12.5 field-sizing-content focus-visible:border-(--d-accent-fill) focus-visible:ring-3 focus-visible:ring-(--d-accent-soft) focus-visible:ring-offset-0"
                 @update:model-value="(text: string | number) => setText(pin, text)"
               />
               <span
@@ -660,7 +660,7 @@ const CURSOR: Record<MarkupSession['tool'], string> = { pen: 'cursor-crosshair',
                     { value: 'change', label: kindName('change'), attrs: { 'data-testid': 'design-markup-kind-option', 'data-kind': 'change' } },
                     { value: 'note', label: kindName('note'), attrs: { 'data-testid': 'design-markup-kind-option', 'data-kind': 'note' } },
                   ]"
-                  indicator-class="text-(--d-design)"
+                  indicator-class="[--tone:var(--d-design-fill)]"
                   selected-class="text-(--d-on-design)"
                   :aria-label="t('editor.designPreview.markup.kind')"
                   data-testid="design-markup-kind"
@@ -670,7 +670,7 @@ const CURSOR: Record<MarkupSession['tool'], string> = { pen: 'cursor-crosshair',
                 <Button
                   variant="ghost"
                   data-testid="design-markup-delete"
-                  class="ms-auto h-6 gap-1 px-2 text-12 text-(--d-danger-text) hover:bg-[color-mix(in_srgb,var(--d-danger)_12%,transparent)] hover:text-(--d-danger-text) [&_svg]:size-3.5"
+                  class="ms-auto h-6 gap-1 px-2 text-12 text-(--d-danger-text) hover:bg-[color-mix(in_srgb,var(--d-danger-fill)_12%,transparent)] hover:text-(--d-danger-text) [&_svg]:size-3.5"
                   @click="deletePin(pin)"
                 >
                   <Trash2 aria-hidden="true" />{{ t('editor.designPreview.markup.delete') }}

@@ -69,6 +69,7 @@ const delivery = computed(() => (finished.value ? tKnown('design.finish.delivery
 
 <template>
   <ToolCardFrame
+    :tool="toolCall.name"
     :icon="Flag"
     :name="name"
     :arg="arg"
@@ -138,7 +139,7 @@ const delivery = computed(() => (finished.value ? tKnown('design.finish.delivery
     <template v-else-if="refusal && showsReport">
       <p
         v-if="refusalReason !== undefined"
-        class="flex items-start gap-2 border-t border-[color-mix(in_srgb,var(--d-danger)_25%,transparent)] bg-[color-mix(in_srgb,var(--d-danger)_8%,transparent)] px-3 py-2 text-xs text-(--d-danger-text)"
+        class="flex items-start gap-2 border-t border-[color-mix(in_srgb,var(--d-danger-fill)_25%,transparent)] bg-[color-mix(in_srgb,var(--d-danger-fill)_8%,transparent)] px-3 py-2 text-xs text-(--d-danger-text)"
         data-testid="finish-design-refusal"
       >
         <CircleSlash
@@ -162,7 +163,7 @@ const delivery = computed(() => (finished.value ? tKnown('design.finish.delivery
     />
     <div
       v-if="toolCall.status === 'running' && !awaitingApproval"
-      class="d-sweep-bar h-0.5 bg-(--d-hover) text-(--d-design)"
+      class="d-sweep-bar h-0.5 bg-(--d-hover) [--tone:var(--d-design-fill)]"
       aria-hidden="true"
     />
   </ToolCardFrame>

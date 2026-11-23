@@ -807,6 +807,47 @@ describe('panel activity, from the same publisher', () => {
     await session.dispose();
   });
 
+  it('a theme card is a pending prompt of kind themeChange (Needs you), reposted in its current state, and idle once its tool closes it', async () => {
+    const { session, permissionHandler, messages } = await startPanel();
+    const activity = watchActivity(session);
+    const card = permissionHandler.openThemeChange(
+      { toolUseId: 'call-1', action: 'theme', themeName: 'Amber Night', looks: ['dark'], isNew: true, changes: [], contrast: [], state: 'waiting', planMode: false, canShowInWindow: true },
+      new AbortController().signal,
+      () => undefined,
+    );
+    const request = messages.find((m) => m.type === 'requestThemeChange') as Extract<ExtensionToWebviewMessage, { type: 'requestThemeChange' }>;
+    expect(permissionHandler.pendingPrompts()).toEqual([{ id: request.promptId, kind: 'themeChange', request }]);
+    card.update({ state: 'outdated' });
+    const posted = messages.length;
+    permissionHandler.repostPendingPrompts();
+    expect(messages.slice(posted)).toEqual([{ ...request, state: 'outdated' }]);
+    card.close();
+    expect(messages).toContainEqual({ type: 'themeChangeClosed', promptId: request.promptId });
+
+    expect(states(messages)).toEqual(['idle', 'requires_action', 'idle']);
+    expect(activity.map((a) => a.pendingKinds)).toEqual([[], ['themeChange'], []]);
+    expect(activity[1]?.pendingPrompts).toEqual([{ id: request.promptId, kind: 'themeChange', owner: { kind: 'main' }, summary: { message: 'change the theme to {0}', args: ['Amber Night'] } }]);
+    await session.dispose();
+  });
+
+  it('a screenshot card is a pending prompt of kind themeScreenshot (Needs you), reposted to a webview that came back, and idle once answered', async () => {
+    const { session, permissionHandler, messages } = await startPanel();
+    const activity = watchActivity(session);
+    const answer = permissionHandler.requestThemeScreenshot({ toolUseId: 'call-2', url: 'app://damocles/theme-shot/0123456789abcdef0123456789abcdef', width: 800, height: 600 }, new AbortController().signal);
+    const request = messages.find((m) => m.type === 'requestThemeScreenshot') as Extract<ExtensionToWebviewMessage, { type: 'requestThemeScreenshot' }>;
+    expect(permissionHandler.pendingPrompts()).toEqual([{ id: request.promptId, kind: 'themeScreenshot', request }]);
+    const posted = messages.length;
+    permissionHandler.repostPendingPrompts();
+    expect(messages.slice(posted)).toEqual([request]);
+    permissionHandler.resolveThemeScreenshot(request.promptId, 'allow');
+    expect(await answer).toBe('allow');
+
+    expect(states(messages)).toEqual(['idle', 'requires_action', 'idle']);
+    expect(activity.map((a) => a.pendingKinds)).toEqual([[], ['themeScreenshot'], []]);
+    expect(activity[1]?.pendingPrompts).toEqual([{ id: request.promptId, kind: 'themeScreenshot', owner: { kind: 'main' }, summary: { message: 'send a screenshot of the window' } }]);
+    await session.dispose();
+  });
+
   it('reports the first write of the session file, which changes the stored session id and not the state', async () => {
     const { session } = await startPanel();
     const finish = await openTurn(session);

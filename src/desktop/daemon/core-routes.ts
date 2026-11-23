@@ -12,6 +12,8 @@ import { createCoreEndpoint, processActor, type CoreEndpoint, type CoreTransport
 import { MAX_ITEMS } from '../core-protocol/messages';
 import { CLIENT_FEATURE_MISSING, CREDENTIAL_CLIENT_ABSENT } from '../../shared/remote-user';
 import { USER_FORGE_FEATURE } from '../../shared/forge/tools';
+import { THEMES_FEATURE } from '../../shared/themes/relay';
+import type { PendingKind } from '../../core/pi-session/session-state';
 import { DESIGN_JOURNEY_UPDATE_NEEDED, DESIGN_PREVIEW_CLIENT_ABSENT, DESIGN_RENDER_CLIENT_ABSENT, DESIGN_RENDER_PREDATES } from '../../shared/design-render';
 import { journeyNeedsScrollFeature } from '../../shared/design-journey';
 import type { JourneyStep } from '../../shared/types/design';
@@ -156,6 +158,20 @@ export const CORE_REQUEST_ROUTES: { readonly [M in keyof CoreRequests]: CoreRequ
   // the turn's device runs a chat's GitHub and GitLab tools with its own accounts
   'user.forge.tool': { to: 'pinnedClient', needs: USER_FORGE_FEATURE },
   'user.forge.describe': { to: 'pinnedClient', needs: USER_FORGE_FEATURE },
+  // the turn's device changes its own app's look, its core the only writer of its theme files
+  'user.theme.read': { to: 'pinnedClient', needs: THEMES_FEATURE },
+  'user.theme.uploadStart': { to: 'pinnedClient', needs: THEMES_FEATURE },
+  'user.theme.uploadChunk': { to: 'pinnedClient', needs: THEMES_FEATURE },
+  'user.theme.stage': { to: 'pinnedClient', needs: THEMES_FEATURE },
+  'user.theme.commit': { to: 'pinnedClient', needs: THEMES_FEATURE },
+  'user.theme.discard': { to: 'pinnedClient', needs: THEMES_FEATURE },
+  'user.theme.preview': { to: 'pinnedClient', needs: THEMES_FEATURE },
+  'user.theme.screenshotTake': { to: 'pinnedClient', needs: THEMES_FEATURE },
+  'user.theme.screenshot': { to: 'pinnedClient', needs: THEMES_FEATURE },
+  'user.theme.screenshotDrop': { to: 'pinnedClient', needs: THEMES_FEATURE },
+  'user.theme.installPrepare': { to: 'pinnedClient', needs: THEMES_FEATURE },
+  'user.theme.installCommit': { to: 'pinnedClient', needs: THEMES_FEATURE },
+  'user.theme.installCancel': { to: 'pinnedClient', needs: THEMES_FEATURE },
   'views.drained': { to: 'daemon' },
   'chats.reveal': { to: 'daemon' },
   // the daemon asks it of a client itself, for chats.reveal
@@ -172,6 +188,22 @@ export const CORE_REQUEST_ROUTES: { readonly [M in keyof CoreRequests]: CoreRequ
   'design.replayJourney': { to: 'chatClient', noClient: noJourneyClient('design.replayJourney'), needs: journeyNeeds('design.replayJourney') },
   // the Locate… click's device alone runs the folder picker; an app whose attach did not list the feature is never asked
   'window.locateProjectFolder': { to: 'client', noClient: nothing, needs: 'projects.relocate' },
+  // a daemon's core builds no theme tools, so it never sends these
+  'themes.render': { to: 'refused' },
+  'themes.screenshotTake': { to: 'refused' },
+  'themes.screenshotRead': { to: 'refused' },
+  'themes.screenshotDrop': { to: 'refused' },
+  'themes.applied': { to: 'refused' },
+  'themes.pendingSettled': { to: 'refused' },
+  'themes.pendingElsewhere': { to: 'refused' },
+  'themes.pendingExtended': { to: 'refused' },
+  'themes.currentArrangement': { to: 'refused' },
+  'themes.applyArrangement': { to: 'refused' },
+  'themes.showInWindow': { to: 'refused' },
+  'themes.stopShowing': { to: 'refused' },
+  'themes.state': { to: 'refused' },
+  'themes.analyze': { to: 'refused' },
+  'themes.analyzeSprite': { to: 'refused' },
 };
 
 // actingClient: as a client request route, an event held past its expiry dropped and logged; registry: the daemon's own (the
@@ -209,6 +241,12 @@ export const CORE_EVENT_ROUTES: Readonly<Record<keyof CoreEvents, CoreEventRoute
   'forge.chooseAccountRows': 'dropped',
   'forge.bindingsChanged': 'dropped',
   'forge.ci.changed': 'dropped',
+  // a daemon's core builds no theme store
+  'themes.changed': 'dropped',
+  'themes.install.updated': 'dropped',
+  'themes.install.progress': 'dropped',
+  'themes.install.expired': 'dropped',
+  'themes.store.updated': 'dropped',
 };
 
 // each attach gets a snapshot as deltas from version 1, then live deltas; chats only of the panels that client views;
@@ -346,6 +384,7 @@ export const MAIN_REQUEST_ROUTES: Readonly<Record<keyof MainRequests, MainReques
   'e2e.voiceRecorder': 'e2e',
   'e2e.stubOAuth': 'e2e',
   'e2e.relocationPauseAfter': 'e2e',
+  'e2e.themeStoreFetches': 'e2e',
   'e2e.clientNetworkAnswers': 'e2e',
   // served by the client's own core
   'user.resolveCredential': 'refused',
@@ -401,11 +440,72 @@ export const MAIN_REQUEST_ROUTES: Readonly<Record<keyof MainRequests, MainReques
   'forge.fork': 'refused',
   'forge.openMergeRequest': 'refused',
   'forge.openOrgAccess': 'refused',
+  // a daemon's core builds no theme store (docs/invariants.md "Desktop themes")
+  'themes.list': 'refused',
+  'themes.duplicate': 'refused',
+  'themes.delete': 'refused',
+  'themes.rename': 'refused',
+  'themes.saveTheme': 'refused',
+  'themes.baseHash': 'refused',
+  'themes.pick': 'refused',
+  'themes.setMode': 'refused',
+  'themes.setScheduleMode': 'refused',
+  'themes.setScheduleRules': 'refused',
+  'themes.resumeSchedule': 'refused',
+  'themes.hold': 'refused',
+  'themes.reset': 'refused',
+  'themes.projectLooks': 'refused',
+  'themes.setProjectLook': 'refused',
+  'themes.relocateProject': 'refused',
+  'themes.forgetProject': 'refused',
+  'themes.forgetHost': 'refused',
+  'themes.keepHosts': 'refused',
+  'themes.history': 'refused',
+  'themes.undo': 'refused',
+  'themes.restore': 'refused',
+  'themes.importFont': 'refused',
+  'themes.importImage': 'refused',
+  'themes.importSprite': 'refused',
+  'themes.allowFlash': 'refused',
+  'themes.install.prepare': 'refused',
+  'themes.install.commit': 'refused',
+  'themes.install.cancel': 'refused',
+  'themes.store.list': 'refused',
+  'themes.store.install': 'refused',
+  'themes.store.backgroundCheck': 'refused',
+  'themes.store.setEnabled': 'refused',
+  'themes.export.plan': 'refused',
+  'themes.export.write': 'refused',
+  'themes.keep': 'refused',
+  'themes.undoPending': 'refused',
+  'themes.showEnded': 'refused',
+  'themes.screenshotGone': 'refused',
   'user.mcp.call': 'refused',
   'user.mcp.resources': 'refused',
   'user.mcp.readResource': 'refused',
   'user.forge.tool': 'refused',
   'user.forge.describe': 'refused',
+  'themes.relay.read': 'refused',
+  'themes.relay.uploadStart': 'refused',
+  'themes.relay.uploadChunk': 'refused',
+  'themes.relay.stage': 'refused',
+  'themes.relay.commit': 'refused',
+  'themes.relay.discard': 'refused',
+  'themes.relay.preview': 'refused',
+  'themes.relay.installPrepare': 'refused',
+  'themes.relay.installCommit': 'refused',
+  'themes.relay.installCancel': 'refused',
+  'themes.relay.allowFlash': 'refused',
+  'themes.install.allowFlash': 'refused',
+  'themes.analyzeProgress': 'refused',
+  // ends only the cards of stages the sending client (the request's actor) made
+  'user.theme.showEnded': 'core',
+  // closes only the card of a screenshot the sending client (the request's actor) took
+  'user.theme.screenshotGone': 'core',
+  // reach only the cards of installs the sending client (the request's actor) staged
+  'user.theme.installUpdated': 'core',
+  'user.theme.installProgress': 'core',
+  'user.theme.installExpired': 'core',
   'panels.attachForeign': 'refused',
   'panels.detachForeign': 'refused',
   'panels.foreignMessage': 'refused',
@@ -446,7 +546,14 @@ export const MIRROR_TOPIC_ROUTES: Readonly<Record<keyof MirrorTopics, 'union' | 
   clientLanguage: 'daemonOwned',
   clientMcp: 'perClient',
   clientForges: 'perClient',
+  clientFeatures: 'daemonOwned',
 };
+
+// The names of FEATURES core reads of each client (clientFeatures): what the client's attach listed of these.
+export const CORE_READ_FEATURES: readonly string[] = [THEMES_FEATURE];
+
+// A prompt kind an older client's parser refuses: chat.activity names it only to a client whose attach listed its feature.
+export const PENDING_KIND_NEEDS: Readonly<Partial<Record<PendingKind, string>>> = { themeChange: THEMES_FEATURE, themeScreenshot: THEMES_FEATURE, themeInstall: THEMES_FEATURE };
 
 // daemon: the daemon sends it itself, and a client's is dropped
 export const MAIN_PANEL_OP_ROUTES: Readonly<Record<keyof MainPanelOps, 'core' | 'panelRule' | 'daemon'>> = {
@@ -473,6 +580,7 @@ export interface ClientMirrors {
   readonly clientLanguage: Map<string, MirrorTopics['language']>;
   readonly clientMcp: Map<string, MirrorTopics['clientMcp']['value'] & object>;
   readonly clientForges: Map<string, MirrorTopics['clientForges']['value'] & object>;
+  readonly clientFeatures: Map<string, MirrorTopics['clientFeatures']['value'] & object>;
   actingClient: MirrorTopics['actingClient'];
 }
 
@@ -490,13 +598,14 @@ export function createClientMirrors(): ClientMirrors {
     clientLanguage: new Map(),
     clientMcp: new Map(),
     clientForges: new Map(),
+    clientFeatures: new Map(),
     actingClient: {},
   };
 }
 
-type PerClientTopic = 'clientAuth' | 'clientUser' | 'clientPolicy' | 'clientEditor' | 'clientTerminal' | 'clientLanguage' | 'clientMcp' | 'clientForges';
-type PerClientValue = ClientAuth | ClientUser | ClientPolicy | EditorMirror | TerminalToggle | MirrorTopics['language'] | (MirrorTopics['clientMcp']['value'] & object) | (MirrorTopics['clientForges']['value'] & object);
-const PER_CLIENT_TOPICS: readonly PerClientTopic[] = ['clientAuth', 'clientUser', 'clientPolicy', 'clientEditor', 'clientTerminal', 'clientLanguage', 'clientMcp', 'clientForges'];
+type PerClientTopic = 'clientAuth' | 'clientUser' | 'clientPolicy' | 'clientEditor' | 'clientTerminal' | 'clientLanguage' | 'clientMcp' | 'clientForges' | 'clientFeatures';
+type PerClientValue = ClientAuth | ClientUser | ClientPolicy | EditorMirror | TerminalToggle | MirrorTopics['language'] | (MirrorTopics['clientMcp']['value'] & object) | (MirrorTopics['clientForges']['value'] & object) | (MirrorTopics['clientFeatures']['value'] & object);
+const PER_CLIENT_TOPICS: readonly PerClientTopic[] = ['clientAuth', 'clientUser', 'clientPolicy', 'clientEditor', 'clientTerminal', 'clientLanguage', 'clientMcp', 'clientForges', 'clientFeatures'];
 
 /** What the router learns of a client's connection besides its channel. */
 export interface ClientLink {
@@ -673,6 +782,17 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
   const liveViewers = (viewId: string): Viewer[] => [...(viewers.get(viewId)?.values() ?? [])].filter((viewer) => live(viewer.session));
   const viewerOf = (session: Session, viewId: string): Viewer | undefined => liveViewers(viewId).find((viewer) => viewer.session === session);
   const capable = (session: Session, needs: string | undefined): boolean => needs === undefined || session.client.features?.has(needs) === true;
+  // the activity as a client may parse it: a prompt kind its attach did not list leaves, and a wait on only such prompts reads running
+  const activityFor = (session: Session, payload: CoreEvents['chat.activity']): CoreEvents['chat.activity'] => {
+    const shown = (kind: PendingKind): boolean => capable(session, PENDING_KIND_NEEDS[kind]);
+    const { activity } = payload;
+    if (activity.pendingKinds.every(shown)) return payload;
+    const pendingKinds = activity.pendingKinds.filter(shown);
+    return {
+      ...payload,
+      activity: { ...activity, pendingKinds, pendingPrompts: activity.pendingPrompts.filter((prompt) => shown(prompt.kind)), ...(pendingKinds.length === 0 && activity.state === 'requires_action' ? { state: 'running' as const } : {}) },
+    };
+  };
   const noClientContext = (viewerLacksNeeds = false): NoClientContext => ({ attached: (feature) => [...sessions.values()].some((session) => present(session) && capable(session, feature)), viewerLacksNeeds });
   // the first present client that lists needs: the preferred one, then the acting client, then the latest attached
   const capableSession = (preferred: Session | undefined, needs: string | undefined): Session | undefined =>
@@ -717,7 +837,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
       deliver(session, (endpoint) => endpoint.publish('chats', { panelId, entry: { ...entry, viewId: viewer.viewId } }));
       // after the entry: main drops the activity of a panel whose entry it does not hold
       const activity = activities.get(panelId);
-      if (added && activity !== undefined) deliver(session, (endpoint) => endpoint.emit('chat.activity', activity));
+      if (added && activity !== undefined) deliver(session, (endpoint) => endpoint.emit('chat.activity', activityFor(session, activity)));
     } else if (session.chats.delete(panelId)) {
       deliver(session, (endpoint) => endpoint.publish('chats', { panelId }));
     }
@@ -980,7 +1100,9 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
 
   // ---- core's events
   const emitTo = (session: Session | undefined, name: keyof CoreEvents, payload: unknown): void => {
-    if (live(session)) deliver(session, (endpoint) => (endpoint.emit as (event: string, value: unknown) => void)(name, payload));
+    if (!live(session)) return;
+    const sent = name === 'chat.activity' ? activityFor(session, payload as CoreEvents['chat.activity']) : payload;
+    deliver(session, (endpoint) => (endpoint.emit as (event: string, value: unknown) => void)(name, sent));
   };
   for (const name of Object.keys(CORE_EVENT_ROUTES) as Array<keyof CoreEvents>) {
     const route = CORE_EVENT_ROUTES[name];
@@ -1175,7 +1297,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
     if (heldMemory) endpoint.publish('heldMemory', heldMemory);
     if (relocations && capable(session, mirrorNeeds('relocations'))) endpoint.publish('relocations', relocations);
     for (const panelId of chats.keys()) publishChat(session, panelId);
-    for (const payload of activities.values()) endpoint.emit('chat.activity', payload);
+    for (const payload of activities.values()) endpoint.emit('chat.activity', activityFor(session, payload));
     for (const map of [scmViews, scmRepositories, scmStates, scmDecorations]) for (const patch of map.values()) endpoint.publish('scm', patch);
     if (scmClone) endpoint.publish('scm', scmClone);
   });
@@ -1395,6 +1517,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
           case 'clientEditor':
           case 'clientTerminal':
           case 'clientLanguage':
+          case 'clientFeatures':
             log(`[core-host] dropped ${client.id}'s ${topic}, which the daemon publishes`);
             return;
           default: {
@@ -1479,6 +1602,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
       publishClientValue('clientEditor', client.clientId, client.mirrors.editor);
       publishClientValue('clientTerminal', client.clientId, client.mirrors.terminal);
       publishClientValue('clientLanguage', client.clientId, client.mirrors.language);
+      publishClientValue('clientFeatures', client.clientId, { features: CORE_READ_FEATURES.filter((feature) => client.features?.has(feature) === true) });
       // core reads a lost client as detached, so a turn pinned to it waits visibly and asks it again once it resumed; the mirror
       // leaves it out meanwhile, so a core started then does not list it as attached
       let heldAuth: ClientAuth | undefined;

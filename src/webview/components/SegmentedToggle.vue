@@ -21,7 +21,7 @@ export interface SegmentedOption<V extends string> {
 const props = withDefaults(defineProps<{
   modelValue: T;
   options: readonly SegmentedOption<T>[];
-  /** The indicator's colour as a text class; it must resolve to an opaque colour. */
+  /** The indicator's colour as a `[--tone:...]` class; it must resolve to an opaque colour. */
   indicatorClass: string;
   /** The selected option's text colour. */
   selectedClass?: string;
@@ -90,7 +90,7 @@ function onUpdate(value: AcceptableValue): void {
         :disabled="option.disabled === true"
         v-bind="itemAttrs(option)"
         data-segment
-        class="relative z-1 flex items-center gap-1 whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--d-accent) disabled:cursor-not-allowed disabled:opacity-(--d-opacity-disabled)"
+        class="relative z-1 flex items-center gap-1 whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--d-accent-fill) disabled:cursor-not-allowed disabled:opacity-(--d-opacity-disabled)"
         :class="[sized.item, option.value === modelValue ? selectedClass : [sized.unselected, 'enabled:hover:text-(--d-text)']]"
         @focus="focused(option)"
       >

@@ -469,10 +469,10 @@ function memoryActions(memory: MemoryEntry, full = true): MemoryAction[] {
 function rowClass(memory: MemoryEntry): string[] {
   return [
     memory.pinned
-      ? 'border-[color-mix(in_srgb,var(--d-warning)_45%,transparent)] bg-[color-mix(in_srgb,var(--d-warning)_6%,var(--d-card))]'
+      ? 'border-[color-mix(in_srgb,var(--d-warning-fill)_45%,transparent)] bg-[color-mix(in_srgb,var(--d-warning-fill)_6%,var(--d-card))]'
       : 'border-(--d-border) bg-(--d-card)',
     memory.forgotten ? 'opacity-50' : '',
-    highlightedId.value === memory.id ? 'ring-2 ring-(--d-accent)' : '',
+    highlightedId.value === memory.id ? 'ring-2 ring-(--d-accent-fill)' : '',
   ];
 }
 
@@ -609,7 +609,7 @@ onUnmounted(() => {
         <span class="min-w-0 flex-1">{{ t('memoryAudit.banner.text', { count: auditStore.summary?.eligibleCount ?? 0 }) }}</span>
         <button
           type="button"
-          class="d-press h-6.5 rounded-md bg-(--d-accent) px-2.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110"
+          class="d-press h-6.5 rounded-md bg-(--d-accent-fill) px-2.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110"
           data-audit-banner-open
           @click="auditStore.openOverlay()"
         >
@@ -654,7 +654,7 @@ onUnmounted(() => {
       </div>
 
       <div class="flex flex-col gap-2.5">
-        <label class="flex h-8.5 items-center gap-2 rounded-10 border border-(--d-border2) bg-(--d-input) pr-1 pl-2.75 transition-colors focus-within:border-(--d-accent)">
+        <label class="flex h-8.5 items-center gap-2 rounded-10 border border-(--d-border2) bg-(--d-input) pr-1 pl-2.75 transition-colors focus-within:border-(--d-accent-fill)">
           <Search
             class="size-3.25 flex-none text-(--d-faint)"
             aria-hidden="true"
@@ -695,7 +695,7 @@ onUnmounted(() => {
             :box="tabBox"
             :radius="7"
             :animate="tabAnimate"
-            class="text-(--d-card) drop-shadow-[0_1px_2px_rgba(0,0,0,.18)]"
+            class="[--tone:var(--d-card)] drop-shadow-[0_1px_2px_rgba(0,0,0,.18)]"
           />
           <button
             v-for="tab in tabs"
@@ -729,7 +729,7 @@ onUnmounted(() => {
           :model-value="store.kindFilter"
           :options="kindOptions"
           class="bg-(--d-hover)"
-          indicator-class="text-[color-mix(in_srgb,var(--d-accent)_18%,var(--d-bg))]"
+          indicator-class="[--tone:color-mix(in_srgb,var(--d-accent-fill)_18%,var(--d-bg))]"
           selected-class="text-(--d-accent-text)"
           :aria-label="t('memoryPanel.kindFilter')"
           @update:model-value="store.setKindFilter"
@@ -738,7 +738,7 @@ onUnmounted(() => {
           :model-value="store.scopeFilter"
           :options="scopeOptions"
           class="bg-(--d-hover)"
-          indicator-class="text-(--d-card)"
+          indicator-class="[--tone:var(--d-card)]"
           :aria-label="t('memoryPanel.scopeFilter')"
           @update:model-value="store.setScopeFilter"
         />
@@ -803,7 +803,7 @@ onUnmounted(() => {
                       :id="`memory-profile-${section.key}`"
                       :value="section.model.value"
                       rows="3"
-                      class="resize-y rounded-lg border border-(--d-border) bg-(--d-input) px-2.5 py-2 text-xs text-(--d-text) outline-none placeholder:text-(--d-faint) focus:border-(--d-accent) disabled:cursor-not-allowed disabled:opacity-(--d-opacity-disabled)"
+                      class="resize-y rounded-lg border border-(--d-border) bg-(--d-input) px-2.5 py-2 text-xs text-(--d-text) outline-none placeholder:text-(--d-faint) focus:border-(--d-accent-fill) disabled:cursor-not-allowed disabled:opacity-(--d-opacity-disabled)"
                       :placeholder="section.placeholder"
                       :disabled="section.unavailable"
                       :aria-describedby="section.unavailable ? `memory-profile-${section.key}-off` : undefined"
@@ -843,7 +843,7 @@ onUnmounted(() => {
           <article
             v-for="(memory, index) in store.filteredMemories"
             :key="memory.id"
-            class="flex gap-2.5 rounded-xl border px-3 py-2.5 outline-none transition-[opacity,border-color] duration-200 focus-visible:ring-2 focus-visible:ring-(--d-accent)"
+            class="flex gap-2.5 rounded-xl border px-3 py-2.5 outline-none transition-[opacity,border-color] duration-200 focus-visible:ring-2 focus-visible:ring-(--d-accent-fill)"
             :class="[rowClass(memory), arriving && 'd-arrive']"
             :style="arriving ? { animationDelay: `${Math.min(index, 8) * 25}ms` } : undefined"
             :data-memory-id="memory.id"
@@ -878,12 +878,12 @@ onUnmounted(() => {
                 />{{ t('memoryPanel.pinned') }}</span>
                 <span
                   v-if="isStaleMemory(memory)"
-                  class="rounded-5 bg-[color-mix(in_srgb,var(--d-warning)_12%,transparent)] px-1.5 leading-4.25 text-(--d-warning-text)"
+                  class="rounded-5 bg-[color-mix(in_srgb,var(--d-warning-fill)_12%,transparent)] px-1.5 leading-4.25 text-(--d-warning-text)"
                   :title="t('memoryPanel.staleTitle', { n: memory.fileChangeCount ?? 0 })"
                 >{{ t('memoryPanel.stale') }}</span>
                 <span
                   v-if="memory.isInference"
-                  class="rounded-5 bg-[color-mix(in_srgb,var(--d-info)_12%,transparent)] px-1.5 leading-4.25 text-(--d-info-text)"
+                  class="rounded-5 bg-[color-mix(in_srgb,var(--d-info-fill)_12%,transparent)] px-1.5 leading-4.25 text-(--d-info-text)"
                 >{{ t('memoryPanel.inferred') }}</span>
                 <span
                   v-if="(memory.sourceCount ?? 0) > 1"
@@ -969,7 +969,7 @@ onUnmounted(() => {
           <article
             v-for="memory in notes"
             :key="memory.id"
-            class="flex gap-2.5 rounded-xl border px-3 py-2.5 outline-none focus-visible:ring-2 focus-visible:ring-(--d-accent)"
+            class="flex gap-2.5 rounded-xl border px-3 py-2.5 outline-none focus-visible:ring-2 focus-visible:ring-(--d-accent-fill)"
             :class="rowClass(memory)"
             :data-memory-id="memory.id"
             :data-focused="highlightedId === memory.id || undefined"
@@ -1039,7 +1039,7 @@ onUnmounted(() => {
           <article
             v-for="memory in observations"
             :key="memory.id"
-            class="flex gap-2.5 rounded-xl border px-3 py-2.5 outline-none focus-visible:ring-2 focus-visible:ring-(--d-accent)"
+            class="flex gap-2.5 rounded-xl border px-3 py-2.5 outline-none focus-visible:ring-2 focus-visible:ring-(--d-accent-fill)"
             :class="rowClass(memory)"
             :data-memory-id="memory.id"
             :data-focused="highlightedId === memory.id || undefined"
@@ -1060,7 +1060,7 @@ onUnmounted(() => {
                 />{{ t('memoryPanel.pinned') }}</span>
                 <span
                   v-if="isStaleMemory(memory)"
-                  class="rounded-5 bg-[color-mix(in_srgb,var(--d-warning)_12%,transparent)] px-1.5 leading-4.25 text-(--d-warning-text)"
+                  class="rounded-5 bg-[color-mix(in_srgb,var(--d-warning-fill)_12%,transparent)] px-1.5 leading-4.25 text-(--d-warning-text)"
                   :title="t('memoryPanel.staleTitle', { n: memory.fileChangeCount ?? 0 })"
                 >{{ t('memoryPanel.stale') }}</span>
                 <span
@@ -1217,7 +1217,7 @@ onUnmounted(() => {
               v-for="entry in historyEntries"
               :key="entry.id"
               class="rounded-10 border bg-(--d-card) px-3 py-2"
-              :class="entry.isLatest ? 'border-(--d-accent)' : 'border-(--d-border)'"
+              :class="entry.isLatest ? 'border-(--d-accent-fill)' : 'border-(--d-border)'"
             >
               <div class="mb-1 flex flex-wrap items-center gap-1.5 text-10.5">
                 <span class="rounded-5 bg-(--d-hover) px-1.5 font-mono leading-4.25 text-(--d-muted)">v{{ entry.version ?? 1 }}</span>
@@ -1289,7 +1289,7 @@ onUnmounted(() => {
         v-if="activeTab === 'all'"
         class="flex flex-none flex-col gap-2 border-t border-(--d-border) bg-(--d-panel) px-3.5 py-2.5"
       >
-        <div class="flex h-9 items-center gap-2 rounded-10 border border-dashed border-(--d-border2) bg-(--d-bg) pr-1.5 pl-3 transition-colors focus-within:border-solid focus-within:border-(--d-accent)">
+        <div class="flex h-9 items-center gap-2 rounded-10 border border-dashed border-(--d-border2) bg-(--d-bg) pr-1.5 pl-3 transition-colors focus-within:border-solid focus-within:border-(--d-accent-fill)">
           <Plus
             class="size-3.25 flex-none text-(--d-faint)"
             aria-hidden="true"
@@ -1309,7 +1309,7 @@ onUnmounted(() => {
           >
           <button
             type="button"
-            class="d-press flex h-6.5 flex-none items-center gap-1 rounded-md bg-(--d-accent) px-2.5 text-xs font-semibold text-(--d-on-accent) transition-[filter] enabled:hover:brightness-110 disabled:opacity-40"
+            class="d-press flex h-6.5 flex-none items-center gap-1 rounded-md bg-(--d-accent-fill) px-2.5 text-xs font-semibold text-(--d-on-accent) transition-[filter] enabled:hover:brightness-110 disabled:opacity-40"
             :disabled="!newMemoryContent.trim() || pendingCreate || createUnavailable"
             data-testid="memory-add"
             @click="handleAdd"
@@ -1327,7 +1327,7 @@ onUnmounted(() => {
             v-model="newMemoryTier"
             :options="tierOptions"
             class="bg-(--d-hover)"
-            indicator-class="text-(--d-card)"
+            indicator-class="[--tone:var(--d-card)]"
             :aria-label="t('memoryPanel.newTier')"
             :aria-describedby="userMemoryOff ? 'memory-tier-off' : undefined"
           />
@@ -1336,7 +1336,7 @@ onUnmounted(() => {
             v-model="newMemoryKind"
             :options="createKindOptions"
             class="bg-(--d-hover)"
-            indicator-class="text-(--d-card)"
+            indicator-class="[--tone:var(--d-card)]"
             :aria-label="t('memoryPanel.newKind')"
           />
           <p

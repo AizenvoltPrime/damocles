@@ -3,7 +3,7 @@ import type { SettingsSectionId } from '../../../src/shared/settings-sections';
 import type { OverlaySettingsAttached } from '../../../src/desktop/preload/overlay-channels';
 import { writeUserSettings, type HermeticHome } from './hermetic';
 import { readyOverlay } from './overlay';
-import { OVERLAY_URL, overlayPage, shellPage } from './shell';
+import { onMainWindow, OVERLAY_URL, overlayPage, SHELL_URL, shellPage } from './shell';
 
 export const settingsModal = (overlay: Page): Locator => overlay.getByTestId('settings-modal');
 export const settingsRow = (overlay: Page, id: string): Locator => overlay.getByTestId(`settings-row-${id}`);
@@ -85,13 +85,12 @@ export async function applyUserSettings(app: ElectronApplication, h: HermeticHom
  * lay out at the size the window took: setContentSize returns before any renderer has it, and the OS may clamp it.
  */
 export async function setContentSize(app: ElectronApplication, width: number, height: number): Promise<void> {
-  await app.evaluate(({ BrowserWindow }, [w, h]) => {
-    const win = BrowserWindow.getAllWindows()[0]!;
+  await onMainWindow(app, (win, [w, h]) => {
     if (win.isMaximized()) win.unmaximize();
-    win.setContentSize(w!, h!);
+    win.setContentSize(w, h);
   }, [width, height] as const);
-  await expect.poll(() => app.evaluate(async ({ BrowserWindow }, overlayUrl) => {
-    const win = BrowserWindow.getAllWindows()[0]!;
+  await expect.poll(() => app.evaluate(async ({ BrowserWindow }, [shellUrl, overlayUrl]) => {
+    const win = BrowserWindow.getAllWindows().find((each) => each.webContents.getURL().startsWith(shellUrl))!;
     const [contentWidth, contentHeight] = win.getContentSize() as [number, number];
     // Both fill the content area; a hidden overlay keeps the bounds it last had.
     const overlay = (win.contentView.children as Electron.WebContentsView[]).find((view) => view.webContents?.getURL() === overlayUrl && view.getVisible());
@@ -103,7 +102,7 @@ export async function setContentSize(app: ElectronApplication, width: number, he
       return laidOut ? [] : [`${contents.getURL()} lays out at ${innerWidth}x${innerHeight} (zoom ${zoom}), the window is ${contentWidth}x${contentHeight}`];
     }));
     return behind.flat();
-  }, OVERLAY_URL)).toEqual([]);
+  }, [SHELL_URL, OVERLAY_URL] as const)).toEqual([]);
 }
 
 /** The modal's footer, "Edit settings.json": it closes the modal and opens `scope` in the selected chat's JSON editor. */

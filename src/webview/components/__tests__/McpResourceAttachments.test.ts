@@ -81,6 +81,7 @@ async function chatPage(host: 'vscode' | 'desktop') {
       onConnection: () => () => undefined,
       allowYolo: async () => false,
       queueAction: () => undefined,
+      setModalOpen: () => undefined,
     } satisfies NonNullable<typeof window.damoclesBridge>;
     deliver = (message) => {
       for (const listener of [...listeners]) listener(message);

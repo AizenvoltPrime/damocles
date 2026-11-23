@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 // The REAL pi operations, because the point of these cases is parity with the implementation replaced.
 import { createBashToolDefinition, createLocalBashOperations, getShellConfig, type BashOperations, type ToolDefinition } from '@earendil-works/pi-coding-agent';
+import { rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { PiCodingAgentModule } from '../../pi-loader';
@@ -358,32 +359,110 @@ describe.runIf(process.platform === 'win32')("the reported repro, end to end", (
 describe('a timeout after the shell exited', () => {
   const tool = createBashTool({ getShellConfig, createBashToolDefinition } as unknown as PiCodingAgentModule, CWD, { getShellOptions: () => ({}), shellJob: undefined });
   const pis = createBashToolDefinition(CWD);
-  // Writes about every 10 ms for 1.6 s, longer than the timeout and more often than the exit's output grace. The waits read
-  // bash's own clock (`EPOCHREALTIME`), so no process starts between writes that a loaded machine could stretch past the grace.
-  const TICKER = '(end=$(( ${EPOCHREALTIME/./} + 1600000 )); while (( ${EPOCHREALTIME/./} < end )); do echo tick; next=$(( ${EPOCHREALTIME/./} + 10000 )); while (( ${EPOCHREALTIME/./} < next )); do :; done; done) & sleep 0.2; echo boom >&2; exit 3';
+  // A background loop writes about every 10 ms, more often than the exit's output grace, for as long as `mark` exists, while
+  // the shell waits 0.2 s and exits. Every wait reads bash's own clock (`EPOCHREALTIME`), so nothing starts a process.
+  // The loop also ends on its own after TICKER_MAX_S, for a test abandoned before it removes `mark`.
+  const TICKER_MAX_S = 30;
+  const ticker = (mark: string): string => {
+    const quoted = `'${mark.replace(/\\/g, '/')}'`;
+    return `stop=$(( \${EPOCHREALTIME/./} + ${TICKER_MAX_S * 1_000_000} )); (while [ -e ${quoted} ] && (( \${EPOCHREALTIME/./} < stop )); do echo tick; next=$(( \${EPOCHREALTIME/./} + 10000 )); while (( \${EPOCHREALTIME/./} < next )); do :; done; done) & end=$(( \${EPOCHREALTIME/./} + 200000 )); while (( \${EPOCHREALTIME/./} < end )); do :; done; echo boom >&2; exit 3`;
+  };
   const AFTER_EXIT = /Command timed out after 1 seconds\. The shell exited with code 3 after \d+(\.\d)? seconds, but background processes it started kept writing output until the timeout\.$/;
+  // What a test that timed out left behind: its `finally` never ran.
+  const marks: string[] = [];
+  const spies: Array<{ mockRestore(): void }> = [];
+  afterEach(() => {
+    for (const spy of spies.splice(0)) spy.mockRestore();
+    for (const mark of marks.splice(0)) rmSync(mark, { force: true });
+  });
 
-  const messageOf = (definition: Pick<ToolDefinition, 'execute'>, command: string, timeout: number): Promise<string> =>
-    (definition.execute('t', { command, timeout } as never, undefined, undefined, undefined as never) as Promise<unknown>).then(
+  /**
+   * Holds every timer of `delayMs`, the calls' deadlines, until the shell's first output arrives, and runs each its full delay
+   * from there, so the deadline excludes shell start-up, which a loaded machine stretches. Once every held deadline ran,
+   * `mark` goes, which ends the ticker's loop.
+   */
+  async function withDeadlineFromFirstOutput(delayMs: number, mark: string | undefined, calls: (onUpdate: () => void) => Promise<string[]>): Promise<string[]> {
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    interface Held { readonly run: () => void; timer?: NodeJS.Timeout; done: boolean }
+    const held = new Map<object, Held>();
+    let started = false;
+    const removeMark = (): void => {
+      if (mark !== undefined) rmSync(mark, { force: true });
+    };
+    const schedule = (entry: Held): void => {
+      entry.timer = realSetTimeout(() => {
+        entry.done = true;
+        entry.run();
+        if ([...held.values()].every((each) => each.done)) removeMark();
+      }, delayMs);
+    };
+    const setSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+      if (ms !== delayMs) return realSetTimeout(callback, ms, ...args);
+      const handle = {};
+      const entry: Held = { run: () => callback(...args), done: false };
+      held.set(handle, entry);
+      if (started) schedule(entry);
+      return handle;
+    }) as unknown as typeof setTimeout);
+    const clearSpy = vi.spyOn(globalThis, 'clearTimeout').mockImplementation((handle) => {
+      const entry = typeof handle === 'object' && handle !== null ? held.get(handle) : undefined;
+      if (!entry) return realClearTimeout(handle);
+      entry.done = true;
+      if (entry.timer) realClearTimeout(entry.timer);
+    });
+    const firstOutput = (): void => {
+      if (started) return;
+      started = true;
+      for (const entry of held.values()) if (!entry.done && !entry.timer) schedule(entry);
+    };
+    spies.push(setSpy, clearSpy);
+    if (mark !== undefined) {
+      marks.push(mark);
+      writeFileSync(mark, '');
+    }
+    try {
+      return await calls(firstOutput);
+    } finally {
+      setSpy.mockRestore();
+      clearSpy.mockRestore();
+      removeMark();
+    }
+  }
+
+  const messageOf = (definition: Pick<ToolDefinition, 'execute'>, command: string, timeout: number, onOutput: () => void = () => undefined): Promise<string> => {
+    const onUpdate = (update: { content: { type: string; text?: string }[] }): void => {
+      if (update.content.some((part) => part.type === 'text' && (part.text ?? '') !== '')) onOutput();
+    };
+    return (definition.execute('t', { command, timeout } as never, undefined, onUpdate as never, undefined as never) as Promise<unknown>).then(
       () => 'resolved',
       (error: unknown) => (error as Error).message,
     );
+  };
+  const markPath = (): string => join(tmpdir(), `damocles-ticker-${process.pid}-${Math.random().toString(36).slice(2)}`);
 
   it('reports the exit code and time of a shell whose background processes kept writing until the timeout, as pi does', async () => {
-    const [ours, theirs] = [await messageOf(tool, TICKER, 1), await messageOf(pis as unknown as ToolDefinition, TICKER, 1)];
+    const messages: string[] = [];
+    for (const definition of [tool, pis as unknown as ToolDefinition]) {
+      const mark = markPath();
+      messages.push(...await withDeadlineFromFirstOutput(1000, mark, async (onOutput) => [await messageOf(definition, ticker(mark), 1, onOutput)]));
+    }
 
-    for (const message of [ours, theirs]) {
+    for (const message of messages) {
       expect(message).toContain('boom');
       expect(message).toMatch(AFTER_EXIT);
     }
   }, 60_000);
 
   it('keeps the plain timeout message when the shell was still running at the deadline', async () => {
-    expect(await messageOf(tool, 'echo started; sleep 30', 0.3)).toMatch(/started\s+Command timed out after 0\.3 seconds$/);
+    const [message] = await withDeadlineFromFirstOutput(300, undefined, async (onOutput) => [await messageOf(tool, 'echo started; sleep 30', 0.3, onOutput)]);
+    expect(message).toMatch(/started\s+Command timed out after 0\.3 seconds$/);
   }, 30_000);
 
   it('keeps each call\'s exit to that call', async () => {
-    const [timedOut, plain] = await Promise.all([messageOf(tool, TICKER, 1), messageOf(tool, 'sleep 30', 1)]);
+    const mark = markPath();
+    // both deadlines count from the ticker's first output; the other shell is still in its 30 s sleep then
+    const [timedOut, plain] = await withDeadlineFromFirstOutput(1000, mark, (onOutput) => Promise.all([messageOf(tool, ticker(mark), 1, onOutput), messageOf(tool, 'sleep 30', 1)]));
 
     expect(timedOut).toMatch(AFTER_EXIT);
     expect(plain).toMatch(/Command timed out after 1 seconds$/);

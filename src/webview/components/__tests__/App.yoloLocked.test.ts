@@ -29,6 +29,7 @@ window.damoclesBridge = {
   onConnection: () => () => undefined,
   allowYolo,
   queueAction: () => undefined,
+  setModalOpen: () => undefined,
 };
 
 let app: VueWrapper | null = null;

@@ -1,0 +1,3 @@
+The Arcade theme ships with Damocles under the repository's MIT License (see LICENSE at the repository root).
+Its characters are pixel grids written in scripts/generate-theme-art.ts and made into SVG sprite strips there, with no
+third-party image or asset; run npm run generate:theme-art to draw them again. It uses Damocles' built-in fonts.

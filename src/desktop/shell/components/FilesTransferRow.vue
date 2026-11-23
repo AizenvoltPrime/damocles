@@ -212,7 +212,7 @@ function releaseFocus(element: Element): void {
             <span
               v-if="row.phase === 'failed'"
               aria-hidden="true"
-              class="absolute inset-0 bg-(--d-danger)/12"
+              class="absolute inset-0 bg-(--d-danger-fill)/12"
             />
           </Transition>
           <div class="relative flex h-5.5 items-center gap-1.5">
@@ -256,7 +256,7 @@ function releaseFocus(element: Element): void {
                 variant="ghost"
                 size="sm"
                 data-testid="files-transfer-cancel"
-                class="d-press h-5.5 shrink-0 rounded-5 px-2 text-11.5 font-normal text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 aria-disabled:cursor-default aria-disabled:opacity-50"
+                class="d-press h-5.5 shrink-0 rounded-5 px-2 text-11.5 font-normal text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 aria-disabled:cursor-default aria-disabled:opacity-50"
                 :aria-describedby="labelId"
                 :aria-disabled="row.cancelling || undefined"
                 @click="cancel"
@@ -275,12 +275,12 @@ function releaseFocus(element: Element): void {
             :aria-valuenow="row.phase === 'preparing' ? undefined : Math.round(fraction * 100)"
             :aria-valuetext="row.phase === 'preparing' ? undefined : valueText"
             class="relative mt-1 mr-1.25 h-1 overflow-hidden rounded-full bg-(--d-border)"
-            :class="row.phase === 'preparing' ? 'd-sweep-bar text-(--d-accent)' : ''"
+            :class="row.phase === 'preparing' ? 'd-sweep-bar [--tone:var(--d-accent-fill)]' : ''"
           >
             <span
               v-if="row.phase !== 'preparing'"
               class="files-transfer-fill block h-full rounded-full"
-              :class="row.phase === 'failed' ? 'bg-(--d-danger)' : row.phase === 'done' ? 'bg-(--d-success)' : 'bg-(--d-accent)'"
+              :class="row.phase === 'failed' ? 'bg-(--d-danger-fill)' : row.phase === 'done' ? 'bg-(--d-success-fill)' : 'bg-(--d-accent-fill)'"
               :style="{ transform: `scaleX(${fraction})` }"
             />
           </div>

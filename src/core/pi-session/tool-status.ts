@@ -12,6 +12,7 @@ import { MCP_RESOURCE_TOOL_NAMES, TOOL_DESIGN_PARITY, TOOL_ENTER_PLAN_MODE, TOOL
 import { designBrowserAllows } from './tools/browser-tools';
 import { MEMORY_WRITE_PI_TOOL_NAMES } from './tools/memory-tools';
 import { BUILT_DESIGN_TOOL_NAMES } from '../design/tools/design-tool-specs';
+import { THEME_PI_TOOL_NAMES } from './tools/theme-tool-specs';
 import type { DesignRuleSet } from '../design/rule-set';
 
 /**
@@ -47,6 +48,12 @@ export interface ToolStatusDeps {
   forgeEnabled: boolean;
   /** Why no account is known where the tools run, else undefined (`forgeGroupUnavailable()`). */
   forgeUnavailable: 'noForgeAccount' | 'forgeServersUnread' | undefined;
+  /** The chat has the theme tools: a main chat of this computer's desktop core (HostCapabilities.damoclesTheme). */
+  themeAvailable: boolean;
+  /** `damocles.desktop.themes.agentTools`. */
+  themeEnabled: boolean;
+  /** Why the tools cannot reach the app they change, else undefined (`themeGroupUnavailable()`). */
+  themeUnavailable: 'themeAppClosed' | 'themeAppOutdated' | undefined;
   /** `this.isMcpEnabled()`. */
   mcpEnabled: boolean;
   /** `this.mcpToolNames()`: every MCP tool, whatever its exposure; `disabled` removes the `off` ones. */
@@ -67,14 +74,17 @@ export interface ToolStatusDeps {
   hostSettings?: Pick<SettingsStore, 'inspect'>;
   /** `damocles.design.enabled`, a user-scope setting. */
   designEnabled: boolean;
-  /** The session is a design chat (its branch's role entry), which keeps its role while the setting is off. */
+  /** The session is a design chat (its branch holds a role entry, readable or not), which keeps its role while the setting is off. */
   designRole: boolean;
   /** The host's rule set (`designRuleSet`), a design chat's recorded one. */
   ruleSet: DesignRuleSet;
 }
 
-/** What a design chat never has: plan mode, parent design tools, teams, and memory writes, which reach outside its folder (PD-4, PD-25). */
-const DESIGN_CHAT_EXCLUDED: ReadonlySet<string> = new Set([TOOL_ENTER_PLAN_MODE, TOOL_EXIT_PLAN_MODE, TOOL_START_DESIGN, TOOL_DESIGN_PARITY, ...TEAM_MAIN_PI_TOOL_NAMES, ...MEMORY_WRITE_PI_TOOL_NAMES]);
+/**
+ * What a design chat never has: plan mode, parent design tools, teams, memory writes, which reach outside its folder (PD-4,
+ * PD-25), and the theme tools, which change the app's look.
+ */
+const DESIGN_CHAT_EXCLUDED: ReadonlySet<string> = new Set([TOOL_ENTER_PLAN_MODE, TOOL_EXIT_PLAN_MODE, TOOL_START_DESIGN, TOOL_DESIGN_PARITY, ...TEAM_MAIN_PI_TOOL_NAMES, ...MEMORY_WRITE_PI_TOOL_NAMES, ...THEME_PI_TOOL_NAMES]);
 
 /** The design tools a chat gets: its rule set's design chat tools in a design chat, its parent tools elsewhere; only those built. */
 function designToolNames(deps: Pick<ToolStatusDeps, 'designEnabled' | 'designRole' | 'ruleSet'>): string[] {
@@ -106,6 +116,7 @@ export function fullActiveToolNames(deps: ToolStatusDeps): string[] {
       browserEnabled: deps.browserAvailable && deps.browserEnabled,
       imageEligible: deps.imageEnabled && deps.imageAvailability.available,
       forgeEligible: deps.forgeAvailable && deps.forgeEnabled,
+      themeEligible: deps.themeAvailable && deps.themeEnabled,
     }),
     ...(deps.mcpEnabled ? deps.mcpToolNames : []),
     ...(deps.mcpEnabled && deps.mcpResourceExposure !== null ? MCP_RESOURCE_TOOL_NAMES : []),
@@ -158,6 +169,7 @@ export function buildToolStatus(deps: ToolStatusDeps): ToolsSnapshot {
     web: deps.webEnabled,
     image: deps.imageEnabled,
     forge: deps.forgeEnabled,
+    theme: deps.themeEnabled,
     subagents: true,
     team: deps.teamEnabled,
     design: deps.designEnabled,
@@ -177,6 +189,9 @@ export function buildToolStatus(deps: ToolStatusDeps): ToolsSnapshot {
     ...(deps.forgeAvailable
       ? [{ group: 'forge' as const, enabled: groupEnabled.forge, available: deps.forgeUnavailable === undefined, ...(deps.forgeUnavailable === undefined ? {} : { unavailableReason: deps.forgeUnavailable }) }]
       : []),
+    ...(deps.themeAvailable
+      ? [{ group: 'theme' as const, enabled: groupEnabled.theme, available: deps.themeUnavailable === undefined, ...(deps.themeUnavailable === undefined ? {} : { unavailableReason: deps.themeUnavailable }) }]
+      : []),
     { group: 'subagents', enabled: groupEnabled.subagents, available: true },
     { group: 'team', enabled: groupEnabled.team, available: deps.teamAvailable },
     // Settings' design switch renders from this entry, so it is sent while off too; the Tools panel hides a group with no tools (PD-22).
@@ -186,7 +201,7 @@ export function buildToolStatus(deps: ToolStatusDeps): ToolsSnapshot {
   const groups = entries.map((entry) =>
     isSwitchableToolGroup(entry.group) && heldOnHost(TOOL_GROUP_SETTINGS[entry.group]) ? { ...entry, setOnHost: true as const } : entry,
   );
-  const tools: ToolStatusInfo[] = FULL_TOOL_CATALOG.filter((entry) => (entry.group !== 'design' || deps.designEnabled) && (entry.group !== 'forge' || deps.forgeAvailable)).map((entry) => ({
+  const tools: ToolStatusInfo[] = FULL_TOOL_CATALOG.filter((entry) => (entry.group !== 'design' || deps.designEnabled) && (entry.group !== 'forge' || deps.forgeAvailable) && (entry.group !== 'theme' || deps.themeAvailable)).map((entry) => ({
     ...entry,
     enabled: entry.toggleable ? groupEnabled[entry.group] && !disabled.has(entry.name) : true,
   }));

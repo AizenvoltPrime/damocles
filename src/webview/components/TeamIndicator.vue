@@ -21,12 +21,12 @@ function openFirstActive(): void {
   <button
     v-if="activeTeamCount > 0"
     type="button"
-    class="flex shrink-0 items-center gap-1.25 rounded-full border border-transparent bg-(--d-accent-soft) px-2 py-0.5 text-(--d-accent-text) transition-colors hover:border-(--d-accent)"
+    class="flex shrink-0 items-center gap-1.25 rounded-full border border-transparent bg-(--d-accent-soft) px-2 py-0.5 text-(--d-accent-text) transition-colors hover:border-(--d-accent-fill)"
     data-testid="composer-team"
     @click="openFirstActive"
   >
     <Users
-      class="size-2.75 animate-[d-pulse_1.6s_ease-in-out_infinite]"
+      class="size-2.75 d-pulsing"
       aria-hidden="true"
     />
     <span class="@max-[43rem]:sr-only">{{ t('team.indicator.label', { n: activeTeamCount }) }}</span>

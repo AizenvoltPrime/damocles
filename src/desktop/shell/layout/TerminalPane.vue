@@ -114,7 +114,7 @@ async function openNewMenu(): Promise<void> {
     ref="root"
     data-testid="terminal-pane"
     :aria-label="t('grid.terminal.title')"
-    class="flex size-full min-h-0 min-w-0 flex-col bg-(--d-bg)"
+    class="flex size-full min-h-0 min-w-0 flex-col bg-(--d-pane-terminal)"
     @focusin="onFocusIn"
     @focusout="onFocusOut"
   >
@@ -173,7 +173,7 @@ async function openNewMenu(): Promise<void> {
             >
               <span
                 aria-hidden="true"
-                class="absolute inset-x-0 top-0 h-0.5 bg-(--d-accent)"
+                class="absolute inset-x-0 top-0 h-0.5 bg-(--d-accent-fill)"
               />
               <component
                 :is="activeGlyph?.icon"

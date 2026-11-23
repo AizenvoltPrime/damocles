@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { AlertDialog, AlertDialogContent } from '@/components/ui/alert-dialog';
 import { User, FolderGit, Globe, ShieldCheck, ShieldX } from 'lucide-vue-next';
 import { useOpenerFocus } from '@/composables/useOpenerFocus';
 import { useChatHost } from '@/composables/useChatHost';
+import { useTrustedVisibility } from '@/composables/useTrustedVisibility';
+import { useSettingsStore } from '@/stores/useSettingsStore';
 import ConfirmDialogLayout from './ConfirmDialogLayout.vue';
+import TrustedCheckingNote from './TrustedCheckingNote.vue';
 import HostBadge from './HostBadge.vue';
 import type { PermissionUpdateDestination, PermissionBehavior } from '@shared/types/permissions';
 
@@ -33,6 +36,10 @@ const emit = defineEmits<{
 const returnFocus = useOpenerFocus(() => props.open);
 // On a remote chat the all-projects rule is saved on its host, which main's panel init names
 const host = useChatHost();
+// This step writes the rule, so it is trusted UI with its own gate; the dialog is not inside the card's root.
+const surfaceRef = ref<HTMLElement | null>(null);
+const settingsStore = useSettingsStore();
+const { isVisible, explain } = useTrustedVisibility(surfaceRef, () => settingsStore.hostCapabilities.damoclesTheme);
 
 const destinations = [
   {
@@ -62,78 +69,98 @@ const destinations = [
     @update:open="(next: boolean) => !next && emit('cancel')"
   >
     <AlertDialogContent
-      class="max-w-md gap-0 overflow-hidden p-0"
+      class="max-h-[calc(100dvh-1rem)] max-w-md grid-rows-[minmax(0,1fr)] gap-0 overflow-hidden p-0"
+      data-trusted
       data-testid="permission-destination-picker"
       @close-auto-focus="returnFocus"
     >
-      <ConfirmDialogLayout
-        :icon="behavior === 'deny' ? ShieldX : ShieldCheck"
-        :tone="behavior === 'deny' ? 'danger' : 'accent'"
-        :title="t(titleKey)"
+      <!-- The gate's target: the whole dialog, bounded by the page, with its choices scrolling inside it. -->
+      <div
+        ref="surfaceRef"
+        class="relative grid min-h-0 grid-rows-[auto_minmax(0,1fr)_auto]"
+        data-testid="permission-destination-surface"
       >
-        <template #description>
-          {{ t(descriptionKey) }}
-          <span class="rounded-5 bg-(--d-hover) px-1.5 font-mono text-xs break-all text-(--d-accent-text)">{{ pattern }}</span>
-        </template>
+        <ConfirmDialogLayout
+          :icon="behavior === 'deny' ? ShieldX : ShieldCheck"
+          :tone="behavior === 'deny' ? 'danger' : 'accent'"
+          :title="t(titleKey)"
+        >
+          <template #description>
+            {{ t(descriptionKey) }}
+            <span class="rounded-5 bg-(--d-hover) px-1.5 font-mono text-xs break-all text-(--d-accent-text)">{{ pattern }}</span>
+          </template>
 
-        <div class="flex flex-col gap-2">
-          <button
-            v-for="dest in destinations"
-            :key="dest.value"
-            type="button"
-            class="d-press flex items-center gap-2.5 rounded-11 border border-(--d-border) bg-(--d-card) px-3 py-2.5 text-left transition-colors hover:border-(--d-accent) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent)"
-            :data-testid="`permission-destination-${dest.value}`"
-            @click="emit('select', dest.value)"
+          <div
+            class="flex flex-col gap-2"
+            role="group"
+            :aria-label="t(titleKey)"
+            :aria-disabled="!isVisible || undefined"
           >
-            <span
-              class="flex size-7 flex-none items-center justify-center rounded-lg bg-(--d-accent-soft) text-(--d-accent)"
-              aria-hidden="true"
+            <button
+              v-for="dest in destinations"
+              :key="dest.value"
+              type="button"
+              class="d-press flex items-center gap-2.5 rounded-11 border border-(--d-border) bg-(--d-card) px-3 py-2.5 text-left transition-colors hover:border-(--d-accent-fill) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent-fill)"
+              :data-testid="`permission-destination-${dest.value}`"
+              @click="emit('select', dest.value)"
             >
-              <component
-                :is="dest.icon"
-                class="size-3.5"
-              />
-            </span>
-            <span
-              v-if="host && dest.value === 'userSettings'"
-              class="flex min-w-0 flex-col"
-            >
-              <i18n-t
-                :keypath="behavior === 'deny' ? 'permission.destination.denyOnHost' : 'permission.destination.allowOnHost'"
-                tag="span"
-                class="flex min-w-0 items-center gap-1.5 text-13 font-medium"
-                scope="global"
+              <span
+                class="flex size-7 flex-none items-center justify-center rounded-lg bg-(--d-accent-soft) text-(--d-accent)"
+                aria-hidden="true"
               >
-                <template #host>
-                  <HostBadge
-                    :name="host.name"
-                    :color="host.color"
-                  />
-                </template>
-              </i18n-t>
-              <span class="text-xs text-(--d-muted)">{{ t('permission.destination.onHostDesc', { host: host.name }) }}</span>
-            </span>
-            <span
-              v-else
-              class="flex min-w-0 flex-col"
-            >
-              <span class="text-13 font-medium">{{ t(dest.labelKey) }}</span>
-              <span class="text-xs text-(--d-muted)">{{ t(dest.descriptionKey) }}</span>
-            </span>
-          </button>
-        </div>
+                <component
+                  :is="dest.icon"
+                  class="size-3.5"
+                />
+              </span>
+              <span
+                v-if="host && dest.value === 'userSettings'"
+                class="flex min-w-0 flex-col"
+              >
+                <i18n-t
+                  :keypath="behavior === 'deny' ? 'permission.destination.denyOnHost' : 'permission.destination.allowOnHost'"
+                  tag="span"
+                  class="flex min-w-0 items-center gap-1.5 text-13 font-medium"
+                  scope="global"
+                >
+                  <template #host>
+                    <HostBadge
+                      :name="host.name"
+                      :color="host.color"
+                    />
+                  </template>
+                </i18n-t>
+                <span class="text-xs text-(--d-muted)">{{ t('permission.destination.onHostDesc', { host: host.name }) }}</span>
+              </span>
+              <span
+                v-else
+                class="flex min-w-0 flex-col"
+              >
+                <span class="text-13 font-medium">{{ t(dest.labelKey) }}</span>
+                <span class="text-xs text-(--d-muted)">{{ t(dest.descriptionKey) }}</span>
+              </span>
+            </button>
+          </div>
 
-        <template #footer>
-          <button
-            type="button"
-            class="d-press flex h-7.5 items-center rounded-9 border border-(--d-border2) px-3 text-12.5 transition-colors hover:bg-(--d-hover)"
-            data-testid="permission-destination-cancel"
-            @click="emit('cancel')"
-          >
-            {{ t('permission.destination.cancel') }}
-          </button>
-        </template>
-      </ConfirmDialogLayout>
+          <template #footer>
+            <button
+              type="button"
+              class="d-press flex h-7.5 items-center rounded-9 border border-(--d-border2) px-3 text-12.5 transition-colors hover:bg-(--d-hover)"
+              :aria-disabled="!isVisible || undefined"
+              data-testid="permission-destination-cancel"
+              @click="emit('cancel')"
+            >
+              {{ t('permission.destination.cancel') }}
+            </button>
+          </template>
+        </ConfirmDialogLayout>
+        <TrustedCheckingNote
+          overlay
+          class="bottom-0"
+          :shown="explain"
+          :text="t('trusted.checkingVisible')"
+        />
+      </div>
     </AlertDialogContent>
   </AlertDialog>
 </template>

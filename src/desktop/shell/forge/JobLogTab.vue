@@ -201,7 +201,7 @@ onBeforeUnmount(() => {
   props.api.forge.jobLogVisible(props.tab.id, false);
 });
 
-const TOOL = 'd-press h-6.5 gap-1.5 rounded-7 px-2 text-12 font-normal text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 aria-pressed:text-(--d-accent-text) aria-disabled:cursor-default aria-disabled:opacity-60 [&_svg]:size-3.25';
+const TOOL = 'd-press h-6.5 gap-1.5 rounded-7 px-2 text-12 font-normal text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 aria-pressed:text-(--d-accent-text) aria-disabled:cursor-default aria-disabled:opacity-60 [&_svg]:size-3.25';
 const OUTLINE = 'd-press h-7 gap-1.5 rounded-8 border-(--d-border2) bg-transparent px-2.75 text-12 font-normal hover:bg-(--d-hover) aria-disabled:cursor-default aria-disabled:opacity-60 [&_svg]:size-3';
 </script>
 
@@ -383,7 +383,7 @@ const OUTLINE = 'd-press h-7 gap-1.5 rounded-8 border-(--d-border2) bg-transpare
         v-if="failure !== undefined"
         role="alert"
         data-testid="job-log-banner"
-        class="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-(--d-border) bg-[color-mix(in_srgb,var(--d-warning)_10%,var(--d-bg))] py-1.5 ps-3.5 pe-2 text-12 text-(--d-muted)"
+        class="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-(--d-border) bg-[color-mix(in_srgb,var(--d-warning-fill)_10%,var(--d-bg))] py-1.5 ps-3.5 pe-2 text-12 text-(--d-muted)"
       >
         <TriangleAlert
           aria-hidden="true"
@@ -417,6 +417,7 @@ const OUTLINE = 'd-press h-7 gap-1.5 rounded-8 border-(--d-border2) bg-transpare
       :key="viewKey"
       v-model:follow="follow"
       v-model:timestamps="timestamps"
+      :api="api"
       :rows="parser.rows"
       :provisional="provisional"
       :sections="parser.sections"

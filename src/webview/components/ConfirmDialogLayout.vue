@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, type Component } from 'vue';
 import { AlertDialogDescription, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { IsolatedText } from './isolated-text';
 
 // Place inside an AlertDialogContent with `gap-0 overflow-hidden p-0`; this draws the header, body and footer.
 const props = withDefaults(defineProps<{
@@ -22,13 +23,14 @@ const emit = defineEmits<{
 }>();
 
 const toneVar = computed(() => `var(--d-${props.tone})`);
+const toneFillVar = computed(() => `var(--d-${props.tone}-fill)`);
 </script>
 
 <template>
   <header class="flex items-start gap-3 px-4.5 pt-4.5 pb-3">
     <span
       class="flex size-8 flex-none items-center justify-center rounded-10"
-      :style="{ background: `color-mix(in srgb, ${toneVar} 14%, transparent)`, color: toneVar }"
+      :style="{ background: `color-mix(in srgb, ${toneFillVar} 14%, transparent)`, color: toneVar }"
       aria-hidden="true"
     >
       <component
@@ -38,7 +40,7 @@ const toneVar = computed(() => `var(--d-${props.tone})`);
     </span>
     <div class="min-w-0 flex-1 pt-0.5">
       <AlertDialogTitle class="text-15 font-semibold tracking-[-.01em]">
-        {{ title }}
+        <IsolatedText :text="title" />
       </AlertDialogTitle>
       <AlertDialogDescription class="mt-1 text-12.5 text-pretty text-(--d-muted)">
         <slot name="description">
@@ -68,7 +70,7 @@ const toneVar = computed(() => `var(--d-${props.tone})`);
       <button
         type="button"
         class="d-press flex h-7.5 items-center gap-1.5 rounded-9 px-3.5 text-12.5 font-semibold transition-[filter] enabled:hover:brightness-110 disabled:opacity-40"
-        :class="danger ? 'bg-(--d-danger) text-(--d-on-danger)' : 'bg-(--d-accent) text-(--d-on-accent)'"
+        :class="danger ? 'bg-(--d-danger-fill) text-(--d-on-danger)' : 'bg-(--d-accent-fill) text-(--d-on-accent)'"
         :disabled="confirmDisabled"
         data-testid="confirm-action"
         @click="emit('confirm')"

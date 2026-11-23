@@ -5,7 +5,7 @@ import { useElementSize } from '@vueuse/core';
 import type { DamoclesShellApi, GridPane, GridSlot, ShellGridLayout, ShellGridSizes, ShellState } from '../../preload/shell-channels';
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import { remPx } from '@/composables/useRemPx';
-import { atRootFont, GRID_SASH_REM } from '../layout';
+import { atRootScale, GRID_SASH_REM } from '../layout';
 import { clampSlotSize, COLUMN_MIN_PX, GRID_SLOTS, gridAreas, ROW_MIN_PX, slotMax, slotMin, slotOf } from './layout-model';
 import { GRID_CONTEXT, type GridContext } from './grid-context';
 import { prefersReducedMotion } from '@/utils/reducedMotion';
@@ -24,6 +24,8 @@ const ICONS = { main: 'square', side: 'panel-right', bottom: 'panel-bottom' } as
 
 const root = ref<HTMLElement | null>(null);
 const chatSlot = ref<HTMLElement | null>(null);
+// The editor's focus overlay hides the chat view, and its modal layer with it.
+const chatModal = computed(() => props.state.chatModal && props.state.chatViewShown && !props.focusOverlay);
 const { width: gridWidth, height: gridHeight } = useElementSize(root);
 
 // The grid owns its sash sizes: a sash edits them here and reports them, and main's sizes replace them only when main
@@ -44,8 +46,8 @@ const shown = (pane: GridPane): boolean => areas.value[area(pane)];
 const sashPx = computed(() => remPx(GRID_SASH_REM));
 const sideRoom = computed(() => gridWidth.value - sashPx.value);
 const bottomRoom = computed(() => gridHeight.value - sashPx.value);
-const sideMin = computed(() => slotMin(sideRoom.value, atRootFont(COLUMN_MIN_PX)));
-const bottomMin = computed(() => slotMin(bottomRoom.value, atRootFont(ROW_MIN_PX)));
+const sideMin = computed(() => slotMin(sideRoom.value, atRootScale(COLUMN_MIN_PX)));
+const bottomMin = computed(() => slotMin(bottomRoom.value, atRootScale(ROW_MIN_PX)));
 const sideWidth = computed(() => clampSlotSize(grid.value.sideWidth, sideRoom.value, sideMin.value));
 const bottomHeight = computed(() => clampSlotSize(grid.value.bottomHeight, bottomRoom.value, bottomMin.value));
 const sideMax = computed(() => slotMax(sideRoom.value, sideMin.value, sideWidth.value));
@@ -288,9 +290,10 @@ defineExpose({ chatSlot, root });
       v-show="shown('chat')"
       :ref="(element) => setPaneElement('chat', element)"
       data-testid="grid-pane-chat"
+      data-wallpaper-panel="chat"
       :inert="focusOverlay"
       :data-slot="area('chat')"
-      class="flex min-h-0 min-w-0 flex-col overflow-hidden bg-(--d-bg)"
+      class="flex min-h-0 min-w-0 flex-col overflow-hidden bg-(--d-pane-chat)"
       :style="{ gridArea: area('chat') }"
     >
       <div class="flex min-h-0 min-w-0 flex-1">
@@ -298,7 +301,12 @@ defineExpose({ chatSlot, root });
              header (h-11.5, panel background, bottom border), so the grip sits where the editor's and terminal's do, and the
              cells under it continue the strips under that header (a design chat's design header, then the banner of a chat
              page or the slot's placeholder) across the gutter. -->
-        <div class="flex w-4 shrink-0 flex-col">
+        <!-- While the chat page shows a modal layer, the gutter takes the page's scrim and, like the page, no input. -->
+        <div
+          class="relative isolate flex w-4 shrink-0 flex-col"
+          :inert="chatModal"
+          data-testid="chat-gutter"
+        >
           <span class="flex h-11.5 shrink-0 items-center justify-center border-b border-(--d-border) bg-(--d-panel)">
             <PaneGrip
               pane="chat"
@@ -306,6 +314,14 @@ defineExpose({ chatSlot, root });
             />
           </span>
           <slot name="chatGutter" />
+          <Transition name="t-overlay">
+            <div
+              v-if="chatModal"
+              aria-hidden="true"
+              class="absolute inset-0 bg-(--d-scrim) backdrop-blur-xs"
+              data-testid="chat-gutter-scrim"
+            />
+          </Transition>
         </div>
         <main
           ref="chatSlot"
@@ -322,6 +338,7 @@ defineExpose({ chatSlot, root });
         v-show="shown('editor')"
         :ref="(element) => setPaneElement('editor', element)"
         data-testid="grid-pane-editor"
+        data-wallpaper-panel="editor"
         :data-slot="area('editor')"
         class="grid-pane flex min-h-0 min-w-0 overflow-hidden"
         :class="dragging === 'editor' ? 'grid-pane-dragging' : ''"
@@ -336,6 +353,7 @@ defineExpose({ chatSlot, root });
         v-show="shown('terminal')"
         :ref="(element) => setPaneElement('terminal', element)"
         data-testid="grid-pane-terminal"
+        data-wallpaper-panel="terminal"
         :inert="focusOverlay"
         :data-slot="area('terminal')"
         class="grid-pane flex min-h-0 min-w-0 overflow-hidden"

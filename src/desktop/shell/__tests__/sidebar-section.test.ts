@@ -160,3 +160,108 @@ describe('the docked Ports section', () => {
     expect(section.style.flex).toBe('0 0 1.875rem');
   });
 });
+
+// A wallpapered sidebar is see-through, so neither the chip nor the actions over it may paint a ground.
+describe('SidebarSection chip under the title actions', () => {
+  type Observed = { callback: ResizeObserverCallback; target: Element };
+  function mountChip() {
+    const observed: Observed[] = [];
+    vi.stubGlobal('ResizeObserver', class {
+      private readonly callback: ResizeObserverCallback;
+      constructor(callback: ResizeObserverCallback) { this.callback = callback; }
+      observe(target: Element): void { observed.push({ callback: this.callback, target }); }
+      unobserve(): void {}
+      disconnect(): void {}
+    });
+    const wrapper = mount(SidebarSection, {
+      props: { section: 'files', collapsed: false, hasChip: true },
+      slots: { chip: '<button data-testid="chip">fix-login</button>', actions: '<button data-testid="action">New file</button>' },
+      global: { plugins: [shellI18n] },
+      attachTo: document.body,
+    });
+    mounted.push(wrapper);
+    const resize = (testid: string, width: number): void => {
+      const target = wrapper.get(`[data-testid="${testid}"]`).element;
+      const entry = { target, contentRect: { width }, borderBoxSize: [{ inlineSize: width }] } as unknown as ResizeObserverEntry;
+      for (const each of observed.filter((one) => one.target === target)) each.callback([entry], {} as ResizeObserver);
+    };
+    return { wrapper, resize, cell: () => wrapper.get<HTMLElement>('[data-testid="sidebar-section-chip-slot"]'), actions: () => wrapper.get('[data-testid="sidebar-section-actions"]'), chip: () => wrapper.get('[data-testid="sidebar-section-chip"]') };
+  }
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('masks the chip under the shown actions by their measured width, and paints no surface on either', async () => {
+    const { wrapper, resize, cell, actions, chip } = mountChip();
+    expect(cell().classes().some((name) => name.startsWith('mask-'))).toBe(false);
+    await wrapper.get('section').trigger('pointerenter');
+    resize('sidebar-section-actions', 72);
+    await nextTick();
+    expect(cell().classes().filter((name) => name.startsWith('mask-'))).toEqual(['mask-[linear-gradient(to_left,transparent_calc(var(--actions-w)-1rem),black_var(--actions-w))]']);
+    expect(cell().element.style.getPropertyValue('--actions-w')).toBe('72px');
+    for (const element of [cell(), actions(), chip()]) {
+      expect(element.classes().filter((name) => /--d-(panel|bg|pane-)|(^|:)(bg|from|via|to)-/.test(name))).toEqual([]);
+    }
+  });
+
+  it('hides the actions over a chip that is pointed at or focused, and shows the chip whole', async () => {
+    const { wrapper, resize, cell, actions, chip } = mountChip();
+    await wrapper.get('section').trigger('pointerenter');
+    resize('sidebar-section-chip-cell', 160);
+    resize('sidebar-section-chip', 120);
+    resize('sidebar-section-actions', 72);
+    await chip().trigger('pointerenter');
+    expect(actions().classes()).toContain('opacity-0');
+    expect(actions().classes()).not.toContain('*:pointer-events-auto');
+    expect(cell().classes().some((name) => name.startsWith('mask-'))).toBe(false);
+    await chip().trigger('pointerleave');
+    expect(actions().classes()).toContain('*:pointer-events-auto');
+    expect(actions().classes()).not.toContain('opacity-0');
+  });
+
+  // Focus stays on a chip after its menu closes; hiding the actions for that focus alone left them out of the pointer's reach.
+  it('hides the actions for a focused chip only while the pointer is not in the header', async () => {
+    const { wrapper, resize, actions, chip } = mountChip();
+    const header = wrapper.get('[data-testid="sidebar-section-header"]');
+    await nextTick();
+    resize('sidebar-section-chip-cell', 160);
+    resize('sidebar-section-chip', 120);
+    resize('sidebar-section-actions', 72);
+    await chip().trigger('focusin');
+    expect(actions().classes()).toContain('opacity-0');
+
+    await wrapper.get('section').trigger('pointerenter');
+    await header.trigger('pointerenter');
+    expect(actions().classes()).not.toContain('opacity-0');
+    expect(actions().classes()).toContain('*:pointer-events-auto');
+
+    await chip().trigger('pointerenter');
+    expect(actions().classes()).toContain('opacity-0');
+    await chip().trigger('pointerleave');
+    await header.trigger('pointerleave');
+    expect(actions().classes()).toContain('opacity-0');
+  });
+
+  // The actions' box starts with 1.375rem of padding, where the chip's fade runs: a chip that ends there is under no button.
+  it('keeps the actions shown over a pointed-at chip that reaches only into their leading padding', async () => {
+    const { wrapper, resize, cell, actions, chip } = mountChip();
+    await wrapper.get('section').trigger('pointerenter');
+    resize('sidebar-section-chip-cell', 182);
+    resize('sidebar-section-actions', 156);
+    resize('sidebar-section-chip', 46);
+    await chip().trigger('pointerenter');
+    expect(actions().classes()).not.toContain('opacity-0');
+    expect(cell().classes().some((name) => name.startsWith('mask-'))).toBe(false);
+    resize('sidebar-section-chip', 49);
+    await nextTick();
+    expect(actions().classes()).toContain('opacity-0');
+  });
+
+  it('keeps the actions shown beside a pointed-at chip too short to reach under them', async () => {
+    const { wrapper, resize, actions, chip } = mountChip();
+    await wrapper.get('section').trigger('pointerenter');
+    resize('sidebar-section-chip-cell', 260);
+    resize('sidebar-section-chip', 80);
+    resize('sidebar-section-actions', 72);
+    await chip().trigger('pointerenter');
+    expect(actions().classes()).not.toContain('opacity-0');
+  });
+});

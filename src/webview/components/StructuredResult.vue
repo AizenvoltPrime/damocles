@@ -65,7 +65,7 @@ function looksLikePath(value: string): boolean {
       class="flex gap-2"
     >
       <span
-        class="mt-2 size-1.25 flex-none rounded-full bg-(--d-accent)"
+        class="mt-2 size-1.25 flex-none rounded-full bg-(--d-accent-fill)"
         aria-hidden="true"
       />
       <code

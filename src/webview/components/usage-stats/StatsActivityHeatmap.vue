@@ -123,7 +123,7 @@ const rows = computed(() => {
           <td
             v-for="cell in day.cells"
             :key="cell.hour"
-            class="h-4 rounded-[0.125rem] p-0"
+            class="h-4 rounded-sm p-0"
             :class="cell.active ? 'bg-[color-mix(in_srgb,var(--chart-1)_var(--heat),transparent)]' : 'bg-[color-mix(in_srgb,var(--d-hover)_40%,transparent)]'"
             :style="cell.style"
             :title="cell.title"

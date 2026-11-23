@@ -434,12 +434,14 @@
     "createFileTeamAgent": "{agent} from team {team} wants to create this file",
     "editFileTeamAgent": "{agent} from team {team} wants to edit",
     "generateImage": "Generate an image and save it as this new file?",
+    "generateThemeImage": "Generate an image for a theme?",
     "useTool": "Allow {tool} with this input?",
     "useToolAgent": "{agent} wants to use {tool} with this input:",
     "useToolTeamAgent": "{agent} from team {team} wants to use {tool} with this input:",
     "imagePrompt": "Image prompt",
     "imageModel": "Model:",
     "imageBilled": "Billed to your OpenRouter key.",
+    "imageForTheme": "The image goes into the theme's own files; nothing is saved in your project.",
     "queuePosition": "{position} of {total} pending",
     "options": {
       "yes": "Yes",
@@ -470,6 +472,7 @@
     "onHost": {
       "runCommand": "Run this command on {host}?",
       "generateImage": "Generate an image and save it as this new file on {host}?",
+      "generateThemeImage": "Generate an image for a theme on {host}?",
       "useTool": "Allow {tool} with this input on {host}?",
       "allowCreate": "Allow creating this file on {host}?",
       "allowEdit": "Allow this edit on {host}?",
@@ -814,6 +817,7 @@
       "subagents": "Subagents",
       "team": "Team",
       "design": "Design",
+      "theme": "Theme",
       "core": "Core"
     },
     "unavailable": {
@@ -821,7 +825,9 @@
       "unknownModel": "Unavailable: the chosen image model is not available. Choose another in Settings.",
       "noOpenRouterKey": "Unavailable: no OpenRouter key or sign-in.",
       "noForgeAccount": "Unavailable: no GitHub or GitLab account. Add one in Settings › Models & accounts › Git hosting.",
-      "forgeServersUnread": "Not available yet: Damocles is still reading the GitHub and GitLab accounts of your computer."
+      "forgeServersUnread": "Not available yet: Damocles is still reading the GitHub and GitLab accounts of your computer.",
+      "themeAppClosed": "Unavailable: these tools change the Damocles app on your computer, and it is closed.",
+      "themeAppOutdated": "Unavailable: the Damocles on your computer is too old to change its look from a chat on a remote host. Update it there."
     },
     "setOnHost": {
       "group": "Set in this host's own settings, so it changes only there.",
@@ -4042,5 +4048,403 @@
       "screenRemoved": "{screen} removed",
       "decisionAdded": "{id} {title} · {chosen}"
     }
+  },
+  "themeAgent": {
+    "looks": {
+      "both": "dark and light",
+      "dark": "dark",
+      "light": "light",
+      "bothLooks": "dark and light looks",
+      "darkLook": "dark look",
+      "lightLook": "light look"
+    },
+    "look": {
+      "dark": "dark",
+      "light": "light",
+      "darkTitle": "Dark",
+      "lightTitle": "Light"
+    },
+    "seed": {
+      "background": "Background",
+      "panel": "Panel",
+      "text": "Text",
+      "accent": "Accent",
+      "success": "Success",
+      "warning": "Warning",
+      "danger": "Danger",
+      "info": "Info"
+    },
+    "history": {
+      "pick": "picked {theme} for the {look} look",
+      "save": "saved {theme}",
+      "create": "created {theme}",
+      "delete": "deleted {theme}",
+      "rename": "renamed {was} to {theme}",
+      "reset": "reset to the default theme",
+      "schedule": "changed the theme schedule",
+      "hold": "showed {theme} ({look}) until the schedule's next change",
+      "resume": "resumed the theme schedule",
+      "projectLook": {
+        "none": "turned off the look of {project}",
+        "touches": "set touches for {project}",
+        "full": "gave {project} its own theme"
+      },
+      "storeRemoved": "applied the store's removal of {themes}",
+      "wallpapersOff": "turned Show wallpapers off",
+      "other": "a change made by a newer Damocles",
+      "restore": "restored to before: {change}"
+    },
+    "change": {
+      "name": "Name: {name}",
+      "lookAdded": "Adds a {look} look",
+      "lookRemoved": "Removes the {look} look",
+      "color": "{color}, {look} look: {hex}",
+      "tokens": "{look} look: {n} token override | {look} look: {n} token overrides",
+      "font": {
+        "ui": "UI font: {family}",
+        "mono": "Mono font: {family}"
+      },
+      "fontDefault": {
+        "ui": "UI font: Damocles' own",
+        "mono": "Mono font: Damocles' own"
+      },
+      "lineHeight": "Line spacing {value}",
+      "radius": "Corner radius {value}",
+      "density": "Density {value}",
+      "chatColumn": "Chat column {value} rem",
+      "chatColumnFull": "Chat column: full width",
+      "default": {
+        "lineHeight": "Line spacing: default",
+        "radius": "Corner radius: default",
+        "density": "Density: default",
+        "chatColumn": "Chat column: default",
+        "surfaceOpacity": "Surface opacity of the {look} look: default"
+      },
+      "wallpapers": "Wallpaper on {n} panel of the {look} look | Wallpaper on {n} panels of the {look} look",
+      "wallpapersNone": "No wallpaper in the {look} look",
+      "surfaceOpacity": "Surface opacity of the {look} look {value}%",
+      "paletteFromWallpaper": "Colors of the {look} look from its wallpaper",
+      "cycle": "The {look} look's wallpaper sets change every {n} minute | The {look} look's wallpaper sets change every {n} minutes",
+      "cycleShortcut": "The {look} look's wallpaper sets change only with Next Wallpaper",
+      "wallpapersOff": "Show wallpapers turned off",
+      "layout": "Window arrangement: this window's current one, put in place whenever the theme is picked",
+      "layoutCleared": "Window arrangement removed",
+      "arrangementApplies": "Picking it puts its window arrangement in place",
+      "css": "New custom CSS for the {region}",
+      "cssCleared": "Custom CSS removed from the {region}",
+      "characters": "A set of {n} project character | A set of {n} project characters",
+      "charactersNone": "No project characters",
+      "pick": "Shows it as your {looks} look",
+      "scheduleOn": "Schedule on, {n} rule | Schedule on, {n} rules",
+      "scheduleOff": "Schedule off",
+      "undo": "Reverts the agent's change: {change}",
+      "projectLookNone": "{project} uses the current theme again",
+      "projectLookTouches": "Touches for {project}: {touches}",
+      "projectLookFull": {
+        "dark": "{project} gets its own theme: {theme}, dark look",
+        "light": "{project} gets its own theme: {theme}, light look",
+        "auto": "{project} gets its own theme: {theme}, following the computer"
+      },
+      "touch": {
+        "accent": "accent",
+        "wallpaper": "wallpaper",
+        "characters": "characters"
+      }
+    },
+    "contrast": {
+      "issue": "{fg} on {bg} is {ratio}, below {need}",
+      "format": "{fg} is not a color Damocles can read"
+    },
+    "cssRegion": {
+      "transcript": "transcript",
+      "sidebar": "sidebar",
+      "editorChrome": "editor chrome",
+      "terminalChrome": "terminal chrome",
+      "titlebar": "title bar"
+    },
+    "dropped": {
+      "title": "Removed from the CSS",
+      "part": "{region}, line {line}: {reason}",
+      "partNoLine": "{region}: {reason}",
+      "more": "and {n} more | and {n} more",
+      "reason": {
+        "regionTooLarge": "the region is over {limit} KB, so all of its CSS is removed",
+        "totalTooLarge": "the CSS is over {limit} KB in all regions, so this region's CSS is removed",
+        "tooManyRules": "past the limit of {n} rule | past the limit of {n} rules",
+        "selectorTooLong": "the selector is longer than {n} character | the selector is longer than {n} characters",
+        "nestedRule": "nested rules are not supported",
+        "parseError": "this could not be read as CSS",
+        "atRule": "only {'@'}media, {'@'}supports and {'@'}container are allowed",
+        "mediaFeature": "media queries may test only reduced motion, contrast, forced colors, hover and pointer",
+        "selector": "the selector reaches outside the content area or into parts a theme may not style, or is not a valid selector",
+        "pseudoElement": "only ::selection, ::placeholder and ::marker are allowed",
+        "property": "theme CSS may not set this property",
+        "valueOutOfRange": "the value is outside the range theme CSS allows",
+        "function": "theme CSS may not use this function",
+        "url": "only still data: images up to {limit} KB are allowed; nothing loads from the network",
+        "colorAlpha": "a color needs at least {percent} opacity, or a --d- or --s- token",
+        "fontFamily": "only the theme's own fonts, var(--d-font), var(--d-mono) or a generic family are allowed"
+      }
+    },
+    "card": {
+      "titleNew": "Preview a new theme",
+      "titleChange": "Preview a theme change",
+      "titleSchedule": "Preview a theme schedule",
+      "titleUndo": "Undo the agent's theme change?",
+      "titleProject": "Preview this project's own look",
+      "titleWallpapersOff": "Turn wallpapers off?",
+      "subtitle": "{name}, {looks} · {tail}",
+      "subtitleNoLooks": "{name} · {tail}",
+      "subtitleOn": "{name}, {looks} · on {computer}",
+      "subtitleNoLooksOn": "{name} · on {computer}",
+      "nothingChanges": "nothing changes until you choose",
+      "outOfDate": "out of date",
+      "appliesOn": "on {computer}",
+      "appliesElsewhere": "applies on another computer",
+      "otherDeviceNote": "Applies on {computer}, the computer this chat's turn runs from. Answer there to apply it; from here you can discard it.",
+      "otherDeviceNoteUnnamed": "Applies on the computer this chat's turn runs from. Answer there to apply it; from here you can discard it.",
+      "otherDevicePreview": "Preview shows on {computer}",
+      "otherDevicePreviewUnnamed": "Preview shows on the computer this chat's turn runs from",
+      "details": "Theme details",
+      "outdatedNote": "This theme changed after the agent proposed this. Ask again for a fresh preview.",
+      "planMode": "Plan mode: this change would have applied on the fly, so it waits for your answer here.",
+      "miniLabel": "{name}, {looks}",
+      "miniLabelLarge": "{name}, {looks}, large",
+      "splitCaption": "Dark top left, light bottom right",
+      "expand": "Expand preview",
+      "changes": "Changes",
+      "contrast": "Contrast",
+      "showInWindow": "Show in window",
+      "showHint": "Paints the whole window until you stop or answer.",
+      "takenOver": "Another preview took over the window.",
+      "forcedColors": "Windows contrast themes are on, so the window shows Damocles' own look and cannot show this proposal.",
+      "safeStart": "This run shows the default theme, so the window cannot show this proposal.",
+      "showing": "Showing in the window",
+      "stopShowing": "Stop showing",
+      "applying": "Applying…",
+      "answering": "Sending your answer…",
+      "answer": "Answer the theme preview",
+      "apply": "Apply",
+      "discard": "Discard",
+      "change": "Change…",
+      "noteLabel": "What should change?",
+      "notePlaceholder": "For example: less orange, darker panels",
+      "sendNote": "Send to agent",
+      "previewTitle": "{name} preview",
+      "lookShown": "Look shown",
+      "pick": {
+        "split": "Both",
+        "dark": "Dark",
+        "light": "Light"
+      },
+      "closePreview": "Close preview",
+      "previewNote": "Drawn from the theme's colors and fonts with sample content. Nothing changes until you choose on the card."
+    },
+    "shot": {
+      "title": "Send a screenshot of the window to the model?",
+      "subtitle": "ThemeRead asks to see the real window. Nothing is sent until you allow it.",
+      "details": "Screenshot details",
+      "alt": "Screenshot of this window, {width} by {height}",
+      "caption": "This window, {width} × {height}, taken just now",
+      "note": "Only this image is sent, once. It may show file names and chat text.",
+      "gone": "The window no longer holds this screenshot, so it cannot be sent. Deny it and ask again for a new one.",
+      "answer": "Answer the screenshot request",
+      "allow": "Allow",
+      "deny": "Deny"
+    },
+    "outcome": {
+      "applied": "Applied",
+      "kept": "Kept",
+      "reverted": "Reverted",
+      "discarded": "Discarded",
+      "changesRequested": "Changes requested",
+      "outdated": "Outdated",
+      "undone": "Undone",
+      "staged": "Draft ready",
+      "installed": "Installed",
+      "installCancelled": "Cancelled",
+      "installExpired": "Expired"
+    },
+    "result": {
+      "waiting": "Waiting for your answer on the preview card below the chat.",
+      "waitingShot": "Waiting for your answer on the card below the chat.",
+      "screenshotArg": "screenshot",
+      "undoArg": "undo",
+      "named": "{name} ({looks})",
+      "applied": "Applied: {name}.",
+      "appliedSub": "You can undo it from Settings › Appearance or with Undo Theme Change.",
+      "kept": "Kept after the {n}-second check. | Kept after the {n}-second check.",
+      "keptSub": "Applied on the fly (Settings › Appearance › Theme changes from the agent).",
+      "reverted": "Reverted.",
+      "revertedSub": "The window is back to how it looked before the change.",
+      "discarded": "Discarded. Nothing changed.",
+      "changesRequested": "Changes requested:",
+      "changesNote": "“{note}”",
+      "changesRequestedSub": "The draft stays; nothing changed in the window.",
+      "droppedCss": "{n} part of the theme's CSS was removed. | {n} parts of the theme's CSS were removed.",
+      "outdated": "Out of date: {name} changed after the agent proposed this.",
+      "outdatedSub": "The draft was discarded; nothing changed.",
+      "undone": "Undone: {change}.",
+      "staged": "Draft ready: {name}.",
+      "stagedSub": "Nothing changed in the window.",
+      "installed": "Installed “{name}”.",
+      "installedSub": "Nothing changed on screen. Pick it in Settings › Appearance or ask the agent to switch.",
+      "installedArrangement": "Its window arrangement applies when you pick it.",
+      "installCancelled": "Install cancelled.",
+      "installCancelledSub": "Nothing was installed.",
+      "installExpired": "The install expired.",
+      "installExpiredSub": "It waited over an hour for an answer, so nothing was installed.",
+      "installArg": "install, {host}",
+      "waitingInstall": "Waiting for your answer on the install card below the chat.",
+      "undoRefused": "Not undone: {actor} {change} after it.",
+      "actorUser": "you",
+      "actorChat": "the chat “{title}”",
+      "sent": "Sent one screenshot.",
+      "sentSub": "The image went to the model once.",
+      "sentLabel": "Sent",
+      "denied": "Screenshot denied.",
+      "deniedSub": "The agent sees the drawn preview only.",
+      "deniedLabel": "Denied",
+      "notSent": "Screenshot not sent.",
+      "notSentSub": "Nobody answered its card in time, or the window no longer held the image.",
+      "notSentLabel": "Not sent"
+    }
+  },
+  "trusted": {
+    "checkingVisible": "This card must be fully visible before you can answer. Scroll it into view or move what covers it."
+  },
+  "themeInstall": {
+    "title": "Install “{name}”?",
+    "details": "Theme contents",
+    "miniLabel": "{name}, {looks}",
+    "miniLooks": {
+      "split": "dark and light looks",
+      "dark": "dark look",
+      "light": "light look"
+    },
+    "splitCaption": "Dark top left, light bottom right",
+    "looks": {
+      "split": "Dark and light",
+      "dark": "Dark",
+      "light": "Light"
+    },
+    "look": {
+      "dark": "Dark",
+      "light": "Light"
+    },
+    "lookTitle": {
+      "dark": "Dark",
+      "light": "Light"
+    },
+    "source": {
+      "file": "From the file {source}",
+      "vscodeFile": "A VS Code theme, from the file {source}",
+      "url": "From a link on {source}",
+      "link": "From a damocles:// link on {source}",
+      "agent": "From a link on {source}",
+      "store": "From the community store. The file matched the signed list.",
+      "storeBy": "From the community store, by {author}. The file matched the signed list."
+    },
+    "vscode": "A VS Code theme becomes a Damocles theme: its colors map onto Damocles' tokens and its syntax colors onto the six code colors; anything missing comes from Damocles' own look of that kind.",
+    "clash": {
+      "legend": "A theme named {name} is installed.",
+      "group": "What to do with the installed theme",
+      "keepBoth": "Keep both",
+      "keepBothHint": "Installs as “{name}”.",
+      "replace": "Replace",
+      "replaceHint": "Replaces the installed one. Your picks, schedule rules and project looks that use it keep working.",
+      "replaceKeepsCopy": "Replaces the installed one. Your edited version is kept as “{name}”.",
+      "builtin": "A built-in theme is never replaced."
+    },
+    "facts": {
+      "author": "Author",
+      "license": "License",
+      "looks": "Looks",
+      "colors": "Colors",
+      "fonts": "Fonts",
+      "wallpapers": "Wallpapers",
+      "css": "Custom CSS",
+      "characters": "Characters",
+      "arrangement": "Window arrangement",
+      "size": "Size"
+    },
+    "colorsNote": "8 main colors per look; the rest is derived.",
+    "fonts": {
+      "none": "Damocles' own",
+      "bundled": "{family}, {role} ({license}, bundled)",
+      "installed": "{family}, {role} (an installed font by name; it shows only on a computer that has it)",
+      "licenseText": "license text included",
+      "noLicense": "no license given",
+      "role": {
+        "ui": "interface",
+        "mono": "code"
+      }
+    },
+    "wallpapers": {
+      "still": "Still image, {format}, {width} × {height}, {size}",
+      "movingTimed": "Moving, {format}, {seconds} s, {size}",
+      "movingFrames": "Moving, {format}, {n} frame, {size} | Moving, {format}, {n} frames, {size}",
+      "panels": "{look} look: {panels}",
+      "span": "{look} look: one image across {panels}",
+      "seconds": "{seconds} s",
+      "pending": "Checking every frame for flashing…",
+      "clear": "No flashing found.",
+      "unchecked": "Not checked for flashing, so the window shows its still frame until a check passes.",
+      "blocked": "Blocked: flashes",
+      "flaggedAt": "It flashes more than three times a second from {time}, so it arrives blocked and the window shows its still frame.",
+      "flagged": "It flashes more than three times a second, so it arrives blocked and the window shows its still frame.",
+      "checking": "Checking every frame for flashing… {percent}%",
+      "progressLabel": "Flash check progress",
+      "warning": "Seizure warning: flashing images can trigger seizures in people with photosensitive epilepsy. Allow it only if no one who sees this screen is at risk.",
+      "allow": "Allow flashing for this file",
+      "allowed": "Flashing is allowed for this file on this computer. Reduce motion still pauses it.",
+      "allowedElsewhere": "Flashing is allowed for this file on {computer}. Reduce motion still pauses it.",
+      "allowedElsewhereUnnamed": "Flashing is allowed for this file on the computer it installs on. Reduce motion still pauses it.",
+      "allowElsewhere": "Only the computer it installs on can allow flashing for this file.",
+      "movingNote": "Moving wallpapers pause in the background, on battery and under Reduce motion."
+    },
+    "panel": {
+      "sidebar": "sidebar",
+      "chat": "chat",
+      "editor": "editor",
+      "terminal": "terminal",
+      "titlebar": "title bar"
+    },
+    "css": {
+      "none": "None",
+      "present": "Present in {n} region: {regions}. Cards like this one and Settings never get it. | Present in {n} regions: {regions}. Cards like this one and Settings never get it.",
+      "dropped": "Removed when installed"
+    },
+    "characters": "{name}, {n} character | {name}, {n} characters",
+    "arrangement": {
+      "present": "Present: {parts}.",
+      "presentPlain": "Present: the sidebar's width and sections.",
+      "slot": {
+        "main": "{pane} in the main place",
+        "side": "{pane} on the right",
+        "bottom": "{pane} below"
+      },
+      "hidden": "{pane} hidden",
+      "pane": {
+        "chat": "chat",
+        "editor": "editor",
+        "terminal": "terminal"
+      },
+      "use": "Use this theme's window arrangement",
+      "on": "On: the arrangement applies when you pick this theme.",
+      "off": "Off: your arrangement stays as it is."
+    },
+    "contrast": "Contrast",
+    "warnings": "Notes",
+    "install": "Install",
+    "installing": "Installing…",
+    "installAs": "Install as “{name}”",
+    "replaceInstall": "Replace and install",
+    "update": "Update",
+    "updateTitle": "Update “{name}” to {version}?",
+    "yourEdits": "Your own edits to this theme are kept as a copy named “{name}”.",
+    "otherDevice": "It installs on {computer}, not on this computer. Only {computer} can install it; you can cancel it here.",
+    "otherDeviceUnnamed": "It installs on another computer. Only that computer can install it; you can cancel it here.",
+    "cancel": "Cancel"
   }
 }

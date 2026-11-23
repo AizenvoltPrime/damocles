@@ -134,7 +134,7 @@ const designOptions = computed<Option[]>(() => [
 const options = computed(() => (props.design ? designOptions.value : genericOptions.value));
 
 // The design rows share the list's two columns, so every label and value lines up; a narrow dock stacks each row.
-const ROW = 'col-span-full grid grid-cols-subgrid items-baseline gap-y-1 border-t border-(--d-border) px-3 py-2.25 first:border-t-0 animate-[d-swap-in_.28s_var(--ease-out)_both]';
+const ROW = 'col-span-full grid grid-cols-subgrid items-baseline gap-y-1 border-t border-(--d-border) px-3 py-2.25 first:border-t-0 d-swap-in';
 const ROW_LABEL = 'flex items-center gap-1.5 text-10.5 font-semibold tracking-[.06em] whitespace-nowrap text-(--d-faint-text) uppercase';
 const ROW_ICON = 'size-3.25 flex-none text-(--d-design)';
 
@@ -324,7 +324,7 @@ onUnmounted(() => {
             class="@container"
             data-testid="rewind-design-rows"
           >
-            <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 overflow-hidden rounded-10 border border-[color-mix(in_srgb,var(--d-design)_22%,var(--d-border))] bg-(--d-bg) text-12.5 @max-[24rem]:grid-cols-1">
+            <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 overflow-hidden rounded-10 border border-[color-mix(in_srgb,var(--d-design-fill)_22%,var(--d-border))] bg-(--d-bg) text-12.5 @max-[24rem]:grid-cols-1">
               <div
                 :class="ROW"
                 style="animation-delay: 40ms"
@@ -372,7 +372,7 @@ onUnmounted(() => {
                     <span
                       v-for="n in 2"
                       :key="n"
-                      class="h-5.5 w-24 animate-[d-pulse_1.4s_ease-in-out_infinite] rounded-full bg-(--d-design)/12"
+                      class="h-5.5 w-24 d-pulsing rounded-full bg-(--d-design-fill)/12"
                     />
                   </span>
                   <template v-else-if="designDecisionsAfter?.length">
@@ -384,7 +384,7 @@ onUnmounted(() => {
                       <li
                         v-for="(decision, index) in designDecisionsAfter"
                         :key="decision.id"
-                        class="flex min-w-0 animate-[d-pop_.26s_var(--ease-spring)_both]"
+                        class="flex min-w-0 d-pop-spring"
                         :style="{ animationDelay: `${140 + Math.min(index, 8) * 35}ms` }"
                       >
                         <DesignDecisionChip
@@ -565,7 +565,7 @@ onUnmounted(() => {
           >
             <span
               class="mt-px flex size-5 flex-none items-center justify-center rounded-md border font-mono text-11"
-              :class="index === selectedIndex && !isDisabled(option) ? 'border-(--d-accent)' : 'border-(--d-border2)'"
+              :class="index === selectedIndex && !isDisabled(option) ? 'border-(--d-accent-fill)' : 'border-(--d-border2)'"
               aria-hidden="true"
             >{{ option.shortcut }}</span>
             <span class="min-w-0 flex-1">
@@ -575,7 +575,7 @@ onUnmounted(() => {
           </button>
         </div>
 
-        <p class="flex items-start gap-2 rounded-10 bg-[color-mix(in_srgb,var(--d-warning)_10%,transparent)] px-3 py-2.25 text-xs text-(--d-warning-text)">
+        <p class="flex items-start gap-2 rounded-10 bg-[color-mix(in_srgb,var(--d-warning-fill)_10%,transparent)] px-3 py-2.25 text-xs text-(--d-warning-text)">
           <TriangleAlert
             class="size-3.25 mt-0.5 flex-none"
             aria-hidden="true"

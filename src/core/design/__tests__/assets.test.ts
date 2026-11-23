@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createVsCodeFileConfinement } from '../../../vscode/platform/file-confinement';
-import { AssetRefusedError, importAsset, importAssetFile, importAssetUrl, MAX_ASSET_BYTES, sniffAsset } from '../assets';
+import { AssetRefusedError, importAsset, importAssetFile, importAssetUrl, MAX_ASSET_BYTES, readAssetSource, sniffAsset } from '../assets';
 import { ProjectFiles } from '../citations';
 import { resolveReadPath, resolveToCwd } from '../../pi-session/tools/search-tools';
 
@@ -252,5 +252,64 @@ describe('ImportAsset from a file outside the project (D101)', () => {
       throw err;
     }
     await expect(importAssetFile(path.join(photos, 'link.png'), photos, folder)).rejects.toThrow(/not a regular file/);
+  });
+});
+
+describe('readAssetSource', () => {
+  const temp: string[] = [];
+  afterEach(() => {
+    for (const dir of temp.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+  const fileOf = (bytes: Uint8Array): string => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-asset-source-'));
+    temp.push(dir);
+    const file = path.join(dir, 'image.png');
+    fs.writeFileSync(file, bytes);
+    return file;
+  };
+
+  it('reserves the file\'s own size and one byte, not the cap, however large the cap is', async () => {
+    const bytes = new Uint8Array(300).fill(7);
+    const file = fileOf(bytes);
+    const reserved = vi.spyOn(Buffer, 'allocUnsafe');
+    const read = await readAssetSource(file, 'image.png', 40 * 1024 * 1024);
+    expect(reserved.mock.calls.map(([size]) => size)).toEqual([301]);
+    expect(new Uint8Array(read)).toEqual(bytes);
+  });
+
+  it('refuses a file that grew after its size was read, and one past the cap from its size alone', async () => {
+    const file = fileOf(new Uint8Array(300));
+    const open = fs.promises.open.bind(fs.promises);
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+      const handle = await open(...args);
+      const stat = handle.stat.bind(handle) as (options: { bigint: true }) => Promise<fs.BigIntStats>;
+      // the size as it was before the file grew by 100 bytes
+      vi.spyOn(handle, 'stat').mockImplementation((async (options: { bigint: true }) => Object.assign(await stat(options), { size: 200n })) as never);
+      return handle;
+    });
+    await expect(readAssetSource(file, 'image.png', 1024)).rejects.toThrow('image.png changed while it was read');
+    vi.restoreAllMocks();
+    const reserved = vi.spyOn(Buffer, 'allocUnsafe');
+    await expect(readAssetSource(file, 'image.png', 299)).rejects.toBeInstanceOf(AssetRefusedError);
+    expect(reserved).not.toHaveBeenCalled();
+  });
+});
+
+describe('sniffAsset on an ISO BMFF file', () => {
+  const ftyp = (size: number, major: string, ...compatible: string[]): Uint8Array => {
+    const bytes = new Uint8Array(size);
+    new DataView(bytes.buffer).setUint32(0, size);
+    bytes.set([...'ftyp', ...major, '\0', '\0', '\0', '\0', ...compatible.join('')].map((char) => char.charCodeAt(0)), 4);
+    return bytes;
+  };
+
+  it('names an AVIF by its major or a compatible brand, read from the first 1445 bytes only', () => {
+    expect(sniffAsset(ftyp(32, 'avif'))).toBe('avif');
+    expect(sniffAsset(ftyp(32, 'mif1', 'miaf', 'avis'))).toBe('avif');
+    expect(sniffAsset(ftyp(32, 'isom', 'mp41'))).toBeUndefined();
+    const padded = ftyp(8 * 1024 * 1024, 'isom');
+    padded.set([...'avif'].map((char) => char.charCodeAt(0)), 4096);
+    expect(sniffAsset(padded)).toBeUndefined();
   });
 });

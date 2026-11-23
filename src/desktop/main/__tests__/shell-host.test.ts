@@ -49,13 +49,14 @@ describe('shell page', () => {
   });
 
   it('locks script-src to a fresh nonce and allows no inline script or remote origin', () => {
-    const first = shellHtml({ kind: 'dark', css: ':root{--d-text:#ccc}', reducedMotion: false, fileIconTheme: 'material' }, 'en');
-    const second = shellHtml({ kind: 'light', css: '', reducedMotion: true, fileIconTheme: 'minimal' }, 'el');
+    const first = shellHtml({ kind: 'dark', css: ':root{--d-text:#ccc}', trustedCss: '[data-trusted]{--d-text:#ccc}', reducedMotion: false, fileIconTheme: 'material' }, 'en');
+    const second = shellHtml({ kind: 'light', css: '', trustedCss: '', reducedMotion: true, fileIconTheme: 'minimal' }, 'el');
     const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(first)?.[1] ?? '';
     const nonce = /'nonce-([^']+)'/.exec(csp)?.[1];
     expect(nonce).toBeDefined();
-    // worker-src: Monaco's module workers from the built shell assets only, never blob: or another origin.
-    expect(csp).toBe(`default-src 'none'; style-src app://damocles 'unsafe-inline'; script-src 'nonce-${nonce}'; worker-src app://damocles/desktop-shell/assets/; font-src app://damocles; img-src app://damocles data:; base-uri 'none'; form-action 'none';`);
+    // worker-src: Monaco's module workers from the built shell assets only, never blob: or another origin; media-src: a video
+    // wallpaper's blob from app:// only
+    expect(csp).toBe(`default-src 'none'; style-src app://damocles 'unsafe-inline'; script-src 'nonce-${nonce}'; worker-src app://damocles/desktop-shell/assets/; font-src app://damocles; img-src app://damocles data:; media-src app://damocles; base-uri 'none'; form-action 'none';`);
     expect(first).toContain(`<script nonce="${nonce}" type="module" src="app://damocles/desktop-shell/assets/index.js"></script>`);
     expect(first).toContain('<body class="vscode-dark"');
     expect(first).toContain('<style id="damocles-host-theme">:root{--d-text:#ccc}</style>');
@@ -173,6 +174,16 @@ describe('ShellHost', () => {
       requestOverlay: vi.fn(async () => ({ kind: 'dismissed' })),
       openAppMenu: vi.fn(),
       setContentBounds: vi.fn(),
+      setThemeDockBounds: vi.fn(),
+      setPageMotion: vi.fn(),
+      setTimeZone: vi.fn(),
+      endThemeDockPeek: vi.fn(),
+      useMyTheme: vi.fn(),
+      keepThemeChanges: vi.fn(async () => undefined),
+      revertThemeChanges: vi.fn(async () => undefined),
+      stopShowingProposal: vi.fn(async () => undefined),
+      projectLook: vi.fn(async () => ({ kind: 'cancelled' })),
+      rendererGone: vi.fn(),
       setSidebarLayout: vi.fn(),
       setGridSizes: vi.fn(),
       setFocusedPart: vi.fn(),
@@ -201,6 +212,85 @@ describe('ShellHost', () => {
     await selectChat(own, 's-1');
     expect(actions.selectChat).toHaveBeenCalledWith('s-1');
     expect(lines.filter((line) => line.startsWith('[shell] rejected'))).toHaveLength(3);
+  });
+
+  // Covering or minimizing the window makes Chromium mark the page hidden; the page reports it, and main pauses moving wallpapers.
+  it('passes the page\'s visibility and reduced motion to main from the window page only, refusing anything but two booleans', () => {
+    host();
+    const report = ipc.listeners.get(SHELL_CHANNELS.pageMotion)!;
+    report({ sender: { id: 2 }, senderFrame: { url: SHELL_PAGE_URL, parent: null } }, { visible: false, reducedMotion: false });
+    report(own, { visible: 'hidden', reducedMotion: false });
+    report(own, null);
+    expect(actions.setPageMotion).not.toHaveBeenCalled();
+    report(own, { visible: false, reducedMotion: true, extra: 1 });
+    expect(actions.setPageMotion).toHaveBeenCalledWith({ visible: false, reducedMotion: true });
+    expect(lines.filter((line) => line.includes('malformed page motion'))).toHaveLength(2);
+  });
+
+  // Main evaluates theme schedules in the zone the page's Intl resolves, which follows the OS.
+  it('passes the page\'s time zone to main from the window page only, refusing a zone Intl does not know', () => {
+    host();
+    const report = ipc.listeners.get(SHELL_CHANNELS.timeZone)!;
+    report({ sender: { id: 2 }, senderFrame: { url: SHELL_PAGE_URL, parent: null } }, 'Europe/Athens');
+    report(own, 'Mars/Olympus');
+    report(own, { zone: 'Europe/Athens' });
+    expect(actions.setTimeZone).not.toHaveBeenCalled();
+    report(own, 'America/New_York');
+    expect(actions.setTimeZone).toHaveBeenCalledWith('America/New_York');
+    expect(lines.filter((line) => line.includes('time zone Intl does not know'))).toHaveLength(2);
+  });
+
+  const foreign = { sender: { id: 2 }, senderFrame: { url: SHELL_PAGE_URL, parent: null } };
+
+  it.each([
+    ['useMyTheme', SHELL_CHANNELS.useMyTheme],
+    ['keepThemeChanges', SHELL_CHANNELS.keepThemeChanges],
+    ['revertThemeChanges', SHELL_CHANNELS.revertThemeChanges],
+    ['stopShowingProposal', SHELL_CHANNELS.stopShowingProposal],
+  ] as const)('runs %s for the window page only', async (action, channel) => {
+    host();
+    const call = ipc.handlers.get(channel)!;
+    await expect(call(foreign)).rejects.toThrow('Rejected');
+    expect(actions[action]).not.toHaveBeenCalled();
+    await call(own);
+    expect(actions[action]).toHaveBeenCalledOnce();
+  });
+
+  it("opens a project's look for the window page only, refusing a key that is no id", async () => {
+    host();
+    const call = ipc.handlers.get(SHELL_CHANNELS.projectLook)!;
+    await expect(call(foreign, 'c:/work/app')).rejects.toThrow('Rejected');
+    await expect(call(own, 42)).rejects.toThrow('Malformed id');
+    await expect(call(own, '')).rejects.toThrow('Malformed id');
+    await expect(call(own, 'k'.repeat(MAX_ID_LENGTH + 1))).rejects.toThrow('Malformed id');
+    expect(actions.projectLook).not.toHaveBeenCalled();
+    expect(await call(own, 'c:/work/app')).toEqual({ kind: 'cancelled' });
+    expect(actions.projectLook).toHaveBeenCalledWith('c:/work/app');
+  });
+
+  it("ends the theme editor's peek for the window page only, and only for false", async () => {
+    host();
+    const call = ipc.handlers.get(SHELL_CHANNELS.themeDockPeek)!;
+    await expect(call(foreign, false)).rejects.toThrow('Rejected');
+    await expect(call(own, true)).rejects.toThrow('Malformed peek');
+    await expect(call(own, undefined)).rejects.toThrow('Malformed peek');
+    expect(actions.endThemeDockPeek).not.toHaveBeenCalled();
+    await call(own, false);
+    expect(actions.endThemeDockPeek).toHaveBeenCalledOnce();
+  });
+
+  it("takes the theme editor dock's slot from the window page only, in DIPs at the page's zoom, and null as no slot", () => {
+    host();
+    const report = ipc.listeners.get(SHELL_CHANNELS.themeDockBounds)!;
+    report(foreign, { x: 0, y: 0, width: 10, height: 10 });
+    report(own, { x: 0, y: 0, width: 'wide', height: 10 });
+    report(own, 'full');
+    expect(actions.setThemeDockBounds).not.toHaveBeenCalled();
+    expect(lines.filter((line) => line.includes('malformed theme dock bounds'))).toHaveLength(2);
+    report(own, { x: 800, y: 40, width: 400, height: 600 });
+    expect(actions.setThemeDockBounds).toHaveBeenLastCalledWith({ x: 1200, y: 60, width: 600, height: 900 });
+    report(own, null);
+    expect(actions.setThemeDockBounds).toHaveBeenLastCalledWith(undefined);
   });
 
   it('shows the sidebar for the page only, and never toggles it', async () => {
@@ -443,6 +533,24 @@ describe('ShellHost', () => {
     expect(contents.send).toHaveBeenCalledWith(SHELL_CHANNELS.updateState, snapshot);
   });
 
+  // The shell's custom CSS reaches it only over this channel, so a theme given before the page loads, or before a reload, must arrive.
+  it('gives each loaded document the latest theme, also one given before it loaded', () => {
+    actions.state = vi.fn(() => ({ projects: [], selected: {} }) as never);
+    const shell = host();
+    const first = { kind: 'dark', css: ':root{}', customCss: '@layer damocles-user{}' } as never;
+    const second = { kind: 'light', css: ':root{}', customCss: '' } as never;
+    shell.sendTheme(first);
+    expect(contents.send).not.toHaveBeenCalledWith(SHELL_CHANNELS.theme, first);
+    contents.emit('did-finish-load');
+    expect(contents.send).toHaveBeenCalledWith(SHELL_CHANNELS.theme, first);
+    shell.sendTheme(second);
+    contents.emit('did-navigate', {}, SHELL_PAGE_URL, 200, 'OK');
+    contents.send.mockClear();
+    contents.emit('did-finish-load');
+    expect(contents.send).toHaveBeenCalledWith(SHELL_CHANNELS.theme, second);
+    expect(contents.send).not.toHaveBeenCalledWith(SHELL_CHANNELS.theme, first);
+  });
+
   // A reload by any route (DevTools, Ctrl+R) commits a new document whose listeners exist only once it has loaded.
   it('sends nothing and asks for no flush between a reload committing and the reloaded page loading', () => {
     actions.state = vi.fn(() => ({ projects: [], selected: {} }) as never);
@@ -569,6 +677,10 @@ describe('ShellHost', () => {
     crash();
     expect(contents.loadURL).toHaveBeenCalledTimes(4);
     expect(gaveUp).toBe(1);
+    // every crash reaches the theme crash loop, which counts only those under a custom look
+    expect(actions.rendererGone).toHaveBeenCalledTimes(4);
+    contents.emit('render-process-gone', {}, { reason: 'clean-exit', exitCode: 0 });
+    expect(actions.rendererGone).toHaveBeenCalledTimes(4);
     shell.restart();
     expect(contents.loadURL).toHaveBeenCalledTimes(5);
   });

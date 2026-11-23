@@ -754,7 +754,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                 spellcheck="false"
                 :aria-label="t('remote.connect.search')"
                 :placeholder="t('remote.connect.searchPlaceholder')"
-                class="h-9 rounded-lg border-(--d-border2) bg-(--d-input) pr-2.5 pl-8.5 text-13 text-(--d-text) focus-visible:border-(--d-accent) focus-visible:ring-3 focus-visible:ring-(--d-accent-soft) focus-visible:ring-offset-0"
+                class="h-9 rounded-lg border-(--d-border2) bg-(--d-input) pr-2.5 pl-8.5 text-13 text-(--d-text) focus-visible:border-(--d-accent-fill) focus-visible:ring-3 focus-visible:ring-(--d-accent-soft) focus-visible:ring-offset-0"
                 @update:model-value="onQuery"
                 @keydown="onSearchKeydown"
               />
@@ -764,7 +764,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                 v-if="refused"
                 role="alert"
                 data-testid="new-host-refused"
-                class="rounded-8 bg-(--d-danger)/12 px-2.5 py-2 text-12 text-(--d-danger-text)"
+                class="rounded-8 bg-(--d-danger-fill)/12 px-2.5 py-2 text-12 text-(--d-danger-text)"
               >
                 {{ refusalText({ refused: visibleText(refused.refused), reason: refused.reason }, t) }}
               </p>
@@ -777,7 +777,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                   type="button"
                   data-connect-card
                   data-testid="new-host-card"
-                  class="host-card host-card-new flex min-w-0 items-center gap-3 rounded-xl border border-dashed border-(--d-accent) bg-(--d-panel) px-3 py-2.5 text-left transition-colors hover:bg-(--d-hover) focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)] focus-visible:outline-none"
+                  class="host-card host-card-new flex min-w-0 items-center gap-3 rounded-xl border border-dashed border-(--d-accent-fill) bg-(--d-panel) px-3 py-2.5 text-left transition-colors hover:bg-(--d-hover) focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)] focus-visible:outline-none"
                   @click="openNameStep({ kind: 'input', input: parsed!.input, destination: newHost.destinationLabel }, newHost.prefillName, newHost.nameCheck.ok ? undefined : newHost.nameCheck)"
                   @keydown="onCardKeydown($event)"
                 >
@@ -822,7 +822,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                   <div
                     v-for="(saved, index) in shownHosts"
                     :key="saved.hostId"
-                    class="host-card flex min-w-0 items-stretch rounded-xl border border-(--d-border) bg-(--d-panel) transition-colors hover:border-(--d-border2) hover:bg-(--d-hover) has-focus-visible:border-(--d-accent) has-focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)]"
+                    class="host-card flex min-w-0 items-stretch rounded-xl border border-(--d-border) bg-(--d-panel) transition-colors hover:border-(--d-border2) hover:bg-(--d-hover) has-focus-visible:border-(--d-accent-fill) has-focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)]"
                     :style="staggered(index)"
                     :data-host-id="saved.hostId"
                   >
@@ -901,7 +901,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                     data-connect-card
                     data-testid="ssh-alias-card"
                     :aria-label="t('remote.connect.aliasCard', { alias })"
-                    class="host-card d-press flex min-w-0 items-center gap-3 rounded-xl border border-(--d-border) bg-(--d-panel) px-3 py-2.5 text-left transition-colors hover:border-(--d-border2) hover:bg-(--d-hover) focus-visible:border-(--d-accent) focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)] focus-visible:outline-none"
+                    class="host-card d-press flex min-w-0 items-center gap-3 rounded-xl border border-(--d-border) bg-(--d-panel) px-3 py-2.5 text-left transition-colors hover:border-(--d-border2) hover:bg-(--d-hover) focus-visible:border-(--d-accent-fill) focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)] focus-visible:outline-none"
                     :style="staggered(shownHosts.length + index)"
                     @click="start({ alias, name: alias }, { name: alias, destination: alias, kind: 'ssh' })"
                     @keydown="onCardKeydown($event)"
@@ -933,7 +933,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                   <div
                     v-for="(card, index) in shownDistros"
                     :key="card.info.distro"
-                    class="host-card flex min-w-0 items-stretch rounded-xl border border-(--d-border) bg-(--d-panel) transition-colors hover:border-(--d-border2) hover:bg-(--d-hover) has-focus-visible:border-(--d-accent) has-focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)]"
+                    class="host-card flex min-w-0 items-stretch rounded-xl border border-(--d-border) bg-(--d-panel) transition-colors hover:border-(--d-border2) hover:bg-(--d-hover) has-focus-visible:border-(--d-accent-fill) has-focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)]"
                     :style="staggered(shownHosts.length + shownAliases.length + index)"
                   >
                     <!-- a card-shaped button named by its content, as a saved host's -->
@@ -1044,7 +1044,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                       type="button"
                       data-connect-card
                       data-testid="devcontainer-folder-card"
-                      class="host-card d-press flex min-w-0 items-center gap-3 rounded-xl border border-(--d-border) bg-(--d-panel) px-3 py-2.5 text-left transition-colors hover:border-(--d-border2) hover:bg-(--d-hover) focus-visible:border-(--d-accent) focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)] focus-visible:outline-none"
+                      class="host-card d-press flex min-w-0 items-center gap-3 rounded-xl border border-(--d-border) bg-(--d-panel) px-3 py-2.5 text-left transition-colors hover:border-(--d-border2) hover:bg-(--d-hover) focus-visible:border-(--d-accent-fill) focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)] focus-visible:outline-none"
                       :style="staggered(cardsBefore)"
                       @click="openContainerFlow('devcontainer')"
                       @keydown="onCardKeydown($event)"
@@ -1064,7 +1064,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                       type="button"
                       data-connect-card
                       data-testid="attach-container-card"
-                      class="host-card d-press flex min-w-0 items-center gap-3 rounded-xl border border-(--d-border) bg-(--d-panel) px-3 py-2.5 text-left transition-colors hover:border-(--d-border2) hover:bg-(--d-hover) focus-visible:border-(--d-accent) focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)] focus-visible:outline-none"
+                      class="host-card d-press flex min-w-0 items-center gap-3 rounded-xl border border-(--d-border) bg-(--d-panel) px-3 py-2.5 text-left transition-colors hover:border-(--d-border2) hover:bg-(--d-hover) focus-visible:border-(--d-accent-fill) focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)] focus-visible:outline-none"
                       :style="staggered(cardsBefore + 1)"
                       @click="openContainerFlow('attach')"
                       @keydown="onCardKeydown($event)"
@@ -1084,7 +1084,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                   <div
                     v-for="(saved, index) in shownContainers"
                     :key="saved.hostId"
-                    class="host-card flex min-w-0 items-stretch rounded-xl border border-(--d-border) bg-(--d-panel) transition-colors hover:border-(--d-border2) hover:bg-(--d-hover) has-focus-visible:border-(--d-accent) has-focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)]"
+                    class="host-card flex min-w-0 items-stretch rounded-xl border border-(--d-border) bg-(--d-panel) transition-colors hover:border-(--d-border2) hover:bg-(--d-hover) has-focus-visible:border-(--d-accent-fill) has-focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)]"
                     :style="staggered(cardsBefore + (filter === '' ? 2 : 0) + index)"
                   >
                     <button
@@ -1325,7 +1325,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                   data-connect-card
                   data-testid="container-where-local"
                   :data-view-focus="containerFlow.via === undefined || undefined"
-                  class="host-card d-press flex min-w-0 items-center gap-3 rounded-xl border border-(--d-border) bg-(--d-panel) px-3 py-2.5 text-left transition-colors hover:border-(--d-border2) hover:bg-(--d-hover) focus-visible:border-(--d-accent) focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)] focus-visible:outline-none"
+                  class="host-card d-press flex min-w-0 items-center gap-3 rounded-xl border border-(--d-border) bg-(--d-panel) px-3 py-2.5 text-left transition-colors hover:border-(--d-border2) hover:bg-(--d-hover) focus-visible:border-(--d-accent-fill) focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)] focus-visible:outline-none"
                   :style="staggered(0)"
                   @click="chooseWhere()"
                   @keydown="onCardKeydown($event)"
@@ -1354,7 +1354,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                   data-testid="container-where-host"
                   :data-host-id="saved.hostId"
                   :data-view-focus="containerFlow.via === saved.hostId || undefined"
-                  class="host-card d-press flex min-w-0 items-center gap-3 rounded-xl border border-(--d-border) bg-(--d-panel) px-3 py-2.5 text-left transition-colors hover:border-(--d-border2) hover:bg-(--d-hover) focus-visible:border-(--d-accent) focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)] focus-visible:outline-none"
+                  class="host-card d-press flex min-w-0 items-center gap-3 rounded-xl border border-(--d-border) bg-(--d-panel) px-3 py-2.5 text-left transition-colors hover:border-(--d-border2) hover:bg-(--d-hover) focus-visible:border-(--d-accent-fill) focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)] focus-visible:outline-none"
                   :style="staggered(index + 1)"
                   @click="chooseWhere(saved)"
                   @keydown="onCardKeydown($event)"
@@ -1410,7 +1410,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                 :aria-labelledby="attachUserLabel"
                 :options="[{ value: 'configured', label: t('remote.container.userConfigured') }, { value: 'root', label: t('remote.container.userRoot') }]"
                 class="border border-(--d-border2) bg-(--d-input)"
-                indicator-class="text-(--d-card)"
+                indicator-class="[--tone:var(--d-card)]"
                 selected-class="text-(--d-accent-text)"
               />
               <span class="flex-1" />
@@ -1452,7 +1452,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                 role="alert"
                 data-testid="attach-failure"
                 :data-code="attachFailure.code"
-                class="timeline-grow flex flex-col gap-1.5 rounded-8 bg-(--d-danger)/12 px-2.5 py-2 text-12 text-(--d-danger-text)"
+                class="timeline-grow flex flex-col gap-1.5 rounded-8 bg-(--d-danger-fill)/12 px-2.5 py-2 text-12 text-(--d-danger-text)"
               >
                 <p>{{ attachFailure.text }}</p>
                 <pre
@@ -1482,7 +1482,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                   data-connect-card
                   data-testid="running-container"
                   :data-container-id="container.id"
-                  class="host-card d-press flex min-w-0 items-center gap-3 rounded-xl border border-(--d-border) bg-(--d-panel) px-3 py-2.5 text-left transition-colors hover:border-(--d-border2) hover:bg-(--d-hover) focus-visible:border-(--d-accent) focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)] focus-visible:outline-none"
+                  class="host-card d-press flex min-w-0 items-center gap-3 rounded-xl border border-(--d-border) bg-(--d-panel) px-3 py-2.5 text-left transition-colors hover:border-(--d-border2) hover:bg-(--d-hover) focus-visible:border-(--d-accent-fill) focus-visible:shadow-[0_0_0_3px_var(--d-accent-soft)] focus-visible:outline-none"
                   :style="staggered(index)"
                   @click="attachTo(container)"
                   @keydown="onCardKeydown($event)"

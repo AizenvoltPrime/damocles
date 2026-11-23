@@ -33,7 +33,7 @@ function offeredImageModel(runtime: ImageRuntime | null, modelId: string): Image
   return model && isOfferedImageModel(model) ? model : undefined;
 }
 
-export type ImageAvailability = { available: true } | { available: false; reason: Exclude<ToolGroupUnavailableReason, 'noForgeAccount' | 'forgeServersUnread'> };
+export type ImageAvailability = { available: true } | { available: false; reason: Extract<ToolGroupUnavailableReason, 'noModel' | 'unknownModel' | 'noOpenRouterKey'> };
 
 /**
  * Whether GenerateImage can run with this model id: the id resolves in pi's image catalog, Damocles offers
@@ -179,6 +179,40 @@ async function createFileAtomically(filePath: string, bytes: Buffer, signal: Abo
   }
 }
 
+/** One generated image as the model declared it (`image/jpg` read as `image/jpeg`), or why there is none; `usage` is billed either way. */
+export type ImageGeneration =
+  | { readonly ok: true; readonly model: string; readonly mimeType: string; readonly data: string; readonly usage?: Usage }
+  | { readonly ok: false; readonly configured: boolean; readonly error: string; readonly usage?: Usage };
+
+/**
+ * Generates one image from `prompt` with the offered model `modelId` and nothing else: no file is written. `signal` reaches the
+ * HTTP request. Never log the prompt or the provider's response.
+ */
+export async function generateImage(runtime: ImageRuntime | null, modelId: string, prompt: string, signal: AbortSignal | undefined): Promise<ImageGeneration> {
+  const model = modelId ? offeredImageModel(runtime, modelId) : undefined;
+  if (!runtime || !model) return { ok: false, configured: false, error: 'Image generation is not configured: choose an OpenRouter image model in Settings.' };
+  // An abortableTool wrapper would answer first and drop the usage of a response that landed as the turn was aborted.
+  const context: ImagesContext = { input: [{ type: 'text', text: prompt }] };
+  const cost = billedCostFetch();
+  const result = await runtime.generateImages(model, context, { ...(signal ? { signal } : {}), fetch: cost.fetch, timeoutMs: IMAGE_TIMEOUT_MS });
+  const usage = result.usage ? billedUsage(result.usage, await cost.billed(), model.id) : undefined;
+  const billed = usage ? { usage } : {};
+  if (result.stopReason !== 'stop') {
+    return { ok: false, configured: true, error: `Image generation ${result.stopReason === 'aborted' ? 'was aborted' : 'failed'}${result.errorMessage ? `: ${result.errorMessage}` : ''}.`, ...billed };
+  }
+  const image = result.output.find((block): block is ImageContent => block.type === 'image');
+  if (!image) return { ok: false, configured: true, error: 'The image model returned no image.', ...billed };
+  const declared = image.mimeType.toLowerCase();
+  return { ok: true, model: model.id, mimeType: declared === 'image/jpg' ? 'image/jpeg' : declared, data: image.data, ...billed };
+}
+
+/** The bytes of generated `data` when it is exact base64 of a PNG, JPEG or WebP image of `mimeType`, else undefined. */
+export function generatedImageBytes(mimeType: string, data: string): Buffer | undefined {
+  // A round trip, not a regex: a regex over a multi-megabyte payload overflows V8's stack and loses `usage`.
+  const bytes = Buffer.from(data, 'base64');
+  return bytes.length === 0 || bytes.toString('base64') !== data || !hasSignature(mimeType, bytes) ? undefined : bytes;
+}
+
 /**
  * The deferred `GenerateImage` tool. It runs after the write gate approved `file_path` and the prompt,
  * so it never changes the path: a format the extension does not match fails, writes nothing, and names
@@ -206,24 +240,10 @@ export function createGenerateImageTool(deps: ImageToolDeps): ToolDefinition {
         return failure(`${params.file_path} already exists. GenerateImage only creates new files; choose a path that does not exist.`, details);
       }
 
-      const runtime = getRuntime();
-      const model = modelId ? offeredImageModel(runtime, modelId) : undefined;
-      if (!runtime || !model) return failure('Image generation is not configured: choose an OpenRouter image model in Settings.', details);
-
-      // pi forwards `signal` to the HTTP request, so an abort settles this promptly. An abortableTool wrapper
-      // would answer first and drop the usage of a response that landed as the turn was aborted.
-      const context: ImagesContext = { input: [{ type: 'text', text: params.prompt }] };
-      const cost = billedCostFetch();
-      const result = await runtime.generateImages(model, context, { ...(signal ? { signal } : {}), fetch: cost.fetch, timeoutMs: IMAGE_TIMEOUT_MS });
-      const usage = result.usage ? billedUsage(result.usage, await cost.billed(), model.id) : undefined;
-      if (result.stopReason !== 'stop') {
-        return failure(`Image generation ${result.stopReason === 'aborted' ? 'was aborted' : 'failed'}${result.errorMessage ? `: ${result.errorMessage}` : ''}. Nothing was written.`, details, usage);
-      }
-
-      const image = result.output.find((block): block is ImageContent => block.type === 'image');
-      if (!image) return failure('The image model returned no image. Nothing was written.', details, usage);
-      const declared = image.mimeType.toLowerCase();
-      const mimeType = declared === 'image/jpg' ? 'image/jpeg' : declared;
+      const generated = await generateImage(getRuntime(), modelId, params.prompt, signal);
+      const usage = generated.usage;
+      if (!generated.ok) return failure(generated.configured ? `${generated.error} Nothing was written.` : generated.error, details, usage);
+      const { mimeType } = generated;
       if (mimeType !== expectedMime) {
         const suggested = EXTENSION_BY_MIME[mimeType];
         return failure(
@@ -233,11 +253,8 @@ export function createGenerateImageTool(deps: ImageToolDeps): ToolDefinition {
           usage,
         );
       }
-      // A round trip, not a regex: a regex over a multi-megabyte payload overflows V8's stack and loses `usage`.
-      const bytes = Buffer.from(image.data, 'base64');
-      if (bytes.length === 0 || bytes.toString('base64') !== image.data || !hasSignature(mimeType, bytes)) {
-        return failure(`The image model returned data that is not a valid ${mimeType} image. Nothing was written.`, details, usage);
-      }
+      const bytes = generatedImageBytes(mimeType, generated.data);
+      if (!bytes) return failure(`The image model returned data that is not a valid ${mimeType} image. Nothing was written.`, details, usage);
 
       // A response that landed as the turn was aborted is still billed: keep its usage and write nothing.
       if (signal?.aborted) return failure('Image generation was aborted. Nothing was written.', details, usage);
@@ -259,8 +276,8 @@ export function createGenerateImageTool(deps: ImageToolDeps): ToolDefinition {
 
       return {
         content: [
-          { type: 'text', text: `Saved a ${mimeType} image (${bytes.length} bytes) generated by ${model.id} to ${params.file_path}.` },
-          { type: 'image', mimeType, data: image.data },
+          { type: 'text', text: `Saved a ${mimeType} image (${bytes.length} bytes) generated by ${generated.model} to ${params.file_path}.` },
+          { type: 'image', mimeType, data: generated.data },
         ],
         details: { ...details, filePath, mimeType, bytes: bytes.length },
         ...(usage ? { usage } : {}),

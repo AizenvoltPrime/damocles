@@ -27,7 +27,7 @@ function handleClick(): void {
 <template>
   <button
     type="button"
-    class="inline-flex h-8 items-center gap-2 rounded-8 border border-(--d-border2) bg-(--d-card) ps-1 pe-2 text-xs text-(--d-text) transition-colors hover:border-(--d-accent)"
+    class="inline-flex h-8 items-center gap-2 rounded-8 border border-(--d-border2) bg-(--d-card) ps-1 pe-2 text-xs text-(--d-text) transition-colors hover:border-(--d-accent-fill)"
     :title="title"
     @click="handleClick"
   >

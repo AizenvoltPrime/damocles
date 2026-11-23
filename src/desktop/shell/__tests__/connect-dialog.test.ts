@@ -69,7 +69,7 @@ describe('host name field', () => {
     expect(wrapper.get('[role="alert"]').text()).toBe('Another host is already called prod');
     expect(input.attributes('aria-invalid')).toBe('true');
     expect(input.attributes('aria-describedby')).toBe(wrapper.get('[role="alert"]').attributes('id'));
-    expect(input.classes()).toContain('border-(--d-danger)');
+    expect(input.classes()).toContain('border-(--d-danger-fill)');
     expect(input.classes()).not.toContain('d-shake');
     await input.trigger('keydown', { key: 'Enter' });
     await flushPromises();
@@ -870,6 +870,9 @@ describe('connect dialog', () => {
     entries()[0]!.click();
     await flushPromises();
     expect(confirm().disabled).toBe(true);
+    // one background class per state, so the pointer never takes the selected row's tint
+    const grounds = (entry: HTMLElement): string[] => [...entry.classList].filter((name) => name.includes('bg-(--d-'));
+    expect(entries().map(grounds)).toEqual([['bg-(--d-accent-soft)'], ['hover:bg-(--d-hover)']]);
     entries()[0]!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
     await vi.waitFor(() => expect(entries().map((entry) => entry.textContent?.trim())).toEqual(['plan.md']));
     entries()[0]!.click();
@@ -1297,8 +1300,8 @@ describe('removing a remote project with live terminals', () => {
     const buttons = [...document.querySelectorAll<HTMLButtonElement>('[data-testid="overlay-message"] button')];
     expect(buttons.map((button) => button.textContent?.trim())).toEqual(['Cancel', 'Keep running', 'End terminals']);
     await vi.waitFor(() => expect(document.activeElement).toBe(buttons[0]));
-    expect(buttons[2]!.className).toContain('bg-(--d-danger)');
-    expect(buttons[1]!.className).not.toContain('bg-(--d-danger)');
+    expect(buttons[2]!.className).toContain('bg-(--d-danger-fill)');
+    expect(buttons[1]!.className).not.toContain('bg-(--d-danger-fill)');
     buttons[1]!.click();
     await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('m1', { kind: 'message', action: 0 }));
   });

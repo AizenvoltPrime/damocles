@@ -65,8 +65,8 @@ const billedText = computed(() => {
 });
 
 const triggerChipClass = computed(() => {
-  if (props.marker.trigger === 'overflow') return 'bg-[color-mix(in_srgb,var(--d-warning)_14%,transparent)] text-(--d-warning-text)';
-  if (props.marker.trigger === 'threshold') return 'bg-[color-mix(in_srgb,var(--d-info)_14%,transparent)] text-(--d-info-text)';
+  if (props.marker.trigger === 'overflow') return 'bg-[color-mix(in_srgb,var(--d-warning-fill)_14%,transparent)] text-(--d-warning-text)';
+  if (props.marker.trigger === 'threshold') return 'bg-[color-mix(in_srgb,var(--d-info-fill)_14%,transparent)] text-(--d-info-text)';
   return 'bg-(--d-accent-soft) text-(--d-accent-text)';
 });
 

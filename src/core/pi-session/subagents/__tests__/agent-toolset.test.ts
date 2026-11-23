@@ -84,6 +84,12 @@ describe('resolveAgentToolset', () => {
     expect(explicit.names).toEqual(['read']);
   });
 
+  it('strips the theme tools whether inherited or named: only the main chat changes the look', () => {
+    const theme = ['ThemeRead', 'ThemeSet', 'ThemeSchedule'];
+    expect(resolveAgentToolset(cfg({ builtinToolNames: undefined }), [...PARENT, ...theme]).names.filter((name) => theme.includes(name))).toEqual([]);
+    expect(resolveAgentToolset(cfg({ builtinToolNames: ['read', ...theme] }), [...PARENT, ...theme]).names).toEqual(['read']);
+  });
+
   it('strips GenerateImage whether inherited or named, and naming it never lifts the read-only shell restriction', () => {
     const inherited = resolveAgentToolset(cfg({ builtinToolNames: undefined }), [...PARENT, TOOL_GENERATE_IMAGE]);
     expect(inherited.names).not.toContain(TOOL_GENERATE_IMAGE);

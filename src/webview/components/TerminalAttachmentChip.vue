@@ -32,7 +32,7 @@ const shownLines = computed(() => (props.attachment.preview === "" ? 0 : props.a
 
 <template>
   <div
-    class="terminal-attachment-chip group/chip inline-flex h-7 max-w-full min-w-0 items-center rounded-full border border-(--d-border2) bg-(--d-card) text-xs text-(--d-text) transition-colors hover:border-(--d-accent)"
+    class="terminal-attachment-chip group/chip inline-flex h-7 max-w-full min-w-0 items-center rounded-full border border-(--d-border2) bg-(--d-card) text-xs text-(--d-text) transition-colors hover:border-(--d-accent-fill)"
     data-testid="terminal-attachment-chip"
     :data-attachment-id="attachment.id"
     :data-tone="tone"
@@ -114,7 +114,7 @@ const shownLines = computed(() => (props.attachment.preview === "" ? 0 : props.a
         <pre
           tabindex="0"
           :aria-label="t('terminalAttachment.previewRegion')"
-          class="max-h-60 overflow-auto px-3 py-2 font-mono text-11/normal whitespace-pre text-(--d-text) outline-none focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-inset"
+          class="max-h-60 overflow-auto px-3 py-2 font-mono text-11/normal whitespace-pre text-(--d-text) outline-none focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-inset"
           data-testid="terminal-attachment-preview-text"
         >{{ attachment.preview || t("terminalAttachment.empty") }}</pre>
       </PopoverContent>

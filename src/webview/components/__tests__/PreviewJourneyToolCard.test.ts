@@ -159,7 +159,7 @@ describe('the PreviewJourney card', () => {
     expect(states(wrapper).slice(1)).toEqual(STEPS.slice(1).map(() => 'waiting'));
     const active = wrapper.findAll('[data-testid="preview-journey-step"]')[0]!;
     expect(active.find('.d-spinning').exists()).toBe(true);
-    expect(active.find('[class*="d-attention-ring"]').exists()).toBe(true);
+    expect(active.find('.d-attention-loop').exists()).toBe(true);
     expect(wrapper.get('[data-testid="preview-journey-card"]').attributes('data-revealing')).toBe('true');
     expect(counter(wrapper)).toBe('0/11');
 

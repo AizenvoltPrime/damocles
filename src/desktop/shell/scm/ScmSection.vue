@@ -738,7 +738,7 @@ onBeforeUnmount(() => {
           v-if="total > 0"
           data-testid="scm-count"
           :aria-label="t('scm.countAria', total)"
-          class="ml-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-(--d-accent) px-1.25 font-mono text-10 font-semibold text-(--d-on-accent)"
+          class="ml-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-(--d-accent-fill) px-1.25 font-mono text-10 font-semibold text-(--d-on-accent)"
         >
           <Transition
             name="t-swap"
@@ -1017,7 +1017,7 @@ onBeforeUnmount(() => {
                     data-testid="scm-stash-note"
                     :data-note="row.text"
                     :tabindex="index === focusedIndex ? 0 : -1"
-                    class="flex items-center px-1.5 text-xs outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
+                    class="flex items-center px-1.5 text-xs outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent-fill)]"
                     :class="[row.text === 'failed' ? 'text-(--d-danger-text)' : 'text-(--d-faint)', arriving.get(row.key) ?? '']"
                     :style="{ height: `${rowHeight(row)}px` }"
                     @focus="focusedKey = row.key"
@@ -1047,7 +1047,7 @@ onBeforeUnmount(() => {
                     :data-row-key="row.key"
                     data-testid="scm-empty"
                     :tabindex="index === focusedIndex ? 0 : -1"
-                    class="flex items-center px-1.5 text-xs text-(--d-faint) outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
+                    class="flex items-center px-1.5 text-xs text-(--d-faint) outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent-fill)]"
                     :style="{ height: `${rowHeight(row)}px` }"
                     @focus="focusedKey = row.key"
                   >

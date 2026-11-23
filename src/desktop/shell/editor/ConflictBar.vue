@@ -16,9 +16,9 @@ const { t } = useI18n();
   <div
     role="alert"
     data-testid="conflict-bar"
-    class="conflict-bar flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-[color-mix(in_srgb,var(--d-warning)_35%,transparent)] bg-[color-mix(in_srgb,var(--d-warning)_10%,var(--d-bg))] px-3.5 py-1.75"
+    class="conflict-bar flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-[color-mix(in_srgb,var(--d-warning-fill)_35%,transparent)] bg-[color-mix(in_srgb,var(--d-warning-fill)_10%,var(--d-bg))] px-3.5 py-1.75"
   >
-    <span class="flex size-6 shrink-0 items-center justify-center rounded-md bg-[color-mix(in_srgb,var(--d-warning)_18%,transparent)] text-(--d-warning-text)">
+    <span class="flex size-6 shrink-0 items-center justify-center rounded-md bg-[color-mix(in_srgb,var(--d-warning-fill)_18%,transparent)] text-(--d-warning-text)">
       <FileWarning
         aria-hidden="true"
         class="size-3.5"
@@ -34,7 +34,7 @@ const { t } = useI18n();
         size="sm"
         variant="outline"
         data-testid="conflict-compare"
-        class="d-press h-6.5 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-2.5 text-12 hover:border-(--d-accent) hover:bg-(--d-card) [&_svg]:size-3.25"
+        class="d-press h-6.5 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-2.5 text-12 hover:border-(--d-accent-fill) hover:bg-(--d-card) [&_svg]:size-3.25"
         :disabled="busy"
         @click="emit('resolve', 'compare')"
       >
@@ -44,7 +44,7 @@ const { t } = useI18n();
         size="sm"
         variant="outline"
         data-testid="conflict-revert"
-        class="d-press h-6.5 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-2.5 text-12 hover:border-(--d-accent) hover:bg-(--d-card) [&_svg]:size-3.25"
+        class="d-press h-6.5 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-2.5 text-12 hover:border-(--d-accent-fill) hover:bg-(--d-card) [&_svg]:size-3.25"
         :disabled="busy"
         @click="emit('resolve', 'revert')"
       >

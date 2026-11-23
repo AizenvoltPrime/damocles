@@ -51,9 +51,9 @@ watch(
 const loading = computed(() => store.isLoading && !timedOut.value);
 
 function fillColor(util: number): string {
-  if (util >= 90) return 'bg-(--d-danger)';
-  if (util >= 70) return 'bg-(--d-warning)';
-  return 'bg-(--d-accent)';
+  if (util >= 90) return 'bg-(--d-danger-fill)';
+  if (util >= 70) return 'bg-(--d-warning-fill)';
+  return 'bg-(--d-accent-fill)';
 }
 
 function capitalize(s: string): string {

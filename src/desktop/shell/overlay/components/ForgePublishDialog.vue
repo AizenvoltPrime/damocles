@@ -292,7 +292,7 @@ watch([phase, cancellable], async ([now, canCancel], [before, couldCancel]) => {
             data-overlay-initial-focus
             data-testid="forge-publish-owner"
             :aria-describedby="ids.ownerHint"
-            class="h-8 w-full min-w-0 cursor-pointer rounded-9 border border-(--d-border2) bg-(--d-input) px-2.5 text-12.5 text-(--d-text) outline-none hover:border-(--d-accent) focus-visible:border-(--d-accent)"
+            class="h-8 w-full min-w-0 cursor-pointer rounded-9 border border-(--d-border2) bg-(--d-input) px-2.5 text-12.5 text-(--d-text) outline-none hover:border-(--d-accent-fill) focus-visible:border-(--d-accent-fill)"
           >
             <optgroup
               v-for="account in dialog.accounts"
@@ -415,7 +415,7 @@ watch([phase, cancellable], async ([now, canCancel], [before, couldCancel]) => {
             data-testid="forge-publish-name-box"
             :data-invalid="refusal ? '' : undefined"
             class="flex h-8 min-w-0 items-center gap-1 rounded-9 border bg-(--d-input) px-2.5"
-            :class="refusal ? 'border-(--d-danger)' : 'border-(--d-border2) focus-within:border-(--d-accent)'"
+            :class="refusal ? 'border-(--d-danger-fill)' : 'border-(--d-border2) focus-within:border-(--d-accent-fill)'"
             @animationend="nameBox?.classList.remove('d-shake')"
           >
             <span

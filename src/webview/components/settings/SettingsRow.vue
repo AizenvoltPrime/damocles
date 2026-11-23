@@ -6,6 +6,7 @@ import SettingsHighlight from './SettingsHighlight';
 import { useSettingWritesStore } from './settings-writes';
 import { useLocalizedText } from '@/composables/useLocalizedText';
 import { rowMatches } from './settings-rows';
+import { withoutIsolates } from '@shared/bidi-isolate';
 import { ROW_STAGGER_MS, STAGGERED_ROWS, useSettingsPage } from './settings-view';
 
 const props = defineProps<{
@@ -33,7 +34,7 @@ const meta = computed(() => {
 });
 const keys = computed(() => meta.value.keys ?? []);
 const rowKey = computed(() => (props.instance === undefined ? props.id : `${props.id}-${props.instance}`));
-const shownTextMatches = (): boolean => [props.label, props.description].some((text) => text !== undefined && text.toLocaleLowerCase().includes(page.query));
+const shownTextMatches = (): boolean => [props.label, props.description].some((text) => text !== undefined && withoutIsolates(text).toLocaleLowerCase().includes(page.query));
 const visible = computed(() => page.listed(meta.value) && (rowMatches(meta.value, page.query, t) || shownTextMatches()));
 // The entrance plays only when the row's element is created, so a row takes a slot only as it appears.
 const index = ref(visible.value ? page.nextIndex() : STAGGERED_ROWS);
@@ -46,7 +47,7 @@ watch(visible, (shown) => (shown ? page.show(rowKey.value, meta.value.section) :
 onBeforeUnmount(() => page.hide(rowKey.value));
 
 const label = computed(() => props.label ?? t(meta.value.label));
-const descriptionText = computed(() => props.description ?? (meta.value.description ? t(meta.value.description) : ''));
+const descriptionText = computed(() => props.description ?? (meta.value.description ? t(meta.value.description, meta.value.descriptionValues ?? {}) : ''));
 
 const feedback = computed(() => writes.latest(keys.value));
 const savedVisible = ref(false);

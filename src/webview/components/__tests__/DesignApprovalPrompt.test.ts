@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
+import { nextTick } from 'vue';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 import DesignApprovalPrompt from '@/components/design/DesignApprovalPrompt.vue';
 import { i18n, loadLocale } from '@/i18n';
@@ -178,6 +179,38 @@ describe('the design approval prompt', () => {
 
     expect(posted).toEqual([{ type: 'resolveDesignApproval', promptId: 'da-1', choice: 'changes', feedback: 'Make the table denser.' }]);
     expect(card(w).exists()).toBe(false);
+  });
+
+  // reka's listbox focuses its selected option whenever the selection changes in code; the next request is a new listbox
+  it('leaves focus in the composer when the next request replaces a card whose selection the user moved', async () => {
+    const w = await raised();
+    await requestChanges(w);
+    await w.get('[data-testid="design-approval-note"]').trigger('keydown', { key: 'Escape' });
+    await flushPromises();
+    expect(w.get('[data-testid="design-approval-option-changes"]').attributes('data-state')).toBe('checked');
+    const outside = document.createElement('textarea');
+    document.body.append(outside);
+    outside.focus();
+
+    deliver({ ...REQUEST, promptId: 'da-2' });
+    deliver({ type: 'designApprovalClosed', promptId: 'da-1' });
+    await flushPromises();
+
+    expect(w.get('[data-testid="design-approval-option-approve"]').attributes('data-state')).toBe('checked');
+    expect(document.activeElement).toBe(outside);
+  });
+
+  // keyed on the Transition's child, a leaving card stayed in the page beside the card of the next request
+  it('is one card in the page when the next request arrives while the answered one leaves', async () => {
+    wrapper = mount(DesignApprovalPrompt, { global: { plugins: [i18n], stubs: { transition: false } }, attachTo: document.body });
+    deliver(REQUEST);
+    await nextTick();
+    deliver({ type: 'designApprovalClosed', promptId: 'da-1' });
+    await nextTick();
+    deliver({ ...REQUEST, promptId: 'da-2' });
+    await nextTick();
+
+    expect(document.querySelectorAll('[data-testid="design-approval-card"]')).toHaveLength(1);
   });
 
   it('sends the note on Ctrl+Enter and goes back to the answers on Escape', async () => {

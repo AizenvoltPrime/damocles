@@ -184,6 +184,13 @@ describe('a design chat writes only its design folder (PD-4)', () => {
     for (const name of DESIGN_BROWSER_TOOL_NAMES) expect(designWriteBlock(name, {}, unreadable)).toBeUndefined();
   });
 
+  it('runs no forge tool and no theme tool, with a role that cannot be read either', () => {
+    for (const at of [scope, { ...scope, superseded: true as const }, { unreadable: true as const }]) {
+      for (const tool of ['ThemeRead', 'ThemeSet', 'ThemeSchedule']) expect(designWriteBlock(tool, {}, at), tool).toBe('A design chat cannot use the theme tools.');
+      expect(designWriteBlock('ForgeIssues', {}, at)).toBe('A design chat cannot use the GitHub and GitLab tools.');
+    }
+  });
+
   it('keeps every chat\'s write tools to the designer files of the designs folder, resolving a path as the tools do (D65)', () => {
     const designs = path.dirname(FOLDER);
     expect(designFilesWriteBlock({ file_path: path.join(FOLDER, 'design.md') }, PROJECT)).toBeUndefined();

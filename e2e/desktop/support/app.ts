@@ -143,12 +143,15 @@ export interface LaunchOptions {
   require?: string;
 }
 
+// SwiftShader as the GL driver (DAMOCLES_E2E_SOFTWARE_GL=1): a host without a GPU then composites as one with a GPU does.
+const SOFTWARE_GL_ARGS: readonly string[] = process.env['DAMOCLES_E2E_SOFTWARE_GL'] === '1' ? ['--use-gl=angle', '--use-angle=swiftshader'] : [];
+
 /**
  * Launches the desktop app on the hermetic home (the packaged executable when PACKAGED_APP_ENV names one), with its output
  * captured for artifacts. With `mainProcess` false, a dev launch refuses main-process calls as a packaged one does.
  */
 export async function launchDesktop(h: HermeticHome, options: LaunchOptions = {}, mainProcess = true): Promise<DesktopApp> {
-  const args = ['--user-data-dir', h.userData, ...(options.args ?? [])];
+  const args = ['--user-data-dir', h.userData, ...SOFTWARE_GL_ARGS, ...(options.args ?? [])];
   const env = hermeticEnv(h, options.env);
   const packaged = packagedAppPath();
   if (packaged !== undefined && options.require !== undefined) throw new Error('a packaged app runs no module ahead of its main script');
@@ -186,6 +189,15 @@ export async function launchDesktop(h: HermeticHome, options: LaunchOptions = {}
       if (proc.exitCode !== 0) throw new Error(`the main process ${proc.signalCode !== null ? `died of ${proc.signalCode}` : `exited with code ${proc.exitCode}`} instead of 0; see its main output`);
     },
   };
+}
+
+/**
+ * Starts the app again on `h` while a launch runs there: it hands `args` to the running app and exits. Tests take the
+ * `secondLaunch` fixture, which kills a child that never exits; `args` follow the user data folder, so a link goes after `--`.
+ */
+export async function spawnSecondLaunch(h: HermeticHome, args: readonly string[] = [], env: Record<string, string> = {}): Promise<ChildProcess> {
+  const electronBinary = (await import('electron')).default as unknown as string;
+  return spawn(electronBinary, [MAIN_SCRIPT, '--user-data-dir', h.userData, ...args], { env: hermeticEnv(h, env), stdio: 'ignore' });
 }
 
 /**

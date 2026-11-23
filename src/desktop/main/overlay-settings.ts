@@ -3,15 +3,17 @@ import type { Disposable } from '../../platform/disposable';
 import type { SettingsStore } from '../../platform/settings-store';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../shared/types/messages';
 import type { HostColor } from '../../shared/host-colors';
+import { MAX_THEME_NAME_CHARS, THEME_ID } from '../../shared/themes/limits';
+import { parseScheduleRules } from '../../shared/themes/schedule';
 import { isSettingsAccountId, isSettingsSectionId, type SettingsTarget } from '../../shared/settings-sections';
 import { SETTINGS_VIEW_REQUEST_TYPES } from '../../shared/settings-view-messages';
-import { MAX_SETTINGS_MESSAGE_CHARS, OVERLAY_CHANNELS, type OverlayPrefs, type OverlayPrefWrite, type OverlayRect, type OverlaySettingsAwayState, type OverlaySettingsPage, type OverlaySettingsScopes } from '../preload/overlay-channels';
+import { MAX_SETTINGS_MESSAGE_CHARS, OVERLAY_CHANNELS, type OverlayPrefs, type OverlayPrefWrite, type OverlayRect, type OverlaySettingsAwayState, type OverlaySettingsPage, type OverlaySettingsScopes, type OverlayThemeAction, type OverlayThemeResult, type OverlayThemesResult } from '../preload/overlay-channels';
 import type { TerminalProfileReport } from '../preload/terminal-channels';
 import { NEW_CHAT_ID_PREFIX, type HostUpdate, type ProjectConnection } from '../preload/shell-channels';
 import type { HostReconnectPhase } from '../../shared/host-connection';
 import type { CoreState } from '../daemon/control-messages';
 import type { RemoteConnection } from './remote/connection';
-import { DESKTOP_CONFIGURATION, isDesktopSettingValue, TERMINAL_PROFILES_SETTING, type DesktopLanguageSetting } from '../local-services/desktop-configuration';
+import { DESKTOP_CONFIGURATION, isDesktopSettingValue, TERMINAL_PROFILES_SETTING, THEME_SETTING, THEMES_DARK_SETTING, THEMES_LIGHT_SETTING, THEMES_STORE_SETTING, type DesktopLanguageSetting } from '../local-services/desktop-configuration';
 import { parseRect, type OverlayHost } from './overlay';
 import { isVersion } from './semver';
 import { asJsonValue, isWebviewMessage } from './views';
@@ -60,6 +62,9 @@ export interface OverlaySettingsDeps {
   readonly focused: () => WebContents | undefined;
   readonly relaunch: () => void;
   readonly resetLayout: () => void;
+  // Settings › Appearance's themes, listed and changed through this computer's core
+  // setStoreEnabled: core writes damocles.desktop.themes.store, so its store reads the new value before the write answers
+  readonly themes: { list(): Promise<OverlayThemesResult>; act(action: ThemeAction): Promise<OverlayThemeResult>; setStoreEnabled(enabled: boolean): Promise<void> };
   // Settings › Terminal's profiles: the listed ones (its default profile), the hidden detected ones and the refused entries
   readonly terminalProfiles: () => TerminalProfileReport;
   readonly log: (line: string) => void;
@@ -73,6 +78,8 @@ export interface OverlaySettingsDeps {
   readonly signIn: (authority: string) => Promise<void>;
   // why the authority's core cannot serve its tabs; undefined once it is up and the selected chat is not reopening with it
   readonly hostAway: (authority: string) => OverlaySettingsAwayState | undefined;
+  // the modal closed: an install card it showed is answered as cancelled
+  readonly closed?: () => void;
 }
 
 // What main knows of an authority whose host or Project tab may wait for its core.
@@ -164,6 +171,59 @@ export async function writeDesktopSetting(settings: SettingsStore, key: string, 
   await settings.update(key, value, 'user');
 }
 
+const HISTORY_ENTRY_ID = /^[0-9A-Za-z-]{1,64}$/;
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** A theme action main runs: one the overlay sent, or the Mode row's, which main alone builds from a damocles.desktop.theme write. */
+export type ThemeAction = OverlayThemeAction | { readonly action: 'mode'; readonly mode: 'system' | 'dark' | 'light' };
+
+/** A Settings › Appearance theme action exactly as the overlay may send it; undefined for anything else. */
+export function parseThemeAction(raw: unknown): OverlayThemeAction | undefined {
+  if (!isRecord(raw)) return undefined;
+  const keys = Object.keys(raw).sort().join(',');
+  switch (raw['action']) {
+    case 'undo': {
+      if (keys === 'action') return { action: 'undo' };
+      const entryId = raw['entryId'];
+      return keys === 'action,entryId' && typeof entryId === 'string' && HISTORY_ENTRY_ID.test(entryId) ? { action: 'undo', entryId } : undefined;
+    }
+    case 'reset':
+    case 'resume':
+      return keys === 'action' ? { action: raw['action'] } : undefined;
+    case 'scheduleMode': {
+      const choice = raw['choice'];
+      return keys === 'action,choice' && (choice === 'system' || choice === 'schedule' || choice === 'off') ? { action: 'scheduleMode', choice } : undefined;
+    }
+    case 'schedule': {
+      const rules = parseScheduleRules(raw['rules']);
+      return keys === 'action,rules' && rules ? { action: 'schedule', rules } : undefined;
+    }
+    case 'restore': {
+      const entryId = raw['entryId'];
+      return keys === 'action,entryId' && typeof entryId === 'string' && HISTORY_ENTRY_ID.test(entryId) ? { action: 'restore', entryId } : undefined;
+    }
+    default:
+      break;
+  }
+  if (typeof raw['themeId'] !== 'string' || !THEME_ID.test(raw['themeId'])) return undefined;
+  const themeId = raw['themeId'];
+  const name = raw['name'];
+  const named = typeof name === 'string' && name.trim() !== '' && [...name].length <= MAX_THEME_NAME_CHARS ? name : undefined;
+  switch (raw['action']) {
+    case 'pick':
+      return keys === 'action,kind,themeId' && (raw['kind'] === 'dark' || raw['kind'] === 'light') ? { action: 'pick', themeId, kind: raw['kind'] } : undefined;
+    case 'duplicate':
+    case 'rename':
+      return keys === 'action,name,themeId' && named !== undefined ? { action: raw['action'], themeId, name: named } : undefined;
+    case 'delete':
+    case 'edit':
+    case 'showFile':
+      return keys === 'action,themeId' ? { action: raw['action'], themeId } : undefined;
+    default:
+      return undefined;
+  }
+}
+
 // a re-attached page sends a few state requests; a renderer sending more while an attach waits on core is not answered for them
 const MAX_HELD_SENDS = 32;
 
@@ -194,7 +254,8 @@ export class OverlaySettings {
   private scopeHost: string | undefined;
   // the host or Project tab shown lost its host's core: it stays selected and attaches again once that core is ready
   private away: { readonly authority: string; readonly away: OverlaySettingsAwayState } | undefined;
-  // sign-ins, provider keys and this computer's hosts change only in the User tab, so a target naming them opens it
+  // sign-ins, provider keys, this computer's hosts and its Appearance (the themes and their install card) show only in the
+  // User tab, so a target naming them opens it
   private userTab = false;
   // settles when the open modal ends
   private ended: Promise<void> = Promise.resolve();
@@ -204,6 +265,9 @@ export class OverlaySettings {
   // what it sends for it waits here and goes once core attached it.
   private inFlight: { readonly generation: number; readonly sends: WebviewToExtensionMessage[] } | undefined;
   private readonly prefsWatch: Disposable;
+  // the page reported the open modal shown; pushes for it wait until then, since the modal subscribes only once it renders
+  private shown = false;
+  private heldPushes: Array<{ readonly channel: string; readonly payload: unknown }> = [];
 
   constructor(deps: OverlaySettingsDeps) {
     this.deps = deps;
@@ -220,6 +284,12 @@ export class OverlaySettings {
     overlay.handleWhileOpen(OVERLAY_CHANNELS.settingsSignIn, settingsOpen, (raw) => this.signIn(raw));
     overlay.handleWhileOpen(OVERLAY_CHANNELS.relaunch, settingsOpen, () => deps.relaunch());
     overlay.handleWhileOpen(OVERLAY_CHANNELS.layoutReset, settingsOpen, () => deps.resetLayout());
+    overlay.handleWhileOpen(OVERLAY_CHANNELS.themesList, settingsOpen, () => deps.themes.list());
+    overlay.handleWhileOpen(OVERLAY_CHANNELS.themesAct, settingsOpen, (raw) => {
+      const action = parseThemeAction(raw);
+      if (action === undefined) throw new Error('Malformed theme action');
+      return deps.themes.act(action);
+    });
     overlay.handleWhileOpen(OVERLAY_CHANNELS.terminalProfiles, settingsOpen, (raw) => {
       if (typeof raw !== 'object' || raw === null || Array.isArray(raw) || Object.keys(raw).length > 0) throw new Error('Malformed terminal profiles request');
       return deps.terminalProfiles();
@@ -250,7 +320,7 @@ export class OverlaySettings {
       ...(forgeServer !== undefined && forgeSignIn === true ? { forgeSignIn } : {}),
       ...(forgeAccount !== undefined ? { forgeAccount } : {}),
     };
-    const userTab = section === 'accounts' || account !== undefined || section === 'remoteHosts' || host !== undefined || forgeServer !== undefined;
+    const userTab = section === 'accounts' || account !== undefined || section === 'remoteHosts' || host !== undefined || forgeServer !== undefined || section === 'appearance';
     if (this.open) {
       this.deps.overlay.send(OVERLAY_CHANNELS.settingsTarget, target);
       if (userTab && this.scope !== undefined && this.scope !== 'user') await this.reattach('user');
@@ -270,9 +340,17 @@ export class OverlaySettings {
       const attachment = this.attachment;
       if (attachment === undefined) throw new Error('No chat could be opened for the settings');
       const scopes = this.scopesShown();
-      await this.deps.overlay.request({ kind: 'settings', ...target, generation: attachment.generation, page: attachment.page, ...(scopes ? { scopes } : {}) }, returnFocus);
+      const shown = (): void => {
+        this.shown = true;
+        const pushes = this.heldPushes;
+        this.heldPushes = [];
+        for (const { channel, payload } of pushes) this.deps.overlay.send(channel, payload);
+      };
+      await this.deps.overlay.request({ kind: 'settings', ...target, generation: attachment.generation, page: attachment.page, ...(scopes ? { scopes } : {}) }, returnFocus, shown);
     } finally {
       this.open = false;
+      this.shown = false;
+      this.heldPushes = [];
       this.scope = undefined;
       this.scopeHost = undefined;
       this.away = undefined;
@@ -282,11 +360,25 @@ export class OverlaySettings {
       this.attachment = undefined;
       attachment?.handle.dispose();
       end();
+      this.deps.closed?.();
     }
+  }
+
+  /** A push for the open modal, sent once the page showed it; false while it is closed, when nothing is sent. */
+  sendWhenShown(channel: string, payload: unknown): boolean {
+    if (!this.open) return false;
+    if (this.shown) this.deps.overlay.send(channel, payload);
+    else this.heldPushes.push({ channel, payload });
+    return true;
   }
 
   dispose(): void {
     this.prefsWatch.dispose();
+  }
+
+  /** The theme files changed; an open modal lists them again. */
+  themesChanged(): void {
+    if (this.open) this.deps.overlay.send(OVERLAY_CHANNELS.themesChanged, {});
   }
 
   /** From the start of show() until the modal closed, the attach before the modal appears included. */
@@ -567,7 +659,18 @@ export class OverlaySettings {
     const request = raw as { key?: unknown; value?: unknown } | null;
     if (typeof request !== 'object' || request === null || typeof request.key !== 'string') return { ok: false, error: 'Not a desktop setting value' };
     try {
-      await writeDesktopSetting(this.deps.settings, request.key, request.value);
+      if (request.key === THEME_SETTING && isDesktopSettingValue(THEME_SETTING, request.value)) {
+        // the mode goes through core, whose System turns a theme schedule off in the same change
+        const done = await this.deps.themes.act({ action: 'mode', mode: request.value as 'system' | 'dark' | 'light' });
+        if (!done.ok) return { ok: false, error: done.error };
+      } else if (request.key === THEMES_STORE_SETTING && typeof request.value === 'boolean') {
+        await this.deps.themes.setStoreEnabled(request.value);
+      } else if (request.key === THEMES_DARK_SETTING || request.key === THEMES_LIGHT_SETTING) {
+        // a pick writes the preferred looks through core, with its history entry; the page is never a second writer of them
+        return { ok: false, error: 'Not a desktop setting value' };
+      } else {
+        await writeDesktopSetting(this.deps.settings, request.key, request.value);
+      }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }

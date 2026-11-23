@@ -1,7 +1,8 @@
 import type { OpenFolder } from '../../platform/workspace-folders';
 import type { ChatCommand } from '../../shared/types/messages';
 import { visibleText } from '../../shared/visible-text';
-import type { PaletteCommand } from '../preload/overlay-channels';
+import { acceleratorLabel } from '../../shared/accelerator';
+import { RESET_THEME_ACCELERATOR, TOGGLE_WALLPAPERS_ACCELERATOR, type PaletteCommand } from '../preload/overlay-channels';
 import type { ScmCommitVariant } from '../preload/scm-channels';
 import { EDITOR_GIT_KEYBINDINGS, type EditorCommand, type EditorMenuShortcut, type SearchEditorCommand, type SearchViewCommand } from '../preload/shell-channels';
 import type { MenuActions, MenuState } from './menu';
@@ -82,6 +83,11 @@ export const MENU_IDS = {
   scrollToPreviousTerminalCommand: 'damocles.terminal.scrollToPreviousCommand',
   scrollToNextTerminalCommand: 'damocles.terminal.scrollToNextCommand',
   toggleSidebar: 'damocles.toggleSidebar',
+  resetTheme: 'damocles.themes.resetToDefault',
+  toggleWallpapers: 'damocles.themes.toggleWallpapers',
+  nextWallpaper: 'damocles.themes.nextWallpaper',
+  undoThemeChange: 'damocles.themes.undo',
+  restartWithDefaultTheme: 'damocles.themes.restartWithDefault',
   nextChat: 'damocles.nextChat',
   previousChat: 'damocles.previousChat',
   focusNextPart: 'damocles.focusNextPart',
@@ -261,6 +267,9 @@ export function newChatInWorktreeAccelerator(platform: NodeJS.Platform): string 
   return platform === 'linux' ? 'Ctrl+Alt+N' : 'Shift+Alt+N';
 }
 export const TOGGLE_SIDEBAR_ACCELERATOR = 'CmdOrCtrl+B';
+export { acceleratorLabel, RESET_THEME_ACCELERATOR, TOGGLE_WALLPAPERS_ACCELERATOR };
+// Fixed and never hidden or disabled: it says when the look has one wallpaper set or none.
+export const NEXT_WALLPAPER_ACCELERATOR = 'CmdOrCtrl+Alt+Shift+.';
 export const OPEN_SETTINGS_ACCELERATOR = 'CmdOrCtrl+,';
 export const QUICK_OPEN_ACCELERATOR = 'CmdOrCtrl+P';
 export const CLOSE_EDITOR_ACCELERATOR = 'CmdOrCtrl+W';
@@ -810,6 +819,11 @@ export function desktopCommands(projects: readonly OpenFolder[], actions: MenuAc
     })),
     { id: MENU_IDS.toggleSidebar, title: t('Toggle Sidebar'), category: view, accelerator: TOGGLE_SIDEBAR_ACCELERATOR, inTerminal: true, run: () => actions.toggleSidebar() },
     { id: MENU_IDS.toggleEditor, title: t('Toggle Editor Pane'), category: view, run: () => actions.toggleEditor() },
+    { id: MENU_IDS.resetTheme, title: t('Reset Theme to Default'), category: view, accelerator: RESET_THEME_ACCELERATOR, inTerminal: true, run: () => actions.resetTheme() },
+    { id: MENU_IDS.toggleWallpapers, title: t('Toggle Wallpapers'), category: view, accelerator: TOGGLE_WALLPAPERS_ACCELERATOR, inTerminal: true, run: () => actions.toggleWallpapers() },
+    { id: MENU_IDS.nextWallpaper, title: t('Next Wallpaper'), category: view, accelerator: NEXT_WALLPAPER_ACCELERATOR, inTerminal: true, run: () => actions.nextWallpaper() },
+    // never hidden or disabled: it says when there is nothing to undo
+    { id: MENU_IDS.undoThemeChange, title: t('Undo Theme Change'), category: view, run: () => actions.undoThemeChange() },
     { id: MENU_IDS.toggleTerminal, title: t('Toggle Terminal'), category: view, accelerator: TOGGLE_TERMINAL_ACCELERATOR, inTerminal: true, run: (_context, source) => actions.toggleTerminal(source === 'accelerator') },
     { id: MENU_IDS.showCommands, title: t('Show All Commands'), menuLabel: t('Command Palette...'), category: view, accelerator: SHOW_COMMANDS_ACCELERATOR, inTerminal: true, run: () => actions.showCommands() },
     { id: MENU_IDS.nextChat, title: t('Next Chat'), category: view, accelerator: mac ? 'Cmd+Shift+]' : 'Ctrl+Tab', run: relative(1) },
@@ -889,6 +903,7 @@ export function desktopCommands(projects: readonly OpenFolder[], actions: MenuAc
     ...(actions.cliCommand ? cliCommands(actions.cliCommand, platform) : []),
     ...(actions.loopback ? loopbackCommands(actions.loopback) : []),
     { id: MENU_IDS.about, title: t('About Damocles'), category: help, run: () => actions.about() },
+    { id: MENU_IDS.restartWithDefaultTheme, title: t('Restart with Default Theme'), category: help, run: () => actions.restartWithDefaultTheme() },
     { id: MENU_IDS.releaseNotes, title: t('Release Notes'), category: help, run: () => actions.releaseNotes() },
     { id: MENU_IDS.checkForUpdates, title: t('Check for Updates...'), category: help, enabled: (context) => context.updateCheck, run: () => actions.checkForUpdates() },
     ...gitCommands(actions),
@@ -946,24 +961,6 @@ export function keyFires(command: Command, context: MenuState): boolean {
 export function terminalPassKeys(commands: readonly Command[], context: MenuState): string[] {
   const terminal: MenuState = { ...context, focus: 'terminal', terminalInput: true };
   return commands.flatMap((command) => (command.inTerminal === true && command.accelerator !== undefined && (command.keyWhen?.(terminal) ?? true) ? [command.accelerator] : []));
-}
-
-const MAC_MODIFIERS: ReadonlyArray<readonly [RegExp, string]> = [
-  [/^(Ctrl|Control)$/, '⌃'],
-  [/^(Alt|Option)$/, '⌥'],
-  [/^Shift$/, '⇧'],
-  [/^(Cmd|Command|CmdOrCtrl|CommandOrControl)$/, '⌘'],
-];
-
-/** An Electron accelerator as the platform writes it: 'Ctrl+Shift+F' on Windows and Linux, '⇧⌘F' on macOS. */
-export function acceleratorLabel(accelerator: string, platform: NodeJS.Platform): string {
-  const parts = accelerator.split('+');
-  // '+' itself as the key leaves an empty last part
-  const key = parts.at(-1) === '' ? '+' : parts.at(-1)!;
-  const modifiers = parts.slice(0, parts.at(-1) === '' ? -2 : -1);
-  if (platform !== 'darwin') return [...modifiers.map((modifier) => (/^(CmdOrCtrl|CommandOrControl|Control)$/.test(modifier) ? 'Ctrl' : modifier)), key].join('+');
-  const symbols = MAC_MODIFIERS.flatMap(([pattern, symbol]) => (modifiers.some((modifier) => pattern.test(modifier)) ? [symbol] : []));
-  return symbols.join('') + key;
 }
 
 /**

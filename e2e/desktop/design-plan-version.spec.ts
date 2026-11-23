@@ -8,7 +8,7 @@ import { approveDesign, DESIGN_APP, grounding, startDesignChat } from './support
 import { seedStubModel, type HermeticHome } from './support/hermetic';
 import { agentRequests, call, startOpenAIStub, type OpenAIStub } from './support/openai-stub';
 import { openProjectChat, setPageSize } from './support/screenshots';
-import { awaitTurnEnd, chatInput } from './support/ui';
+import { awaitTurnEnd, chatInput, promptReady } from './support/ui';
 
 // A plan approved after design v1 records v1, and a v2 delivered after that approval pauses the main chat with the update
 // card and the version prompt before any run; the prompt's answer decides how the run starts.
@@ -213,6 +213,7 @@ test('Finish v1 first answers the version pause with exactly one run in the curr
     stub.replies.push({ chunks: ['Finishing the plan approved against v1.'] });
     // A digit answers the dock prompt that holds focus, as on the other dock prompts.
     await versionPrompt(parent).getByRole('option').first().focus();
+    await promptReady(versionPrompt(parent));
     await parent.keyboard.press('2');
     await expect(versionPrompt(parent)).toHaveCount(0);
     await expect(parent.getByText('Finishing the plan approved against v1.')).toBeVisible();

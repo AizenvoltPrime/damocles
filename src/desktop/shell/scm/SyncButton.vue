@@ -101,8 +101,8 @@ watch(spinning, (on, was) => {
     :title="tooltip"
     :aria-disabled="!enabled || undefined"
     :aria-busy="spinning || undefined"
-    class="h-7 shrink-0 gap-1.25 rounded-7 py-0 border border-(--d-border2) bg-(--d-card) px-2.25 font-mono text-11 font-normal text-(--d-muted) transition-colors duration-150 hover:bg-(--d-card) focus-visible:border-(--d-accent) focus-visible:ring-0 focus-visible:ring-offset-0 [&_svg]:size-3"
-    :class="[enabled ? 'd-press hover:border-(--d-accent) hover:text-(--d-text)' : 'cursor-default hover:text-(--d-muted)', mode === 'none' && !spinning && !committing ? 'opacity-50' : '']"
+    class="h-7 shrink-0 gap-1.25 rounded-7 py-0 border border-(--d-border2) bg-(--d-card) px-2.25 font-mono text-11 font-normal text-(--d-muted) transition-colors duration-150 hover:bg-(--d-card) focus-visible:border-(--d-accent-fill) focus-visible:ring-0 focus-visible:ring-offset-0 [&_svg]:size-3"
+    :class="[enabled ? 'd-press hover:border-(--d-accent-fill) hover:text-(--d-text)' : 'cursor-default hover:text-(--d-muted)', mode === 'none' && !spinning && !committing ? 'opacity-50' : '']"
     @click="run"
   >
     <span

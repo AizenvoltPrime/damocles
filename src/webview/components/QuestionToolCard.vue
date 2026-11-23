@@ -70,6 +70,7 @@ function truncateText(text: string, maxLength: number): string {
 
 <template>
   <ToolCardFrame
+    :tool="toolCall.name"
     :icon="CircleQuestionMark"
     :name="headerText"
     :status="toolCall.status"

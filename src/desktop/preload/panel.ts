@@ -126,6 +126,9 @@ const bridge: DamoclesBridge = {
     if (hydratedState) hydratedState.state = next;
     ipcRenderer.send(PANEL_CHANNELS.setState, next);
   },
+  setModalOpen: (open: boolean): void => {
+    ipcRenderer.send(PANEL_CHANNELS.modal, open === true);
+  },
 };
 
 contextBridge.exposeInMainWorld('damoclesBridge', bridge);

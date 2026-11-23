@@ -439,8 +439,8 @@ describe('Files drop target', () => {
     expect(files.dropEffect).toBe('copy');
     expect(highlighted(wrapper)).toBe('src');
     expect(wrapper.get('[data-testid="files-drop-highlight"]').classes()).toContain('d-fade-in');
-    // the tint is the row's own background, which a link badge on the row paints too
-    expect(row(wrapper, 'src').classes()).toContain('[--row-bg:var(--d-accent-soft)]');
+    // the tint is the row's own background, under its icon and name, never the highlight's over them
+    expect(row(wrapper, 'src').classes()).toContain('bg-(--d-accent-soft)');
     expect(wrapper.get('[data-testid="files-drop-highlight"]').classes()).not.toContain('bg-(--d-accent-soft)');
     expect(wrapper.get('[data-testid="files-drop-hint"]').text()).toBe('Copy to src');
 
@@ -992,7 +992,7 @@ describe('Files link rows', () => {
     expect(plain.attributes('title')).toBe('todo.md');
   });
 
-  it('gives each row its background as --row-bg, which a link badge paints: plain, hovered, selected and selected while hovered', async () => {
+  it('gives each link row its background: plain, hovered, selected and selected while hovered', async () => {
     const shown = { id: 't', kind: 'code' as const, documentId: 'd-t', title: 'todo.md', projectKey: 'home', relativePath: 'todo.md', displayPath: 'C:\\home\\todo.md', dirty: false, readOnly: false, conflict: false };
     const api = fakeShellApi([], {
       listFiles: vi.fn(async () => ({ ok: true as const, entries: [{ name: 'notes.txt', kind: 'file' as const, link: { target: '/srv/notes.txt' } }, { name: 'todo.md', kind: 'file' as const, link: { target: '/srv/todo.md' } }] })),
@@ -1008,9 +1008,11 @@ describe('Files link rows', () => {
     mounted.push(wrapper);
     await flushPromises();
     const plain = row(wrapper, 'notes.txt').classes();
-    expect(plain).toEqual(expect.arrayContaining(['bg-(--row-bg)', '[--row-bg:transparent]', 'hover:[--row-bg:var(--d-hover)]']));
+    expect(plain).toContain('hover:bg-(--d-hover)');
+    expect(plain.filter((name) => /^bg-/.test(name))).toEqual([]);
+    // one background class per state: two hover utilities on one row would leave the winner to the bundle's rule order
     const selected = row(wrapper, 'todo.md').classes();
-    expect(selected).toEqual(expect.arrayContaining(['bg-(--row-bg)', '[--row-bg:var(--d-accent-soft)]']));
+    expect(selected).toContain('bg-(--d-accent-soft)');
     expect(selected.filter((name) => name.startsWith('hover:'))).toEqual([]);
   });
 

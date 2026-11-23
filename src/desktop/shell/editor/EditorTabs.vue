@@ -402,6 +402,7 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
 <template>
   <div
     class="relative flex min-w-0 flex-1"
+    data-theme-scope="editorChrome"
     @pointerenter="onPointerEnter"
     @pointerleave="onPointerLeave"
   >
@@ -654,7 +655,7 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
           </div>
         </Transition>
         <SlidingIndicator
-          class="text-(--d-accent)"
+          class="[--tone:var(--d-accent-fill)]"
           data-testid="editor-tab-indicator"
           :box="barBox"
           :radius="0"

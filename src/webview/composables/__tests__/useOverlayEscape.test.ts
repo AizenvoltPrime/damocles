@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { defineComponent, h, nextTick, ref } from 'vue';
+import { defineComponent, effectScope, h, nextTick, ref } from 'vue';
 import { mount, type VueWrapper } from '@vue/test-utils';
-import { hasOpenOverlay, useOverlayEscape, MODAL_Z_INDEX, type OverlayOptions } from '../useOverlayEscape';
+import { hasOpenOverlay, reportOverlayOpen, useOverlayEscape, MODAL_Z_INDEX, type OverlayOptions } from '../useOverlayEscape';
 
 /**
  * Escape must reach exactly one overlay: the one the user is looking at.
@@ -200,6 +200,28 @@ describe('the derived paint order', () => {
 
     expect(beneath.get('div').attributes('data-top')).toBe('false');
     expect(top.get('div').attributes('data-top')).toBe('true');
+  });
+});
+
+describe('the page-wide overlay report', () => {
+  it('says closed at once, then only the first overlay opening and the last one closing', async () => {
+    const reports: boolean[] = [];
+    const scope = effectScope();
+    scope.run(() => reportOverlayOpen((open) => reports.push(open)));
+    try {
+      const first = openOverlay(vi.fn());
+      await nextTick();
+      const second = openOverlay(vi.fn(), { modal: true });
+      await nextTick();
+      closeOverlay(first);
+      await nextTick();
+      expect(reports).toEqual([false, true]);
+      closeOverlay(second);
+      await nextTick();
+      expect(reports).toEqual([false, true, false]);
+    } finally {
+      scope.stop();
+    }
   });
 });
 

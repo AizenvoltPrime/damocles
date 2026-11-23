@@ -147,7 +147,7 @@ const MERGED_FITS = '@max-[18rem]/card:hidden';
     :aria-label="ariaLabel"
     :aria-busy="(row.kind === 'note' && row.state === 'loading') || ciStatus?.kind === 'loading' ? true : undefined"
     :tabindex="current ? 0 : -1"
-    class="group/detail relative flex items-stretch gap-1.5 pr-1.5 outline-none focus-visible:[&>.graph-card]:shadow-[inset_0_0_0_1px_var(--d-accent)]"
+    class="group/detail relative flex items-stretch gap-1.5 pr-1.5 outline-none focus-visible:[&>.graph-card]:shadow-[inset_0_0_0_1px_var(--d-accent-fill)]"
     :class="row.kind === 'file' || ciStatus?.kind === 'ready' ? 'cursor-pointer' : 'cursor-default'"
     :style="{ height: `${height}px` }"
     @click="onClick"

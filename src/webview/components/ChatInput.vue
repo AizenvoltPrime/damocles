@@ -238,12 +238,12 @@ const micButtonClass = computed(() => {
     if (jarvisState.value === "error") return "text-(--d-danger)";
     if (jarvisState.value === "off") return "opacity-50";
     if (jarvisMuted.value || jarvisState.value === "muted") return "opacity-60";
-    if (jarvisState.value === "recording") return "d-ring text-(--d-danger) bg-[color-mix(in_srgb,var(--d-danger)_14%,transparent)]";
+    if (jarvisState.value === "recording") return "d-ring [--tone:var(--d-danger-fill)] text-(--d-danger) bg-[color-mix(in_srgb,var(--d-danger-fill)_14%,transparent)]";
     if (jarvisState.value === "cpu-fallback") return "text-(--d-warning)";
     if (jarvisState.value === "loading") return "";
     return "text-(--d-success)";
   }
-  if (voiceStatus.value === "recording") return "d-ring text-(--d-danger) bg-[color-mix(in_srgb,var(--d-danger)_14%,transparent)]";
+  if (voiceStatus.value === "recording") return "d-ring [--tone:var(--d-danger-fill)] text-(--d-danger) bg-[color-mix(in_srgb,var(--d-danger-fill)_14%,transparent)]";
   if (voiceStatus.value === "error") return "text-(--d-warning)";
   return "";
 });
@@ -684,7 +684,7 @@ onUnmounted(() => {
       <p
         v-if="yoloRefused"
         data-testid="yolo-refused"
-        class="mb-1.5 flex min-w-0 items-center gap-1.5 px-1 text-xs text-(--d-muted) animate-[d-fade_0.2s_var(--ease-out)]"
+        class="mb-1.5 flex min-w-0 items-center gap-1.5 px-1 text-xs text-(--d-muted) d-fade-in"
       >
         <LockOpen
           class="size-3 shrink-0"
@@ -710,7 +710,7 @@ onUnmounted(() => {
 
     <div
       ref="cardRef"
-      class="group/composer relative rounded-2xl border border-(--d-border2) bg-(--d-input) shadow-[0_1px_2px_rgb(0_0_0/.15)] transition-colors duration-200 focus-within:border-(--d-accent)"
+      class="group/composer relative rounded-2xl border border-(--d-border2) bg-(--surface-input) shadow-[0_1px_2px_rgb(0_0_0/.15)] transition-colors duration-200 focus-within:border-(--d-accent-fill)"
       data-testid="composer"
       :data-file-drop="fileDropping || undefined"
       @dragenter="onFileDragEnter"
@@ -722,7 +722,7 @@ onUnmounted(() => {
         <div
           v-if="fileDropping"
           data-testid="composer-drop-target"
-          class="composer-drop-target pointer-events-none absolute inset-0 z-5 flex items-center justify-center gap-2 rounded-2xl border-[1.5px] border-dashed border-(--d-accent) bg-(--d-accent-soft) font-medium text-(--d-accent-text)"
+          class="composer-drop-target pointer-events-none absolute inset-0 z-5 flex items-center justify-center gap-2 rounded-2xl border-[1.5px] border-dashed border-(--d-accent-fill) bg-(--d-accent-soft) font-medium text-(--d-accent-text)"
         >
           <AtSign
             aria-hidden="true"
@@ -732,7 +732,7 @@ onUnmounted(() => {
         </div>
       </Transition>
       <span
-        class="pointer-events-none absolute -inset-1.25 rounded-[1.25rem] border-4 border-(--d-accent-soft) opacity-0 transition-opacity duration-200 group-focus-within/composer:opacity-100"
+        class="pointer-events-none absolute -inset-1.25 rounded-[calc(var(--radius-2xl)+var(--spacing)*1.25)] border-4 border-(--d-accent-soft) opacity-0 transition-opacity duration-200 group-focus-within/composer:opacity-100"
         aria-hidden="true"
       />
       <!-- Host state that rides above the text, such as the worktree opt-in chip (D30). -->
@@ -761,7 +761,7 @@ onUnmounted(() => {
         :aria-controls="autocompleteListId"
         :aria-activedescendant="activeOptionId"
         rows="2"
-        class="relative block max-h-50 min-h-[round(calc(2lh+1.125rem),0.0625rem)] w-full resize-none overflow-x-hidden overflow-y-auto bg-transparent px-3.5 pb-1.5 pt-3 text-13.5 leading-[1.55] text-(--d-text) outline-none field-sizing-content placeholder:text-(--d-faint) focus-visible:outline-none"
+        class="relative block max-h-50 min-h-[round(calc(2lh+var(--spacing)*4.5),0.0625rem)] w-full resize-none overflow-x-hidden overflow-y-auto bg-transparent px-3.5 pb-1.5 pt-3 text-13.5/draft text-(--d-text) outline-none field-sizing-content placeholder:text-(--d-faint) focus-visible:outline-none"
         @keydown="handleKeydown"
         @input="handleInput"
         @paste="handlePaste"
@@ -775,7 +775,7 @@ onUnmounted(() => {
             <button
               type="button"
               aria-disabled="true"
-              class="d-tone-design flex h-7 shrink-0 cursor-default items-center gap-1.5 rounded-full border border-(--tone)/35 bg-(--tone)/10 py-0 ps-0.75 pe-2.5 text-xs font-medium outline-none focus-visible:ring-1 focus-visible:ring-(--d-design) @max-[28.75rem]:pe-0.75"
+              class="d-tone-design flex h-7 shrink-0 cursor-default items-center gap-1.5 rounded-full border border-(--tone)/35 bg-(--tone)/10 py-0 ps-0.75 pe-2.5 text-xs font-medium outline-none focus-visible:ring-1 focus-visible:ring-(--d-design-fill) @max-[28.75rem]:pe-0.75"
               :aria-describedby="designModeHintId"
               data-testid="composer-mode"
               data-mode="design"
@@ -847,7 +847,7 @@ onUnmounted(() => {
           type="button"
           class="d-press flex h-7 shrink-0 items-center gap-1.25 rounded-full px-2.25 text-xs font-medium transition-colors duration-200"
           :class="dangerouslySkipPermissions
-            ? 'bg-[color-mix(in_srgb,var(--d-danger)_14%,transparent)] text-(--d-danger-text)'
+            ? 'bg-[color-mix(in_srgb,var(--d-danger-fill)_14%,transparent)] text-(--d-danger-text)'
             : yoloLocked
               ? ['text-(--d-faint)', askingYolo ? 'cursor-default' : 'hover:bg-(--d-hover) hover:text-(--d-muted)']
               : 'text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text)'"
@@ -964,9 +964,9 @@ onUnmounted(() => {
             type="button"
             class="d-press flex size-8 shrink-0 items-center justify-center rounded-10 transition-colors duration-200"
             :class="isProcessing && !canSend
-              ? 'bg-(--d-danger) text-(--d-on-danger)'
+              ? 'bg-(--d-danger-fill) text-(--d-on-danger)'
               : canSend
-                ? 'bg-(--d-accent) text-(--d-on-accent) shadow-[0_4px_14px_var(--d-accent-soft)]'
+                ? 'bg-(--d-accent-fill) text-(--d-on-accent) shadow-[0_4px_14px_var(--d-accent-soft)]'
                 : 'bg-(--d-hover) text-(--d-faint)'"
             :disabled="canSend ? settingsStore.workspaceFolderSwitchPending || sendBlocked !== undefined : !isProcessing"
             :title="isProcessing && !canSend ? t('composer.stop') : canSend && sendBlocked ? sendBlocked : t('composer.send')"
@@ -976,7 +976,7 @@ onUnmounted(() => {
           >
             <span
               v-if="isProcessing && !canSend"
-              class="size-2.75 rounded-[0.1875rem] bg-current"
+              class="size-2.75 rounded-[calc(0.1875rem*var(--d-radius-scale,1))] bg-current"
               aria-hidden="true"
             />
             <ArrowUp

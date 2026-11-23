@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted } from 'vue';
-import type { DamoclesOverlayApi } from '../../preload/overlay-channels';
+import type { DamoclesOverlayApi, OverlayState } from '../../preload/overlay-channels';
+import { setPageCharacters } from '../characters';
 import { applyShellLocale } from '../i18n';
 import { createChime } from './chime';
 import ToastStack from './components/ToastStack.vue';
@@ -14,8 +15,12 @@ onMounted(async () => {
   // Unsubscribed before the context closes, so no chime can open it again.
   stops.push(props.api.onChime(chime.play), chime.close);
   // Subscribed before the first read, so a language change between the two is not lost.
-  stops.push(props.api.onState((state) => void applyShellLocale(state.locale)));
-  void applyShellLocale((await props.api.getState()).locale);
+  const apply = (state: OverlayState): void => {
+    void applyShellLocale(state.locale);
+    setPageCharacters(state.characters);
+  };
+  stops.push(props.api.onState(apply));
+  apply(await props.api.getState());
 });
 onBeforeUnmount(() => {
   for (const stop of stops) stop();

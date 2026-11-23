@@ -54,7 +54,7 @@ function send(): void {
         spellcheck="false"
         :aria-label="t(`remote.timeline.secret.${prompt.secretKind}`)"
         :aria-describedby="helpId"
-        class="h-7.5 w-72 max-w-full rounded-lg border-(--d-border2) bg-(--d-input) px-2.5 text-13 text-(--d-text) focus-visible:border-(--d-accent) focus-visible:ring-3 focus-visible:ring-(--d-accent-soft) focus-visible:ring-offset-0"
+        class="h-7.5 w-72 max-w-full rounded-lg border-(--d-border2) bg-(--d-input) px-2.5 text-13 text-(--d-text) focus-visible:border-(--d-accent-fill) focus-visible:ring-3 focus-visible:ring-(--d-accent-soft) focus-visible:ring-offset-0"
       />
       <Button
         type="button"
@@ -105,7 +105,7 @@ function send(): void {
         :id="rememberId"
         :checked="remember"
         data-testid="secret-remember"
-        class="size-3.75 shrink-0 rounded-xs border-(--d-border2) data-[state=checked]:border-(--d-accent) data-[state=checked]:bg-(--d-accent) data-[state=checked]:text-(--d-on-accent) [&_svg]:size-2.75"
+        class="size-3.75 shrink-0 rounded-xs border-(--d-border2) data-[state=checked]:border-(--d-accent-fill) data-[state=checked]:bg-(--d-accent-fill) data-[state=checked]:text-(--d-on-accent) [&_svg]:size-2.75"
         @update:checked="remember = $event"
       />
       <label

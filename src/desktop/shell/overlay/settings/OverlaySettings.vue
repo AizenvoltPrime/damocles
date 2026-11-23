@@ -17,7 +17,11 @@ import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useExtensionUiStore } from '@/stores/useExtensionUiStore';
 import { useVoiceJarvisStore } from '@/stores/useVoiceJarvisStore';
-import type { DamoclesOverlayApi, OverlaySettingsAway, OverlaySettingsAwayState, OverlaySettingsPage, OverlaySettingsScope, OverlaySettingsScopes } from '../../../preload/overlay-channels';
+import { acceleratorLabel } from '@shared/accelerator';
+import { KEEP_CHANGES_MS } from '@shared/themes/agent';
+import {
+  TOGGLE_WALLPAPERS_ACCELERATOR, type DamoclesOverlayApi, type OverlaySettingsAway, type OverlaySettingsAwayState, type OverlaySettingsPage, type OverlaySettingsScope, type OverlaySettingsScopes,
+} from '../../../preload/overlay-channels';
 import { ran } from '../popup-answer';
 import SettingsScopeTabs from './SettingsScopeTabs.vue';
 import AboutSection from './AboutSection.vue';
@@ -35,6 +39,9 @@ import NotifySoundRow from './NotifySoundRow.vue';
 import ForgeSettingsRows from './ForgeSettingsRows.vue';
 import type { OverlaySettingsBridge } from './overlay-bridge';
 import { provideDesktopPrefs } from './desktop-prefs';
+import { provideInstallCard } from './themes/install-card';
+import { secondsText } from './themes/theme-text';
+import ThemeInstallDialog from './themes/ThemeInstallDialog.vue';
 import { gitRowName } from './git-row-name';
 import {
   EDITOR_AUTO_SAVE_SETTING,
@@ -46,6 +53,15 @@ import {
   EDITOR_TAB_SIZE_SETTING,
   EDITOR_WORD_WRAP_SETTING,
   FILE_ICON_THEME_SETTING,
+  TEXT_SIZE_SETTING,
+  THEMES_DARK_SETTING,
+  THEMES_LIGHT_SETTING,
+  THEMES_AGENT_TOOLS_SETTING,
+  SHOW_WALLPAPERS_SETTING,
+  WALLPAPER_CONTRAST_SETTING,
+  CHARACTER_MOTION_SETTING,
+  THEMES_STORE_SETTING,
+  THEMES_APPLY_MODE_SETTING,
   FILES_EXCLUDE_SETTING,
   FORGE_AGENT_READ_ANY_REPOSITORY_SETTING,
   FORGE_AGENT_TOOLS_SETTING,
@@ -143,7 +159,7 @@ const emit = defineEmits<{
   (e: 'closed'): void;
 }>();
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const settingsStore = useSettingsStore();
 const extensionUiStore = useExtensionUiStore();
 const writes = useSettingWritesStore();
@@ -152,6 +168,7 @@ const ctx: SettingsHandlerContext = {
 };
 
 const prefs = provideDesktopPrefs(props.api);
+const installCard = provideInstallCard(props.api);
 
 // The Search group's rows in Files and search, in the order FilesSearchSection renders them.
 const SEARCH_SETTINGS = [
@@ -277,6 +294,8 @@ const REMOTE_HOSTS_SECTION: HostSettingsSection = {
   ],
 };
 
+// Unknown until main's overlay state answers; the row shows no description until then.
+const toggleWallpapersShortcut = computed(() => (prefs.platform.value === undefined ? undefined : acceleratorLabel(TOGGLE_WALLPAPERS_ACCELERATOR, prefs.platform.value)));
 const DESKTOP_SETTINGS = computed((): HostSettings => ({
   sections: [{
     id: 'appearance',
@@ -286,6 +305,18 @@ const DESKTOP_SETTINGS = computed((): HostSettings => ({
     component: AppearanceSection,
     rows: [
       { id: 'damocles.desktop.theme', section: 'appearance', label: 'settingsHost.rows.theme.label', description: 'settingsHost.rows.theme.description', keys: ['damocles.desktop.theme'] },
+      { id: 'theme-gallery', section: 'appearance', label: 'settingsHost.rows.themeGallery.label', description: 'settingsHost.rows.themeGallery.description', keys: [THEMES_DARK_SETTING, THEMES_LIGHT_SETTING] },
+      { id: 'theme-schedule', section: 'appearance', label: 'settingsHost.rows.themeSchedule.label', description: 'settingsHost.rows.themeSchedule.description' },
+      { id: TEXT_SIZE_SETTING, section: 'appearance', label: 'settingsHost.rows.textSize.label', description: 'settingsHost.rows.textSize.description', keys: [TEXT_SIZE_SETTING] },
+      { id: THEMES_APPLY_MODE_SETTING, section: 'appearance', label: 'settingsHost.rows.themesApplyMode.label', description: 'settingsHost.rows.themesApplyMode.description', descriptionValues: { duration: secondsText(locale.value, KEEP_CHANGES_MS) }, keys: [THEMES_APPLY_MODE_SETTING] },
+      { id: THEMES_AGENT_TOOLS_SETTING, section: 'appearance', label: 'settingsHost.rows.themesAgentTools.label', description: 'settingsHost.rows.themesAgentTools.description', keys: [THEMES_AGENT_TOOLS_SETTING] },
+      {
+        id: SHOW_WALLPAPERS_SETTING, section: 'appearance', label: 'settingsHost.rows.showWallpapers.label', keys: [SHOW_WALLPAPERS_SETTING],
+        ...(toggleWallpapersShortcut.value === undefined ? {} : { description: 'settingsHost.rows.showWallpapers.description', descriptionValues: { shortcut: toggleWallpapersShortcut.value } }),
+      },
+      { id: WALLPAPER_CONTRAST_SETTING, section: 'appearance', label: 'settingsHost.rows.wallpaperContrast.label', description: 'settingsHost.rows.wallpaperContrast.description', keys: [WALLPAPER_CONTRAST_SETTING] },
+      { id: CHARACTER_MOTION_SETTING, section: 'appearance', label: 'settingsHost.rows.characterMotion.label', description: 'settingsHost.rows.characterMotion.description', keys: [CHARACTER_MOTION_SETTING] },
+      { id: THEMES_STORE_SETTING, section: 'appearance', label: 'settingsHost.rows.themesStore.label', description: 'settingsHost.rows.themesStore.description', keys: [THEMES_STORE_SETTING] },
       { id: FILE_ICON_THEME_SETTING, section: 'appearance', label: 'settingsHost.rows.fileIconTheme.label', description: 'settingsHost.rows.fileIconTheme.description', keys: [FILE_ICON_THEME_SETTING] },
       { id: 'damocles.desktop.reduceMotion', section: 'appearance', label: 'settingsHost.rows.reduceMotion.label', description: 'settingsHost.rows.reduceMotion.description', keys: ['damocles.desktop.reduceMotion'] },
       { id: 'damocles.desktop.restoreLayout', section: 'appearance', label: 'settingsHost.rows.restoreLayout.label', description: 'settingsHost.rows.restoreLayout.description', keys: ['damocles.desktop.restoreLayout'] },
@@ -738,5 +769,14 @@ const modal = ref<InstanceType<typeof SettingsModal> | null>(null);
       </div>
     </template>
   </SettingsModal>
+  <!-- beside the modal, so the card shows whatever section, sub-page or scope tab the modal is on -->
+  <ThemeInstallDialog
+    :preview="installCard.preview.value"
+    :busy="installCard.busy.value"
+    :failure="installCard.failure.value"
+    :progress="installCard.progress.value"
+    @answer="installCard.answer"
+    @allow-flash="installCard.allowFlash"
+  />
   <ExtensionUiDialog />
 </template>

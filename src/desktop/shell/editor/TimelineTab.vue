@@ -250,7 +250,7 @@ const ICON_BUTTON = 'd-press size-5.5 rounded-5 text-(--d-muted) hover:bg-(--d-b
       <Button
         size="sm"
         variant="outline"
-        class="d-press h-7 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-3 text-12 hover:border-(--d-accent) hover:bg-(--d-card) [&_svg]:size-3.5"
+        class="d-press h-7 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-3 text-12 hover:border-(--d-accent-fill) hover:bg-(--d-card) [&_svg]:size-3.5"
         @click="load(false)"
       >
         <RotateCw aria-hidden="true" />{{ t('timeline.retry') }}
@@ -293,7 +293,7 @@ const ICON_BUTTON = 'd-press size-5.5 rounded-5 text-(--d-muted) hover:bg-(--d-b
           :data-hash="row.kind === 'commit' ? row.entry.hash : undefined"
           :tabindex="index === active ? 0 : -1"
           :title="row.kind === 'commit' ? `${row.entry.hash.slice(0, 7)}: ${visibleText(row.entry.subject)}\n${visibleText(row.entry.author)} · ${when(row.entry)}` : undefined"
-          class="group/row flex cursor-pointer items-center gap-2 rounded-7 pr-1.5 pl-2 text-12.5 outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
+          class="group/row flex cursor-pointer items-center gap-2 rounded-7 pr-1.5 pl-2 text-12.5 outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent-fill)]"
           :class="[
             row.kind === 'commit' && compareWith?.hash === row.entry.hash ? 'bg-(--d-accent-soft)' : 'hover:bg-(--d-hover)',
             arrivedFrom !== null && index >= arrivedFrom ? 'd-row-reveal' : '',

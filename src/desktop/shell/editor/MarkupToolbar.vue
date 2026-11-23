@@ -92,7 +92,7 @@ defineExpose({
         :title="t(`editor.designPreview.markup.${item.tool}Title`)"
         data-testid="design-markup-tool"
         :data-tool="item.tool"
-        class="h-5.5 gap-1 rounded-5 px-2 text-11 font-medium text-(--d-muted) transition-[color,background-color] duration-150 hover:bg-transparent hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 data-[state=on]:bg-(--d-design) data-[state=on]:text-(--d-on-design) @max-[42rem]:px-1.5 [&_svg]:size-3"
+        class="h-5.5 gap-1 rounded-5 px-2 text-11 font-medium text-(--d-muted) transition-[color,background-color] duration-150 hover:bg-transparent hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 data-[state=on]:bg-(--d-design-fill) data-[state=on]:text-(--d-on-design) @max-[42rem]:px-1.5 [&_svg]:size-3"
       >
         <component
           :is="item.icon"
@@ -131,7 +131,7 @@ defineExpose({
       <span
         data-testid="design-markup-chip"
         :title="t('editor.designPreview.markup.frozenTitle')"
-        class="inline-flex h-5.5 items-center gap-1.5 rounded-full border border-[color-mix(in_srgb,var(--d-design)_40%,var(--d-border))] bg-[color-mix(in_srgb,var(--d-design)_10%,transparent)] px-2 text-11 whitespace-nowrap text-(--d-design-text) tabular-nums"
+        class="inline-flex h-5.5 items-center gap-1.5 rounded-full border border-[color-mix(in_srgb,var(--d-design-fill)_40%,var(--d-border))] bg-[color-mix(in_srgb,var(--d-design-fill)_10%,transparent)] px-2 text-11 whitespace-nowrap text-(--d-design-text) tabular-nums"
       >
         <Snowflake
           aria-hidden="true"
@@ -151,7 +151,7 @@ defineExpose({
       <Button
         data-testid="design-markup-send"
         :class="cn(
-          'd-press h-6.5 gap-1.5 rounded-7 bg-(--d-design) px-2.5 text-12 font-medium text-(--d-on-design) hover:bg-[color-mix(in_srgb,var(--d-design)_88%,var(--d-text))] focus-visible:ring-2 focus-visible:ring-(--d-accent) focus-visible:ring-offset-1 focus-visible:ring-offset-(--d-panel) aria-disabled:cursor-default aria-disabled:opacity-(--d-opacity-disabled) aria-disabled:hover:bg-(--d-design) [&_svg]:size-3.5',
+          'd-press h-6.5 gap-1.5 rounded-7 bg-(--d-design-fill) px-2.5 text-12 font-medium text-(--d-on-design) hover:bg-[color-mix(in_srgb,var(--d-design-fill)_88%,var(--d-text))] focus-visible:ring-2 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-1 focus-visible:ring-offset-(--d-panel) aria-disabled:cursor-default aria-disabled:opacity-(--d-opacity-disabled) aria-disabled:hover:bg-(--d-design-fill) [&_svg]:size-3.5',
           shaking && 'd-shake',
         )"
         :aria-disabled="sending || count === 0 || undefined"

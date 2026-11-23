@@ -962,6 +962,7 @@ describe('RemoteHosts', () => {
         forgetChats: () => undefined,
         forgetRemoteState: () => state.forgetAuthority(`ssh+${hostId}`),
         forgetForgeBindings: async () => undefined,
+        forgetThemeLooks: async () => undefined,
         log: () => undefined,
       }),
     });

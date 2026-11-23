@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { canonicalHexColor, hexColorParts, type HexColor } from '../../../shared/hex-color';
-import { HOST_TONES } from '../../../shared/host-colors';
+import { HOST_TONES, hostColorLook } from '../../../shared/host-colors';
 import { DARK_THEME, LIGHT_THEME, type ThemePalette } from '../../theme-palettes';
 
 // WCAG 2.2 AA for normal-size text: a host's badge label and its title bar stripe label in every palette tone.
@@ -50,10 +50,10 @@ function badgeTint(): number {
   return Number(match[1]) / 100;
 }
 
-// The .d-tone-<tone> rule of the shared stylesheet, which every badge, swatch and stripe of that tone takes.
-function toneRule(tone: string): string {
-  const match = new RegExp(`\\.d-tone-${tone}\\s*\\{([^}]*)\\}`).exec(read('src/webview/style.css'));
-  if (!match) throw new Error(`style.css has no .d-tone-${tone} rule`);
+// A rule of the shared stylesheet: .d-tone-<tone>, which every badge, swatch and stripe of that tone takes, or .d-safety.d-tone-<tone>.
+function toneRule(tone: string, selector = `\\.d-tone-${tone}`): string {
+  const match = new RegExp(`(?:^|\\s)${selector}\\s*\\{([^}]*)\\}`).exec(read('src/webview/style.css'));
+  if (!match) throw new Error(`style.css has no ${selector} rule`);
   return match[1]!;
 }
 
@@ -76,9 +76,17 @@ const pickedLabel = (fill: Rgba): Rgba => (luminance(fill) < 0.179 ? WHITE : BLA
 describe('host safety colors', () => {
   it.each(HOST_TONES)('.d-tone-%s gives a badge its text shade and a stripe label its solid-fill text', (tone) => {
     const rule = toneRule(tone);
-    expect(rule).toContain(`--tone: var(--d-${tone});`);
+    expect(rule).toContain(`--tone: var(--d-${tone}-fill);`);
     expect(rule).toContain(`color: var(--d-${tone}-text);`);
     expect(rule).toContain(`--tone-on: var(--d-on-${tone});`);
+  });
+
+  it.each(HOST_TONES)('a host tone %s takes the built-in safety tokens', (tone) => {
+    expect(hostColorLook(tone).class.split(' ')).toEqual([`d-tone-${tone}`, 'd-safety']);
+    const rule = toneRule(tone, `\\.d-safety\\.d-tone-${tone}`);
+    expect(rule).toContain(`--tone: var(--d-safety-${tone});`);
+    expect(rule).toContain(`--tone-on: var(--d-safety-on-${tone});`);
+    expect(rule).toContain(`color: var(--d-safety-${tone}-text);`);
   });
 
   it('.d-tone-custom carries the opacity into --tone, labels a tint with --d-text and picks --tone-on over the composite', () => {
@@ -96,9 +104,9 @@ describe('host safety colors', () => {
   ] as const)('%s', (_kind, palette) => {
     it.each(HOST_TONES)('the %s badge label reaches AA on its tint over every surface it sits on', (tone) => {
       const tint = badgeTint();
-      const text = token(palette, `--d-${tone}-text`);
+      const text = token(palette, `--d-safety-${tone}-text`);
       const failures = BADGE_SURFACES.flatMap((surface) => {
-        const ratio = contrast(text, over(token(palette, `--d-${tone}`), tint, token(palette, surface)));
+        const ratio = contrast(text, over(token(palette, `--d-safety-${tone}`), tint, token(palette, surface)));
         return ratio >= AA ? [] : [`${surface}: ${ratio.toFixed(2)}`];
       });
       expect(failures).toEqual([]);
@@ -106,12 +114,12 @@ describe('host safety colors', () => {
 
     it.each(HOST_TONES)('the %s badge label reaches AA on a selected Projects row', (tone) => {
       const selected = over(token(palette, '--d-accent-soft'), 1, token(palette, '--d-panel'));
-      const ratio = contrast(token(palette, `--d-${tone}-text`), over(token(palette, `--d-${tone}`), badgeTint(), selected));
+      const ratio = contrast(token(palette, `--d-safety-${tone}-text`), over(token(palette, `--d-safety-${tone}`), badgeTint(), selected));
       expect(ratio).toBeGreaterThanOrEqual(AA);
     });
 
     it.each(HOST_TONES)('the %s tone is a #rrggbb color, which the custom color picker starts from', (tone) => {
-      expect(canonicalHexColor(palette[`--d-${tone}`] ?? '')).toMatch(/^#[0-9a-f]{6}ff$/);
+      expect(canonicalHexColor(palette[`--d-safety-${tone}`] ?? '')).toMatch(/^#[0-9a-f]{6}ff$/);
     });
 
     // WCAG 1.4.11: a custom color has no contrast floor, so a custom-colored Projects group's icon keeps the header's
@@ -122,7 +130,7 @@ describe('host safety colors', () => {
     });
 
     it.each(HOST_TONES)('the %s stripe label reaches AA on the solid fill', (tone) => {
-      expect(contrast(token(palette, `--d-on-${tone}`), token(palette, `--d-${tone}`))).toBeGreaterThanOrEqual(AA);
+      expect(contrast(token(palette, `--d-safety-on-${tone}`), token(palette, `--d-safety-${tone}`))).toBeGreaterThanOrEqual(AA);
     });
 
     it('--d-text reaches AA on the badge tint of every sampled custom color over every surface it sits on', () => {

@@ -506,7 +506,7 @@ const messageText = computed(() => {
         :role="running ? 'progressbar' : undefined"
         :data-testid="running ? 'search-editor-progress' : undefined"
         :aria-label="running ? t('search.searching') : undefined"
-        class="d-sweep-bar h-full text-(--d-accent)"
+        class="d-sweep-bar h-full [--tone:var(--d-accent-fill)]"
       />
     </div>
     <div class="relative min-h-0 flex-1">

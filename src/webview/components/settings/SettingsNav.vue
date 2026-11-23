@@ -70,7 +70,7 @@ function onKeydown(event: KeyboardEvent): void {
       :box="box"
       :radius="9"
       :animate="animate"
-      class="sm-pill text-(--d-accent-soft)"
+      class="sm-pill [--tone:var(--d-accent-soft)]"
       :class="{ 'sm-pill-hidden': searching }"
     />
     <button

@@ -110,6 +110,11 @@ export function fakeViewsElectron(webPreferences: unknown[] = []): Record<string
     getURL(): string {
       return this.mainFrame.url;
     }
+    // a test sets it while a page's load is under way
+    loading = false;
+    isLoadingMainFrame(): boolean {
+      return this.loading;
+    }
     isDestroyed(): boolean {
       return false;
     }
@@ -166,6 +171,8 @@ export type FakeContents = DesktopPanel['webContents'] & {
   ipc: EventEmitter & { handlers: Map<string, (event: unknown, ...args: unknown[]) => unknown> };
   focus: ReturnType<typeof vi.fn>;
   focused: boolean;
+  loading: boolean;
+  executeJavaScriptInIsolatedWorld: ReturnType<typeof vi.fn>;
   zoom: number;
   loadURL: ReturnType<typeof vi.fn>;
   mainFrame: { url: string; parent: null };

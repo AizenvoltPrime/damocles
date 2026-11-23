@@ -10,9 +10,12 @@ import { isShellTool, TOOL_EDIT, TOOL_FORGE_COMMENT, TOOL_FORGE_JOB_ACTION, TOOL
 import type { PermissionContent, PermissionFact, PermissionUpdate, PermissionUpdateDestination, PromptOwner } from '@shared/types/permissions';
 import type { LocalizedText } from '@shared/localized-text';
 import type { FilePatchOmitted } from '@shared/types/file-patch';
+import { MAX_PROMPT_ANSWER_CHARS } from '@shared/types/constants';
 import { buildFileDiff, fileChangeSource } from '@/utils/parseUnifiedDiff';
 import { useDockPromptDigits } from '@/composables/useDockPrompt';
 import { useAttentionCard } from '@/composables/useAttention';
+import { useDockCardVisibility } from '@/composables/useDockCardVisibility';
+import TrustedCheckingNote from './TrustedCheckingNote.vue';
 import { useFolderRelativePath } from '@/composables/useFolderRelativePath';
 import { useDiffStore } from '@/stores/useDiffStore';
 import { useEditorStore } from '@/stores/useEditorStore';
@@ -67,6 +70,8 @@ const pendingBehavior = ref<'allow' | 'deny'>('allow');
 
 const isShell = computed(() => isShellTool(props.toolName ?? ''));
 const isGenerateImage = computed(() => props.toolName === TOOL_GENERATE_IMAGE);
+// An image for a theme names no file: it goes into the theme and nothing is written in the project.
+const isThemeImage = computed(() => isGenerateImage.value && !props.filePath);
 const isEditOrWrite = computed(() => props.toolName === TOOL_EDIT || props.toolName === TOOL_WRITE);
 // An Edit or Write core titled (its path may reach a network host, so core read no file for a patch) shows core's card, not a diff.
 const isFileChange = computed(() => isEditOrWrite.value && props.title === undefined);
@@ -106,7 +111,7 @@ const hasDetail = computed(() => isGeneric.value && (props.facts !== undefined |
 const toolTitle = computed(() => (isGeneric.value && props.title ? renderText(props.title) : undefined));
 const showAvatars = computed(() => settingsStore.forgeAccounts?.showAvatars ?? true);
 const titleKey = computed(() => {
-  const key = isShell.value ? 'runCommand' : isGenerateImage.value ? 'generateImage' : isGeneric.value ? 'useTool' : isNewFile.value ? 'allowCreate' : 'allowEdit';
+  const key = isShell.value ? 'runCommand' : isThemeImage.value ? 'generateThemeImage' : isGenerateImage.value ? 'generateImage' : isGeneric.value ? 'useTool' : isNewFile.value ? 'allowCreate' : 'allowEdit';
   if (host.value) return `permission.onHost.${key}`;
   return key === 'allowCreate' || key === 'allowEdit' ? `prompts.permission.${key}` : `permission.${key}`;
 });
@@ -199,14 +204,23 @@ const options = computed(() => {
   });
 });
 
+// A request is answered once: the page shows the next request only after its flush, and a press before that is not for it.
+let answeredRequest: string | undefined;
+function approve(approved: boolean, options?: { acceptAll?: boolean; customMessage?: string; updatedPermissions?: PermissionUpdate[] }): void {
+  if (answeredRequest === props.toolUseId) return;
+  answeredRequest = props.toolUseId;
+  if (options === undefined) emit('approve', approved);
+  else emit('approve', approved, options);
+}
+
 function handleSelect(value: OptionValue) {
   switch (value) {
     case 'yes':
-      emit('approve', true);
+      approve(true);
       resetState();
       break;
     case 'yes-accept-all':
-      emit('approve', true, { acceptAll: true });
+      approve(true, { acceptAll: true });
       resetState();
       break;
     case 'always-allow':
@@ -220,7 +234,7 @@ function handleSelect(value: OptionValue) {
       break;
     }
     case 'no':
-      emit('approve', false);
+      approve(false);
       resetState();
       break;
   }
@@ -229,7 +243,7 @@ function handleSelect(value: OptionValue) {
 function handleCustomSubmit() {
   const message = customMessage.value.trim();
   if (!message) return;
-  emit('approve', false, { customMessage: message });
+  approve(false, { customMessage: message });
   resetState();
 }
 
@@ -248,7 +262,7 @@ function handleDestinationSelect(destination: PermissionUpdateDestination) {
       behavior: pendingBehavior.value,
       destination,
     };
-    emit('approve', pendingBehavior.value === 'allow', { updatedPermissions: [updatedSuggestion] });
+    approve(pendingBehavior.value === 'allow', { updatedPermissions: [updatedSuggestion] });
   }
   resetState();
 }
@@ -260,13 +274,14 @@ function handleDestinationCancel() {
 
 const cardRef = ref<HTMLElement | null>(null);
 useAttentionCard('approval', cardRef);
+const { isVisible, explain, refuse } = useDockCardVisibility(cardRef);
 
 useDockPromptDigits(cardRef, (digit) => {
   const option = showDestinationPicker.value ? undefined : options.value[digit - 1];
   if (!option) return false;
   handleSelect(option.value);
   return true;
-});
+}, refuse);
 
 function focusOptions() {
   cardRef.value?.querySelector<HTMLElement>('[role="listbox"]')?.focus();
@@ -276,277 +291,305 @@ watch(() => props.toolUseId, resetState);
 </script>
 
 <template>
-  <section
+  <div
     v-if="visible"
-    ref="cardRef"
-    class="overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--d-warning)_45%,transparent)] bg-(--d-card) text-(--d-text) shadow-(--d-shadow) [--attention-ring:var(--d-warning)]"
-    role="region"
-    :aria-label="t('permission.ariaLabel')"
-    data-dock-prompt
-    data-testid="permission-card"
+    class="d-dock-shadow rounded-14"
+    data-trusted
   >
-    <header class="flex items-center gap-2.5 border-b border-(--d-border) bg-linear-to-b from-[color-mix(in_srgb,var(--d-warning)_10%,transparent)] to-transparent px-3 py-2">
-      <span
-        class="d-ring flex size-6.5 flex-none items-center justify-center rounded-8 bg-[color-mix(in_srgb,var(--d-warning)_16%,transparent)] text-(--d-warning)"
-        aria-hidden="true"
-      >
-        <component
-          :is="kindIcon"
-          class="size-3.5"
-        />
-      </span>
-      <div class="min-w-0 flex-1">
-        <div
-          class="font-semibold"
-          data-testid="permission-title"
-        >
-          <i18n-t
-            v-if="host && toolTitle !== undefined"
-            keypath="permission.onHost.titled"
-            tag="span"
-            class="inline-flex flex-wrap items-center gap-x-1.5"
-            scope="global"
-          >
-            <template #host>
-              <HostBadge
-                :name="host.name"
-                :color="host.color"
-              />
-            </template>
-            <template #title>
-              {{ toolTitle }}
-            </template>
-          </i18n-t>
-          <i18n-t
-            v-else-if="host"
-            :keypath="titleKey"
-            tag="span"
-            class="inline-flex flex-wrap items-center gap-x-1.5"
-            scope="global"
-          >
-            <template #host>
-              <HostBadge
-                :name="host.name"
-                :color="host.color"
-              />
-            </template>
-            <template #tool>
-              {{ toolName }}
-            </template>
-          </i18n-t>
-          <template v-else>
-            {{ heading }}
-          </template>
-        </div>
-        <div
-          v-if="isGeneric && props.subtitle"
-          class="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-(--d-muted)"
-          data-testid="permission-subtitle"
-        >
-          <span class="font-mono text-(--d-text)">{{ toolName }}</span>
-          <span class="sr-only">, </span>
-          <span
-            class="text-(--d-faint)"
-            aria-hidden="true"
-          >·</span>
-          <span>{{ renderText(props.subtitle) }}</span>
-        </div>
-        <div
-          v-else-if="subline"
-          class="truncate font-mono text-xs text-(--d-muted)"
-          :title="sublineTitle"
-          data-testid="permission-subtitle"
-        >
-          {{ subline }}
-        </div>
-      </div>
-      <span
-        v-if="queueTotal && queueTotal > 1"
-        class="flex-none rounded-full border border-(--d-border2) px-2 text-11/5 text-(--d-muted)"
-      >
-        {{ t('permission.queuePosition', { position: queuePosition, total: queueTotal }) }}
-      </span>
-      <button
-        v-if="canOpenDiff"
-        type="button"
-        class="flex-none rounded-6 px-1 text-xs whitespace-nowrap text-(--d-accent) hover:underline focus-visible:outline-2 focus-visible:outline-(--d-accent)"
-        data-testid="permission-open-diff"
-        @click="openDiff"
-      >
-        {{ t('prompts.permission.openDiff') }}
-      </button>
-    </header>
-
-    <div
-      v-if="agentLine || unsavedNote || isShell || isGeneric || isGenerateImage"
-      class="space-y-2 px-3 pt-2.5 text-12.5"
+    <!-- One bounded element that scrolls inside itself under its answers, so the whole card always fits the page. -->
+    <!-- Keyed by the request: the next request is a new element, which starts held (useTrustedVisibility). -->
+    <section
+      ref="cardRef"
+      :key="toolUseId"
+      class="max-h-[70dvh] overflow-x-hidden overflow-y-auto rounded-14 border border-[color-mix(in_srgb,var(--d-warning-fill)_45%,transparent)] bg-(--d-card) text-(--d-text) [--attention-ring:var(--d-warning-fill)]"
+      role="region"
+      :aria-label="t('permission.ariaLabel')"
+      data-dock-prompt
+      data-trusted
+      data-testid="permission-card"
     >
-      <div
-        v-if="agentLine"
-        class="text-(--d-muted)"
-      >
-        {{ agentLine }}
-      </div>
-      <div
-        v-if="unsavedNote"
-        class="text-(--d-muted)"
-        data-testid="permission-unsaved-changes"
-      >
-        {{ t('prompts.permission.unsavedChanges') }}
-      </div>
-      <div
-        v-if="isShell"
-        class="max-h-40 overflow-y-auto rounded-8 border border-(--d-border) bg-(--d-code) px-2.5 py-2 font-mono text-xs break-all whitespace-pre-wrap"
-      >
-        {{ command }}
-      </div>
-      <template v-else-if="hasDetail">
-        <dl
-          v-if="facts?.length"
-          class="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs"
-          role="group"
-          :aria-label="t('permission.factsLabel')"
-          data-testid="permission-facts"
-        >
-          <template
-            v-for="(fact, index) in facts"
-            :key="index"
-          >
-            <dt class="text-(--d-faint-text)">
-              {{ renderText(fact.label) }}
-            </dt>
-            <dd class="m-0 flex min-w-0 flex-wrap items-center gap-x-1.5 font-mono wrap-anywhere">
-              <ForgeAvatar
-                v-if="fact.avatar !== undefined"
-                :login="fact.value"
-                :avatar-key="showAvatars ? fact.avatar.key : undefined"
-                size="chip"
-              />
-              <span
-                dir="ltr"
-                class="whitespace-pre-wrap"
-              >{{ fact.value }}</span>
-              <span
-                v-if="fact.detail !== undefined"
-                class="font-sans text-(--d-faint-text)"
-              ><span class="sr-only">, </span><span aria-hidden="true">· </span>{{ fact.detail }}</span>
-              <span
-                v-if="fact.note !== undefined"
-                class="font-sans text-(--d-faint-text)"
-              ><span class="sr-only">, </span><span aria-hidden="true">· </span>{{ renderText(fact.note) }}</span>
-            </dd>
-          </template>
-        </dl>
-        <div
-          v-if="content"
-          class="max-h-40 overflow-y-auto rounded-8 border border-(--d-border) bg-(--d-code) px-2.5 py-2 text-xs wrap-break-word whitespace-pre-wrap focus-visible:outline-2 focus-visible:outline-(--d-accent)"
-          role="region"
-          tabindex="0"
-          :aria-label="renderText(content.label)"
-          data-testid="permission-content"
-          v-text="content.text"
-        />
-      </template>
-      <div
-        v-else-if="isGeneric"
-        class="max-h-40 overflow-y-auto rounded-8 border border-(--d-border) bg-(--d-code) px-2.5 py-2 font-mono text-xs break-all whitespace-pre-wrap focus-visible:outline-2 focus-visible:outline-(--d-accent)"
-        role="region"
-        tabindex="0"
-        :aria-label="heading"
-        data-testid="tool-permission-input"
-        v-text="JSON.stringify(toolInput ?? {}, null, 2)"
-      />
-      <template v-else-if="isGenerateImage">
-        <div
-          class="rounded-8 border border-(--d-border) bg-(--d-code) px-2.5 py-2 font-mono text-xs break-all whitespace-pre-wrap"
-          data-testid="image-permission-path"
-        >
-          {{ filePath }}
-        </div>
-        <div class="text-xs text-(--d-muted)">
-          {{ t('permission.imagePrompt') }}
-        </div>
-        <div
-          class="max-h-40 overflow-y-auto rounded-8 border border-(--d-border) bg-(--d-code) px-2.5 py-2 text-xs wrap-break-word whitespace-pre-wrap focus-visible:outline-2 focus-visible:outline-(--d-accent)"
-          role="region"
-          tabindex="0"
-          :aria-label="t('permission.imagePrompt')"
-          data-testid="image-permission-prompt"
-        >
-          {{ prompt }}
-        </div>
-        <div
-          class="text-xs text-(--d-muted)"
-          data-testid="image-permission-model"
-        >
-          {{ t('permission.imageModel') }} <span class="font-mono break-all text-(--d-text)">{{ imageModel }}</span>
-        </div>
-        <div
-          class="text-xs text-(--d-muted)"
-          data-testid="image-permission-billing"
-        >
-          {{ t('permission.imageBilled') }}
-        </div>
-      </template>
-    </div>
-
-    <div class="px-1.5 pt-1 pb-1.5">
-      <ListboxRoot
-        v-model="selectedValue"
-        class="group/list flex flex-col"
-        orientation="vertical"
-        data-testid="permission-options"
-        @keydown.esc.prevent.stop="handleSelect('no')"
-      >
-        <DockPromptOptions :aria-label="heading">
-          <ListboxItem
-            v-for="option in options"
-            :key="option.value"
-            :value="option.value"
-            class="group flex items-center gap-2.5 rounded-9 px-2.5 py-1.25 transition-colors outline-none data-highlighted:bg-(--d-accent-soft) data-highlighted:text-(--d-accent-text) data-[state=checked]:bg-(--d-accent-soft) data-[state=checked]:text-(--d-accent-text) group-hover/list:data-[state=checked]:not-data-highlighted:bg-transparent group-hover/list:data-[state=checked]:not-data-highlighted:text-(--d-text)"
-            :aria-keyshortcuts="option.shortcuts"
-            :data-testid="`permission-option-${option.value}`"
-            @select="handleSelect(option.value)"
-          >
-            <span
-              class="flex size-5 flex-none items-center justify-center rounded-6 border border-(--d-border2) font-mono text-11 group-data-highlighted:border-(--d-accent) group-data-[state=checked]:border-(--d-accent)"
-              aria-hidden="true"
-            >{{ option.key }}</span>
-            <span class="min-w-0 flex-1 truncate font-medium">{{ option.label }}</span>
-            <!-- Enter and Esc answer only while the options hold focus, so their hints show only then. -->
-            <span
-              v-if="option.hint"
-              class="invisible flex-none text-11 text-(--d-faint) group-focus-within/list:visible group-data-highlighted:text-(--d-faint-text) group-data-[state=checked]:text-(--d-faint-text)"
-              aria-hidden="true"
-            >{{ option.hint }}</span>
-          </ListboxItem>
-        </DockPromptOptions>
-      </ListboxRoot>
-
-      <label class="mx-1 mt-0.75 mb-0.5 flex h-7.5 items-center gap-2 rounded-9 border border-(--d-border) bg-(--d-input) px-2.5 focus-within:border-(--d-accent)">
-        <MessageSquare
-          class="size-3.25 flex-none text-(--d-faint)"
+      <header class="flex items-center gap-2.5 border-b border-(--d-border) bg-linear-to-b from-[color-mix(in_srgb,var(--d-warning-fill)_10%,transparent)] to-transparent px-3 py-2">
+        <span
+          class="d-ring [--tone:var(--d-warning-fill)] flex size-6.5 flex-none items-center justify-center rounded-8 bg-[color-mix(in_srgb,var(--d-warning-fill)_16%,transparent)] text-(--d-warning)"
           aria-hidden="true"
-        />
-        <span class="sr-only">{{ t('permission.options.customMessage') }}</span>
-        <input
-          v-model="customMessage"
-          type="text"
-          class="min-w-0 flex-1 border-0 bg-transparent text-12.5 text-(--d-text) outline-none placeholder:text-(--d-faint)"
-          :placeholder="t('prompts.permission.feedbackPlaceholder')"
-          data-testid="permission-feedback"
-          @keydown.enter.prevent="handleCustomSubmit"
-          @keydown.esc.stop="focusOptions"
         >
-      </label>
-    </div>
+          <component
+            :is="kindIcon"
+            class="size-3.5"
+          />
+        </span>
+        <div class="min-w-0 flex-1">
+          <div
+            class="font-semibold"
+            data-testid="permission-title"
+          >
+            <i18n-t
+              v-if="host && toolTitle !== undefined"
+              keypath="permission.onHost.titled"
+              tag="span"
+              class="inline-flex flex-wrap items-center gap-x-1.5"
+              scope="global"
+            >
+              <template #host>
+                <HostBadge
+                  :name="host.name"
+                  :color="host.color"
+                />
+              </template>
+              <template #title>
+                {{ toolTitle }}
+              </template>
+            </i18n-t>
+            <i18n-t
+              v-else-if="host"
+              :keypath="titleKey"
+              tag="span"
+              class="inline-flex flex-wrap items-center gap-x-1.5"
+              scope="global"
+            >
+              <template #host>
+                <HostBadge
+                  :name="host.name"
+                  :color="host.color"
+                />
+              </template>
+              <template #tool>
+                {{ toolName }}
+              </template>
+            </i18n-t>
+            <template v-else>
+              {{ heading }}
+            </template>
+          </div>
+          <div
+            v-if="isGeneric && props.subtitle"
+            class="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-(--d-muted)"
+            data-testid="permission-subtitle"
+          >
+            <span class="font-mono text-(--d-text)">{{ toolName }}</span>
+            <span class="sr-only">, </span>
+            <span
+              class="text-(--d-faint)"
+              aria-hidden="true"
+            >·</span>
+            <span>{{ renderText(props.subtitle) }}</span>
+          </div>
+          <div
+            v-else-if="subline"
+            class="truncate font-mono text-xs text-(--d-muted)"
+            :title="sublineTitle"
+            data-testid="permission-subtitle"
+          >
+            {{ subline }}
+          </div>
+        </div>
+        <span
+          v-if="queueTotal && queueTotal > 1"
+          class="flex-none rounded-full border border-(--d-border2) px-2 text-11/5 text-(--d-muted)"
+        >
+          {{ t('permission.queuePosition', { position: queuePosition, total: queueTotal }) }}
+        </span>
+        <button
+          v-if="canOpenDiff"
+          type="button"
+          class="flex-none rounded-6 px-1 text-xs whitespace-nowrap text-(--d-accent) hover:underline focus-visible:outline-2 focus-visible:outline-(--d-accent-fill)"
+          data-view-only
+          data-testid="permission-open-diff"
+          @click="openDiff"
+        >
+          {{ t('prompts.permission.openDiff') }}
+        </button>
+      </header>
 
-    <PermissionDestinationPicker
-      :open="showDestinationPicker"
-      :pattern="suggestionLabel ?? ''"
-      :behavior="pendingBehavior"
-      @select="handleDestinationSelect"
-      @cancel="handleDestinationCancel"
-    />
-  </section>
+      <div
+        v-if="agentLine || unsavedNote || isShell || isGeneric || isGenerateImage"
+        class="space-y-2 px-3 pt-2.5 text-12.5"
+      >
+        <div
+          v-if="agentLine"
+          class="text-(--d-muted)"
+        >
+          {{ agentLine }}
+        </div>
+        <div
+          v-if="unsavedNote"
+          class="text-(--d-muted)"
+          data-testid="permission-unsaved-changes"
+        >
+          {{ t('prompts.permission.unsavedChanges') }}
+        </div>
+        <div
+          v-if="isShell"
+          class="max-h-40 overflow-y-auto rounded-8 border border-(--d-border) bg-(--d-code) px-2.5 py-2 font-mono text-xs break-all whitespace-pre-wrap"
+        >
+          {{ command }}
+        </div>
+        <template v-else-if="hasDetail">
+          <dl
+            v-if="facts?.length"
+            class="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs"
+            role="group"
+            :aria-label="t('permission.factsLabel')"
+            data-testid="permission-facts"
+          >
+            <template
+              v-for="(fact, index) in facts"
+              :key="index"
+            >
+              <dt class="text-(--d-faint-text)">
+                {{ renderText(fact.label) }}
+              </dt>
+              <dd class="m-0 flex min-w-0 flex-wrap items-center gap-x-1.5 font-mono wrap-anywhere">
+                <ForgeAvatar
+                  v-if="fact.avatar !== undefined"
+                  :login="fact.value"
+                  :avatar-key="showAvatars ? fact.avatar.key : undefined"
+                  size="chip"
+                />
+                <span
+                  dir="ltr"
+                  class="whitespace-pre-wrap"
+                >{{ fact.value }}</span>
+                <span
+                  v-if="fact.detail !== undefined"
+                  class="font-sans text-(--d-faint-text)"
+                ><span class="sr-only">, </span><span aria-hidden="true">· </span>{{ fact.detail }}</span>
+                <span
+                  v-if="fact.note !== undefined"
+                  class="font-sans text-(--d-faint-text)"
+                ><span class="sr-only">, </span><span aria-hidden="true">· </span>{{ renderText(fact.note) }}</span>
+              </dd>
+            </template>
+          </dl>
+          <div
+            v-if="content"
+            class="max-h-40 overflow-y-auto rounded-8 border border-(--d-border) bg-(--d-code) px-2.5 py-2 text-xs wrap-break-word whitespace-pre-wrap focus-visible:outline-2 focus-visible:outline-(--d-accent-fill)"
+            role="region"
+            tabindex="0"
+            :aria-label="renderText(content.label)"
+            data-testid="permission-content"
+            v-text="content.text"
+          />
+        </template>
+        <div
+          v-else-if="isGeneric"
+          class="max-h-40 overflow-y-auto rounded-8 border border-(--d-border) bg-(--d-code) px-2.5 py-2 font-mono text-xs break-all whitespace-pre-wrap focus-visible:outline-2 focus-visible:outline-(--d-accent-fill)"
+          role="region"
+          tabindex="0"
+          :aria-label="heading"
+          data-testid="tool-permission-input"
+          v-text="JSON.stringify(toolInput ?? {}, null, 2)"
+        />
+        <template v-else-if="isGenerateImage">
+          <div
+            v-if="isThemeImage"
+            class="text-xs text-(--d-muted)"
+            data-testid="image-permission-theme"
+          >
+            {{ t('permission.imageForTheme') }}
+          </div>
+          <div
+            v-else
+            class="rounded-8 border border-(--d-border) bg-(--d-code) px-2.5 py-2 font-mono text-xs break-all whitespace-pre-wrap"
+            data-testid="image-permission-path"
+          >
+            {{ filePath }}
+          </div>
+          <div class="text-xs text-(--d-muted)">
+            {{ t('permission.imagePrompt') }}
+          </div>
+          <div
+            class="max-h-40 overflow-y-auto rounded-8 border border-(--d-border) bg-(--d-code) px-2.5 py-2 text-xs wrap-break-word whitespace-pre-wrap focus-visible:outline-2 focus-visible:outline-(--d-accent-fill)"
+            role="region"
+            tabindex="0"
+            :aria-label="t('permission.imagePrompt')"
+            data-testid="image-permission-prompt"
+          >
+            {{ prompt }}
+          </div>
+          <div
+            class="text-xs text-(--d-muted)"
+            data-testid="image-permission-model"
+          >
+            {{ t('permission.imageModel') }} <span class="font-mono break-all text-(--d-text)">{{ imageModel }}</span>
+          </div>
+          <div
+            class="text-xs text-(--d-muted)"
+            data-testid="image-permission-billing"
+          >
+            {{ t('permission.imageBilled') }}
+          </div>
+        </template>
+      </div>
+
+      <div class="sticky bottom-0 bg-(--d-card) px-1.5 pt-1 pb-1.5">
+        <TrustedCheckingNote
+          overlay
+          class="bottom-0"
+          :shown="explain"
+          :text="t('trusted.checkingVisible')"
+        />
+        <ListboxRoot
+          v-model="selectedValue"
+          class="group/list flex flex-col"
+          orientation="vertical"
+          data-testid="permission-options"
+          @keydown.esc.prevent.stop="handleSelect('no')"
+        >
+          <DockPromptOptions
+            :aria-label="heading"
+            :aria-disabled="!isVisible || undefined"
+          >
+            <ListboxItem
+              v-for="option in options"
+              :key="option.value"
+              :value="option.value"
+              class="group flex items-center gap-2.5 rounded-9 px-2.5 py-1.25 transition-colors outline-none data-highlighted:bg-(--d-accent-soft) data-highlighted:text-(--d-accent-text) data-[state=checked]:bg-(--d-accent-soft) data-[state=checked]:text-(--d-accent-text) group-hover/list:data-[state=checked]:not-data-highlighted:bg-transparent group-hover/list:data-[state=checked]:not-data-highlighted:text-(--d-text)"
+              :aria-keyshortcuts="option.shortcuts"
+              :data-testid="`permission-option-${option.value}`"
+              @select="handleSelect(option.value)"
+            >
+              <span
+                class="flex size-5 flex-none items-center justify-center rounded-6 border border-(--d-border2) font-mono text-11 group-data-highlighted:border-(--d-accent-fill) group-data-[state=checked]:border-(--d-accent-fill)"
+                aria-hidden="true"
+              >{{ option.key }}</span>
+              <span class="min-w-0 flex-1 truncate font-medium">{{ option.label }}</span>
+              <!-- Enter and Esc answer only while the options hold focus, so their hints show only then. -->
+              <span
+                v-if="option.hint"
+                class="invisible flex-none text-11 text-(--d-faint) group-focus-within/list:visible group-data-highlighted:text-(--d-faint-text) group-data-[state=checked]:text-(--d-faint-text)"
+                aria-hidden="true"
+              >{{ option.hint }}</span>
+            </ListboxItem>
+          </DockPromptOptions>
+        </ListboxRoot>
+
+        <label class="mx-1 mt-0.75 mb-0.5 flex h-7.5 items-center gap-2 rounded-9 border border-(--d-border) bg-(--d-input) px-2.5 focus-within:border-(--d-accent-fill)">
+          <MessageSquare
+            class="size-3.25 flex-none text-(--d-faint)"
+            aria-hidden="true"
+          />
+          <span class="sr-only">{{ t('permission.options.customMessage') }}</span>
+          <input
+            v-model="customMessage"
+            type="text"
+            class="min-w-0 flex-1 border-0 bg-transparent text-12.5 text-(--d-text) outline-none placeholder:text-(--d-faint)"
+            :placeholder="t('prompts.permission.feedbackPlaceholder')"
+            :maxlength="MAX_PROMPT_ANSWER_CHARS"
+            data-testid="permission-feedback"
+            @keydown.enter.prevent="handleCustomSubmit"
+            @keydown.esc.stop="focusOptions"
+          >
+        </label>
+      </div>
+
+      <PermissionDestinationPicker
+        :open="showDestinationPicker"
+        :pattern="suggestionLabel ?? ''"
+        :behavior="pendingBehavior"
+        @select="handleDestinationSelect"
+        @cancel="handleDestinationCancel"
+      />
+    </section>
+  </div>
 </template>

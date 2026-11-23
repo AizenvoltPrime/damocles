@@ -17,7 +17,7 @@ const segments = computed(() => highlightTerms(props.text, props.terms));
   >
     <mark
       v-if="segment.hit"
-      class="rounded-sm bg-[color-mix(in_srgb,var(--d-warning)_25%,transparent)] px-0.5 font-semibold text-(--d-text)"
+      class="rounded-sm bg-[color-mix(in_srgb,var(--d-warning-fill)_25%,transparent)] px-0.5 font-semibold text-(--d-text)"
     >{{ segment.text }}</mark>
     <span v-else>{{ segment.text }}</span>
   </template>

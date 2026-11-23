@@ -326,7 +326,7 @@ function userMessageText(message: ChatMessage): string {
             :class="arrived.has(message.id) && 'd-arrive'"
             data-testid="agent-steer-message"
           >
-            <div class="max-w-[85%] rounded-[0.875rem_0.875rem_0.3125rem_0.875rem] border border-[color-mix(in_srgb,var(--d-warning)_35%,transparent)] bg-[color-mix(in_srgb,var(--d-warning)_7%,transparent)] px-3 pt-2 pb-2.25">
+            <div class="max-w-[85%] rounded-14 rounded-br-5 border border-[color-mix(in_srgb,var(--d-warning-fill)_35%,transparent)] bg-[color-mix(in_srgb,var(--d-warning-fill)_7%,transparent)] px-3 pt-2 pb-2.25">
               <div class="mb-0.5 flex items-center gap-1.5 text-11 font-semibold text-(--d-warning-text)">
                 <Send
                   class="size-2.75"

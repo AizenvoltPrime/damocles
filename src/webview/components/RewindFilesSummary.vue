@@ -25,7 +25,7 @@ const hasFileList = computed(() => !!props.files && props.files.length > 0);
       <button
         v-if="hasFileList"
         type="button"
-        class="flex items-center gap-1 rounded text-(--d-accent) focus:outline-none focus-visible:ring-1 focus-visible:ring-(--d-accent)"
+        class="flex items-center gap-1 rounded text-(--d-accent) focus:outline-none focus-visible:ring-1 focus-visible:ring-(--d-accent-fill)"
         :aria-expanded="expanded"
         :title="t('rewind.toggleFileList')"
         data-testid="rewind-files-toggle"

@@ -17,6 +17,9 @@ import type { ChatReviewTab, DamoclesReviewApi } from './review-channels';
 import type { DamoclesPortsApi } from './ports-channels';
 import type { DamoclesForgeShellApi } from './forge-channels';
 import type { CiState } from '../../shared/forge/ci';
+import type { KeepChangesState, ThemeProposalStrip } from '../../shared/themes/agent';
+import type { ShellWallpaper } from '../../shared/themes/wallpapers';
+import type { ShownCharacters } from '../../shared/themes/characters';
 import type { RelocationStepName } from '../../core/project-relocation/types';
 import type { LinkRefusal } from '../../platform/file-confinement';
 import type { LocalizedText } from '../../shared/localized-text';
@@ -33,6 +36,7 @@ export const SHELL_CHANNELS = {
   locateProject: 'damocles:shell:locate-project',
   retryRelocation: 'damocles:shell:retry-relocation',
   abandonRelocation: 'damocles:shell:abandon-relocation',
+  projectLook: 'damocles:shell:project-look',
   selectProject: 'damocles:shell:select-project',
   grantTrust: 'damocles:shell:grant-trust',
   chatsList: 'damocles:shell:chats:list',
@@ -108,8 +112,22 @@ export const SHELL_CHANNELS = {
   containersReopen: 'damocles:shell:containers:reopen',
   // { projectKey }: the Connect dialog opens on the container project's host card at its Rebuild Container confirmation
   containersRebuild: 'damocles:shell:containers:rebuild',
+  // renderer → main, invoke boolean: the peek bar ends Peek at the window (false); the dock alone starts it
+  themeDockPeek: 'damocles:shell:theme-dock:peek',
+  // renderer → main, invoke {}: the safe-start banner's Use my theme
+  useMyTheme: 'damocles:shell:themes:use-mine',
+  // renderer → main, invoke {}: the keep-changes banner's Keep and Revert, and the Show in window strip's Stop showing
+  keepThemeChanges: 'damocles:shell:themes:keep',
+  revertThemeChanges: 'damocles:shell:themes:revert',
+  stopShowingProposal: 'damocles:shell:themes:stop-showing',
   // renderer → main, send
   contentBounds: 'damocles:shell:content-bounds',
+  // ContentBounds | null: the theme editor dock's slot, where main places its view; null while the shell shows none
+  themeDockBounds: 'damocles:shell:theme-dock:bounds',
+  // ShellPageMotion: the page's document.visibilityState and prefers-reduced-motion, on load and on each change
+  pageMotion: 'damocles:shell:page-motion',
+  // string: the IANA zone Intl resolves in the page, which follows the OS, on load and when it changes
+  timeZone: 'damocles:shell:time-zone',
   sidebarLayout: 'damocles:shell:sidebar-layout',
   gridSizes: 'damocles:shell:grid-sizes',
   focusedPart: 'damocles:shell:focused-part',
@@ -425,7 +443,17 @@ export interface ShellProject {
   readonly relocation?: ShellRelocation;
   // a remote project whose folder is not there, on a host whose Damocles server cannot move project folders: Locate is off
   readonly locateUnsupported?: true;
+  // the project's own look on this computer: touches on top of the current theme, or a whole theme of its own
+  readonly look?: 'touches' | 'full';
 }
+
+// Project look… from the project's menu: what was saved, for the status line under the project list; themeName names its own
+// theme
+export type ProjectLookResult =
+  // missingTheme: the saved full theme is not installed or cannot show, so the built-in look of its kind shows
+  | { readonly kind: 'saved'; readonly look: 'none' | 'touches' | 'full'; readonly themeName?: string; readonly missingTheme?: true }
+  | { readonly kind: 'cancelled' }
+  | { readonly kind: 'failed'; readonly reason: string };
 
 // reason: a coded refusal or step failure and its text in main's language. running: the step (RELOCATION_STEPS) and the
 // chats moved of those to move; paused: Retry runs it on, and Stop moving abandons it when its core can (abandonable), to: the
@@ -804,8 +832,9 @@ export interface ScmViewOptions {
 export type ShellSidebarLayout = Pick<ShellLayout, 'sidebarWidth' | 'sections' | 'sectionOrder' | 'search' | 'scm' | 'repositories' | 'graph'>;
 export type ShellGridSizes = Pick<ShellGridLayout, 'sideWidth' | 'bottomHeight'>;
 
-export type ShellFocusPart = 'sidebar' | 'editor' | 'terminal';
-export const SHELL_FOCUS_PARTS: readonly ShellFocusPart[] = ['sidebar', 'editor', 'terminal'];
+// keepChanges: the keep-changes banner, in the cycle only while it counts
+export type ShellFocusPart = 'sidebar' | 'editor' | 'terminal' | 'keepChanges';
+export const SHELL_FOCUS_PARTS: readonly ShellFocusPart[] = ['sidebar', 'editor', 'terminal', 'keepChanges'];
 
 // Editor pane (main's editor-pane.ts relay). Ids are issued by main; the shell passes them back verbatim.
 export type EditorTabKind = 'code' | 'diff' | 'markdownPreview' | 'image' | 'untitled' | 'settings' | 'log' | 'notDisplayed' | 'browser' | 'searchEditor' | 'changes' | 'review' | 'timeline' | 'merge' | 'designPreview' | 'terminal' | 'htmlPreview' | 'jobLog';
@@ -1834,14 +1863,34 @@ export interface ShellState {
   // a chat view covers the chat slot: the selected chat, or another project's kept while the project's core opens its own;
   // false while none is selected or the kept one is withheld (keptChatWithheld), and the slot shows the shell's placeholder
   readonly chatViewShown: boolean;
+  // the shown chat view's page shows a modal layer, whose scrim the chat slot's gutter continues
+  readonly chatModal: boolean;
   // the breadcrumb's chat; title is absent until main has read it, and '' for a chat with no title yet; design as its chat list row has it
   readonly selectedChat?: { readonly id: string; readonly title?: string; readonly status: ChatStatus; readonly design?: ShellChat['design'] };
   // by project key, every project of the list (D31)
   readonly shownFolders: { readonly [projectKey: string]: ShownFolder };
   readonly effectiveTheme: 'dark' | 'light';
   readonly layout: ShellLayout;
-  // bumped when main replaces the layout itself (Restore default layout); the shell's own reports never bump it
+  // bumped when main replaces the layout itself (Restore default layout, a picked theme's arrangement); the shell's own
+  // reports never bump it
   readonly layoutRevision: number;
+  // rem the theme editor dock takes at the window's right edge, under the title bar; 0 while it is closed. Below 48rem of
+  // window width the dock covers the window instead.
+  readonly dockInset: number;
+  // Peek at the window hides the dock that covers it until the peek bar's button or Escape
+  readonly dockPeek: boolean;
+  // safe start for this run: the default theme shows, and the banner says why
+  readonly safeStart?: { readonly reason: 'launch' | 'crashLoop' | 'reset' };
+  // the keep-changes banner of an agent's on-the-fly theme change; absent while none shows
+  readonly keepChanges?: KeepChangesState;
+  // a theme card's proposal paints the window (Show in window); absent while none does
+  readonly themeProposal?: ThemeProposalStrip;
+  // the shown look's wallpapers, which the shell draws under its panes; absent while none shows
+  readonly wallpapers?: readonly ShellWallpaper[];
+  // why moving wallpapers show their still frame now (main/themes/appearance.ts wallpaperMotion); empty while they play
+  readonly wallpaperPaused?: readonly string[];
+  // the project characters the shown theme and the pins give; absent while every project shows its letter
+  readonly characters?: ShownCharacters;
   // display labels of menu accelerators, e.g. "Ctrl+N"
   readonly shortcuts: {
     readonly newChat: string;
@@ -1879,6 +1928,18 @@ export interface ContentBounds {
   readonly height: number;
 }
 
+export interface ShellPageMotion {
+  readonly visible: boolean;
+  readonly reducedMotion: boolean;
+}
+
+/** A page motion report, or undefined for anything but two booleans. */
+export function parsePageMotion(raw: unknown): ShellPageMotion | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const { visible, reducedMotion } = raw as Record<string, unknown>;
+  return typeof visible === 'boolean' && typeof reducedMotion === 'boolean' ? { visible, reducedMotion } : undefined;
+}
+
 // The page area also carries its card's inner corner radius in CSS px, which main rounds the page view's corners to.
 export interface BrowserPageArea extends ContentBounds {
   readonly radius: number;
@@ -1899,6 +1960,8 @@ export interface DamoclesShellApi {
   retryRelocation(key: string): Promise<void>;
   // Stop moving, once the user confirmed: abandons the project's paused relocation, leaving what moved where it landed
   abandonRelocation(key: string): Promise<void>;
+  // Project look…: the dialog in the overlay, then what was saved
+  projectLook(key: string): Promise<ProjectLookResult>;
   // selects the project's last viewed chat while it exists, once it is gone the top of its Chats list, else a new chat; a new
   // chat in a project never viewed
   selectProject(key: string): Promise<void>;
@@ -1974,6 +2037,21 @@ export interface DamoclesShellApi {
   openSettings(section?: SettingsSectionId): Promise<void>;
   // the chat pane's slot rectangle; main places the selected chat's view there
   reportContentBounds(bounds: ContentBounds): void;
+  // the theme editor dock's slot, or null while none shows; main places the dock's view there
+  reportThemeDockBounds(bounds: ContentBounds | null): void;
+  // whether the page is visible (hidden while the window is covered or minimized) and the OS asks for reduced motion
+  reportPageMotion(motion: ShellPageMotion): void;
+  // the page's IANA time zone, which theme schedules are evaluated in
+  reportTimeZone(zone: string): void;
+  // ends Peek at the window: the dock shows again
+  endThemeDockPeek(): Promise<void>;
+  // the safe-start banner's Use my theme: the theme shows again for this run
+  useMyTheme(): Promise<void>;
+  // the keep-changes banner's Keep: the change stays; Revert: the look from before the first change returns
+  keepThemeChanges(): Promise<void>;
+  revertThemeChanges(): Promise<void>;
+  // the Show in window strip's Stop showing: the window shows the current theme again and the card's toggle turns off
+  stopShowingProposal(): Promise<void>;
   // the sidebar's width, section sizes and Search states; main keeps the sidebar's visibility
   reportSidebarLayout(layout: ShellSidebarLayout): void;
   // the grid's sash sizes; main keeps the slots, visibility and maximized pane

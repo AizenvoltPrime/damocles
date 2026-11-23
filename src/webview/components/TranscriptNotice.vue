@@ -20,6 +20,7 @@ const emit = defineEmits<{ dismiss: [] }>();
 const { t } = useI18n();
 
 const toneVar = computed(() => `var(--d-${props.tone})`);
+const toneFillVar = computed(() => `var(--d-${props.tone}-fill)`);
 const toneTextVar = computed(() => `var(--d-${props.tone}-text)`);
 </script>
 
@@ -28,12 +29,12 @@ const toneTextVar = computed(() => `var(--d-${props.tone}-text)`);
   <div class="py-2">
     <section
       class="flex items-start gap-2.5 rounded-xl border bg-(--d-card) px-3 py-2.25"
-      :style="{ borderColor: `color-mix(in srgb, ${toneVar} 35%, var(--d-border))` }"
+      :style="{ borderColor: `color-mix(in srgb, ${toneFillVar} 35%, var(--d-border))` }"
       :aria-label="title"
     >
       <span
         class="flex size-7 flex-none items-center justify-center rounded-lg"
-        :style="{ background: `color-mix(in srgb, ${toneVar} 14%, transparent)`, color: toneVar }"
+        :style="{ background: `color-mix(in srgb, ${toneFillVar} 14%, transparent)`, color: toneVar }"
         aria-hidden="true"
       >
         <component
@@ -50,7 +51,7 @@ const toneTextVar = computed(() => `var(--d-${props.tone}-text)`);
           <span
             v-if="chip"
             class="rounded-full px-2 py-px text-11 font-medium"
-            :style="{ background: `color-mix(in srgb, ${toneVar} 14%, transparent)`, color: toneTextVar }"
+            :style="{ background: `color-mix(in srgb, ${toneFillVar} 14%, transparent)`, color: toneTextVar }"
           >{{ chip }}</span>
         </div>
         <div class="flex flex-col gap-0.5 text-xs text-pretty text-(--d-muted)">

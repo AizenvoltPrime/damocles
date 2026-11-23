@@ -53,9 +53,9 @@ const heldPrompt = computed(() => props.state.heldPrompt);
 const step = computed(() => (kind.value === 'settingUp' ? props.state.setupStep : undefined));
 const stepCommand = computed(() => (step.value ? visibleText(step.value.command) : ''));
 
-const button = 'd-press h-7 gap-1.5 rounded-7 px-2.75 text-xs font-medium focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 [&_svg]:size-3.25';
+const button = 'd-press h-7 gap-1.5 rounded-7 px-2.75 text-xs font-medium focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 [&_svg]:size-3.25';
 const plainButton = `${button} border-(--d-border2) bg-transparent text-(--d-text) hover:bg-(--d-hover) hover:text-(--d-text)`;
-const fillButton = `${button} bg-(--d-accent) font-semibold text-(--d-on-accent) hover:bg-(--d-accent) hover:brightness-110`;
+const fillButton = `${button} bg-(--d-accent-fill) font-semibold text-(--d-on-accent) hover:bg-(--d-accent-fill) hover:brightness-110`;
 </script>
 
 <template>
@@ -63,7 +63,7 @@ const fillButton = `${button} bg-(--d-accent) font-semibold text-(--d-on-accent)
     <div
       v-if="kind"
       class="relative mb-2 overflow-hidden rounded-10 border bg-(--d-card)"
-      :class="kind === 'setupFailed' || kind === 'createFailed' ? 'border-[color-mix(in_srgb,var(--d-danger)_40%,var(--d-border))]' : 'border-(--d-border)'"
+      :class="kind === 'setupFailed' || kind === 'createFailed' ? 'border-[color-mix(in_srgb,var(--d-danger-fill)_40%,var(--d-border))]' : 'border-(--d-border)'"
       data-testid="worktree-status"
       :data-phase="kind"
     >
@@ -290,7 +290,7 @@ const fillButton = `${button} bg-(--d-accent) font-semibold text-(--d-on-accent)
           class="absolute inset-x-0 bottom-0 h-0.5"
           aria-hidden="true"
         >
-          <div class="d-sweep-bar size-full bg-(--d-hover) text-(--d-accent)" />
+          <div class="d-sweep-bar size-full bg-(--d-hover) [--tone:var(--d-accent-fill)]" />
         </div>
       </Transition>
     </div>

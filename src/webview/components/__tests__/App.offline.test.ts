@@ -32,6 +32,7 @@ function page(offline: { hostId: string; hostName: string } | undefined): void {
     onConnection: () => () => undefined,
     allowYolo: async () => false,
     queueAction: () => undefined,
+    setModalOpen: () => undefined,
   };
 }
 

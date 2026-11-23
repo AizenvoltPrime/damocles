@@ -4,6 +4,8 @@ import type { PermissionDetail, PermissionUpdate, QuestionAnnotations } from '..
 import type { FormValues } from '../../shared/types/forms';
 import type { ElicitationResult } from '../../shared/types/elicitation';
 import type { DesignVersionChoice, PlanApprovalDesignLink } from '../../shared/types/design';
+import type { ThemeScreenshotChoice } from '../../shared/themes/agent';
+import type { ThemeInstallAnswer } from '../../shared/themes/install';
 
 export interface PermissionResult {
   behavior: 'allow' | 'deny';
@@ -201,10 +203,49 @@ export interface PendingDesignApproval {
   request: Extract<ExtensionToWebviewMessage, { type: 'requestDesignApproval' }>;
 }
 
+/** An answer to a theme card; `change` always carries a non-blank note. */
+export type ThemeChangeAnswer = { choice: 'apply' } | { choice: 'discard' } | { choice: 'change'; note: string };
+
+/** An open theme card; its tool closes it, and answers reach the tool only while it waits for one. */
+export interface PendingThemeChange {
+  request: Extract<ExtensionToWebviewMessage, { type: 'requestThemeChange' }>;
+  // false while the tool waits for no answer
+  deliver: (answer: ThemeChangeAnswer) => boolean;
+  showInWindow: (on: boolean) => void;
+  // closes the card on every view and ends the tool's wait with undefined
+  close: () => void;
+  // a remote chat's card: the client whose device the change lands on, which alone applies it or asks for changes
+  device?: string;
+}
+
+/** An open screenshot card; it resolves with the user's answer, or undefined when it closed unanswered. */
+export interface PendingThemeScreenshot {
+  resolve: (choice: ThemeScreenshotChoice | undefined) => void;
+  cleanup: () => void;
+  request: Extract<ExtensionToWebviewMessage, { type: 'requestThemeScreenshot' }>;
+  // a remote chat's card: the client whose window the screenshot shows, whose views alone show and answer it
+  device?: string;
+}
+
+/** An open install card; its tool closes it, and the user's answer closes it on every view. */
+export interface PendingThemeInstall {
+  request: Extract<ExtensionToWebviewMessage, { type: 'requestThemeInstall' }>;
+  deliver: (answer: ThemeInstallAnswer) => void;
+  // the card's Allow flashing for this file; absent on a daemon's core, whose chats' presses never reach it
+  allowFlash?: (sha256: string) => void;
+  // closes the card on every view and ends the tool's wait
+  close: () => void;
+  // a remote chat's card: the client whose device the install lands on, which alone installs
+  device?: string;
+}
+
 export type PostMessageFn = (msg: ExtensionToWebviewMessage) => void;
 
 /** The description of the runnable skill named name in the chat's current folder, for its approval prompt; undefined for none. */
 export type SkillDescriber = (name: string) => Promise<string | undefined>;
+/** The message one device's views get, by its client id (undefined: a view core has not heard from); undefined: none. */
+export type DeviceMessage = (clientId: string | undefined) => ExtensionToWebviewMessage | undefined;
+export type DevicePostFn = (message: DeviceMessage) => void;
 
 /**
  * The "agent is blocked waiting for your approval" signal (US-009, the Claude Code Notification

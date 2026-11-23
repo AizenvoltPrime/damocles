@@ -9,6 +9,8 @@ import { useDesignStore } from '@/stores/useDesignStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useDockPromptDigits } from '@/composables/useDockPrompt';
 import { useAttentionCard } from '@/composables/useAttention';
+import { useDockCardVisibility } from '@/composables/useDockCardVisibility';
+import TrustedCheckingNote from '../TrustedCheckingNote.vue';
 
 type Choice = 'replan' | 'finishFirst';
 
@@ -20,6 +22,7 @@ const { postMessage } = usePlatformBridge();
 const current = computed(() => store.versionPrompts[0]);
 const cardRef = ref<HTMLElement | null>(null);
 useAttentionCard('question', cardRef);
+const { isVisible, explain, refuse } = useDockCardVisibility(cardRef);
 
 // An approval made before the design's first version recorded none, which core sends as version 0.
 const approvedLine = computed(() => {
@@ -57,82 +60,96 @@ useDockPromptDigits(cardRef, (digit) => {
   if (!choice) return false;
   answer(choice.promptId, choice.value);
   return true;
-});
+}, refuse);
 </script>
 
 <template>
-  <Transition
-    name="t-up"
-    mode="out-in"
-  >
+  <Transition name="t-up">
     <div
       v-if="current"
-      :key="current.promptId"
-      ref="cardRef"
-      class="overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--d-design)_45%,var(--d-border))] bg-(--d-card) text-(--d-text) shadow-(--d-shadow) [--attention-ring:var(--d-design)]"
-      role="region"
-      :aria-label="t('design.versionPrompt.title')"
-      data-dock-prompt
-      data-testid="design-version-card"
-      :data-design-id="current.designId"
-      :data-from-version="current.fromVersion"
-      :data-to-version="current.toVersion"
+      class="d-dock-shadow rounded-14"
+      data-trusted
     >
-      <div class="flex items-center gap-2.5 border-b border-(--d-border) bg-linear-to-b from-[color-mix(in_srgb,var(--d-design)_12%,transparent)] to-transparent px-3 py-2">
-        <span
-          class="d-ring flex size-6.5 flex-none items-center justify-center rounded-lg bg-[color-mix(in_srgb,var(--d-design)_16%,transparent)] text-(--d-design)"
-          aria-hidden="true"
-        >
-          <GitCompareArrows class="size-3.5" />
-        </span>
-        <div class="min-w-0 flex-1 font-semibold text-pretty">
-          {{ t('design.versionPrompt.title') }}
+      <!-- One bounded element that scrolls inside itself, so the whole card always fits the page. -->
+      <!-- Keyed by the request: the next request is a new element, which starts held (useTrustedVisibility). -->
+      <div
+        ref="cardRef"
+        :key="current.promptId"
+        class="max-h-[70dvh] overflow-x-hidden overflow-y-auto rounded-14 border border-[color-mix(in_srgb,var(--d-design-fill)_45%,var(--d-border))] bg-(--d-card) text-(--d-text) [--attention-ring:var(--d-design-fill)]"
+        role="region"
+        :aria-label="t('design.versionPrompt.title')"
+        data-dock-prompt
+        data-trusted
+        data-testid="design-version-card"
+        :data-design-id="current.designId"
+        :data-from-version="current.fromVersion"
+        :data-to-version="current.toVersion"
+      >
+        <div class="flex items-center gap-2.5 border-b border-(--d-border) bg-linear-to-b from-[color-mix(in_srgb,var(--d-design-fill)_12%,transparent)] to-transparent px-3 py-2">
+          <span
+            class="d-ring [--tone:var(--d-design-fill)] flex size-6.5 flex-none items-center justify-center rounded-lg bg-[color-mix(in_srgb,var(--d-design-fill)_16%,transparent)] text-(--d-design)"
+            aria-hidden="true"
+          >
+            <GitCompareArrows class="size-3.5" />
+          </span>
+          <div class="min-w-0 flex-1 font-semibold text-pretty">
+            {{ t('design.versionPrompt.title') }}
+          </div>
         </div>
-      </div>
 
-      <div class="px-3.5 pt-2.5 pb-1 text-12.5">
-        <p
-          class="text-pretty text-(--d-muted)"
-          data-testid="design-version-body"
-        >
-          {{ `${approvedLine} ${nowLine}` }}
-        </p>
-        <!-- Scrolls when long; focusable so a keyboard user can scroll it too. -->
-        <div
-          v-if="current.changes.length > 0"
-          class="mt-1.5 max-h-30 overflow-y-auto rounded-md outline-none focus-visible:ring-1 focus-visible:ring-(--d-design)"
-          role="region"
-          :aria-label="t('design.versionPrompt.changes', { version: current.toVersion })"
-          tabindex="0"
-          data-testid="design-version-changes"
-        >
-          <DesignChangeList :changes="current.changes" />
+        <div class="px-3.5 pt-2.5 pb-1 text-12.5">
+          <p
+            class="text-pretty text-(--d-muted)"
+            data-testid="design-version-body"
+          >
+            {{ `${approvedLine} ${nowLine}` }}
+          </p>
+          <!-- Scrolls when long; focusable so a keyboard user can scroll it too. -->
+          <div
+            v-if="current.changes.length > 0"
+            class="mt-1.5 max-h-30 overflow-y-auto rounded-md outline-none focus-visible:ring-1 focus-visible:ring-(--d-design-fill)"
+            role="region"
+            :aria-label="t('design.versionPrompt.changes', { version: current.toVersion })"
+            tabindex="0"
+            data-testid="design-version-changes"
+          >
+            <DesignChangeList :changes="current.changes" />
+          </div>
         </div>
-      </div>
 
-      <div class="px-1.5 pt-1 pb-1.5">
-        <ListboxRoot
-          v-model="selected"
-          class="flex flex-col outline-none"
-          orientation="vertical"
-        >
-          <DockPromptOptions :aria-label="t('design.versionPrompt.title')">
-            <ListboxItem
-              v-for="(option, index) in choices"
-              :key="option.value"
-              :value="option.value"
-              class="group flex items-center gap-2.5 rounded-9 px-2.5 py-1.25 transition-colors outline-none data-highlighted:bg-[color-mix(in_srgb,var(--d-design)_14%,transparent)] data-highlighted:text-(--d-design-text)"
-              :data-testid="`design-version-${option.value}`"
-              @select="answer(option.promptId, option.value)"
+        <div class="px-1.5 pt-1 pb-1.5">
+          <ListboxRoot
+            v-model="selected"
+            class="flex flex-col outline-none"
+            orientation="vertical"
+          >
+            <DockPromptOptions
+              :aria-label="t('design.versionPrompt.title')"
+              :aria-disabled="!isVisible || undefined"
             >
-              <span
-                class="flex size-5 flex-none items-center justify-center rounded-md border border-(--d-border2) font-mono text-11 group-data-highlighted:border-(--d-design)"
-                aria-hidden="true"
-              >{{ index + 1 }}</span>
-              <span class="min-w-0 flex-1 truncate font-medium">{{ option.label }}</span>
-            </ListboxItem>
-          </DockPromptOptions>
-        </ListboxRoot>
+              <ListboxItem
+                v-for="(option, index) in choices"
+                :key="option.value"
+                :value="option.value"
+                class="group flex items-center gap-2.5 rounded-9 px-2.5 py-1.25 transition-colors outline-none data-highlighted:bg-[color-mix(in_srgb,var(--d-design-fill)_14%,transparent)] data-highlighted:text-(--d-design-text)"
+                :data-testid="`design-version-${option.value}`"
+                @select="answer(option.promptId, option.value)"
+              >
+                <span
+                  class="flex size-5 flex-none items-center justify-center rounded-md border border-(--d-border2) font-mono text-11 group-data-highlighted:border-(--d-design-fill)"
+                  aria-hidden="true"
+                >{{ index + 1 }}</span>
+                <span class="min-w-0 flex-1 truncate font-medium">{{ option.label }}</span>
+              </ListboxItem>
+            </DockPromptOptions>
+          </ListboxRoot>
+        </div>
+        <TrustedCheckingNote
+          overlay
+          class="bottom-0"
+          :shown="explain"
+          :text="t('trusted.checkingVisible')"
+        />
       </div>
     </div>
   </Transition>

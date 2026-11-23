@@ -25,6 +25,7 @@ const isAwaitingApproval = computed(() => props.toolCall.status === 'awaiting_ap
 const isCompleted = computed(() => props.toolCall.status === 'completed');
 const isDenied = computed(() => props.toolCall.status === 'denied');
 const isAbandoned = computed(() => props.toolCall.status === 'abandoned');
+const isEnded = computed(() => isAbandoned.value || props.toolCall.status === 'cancelled' || props.toolCall.status === 'unrecorded');
 
 const planSummary = usePlanSummary(() => props.toolCall.id, () => recordedPlanVersion(props.toolCall.metadata));
 const subtitle = computed(() => [t('exitPlanMode.plan'), ...planSummary.value].join(' · '));
@@ -39,13 +40,15 @@ const designVersion = computed(() => {
 
 const { statusIcon, statusMotion, cardClass } = useToolCardStatus(() => props.toolCall.status);
 
-// The reference's plan card rings in accent while it awaits review, where a tool row borders in warning.
-const frameClass = computed(() => (isAwaitingApproval.value
-  ? 'border-[color-mix(in_srgb,var(--d-accent)_45%,var(--d-border))] shadow-[0_0_0_3px_var(--d-accent-soft)]'
-  : cardClass.value));
+// The reference's plan card rings in accent while it awaits review, where a tool row borders in warning. A trusted card
+// is never dimmed with opacity, which IntersectionObserver v2 counts as hidden.
+const frameClass = computed(() => {
+  if (isAwaitingApproval.value) return 'border-[color-mix(in_srgb,var(--d-accent-fill)_45%,var(--d-border))] shadow-[0_0_0_3px_var(--d-accent-soft)]';
+  return isEnded.value ? 'border-(--d-border)' : cardClass.value;
+});
 
-const SUCCESS_CHIP = 'bg-[color-mix(in_srgb,var(--d-success)_14%,transparent)] text-(--d-success-text)';
-const WARNING_CHIP = 'bg-[color-mix(in_srgb,var(--d-warning)_14%,transparent)] text-(--d-warning-text)';
+const SUCCESS_CHIP = 'bg-[color-mix(in_srgb,var(--d-success-fill)_14%,transparent)] text-(--d-success-text)';
+const WARNING_CHIP = 'bg-[color-mix(in_srgb,var(--d-warning-fill)_14%,transparent)] text-(--d-warning-text)';
 const NEUTRAL_CHIP = 'bg-(--d-hover) text-(--d-muted)';
 
 const CHIPS: Record<ToolCall['status'], { labelKey: string; class: string }> = {
@@ -83,6 +86,7 @@ const approvalModeIcon = computed(() => {
 
 const isClickable = computed(() => isAwaitingApproval.value && permissionStore.pendingPlanApproval !== null);
 
+// Opens the plan overlay, whose footer holds every answer behind its own gate; this card only views.
 function handleCardClick() {
   if (isClickable.value) {
     permissionStore.showPlanOverlay();
@@ -96,10 +100,11 @@ function handleViewPlan() {
 
 <template>
   <div
+    data-trusted
     class="overflow-hidden rounded-xl border bg-(--d-card) transition-[border-color,box-shadow] duration-200"
     :class="[
       frameClass,
-      isClickable && 'cursor-pointer hover:border-(--d-border2) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent)',
+      isClickable && 'cursor-pointer hover:border-(--d-border2) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent-fill)',
     ]"
     :role="isClickable ? 'button' : undefined"
     :tabindex="isClickable ? 0 : undefined"
@@ -147,7 +152,7 @@ function handleViewPlan() {
       class="flex items-center gap-2 border-t border-(--d-border) py-1.75 pr-3 pl-12.5 text-xs text-(--d-accent)"
     >
       <span
-        class="d-pulsing size-1.75 flex-none rounded-full bg-(--d-accent)"
+        class="d-pulsing size-1.75 flex-none rounded-full bg-(--d-accent-fill)"
         aria-hidden="true"
       />
       <span class="flex-1">{{ isClickable ? t('exitPlanMode.clickToReview') : t('exitPlanMode.waitingApproval') }}</span>
@@ -188,7 +193,7 @@ function handleViewPlan() {
       <span class="flex-1" />
       <button
         type="button"
-        class="flex items-center gap-1.25 rounded-md text-(--d-accent) hover:underline focus-visible:outline-2 focus-visible:outline-(--d-accent)"
+        class="flex items-center gap-1.25 rounded-md text-(--d-accent) hover:underline focus-visible:outline-2 focus-visible:outline-(--d-accent-fill)"
         @click.stop="handleViewPlan"
       >
         <Eye

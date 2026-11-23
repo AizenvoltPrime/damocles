@@ -16,10 +16,10 @@ const operationIcons: Record<string, string> = {
 };
 
 const operationColors: Record<string, string> = {
-  read: 'text-info',
-  edit: 'text-warning',
-  write: 'text-success',
-  create: 'text-primary',
+  read: 'text-(--d-info)',
+  edit: 'text-(--d-warning)',
+  write: 'text-(--d-success)',
+  create: 'text-(--d-accent)',
 };
 
 function getFileName(path: string): string {

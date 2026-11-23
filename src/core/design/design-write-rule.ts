@@ -6,7 +6,8 @@ import { DESIGN_CHAT_FORGE_REFUSAL } from '../pi-session/tools/forge-tool-specs'
 import type { ReadOnlyVerdict } from '../pi-session/readonly-shell';
 import { toolShell } from '../pi-session/worktree-isolation';
 import { resolveToCwd } from '../pi-session/tools/search-tools';
-import { FORGE_READ_TOOLS, FORGE_WRITE_TOOLS, SHELL_TOOLS, TOOL_BASH, WRITE_TOOLS } from '../../shared/tool-names';
+import { DESIGN_CHAT_THEME_REFUSAL } from '../pi-session/tools/theme-tool-specs';
+import { FORGE_READ_TOOLS, FORGE_WRITE_TOOLS, SHELL_TOOLS, THEME_TOOLS, TOOL_BASH, WRITE_TOOLS } from '../../shared/tool-names';
 import { BUILT_DESIGN_TOOL_NAMES } from './tools/design-tool-specs';
 import { DAMOCLES_DESIGNS_DIR, isFileBelow } from '../paths';
 import { spelledPath } from '../canonical-path';
@@ -50,7 +51,7 @@ export function designShellRefusal(verdict: ReadOnlyVerdict & { readOnly: false 
 }
 
 /**
- * The policy reason a design chat's call is blocked for, or undefined when the posture allows it: a write tool's target must be
+ * The policy reason a design chat's call is blocked for, or undefined when the posture allows it: no forge or theme tool runs, a write tool's target must be
  * a designer file of the chat's own design folder (D65), a shell command must be proven read-only, a browser tool must be a read,
  * and an unreadable scope runs no write, shell, design, page-acting browser or not read-only MCP tool. `input` is the normalized
  * input as the hooks left it; `call` holds what the gate read of it (`CallFacts`) and whether it is a read-only-annotated MCP tool. A
@@ -59,6 +60,7 @@ export function designShellRefusal(verdict: ReadOnlyVerdict & { readOnly: false 
 export function designWriteBlock(toolName: string, input: Record<string, unknown>, scope: DesignScope, call: DesignCallFacts = {}): string | undefined {
   const { mcpReadOnly = false } = call;
   if (FORGE_READ_TOOLS.has(toolName) || FORGE_WRITE_TOOLS.has(toolName)) return DESIGN_CHAT_FORGE_REFUSAL;
+  if (THEME_TOOLS.has(toolName)) return DESIGN_CHAT_THEME_REFUSAL;
   if ('unreadable' in scope) {
     const runs = WRITE_TOOLS.has(toolName) || SHELL_TOOLS.has(toolName) || BUILT_DESIGN_TOOL_NAMES.has(toolName)
       || !designBrowserAllows(toolName) || (toolName.startsWith('mcp__') && !mcpReadOnly);

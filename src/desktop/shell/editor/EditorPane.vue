@@ -157,8 +157,8 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
     data-testid="editor-pane"
     :aria-label="t('editor.label')"
     :data-focus-overlay="focusPhase !== 'off' ? focusPhase : undefined"
-    class="editor-pane flex size-full min-h-0 min-w-0 flex-col overflow-hidden bg-(--d-bg)"
-    :class="focusPhase === 'off' ? '' : focusPhase === 'on' ? 'editor-focus' : 'editor-focus editor-focus-leave'"
+    class="editor-pane flex size-full min-h-0 min-w-0 flex-col overflow-hidden"
+    :class="focusPhase === 'off' ? 'bg-(--d-pane-editor)' : focusPhase === 'on' ? 'editor-focus bg-(--d-bg)' : 'editor-focus editor-focus-leave bg-(--d-bg)'"
     :style="focusPhase === 'off' ? undefined : { zIndex: focusLayer.zIndex.value }"
     @focusin="onFocusIn"
     @focusout="onFocusOut"
@@ -288,7 +288,7 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
         v-if="store.saveError.value?.tabId === tab.id"
         role="alert"
         data-testid="editor-save-error"
-        class="flex shrink-0 items-center gap-2 border-b border-(--d-border) bg-[color-mix(in_srgb,var(--d-danger)_10%,var(--d-bg))] px-3.5 py-1.5 text-12 text-(--d-danger-text)"
+        class="flex shrink-0 items-center gap-2 border-b border-(--d-border) bg-[color-mix(in_srgb,var(--d-danger-fill)_10%,var(--d-bg))] px-3.5 py-1.5 text-12 text-(--d-danger-text)"
       >
         <CircleAlert
           aria-hidden="true"
@@ -341,7 +341,7 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
             size="sm"
             variant="outline"
             data-testid="editor-reconnect"
-            class="d-press h-7 rounded-7 border-(--d-border2) bg-(--d-card) px-3 text-12 hover:border-(--d-accent) hover:bg-(--d-card)"
+            class="d-press h-7 rounded-7 border-(--d-border2) bg-(--d-card) px-3 text-12 hover:border-(--d-accent-fill) hover:bg-(--d-card)"
             :disabled="reconnecting"
             @click="reconnect(offline.hostId)"
           >
@@ -454,7 +454,7 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
               size="sm"
               variant="outline"
               data-testid="editor-open-anyway"
-              class="d-press h-7 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-3 text-12 hover:border-(--d-accent) hover:bg-(--d-card) [&_svg]:size-3.5"
+              class="d-press h-7 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-3 text-12 hover:border-(--d-accent-fill) hover:bg-(--d-card) [&_svg]:size-3.5"
               @click="api.editorTab({ action: 'openAnyway', tabId: tab.id })"
             >
               <ExternalLink aria-hidden="true" />{{ t('editor.notDisplayed.openAnyway') }}
@@ -464,7 +464,7 @@ const focusTitle = computed(() => (store.focusOverlay.value ? t('editor.focus.ba
               size="sm"
               variant="outline"
               data-testid="editor-reveal"
-              class="d-press h-7 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-3 text-12 hover:border-(--d-accent) hover:bg-(--d-card) [&_svg]:size-3.5"
+              class="d-press h-7 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-3 text-12 hover:border-(--d-accent-fill) hover:bg-(--d-card) [&_svg]:size-3.5"
               @click="api.editorTab({ action: 'revealInExplorer', tabId: tab.id })"
             >
               <FolderSearch aria-hidden="true" />{{ t('editor.menu.revealInExplorer') }}

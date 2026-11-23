@@ -36,6 +36,8 @@ export const FOLDER_IDENTITIES_PATH: string = path.join(DAMOCLES_HOME_DIR, "fold
 export const RELOCATION_LOCK_DIR: string = path.join(DAMOCLES_HOME_DIR, "locks", "relocations");
 /** The worktree registry's rootDir: registry.json and every chat worktree, as <project>-<hash>/<id> (AD12). */
 export const WORKTREES_ROOT_DIR: string = path.join(DAMOCLES_HOME_DIR, "worktrees");
+/** The desktop theme store: `themes/<id>/theme.json`, `appearance.json` and the `.lock` its writers share (docs/invariants.md "Desktop themes"). */
+export const THEMES_DIR: string = path.join(DAMOCLES_HOME_DIR, "themes");
 
 /** Root for browser-captured downloads; the browser service saves each launch's files under a per-launch subdir. */
 export const DAMOCLES_BROWSER_DOWNLOADS_DIR: string = path.join(DAMOCLES_HOME_DIR, "browser-downloads");

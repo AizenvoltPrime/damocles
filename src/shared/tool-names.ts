@@ -52,6 +52,12 @@ export const TOOL_FORGE_ISSUES = "ForgeIssues";
 export const TOOL_FORGE_JOB_ACTION = "ForgeJobAction";
 export const TOOL_FORGE_OPEN_MERGE_REQUEST = "ForgeOpenMergeRequest";
 export const TOOL_FORGE_COMMENT = "ForgeComment";
+export const TOOL_THEME_READ = "ThemeRead";
+export const TOOL_THEME_SET = "ThemeSet";
+export const TOOL_THEME_SCHEDULE = "ThemeSchedule";
+
+/** The desktop app's theme tools, run only by this computer's desktop core for a main chat. */
+export const THEME_TOOLS: ReadonlySet<string> = new Set([TOOL_THEME_READ, TOOL_THEME_SET, TOOL_THEME_SCHEDULE]);
 
 /** The GitHub and GitLab tools that only read the server. */
 export const FORGE_READ_TOOLS: ReadonlySet<string> = new Set([TOOL_FORGE_PIPELINES, TOOL_FORGE_JOBS, TOOL_FORGE_JOB_LOG, TOOL_FORGE_MERGE_REQUEST, TOOL_FORGE_MERGE_REQUESTS, TOOL_FORGE_ISSUE, TOOL_FORGE_ISSUES]);

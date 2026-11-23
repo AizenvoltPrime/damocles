@@ -20,7 +20,7 @@ export function sessionStateTreatment(state: SessionState): SessionStateTreatmen
       };
     case 'requires_action':
       return {
-        iconClass: 'bg-(--d-warning) animate-[d-pulse_1.2s_infinite]',
+        iconClass: 'bg-(--d-warning-fill) d-pulsing',
         labelClass: 'text-(--d-warning) font-medium',
       };
     case 'idle':

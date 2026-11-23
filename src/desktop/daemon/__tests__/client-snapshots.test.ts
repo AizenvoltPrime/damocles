@@ -187,6 +187,19 @@ describe('client snapshots on a daemon\'s core', () => {
     expect(askedB).not.toHaveBeenCalled();
   });
 
+  it("name the client that sent user.theme.showEnded to the theme tools' listener", async () => {
+    const { remote, attach } = setUp();
+    const b = attach('connection-2', values('b'));
+    await flush();
+    const ended = vi.fn();
+    const listening = remote.onThemeShowEnded(ended);
+    await b.main.request('user.theme.showEnded', { stageId: 'stage-1', promptId: 'card-1', reason: 'takenOver' });
+    expect(ended).toHaveBeenCalledWith({ clientId: 'connection-2', stageId: 'stage-1', promptId: 'card-1', reason: 'takenOver' });
+    listening.dispose();
+    await b.main.request('user.theme.showEnded', { stageId: 'stage-1', promptId: 'card-1', reason: 'stopped' });
+    expect(ended).toHaveBeenCalledTimes(1);
+  });
+
   it('refuse to speak a reply of a chat no client shows, and so does the fake core tests use', async () => {
     const { remote } = setUp();
     const fake = createFakeRemoteHost();

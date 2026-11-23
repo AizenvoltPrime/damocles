@@ -31,8 +31,8 @@ const SIZES = { row: 'size-7 text-xs', item: 'size-5 text-10', chip: 'size-3.5 t
 // Three tints tell two accounts on one server apart beside their logins, never alone.
 const TINTS = [
   'bg-(--d-accent-soft) text-(--d-accent-text)',
-  'bg-[color-mix(in_srgb,var(--d-design)_18%,transparent)] text-(--d-design-text)',
-  'bg-[color-mix(in_srgb,var(--d-success)_16%,transparent)] text-(--d-success-text)',
+  'bg-[color-mix(in_srgb,var(--d-design-fill)_18%,transparent)] text-(--d-design-text)',
+  'bg-[color-mix(in_srgb,var(--d-success-fill)_16%,transparent)] text-(--d-success-text)',
 ] as const;
 
 const tint = computed(() => TINTS[[...props.login].reduce((sum, char) => sum + char.charCodeAt(0), 0) % TINTS.length]);

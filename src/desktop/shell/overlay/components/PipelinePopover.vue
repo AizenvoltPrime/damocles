@@ -255,7 +255,7 @@ const ACTION = 'd-press size-5.5 shrink-0 rounded-6 text-(--d-muted) hover:bg-(-
             <span
               v-if="otherCommit"
               data-testid="forge-pipeline-other-commit"
-              class="d-fade-in shrink-0 rounded-5 bg-[color-mix(in_srgb,var(--d-warning)_14%,transparent)] px-1 font-mono text-10.5 text-(--d-warning-text)"
+              class="d-fade-in shrink-0 rounded-5 bg-[color-mix(in_srgb,var(--d-warning-fill)_14%,transparent)] px-1 font-mono text-10.5 text-(--d-warning-text)"
               :title="t('forge.ci.otherCommit', { sha: otherCommit })"
             ><span aria-hidden="true">{{ otherCommit }}</span><span class="sr-only">{{ t('forge.ci.otherCommit', { sha: otherCommit }) }}</span></span>
           </span>

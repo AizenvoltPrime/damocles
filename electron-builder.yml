@@ -55,6 +55,8 @@ files:
   # the damocles command's scripts ship beside app.asar from dist/bin (extraResources); resources/server-bin is a server package's
   - '!resources/bin{,/**}'
   - '!resources/server-bin{,/**}'
+  # the built-in themes' source; core and main read the copy the shell build writes to dist/desktop-shell/themes
+  - '!resources/themes{,/**}'
   - python/**
   - '!python/**/.venv{,/**}'
   - '!python/**/__pycache__{,/**}'
@@ -137,6 +139,14 @@ electronFuses:
   enableEmbeddedAsarIntegrityValidation: true
   onlyLoadAppFromAsar: true
   grantFileProtocolExtraPrivileges: false
+
+# damocles://theme/install?url=<https URL>: macOS takes it into Info.plist (CFBundleURLTypes) and Linux into the .desktop file's
+# MimeType (x-scheme-handler/damocles). NSIS writes no protocol keys, so the installed Windows app registers the scheme itself
+# (registerThemeLinkScheme in src/desktop/main/index.ts) and build/win/installer.nsh removes it at uninstall.
+protocols:
+  - name: Damocles theme link
+    schemes:
+      - damocles
 
 publish:
   provider: github

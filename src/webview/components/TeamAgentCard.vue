@@ -74,7 +74,7 @@ function cancelAgent(): void {
 <template>
   <!-- The name button stretches over the card, so the whole card opens the agent and its own buttons sit above it. -->
   <div
-    class="d-arrive relative flex flex-col overflow-hidden rounded-11 border border-(--d-border) bg-(--d-card) text-13 transition-colors hover:border-(--d-border2) has-[[data-card-open]:focus-visible]:outline-2 has-[[data-card-open]:focus-visible]:outline-offset-2 has-[[data-card-open]:focus-visible]:outline-(--d-accent) has-[[data-card-open]:focus-visible]:outline-solid"
+    class="d-arrive relative flex flex-col overflow-hidden rounded-11 border border-(--d-border) bg-(--d-card) text-13 transition-colors hover:border-(--d-border2) has-[[data-card-open]:focus-visible]:outline-2 has-[[data-card-open]:focus-visible]:outline-offset-2 has-[[data-card-open]:focus-visible]:outline-(--d-accent-fill) has-[[data-card-open]:focus-visible]:outline-solid"
     :style="{ animationDelay: `${index * 40}ms` }"
     data-testid="team-agent-card"
   >
@@ -205,7 +205,7 @@ function cancelAgent(): void {
       <button
         v-if="memberStop.canStop.value"
         type="button"
-        class="relative flex rounded-5 p-0.75 text-(--d-danger) opacity-75 transition-[opacity,background-color] enabled:hover:bg-[color-mix(in_srgb,var(--d-danger)_12%,transparent)] enabled:hover:opacity-100 disabled:opacity-60"
+        class="relative flex rounded-5 p-0.75 text-(--d-danger) opacity-75 transition-[opacity,background-color] enabled:hover:bg-[color-mix(in_srgb,var(--d-danger-fill)_12%,transparent)] enabled:hover:opacity-100 disabled:opacity-60"
         :title="stopLabel"
         :aria-label="stopLabel"
         :aria-busy="stopping || undefined"

@@ -55,11 +55,11 @@ const toolName = computed(() => props.diff.tool === 'Write' ? t('diffOverlay.wri
       #header-actions
     >
       <span
-        class="flex-none rounded-full bg-[color-mix(in_srgb,var(--d-success)_14%,transparent)] px-2 font-mono text-11/5 text-(--d-success-text)"
+        class="flex-none rounded-full bg-[color-mix(in_srgb,var(--d-success-fill)_14%,transparent)] px-2 font-mono text-11/5 text-(--d-success-text)"
         data-testid="diff-overlay-added"
       >+{{ fileDiff.stats.added }}</span>
       <span
-        class="flex-none rounded-full bg-[color-mix(in_srgb,var(--d-danger)_14%,transparent)] px-2 font-mono text-11/5 text-(--d-danger-text)"
+        class="flex-none rounded-full bg-[color-mix(in_srgb,var(--d-danger-fill)_14%,transparent)] px-2 font-mono text-11/5 text-(--d-danger-text)"
         data-testid="diff-overlay-removed"
       >−{{ fileDiff.stats.removed }}</span>
     </template>

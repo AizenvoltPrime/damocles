@@ -12,9 +12,9 @@ const idle = sessionStateTreatment('idle');
 
 describe('the parked run against the working run', () => {
   it('moves differently, so motion alone separates the two', () => {
-    expect(parked.iconClass).toContain('d-pulse');
-    expect(running.iconClass).toContain('d-spin');
-    expect(running.iconClass).not.toContain('d-pulse');
+    expect(parked.iconClass.split(' ')).toContain('d-pulsing');
+    expect(running.iconClass.split(' ')).toContain('d-spinning');
+    expect(running.iconClass).not.toContain('d-puls');
   });
 
   it('colours the parked mark and label with the warning token only', () => {

@@ -467,7 +467,7 @@ const ICON_BUTTON = 'd-press size-6 rounded-6 text-(--d-muted) hover:bg-(--d-bor
 const SETTLED_BAR = 'qd-merge-bar qd-merge-done-bar';
 // Each input's look: its icon, its words and its tone, the header chip's included.
 const PANES = {
-  incoming: { icon: ArrowDownToLine, title: 'merge.incoming', pane: 'merge.incomingPane', tone: 'text-(--d-info-text)', chip: 'bg-[color-mix(in_srgb,var(--d-info)_16%,transparent)] text-(--d-info-text)' },
+  incoming: { icon: ArrowDownToLine, title: 'merge.incoming', pane: 'merge.incomingPane', tone: 'text-(--d-info-text)', chip: 'bg-[color-mix(in_srgb,var(--d-info-fill)_16%,transparent)] text-(--d-info-text)' },
   current: { icon: Target, title: 'merge.current', pane: 'merge.currentPane', tone: 'text-(--d-accent-text)', chip: 'bg-(--d-accent-soft) text-(--d-accent-text)' },
 } as const;
 function setInputHost(side: 'incoming' | 'current', element: unknown): void {
@@ -582,7 +582,7 @@ function setInputHost(side: 'incoming' | 'current', element: unknown): void {
       <Button
         size="sm"
         data-testid="merge-complete"
-        class="d-press h-7 gap-1.5 rounded-7 bg-(--d-accent) px-2.75 text-12 font-semibold text-(--d-on-accent) hover:bg-(--d-accent) hover:brightness-110 [&_svg]:size-3.25"
+        class="d-press h-7 gap-1.5 rounded-7 bg-(--d-accent-fill) px-2.75 text-12 font-semibold text-(--d-on-accent) hover:bg-(--d-accent-fill) hover:brightness-110 [&_svg]:size-3.25"
         :disabled="!inputs || busy !== null || tab.readOnly"
         @click="complete"
       >
@@ -602,7 +602,7 @@ function setInputHost(side: 'incoming' | 'current', element: unknown): void {
       v-if="loadingBar"
       role="progressbar"
       :aria-label="t('merge.loading')"
-      class="d-sweep-bar h-0.5 shrink-0 text-(--d-accent)"
+      class="d-sweep-bar h-0.5 shrink-0 [--tone:var(--d-accent-fill)]"
     />
     <LoadFailedNotice
       v-if="resultFailed"

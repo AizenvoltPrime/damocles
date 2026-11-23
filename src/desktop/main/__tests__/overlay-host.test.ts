@@ -125,7 +125,7 @@ describe('overlay page', () => {
     expect(OVERLAY_PAGE_URL).toBe('app://damocles/overlay/index.html');
     expect(resolveAppRequest(OVERLAY_PAGE_URL, process.cwd())).toEqual({ kind: 'overlay' });
     expect(resolveAppRequest('app://damocles/overlay/other.html', process.cwd())).toBeUndefined();
-    const html = overlayHtml({ kind: 'dark', css: ':root{}', reducedMotion: false, fileIconTheme: 'material' }, 'el');
+    const html = overlayHtml({ kind: 'dark', css: ':root{}', trustedCss: ':root{}', reducedMotion: false, fileIconTheme: 'material' }, 'el');
     const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(html)?.[1] ?? '';
     const nonce = /'nonce-([^']+)'/.exec(csp)?.[1];
     expect(csp).toBe(`default-src 'none'; style-src app://damocles 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src app://damocles; img-src app://damocles data:; base-uri 'none'; form-action 'none';`);
@@ -306,7 +306,7 @@ describe('overlay requests', () => {
 
   it('sends a theme pushed while the page loads once it has loaded, so the page never keeps the theme it was built with', () => {
     host.load();
-    const theme = { kind: 'light', css: ':root{}', reducedMotion: false, fileIconTheme: 'material' } as const;
+    const theme = { kind: 'light', css: ':root{}', trustedCss: ':root{}', reducedMotion: false, fileIconTheme: 'material' } as const;
     host.sendTheme(theme);
     const themes = (): unknown[] => view().webContents.send.mock.calls.filter(([channel]) => channel === OVERLAY_CHANNELS.theme).map(([, payload]) => payload);
     expect(themes()).toEqual([]);

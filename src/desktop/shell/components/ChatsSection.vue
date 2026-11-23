@@ -33,7 +33,7 @@ const GROUP_ROW_REM = 1.625;
 const CHAT_ROW_REM = 2.875;
 const NESTED_ROW_REM = 2;
 const SEARCH_DEBOUNCE_MS = 150;
-const STATE_ACTION = 'h-auto rounded-7 border-(--d-border2) bg-transparent px-2.5 py-1 text-xs font-normal text-(--d-text) transition-none hover:border-(--d-accent) hover:bg-transparent hover:text-(--d-accent)';
+const STATE_ACTION = 'h-auto rounded-7 border-(--d-border2) bg-transparent px-2.5 py-1 text-xs font-normal text-(--d-text) transition-none hover:border-(--d-accent-fill) hover:bg-transparent hover:text-(--d-accent)';
 
 const listId = useId();
 const helpId = useId();
@@ -499,7 +499,7 @@ defineExpose({
           type="button"
           size="sm"
           data-testid="new-chat"
-          class="relative h-5.5 gap-1 rounded-s-md rounded-e-none px-1.75 text-11.5 hover:bg-[color-mix(in_srgb,var(--d-accent)_88%,var(--d-text))] focus-visible:z-1 [&_svg]:size-3"
+          class="relative h-5.5 gap-1 rounded-s-md rounded-e-none px-1.75 text-11.5 hover:bg-[color-mix(in_srgb,var(--d-accent-fill)_88%,var(--d-text))] focus-visible:z-1 [&_svg]:size-3"
           :aria-label="t('chats.newChat')"
           :title="t('chats.newTitle', { shortcut: newChatShortcut })"
           @click="newChat"
@@ -517,8 +517,8 @@ defineExpose({
           data-testid="new-chat-options"
           aria-haspopup="menu"
           :aria-expanded="newMenuOpen"
-          class="relative h-5.5 rounded-s-none rounded-e-md border-l border-[color-mix(in_srgb,var(--d-on-accent)_25%,transparent)] px-1 hover:bg-[color-mix(in_srgb,var(--d-accent)_88%,var(--d-text))] focus-visible:z-1 aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-primary [&_svg]:size-2.75"
-          :class="newMenuOpen ? 'bg-[color-mix(in_srgb,var(--d-accent)_88%,var(--d-text))]' : ''"
+          class="relative h-5.5 rounded-s-none rounded-e-md border-l border-[color-mix(in_srgb,var(--d-on-accent)_25%,transparent)] px-1 hover:bg-[color-mix(in_srgb,var(--d-accent-fill)_88%,var(--d-text))] focus-visible:z-1 aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-primary [&_svg]:size-2.75"
+          :class="newMenuOpen ? 'bg-[color-mix(in_srgb,var(--d-accent-fill)_88%,var(--d-text))]' : ''"
           :aria-disabled="projectKey === undefined || undefined"
           :aria-label="t('chats.newOptions')"
           :title="projectKey === undefined ? t('chats.newOptionsNoProject') : t('chats.newOptions')"
@@ -535,10 +535,10 @@ defineExpose({
 
     <div
       v-if="searchOpen"
-      class="animate-[d-pop_.16s_ease-out] px-2.5 pt-0.5 pb-1.5"
+      class="d-pop-in px-2.5 pt-0.5 pb-1.5"
     >
       <!-- The label draws the field around the icon and a bare input; Input's own box would be replaced wholesale. -->
-      <label class="flex h-7 items-center gap-1.75 rounded-7 border border-(--d-border2) bg-(--d-input) px-2.25 focus-within:border-(--d-accent)">
+      <label class="flex h-7 items-center gap-1.75 rounded-7 border border-(--d-border2) bg-(--d-input) px-2.25 focus-within:border-(--d-accent-fill)">
         <Search
           aria-hidden="true"
           class="size-3 shrink-0 text-(--d-faint)"
@@ -578,10 +578,10 @@ defineExpose({
           :data-tag="entry.tag"
           :aria-pressed="entry.tag === tagFilter"
           :title="entry.tag === tagFilter ? t('chats.clearTagFilter') : t('chats.showTagged', { tag: entry.tag })"
-          class="flex h-5 max-w-24 shrink-0 justify-start gap-1 rounded-full px-2 text-11 font-normal transition-none hover:border-(--d-accent) [&_svg]:size-2.5"
+          class="flex h-5 max-w-24 shrink-0 justify-start gap-1 rounded-full px-2 text-11 font-normal transition-none hover:border-(--d-accent-fill) [&_svg]:size-2.5"
           :class="[
             entry.tag === tagFilter
-              ? 'border-(--d-accent) bg-(--d-accent-soft) text-(--d-accent-text) hover:bg-(--d-accent-soft) hover:text-(--d-accent-text)'
+              ? 'border-(--d-accent-fill) bg-(--d-accent-soft) text-(--d-accent-text) hover:bg-(--d-accent-soft) hover:text-(--d-accent-text)'
               : 'border-(--d-border) bg-transparent text-(--d-muted) hover:bg-transparent hover:text-(--d-muted)',
             index >= visibleChips ? 'invisible' : '',
           ]"
@@ -610,7 +610,7 @@ defineExpose({
         variant="outline"
         size="sm"
         data-testid="all-tags"
-        class="flex h-5 shrink-0 gap-0.75 rounded-full border-(--d-border) bg-transparent px-1.75 text-11 font-normal text-(--d-muted) transition-none hover:border-(--d-accent) hover:bg-transparent hover:text-(--d-text) [&_svg]:size-2.5"
+        class="flex h-5 shrink-0 gap-0.75 rounded-full border-(--d-border) bg-transparent px-1.75 text-11 font-normal text-(--d-muted) transition-none hover:border-(--d-accent-fill) hover:bg-transparent hover:text-(--d-text) [&_svg]:size-2.5"
         :aria-label="t('chats.moreTags', { count: hiddenChips })"
         :title="t('chats.allTags')"
         aria-haspopup="menu"
@@ -626,14 +626,14 @@ defineExpose({
 
     <p
       v-if="noMatch"
-      class="animate-[d-fade_.3s] px-4 py-3.5 text-center text-xs text-(--d-faint)"
+      class="d-fade-in px-4 py-3.5 text-center text-xs text-(--d-faint)"
       data-testid="chats-no-match"
     >
       {{ t('chats.noMatch') }}
     </p>
     <div
       v-if="isEmpty"
-      class="flex animate-[d-fade_.3s] flex-col items-center gap-2 px-4 py-4.5 text-center text-xs text-(--d-muted)"
+      class="flex d-fade-in flex-col items-center gap-2 px-4 py-4.5 text-center text-xs text-(--d-muted)"
       data-testid="chats-empty"
     >
       <MessageSquareDashed
@@ -652,7 +652,7 @@ defineExpose({
     </div>
     <div
       v-if="loadFailed"
-      class="flex animate-[d-fade_.3s] flex-col items-center gap-2 px-4 py-3.5 text-center text-xs"
+      class="flex d-fade-in flex-col items-center gap-2 px-4 py-3.5 text-center text-xs"
       data-testid="chats-load-failed"
     >
       <p

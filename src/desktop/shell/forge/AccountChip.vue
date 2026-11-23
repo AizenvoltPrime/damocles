@@ -196,7 +196,7 @@ function onKeydown(event: KeyboardEvent): void {
 defineExpose({ openMenu });
 
 const TONE = computed(() => {
-  if (warn.value) return 'bg-[color-mix(in_srgb,var(--d-warning)_14%,transparent)] text-(--d-warning-text) hover:bg-[color-mix(in_srgb,var(--d-warning)_22%,transparent)] hover:text-(--d-warning-text) aria-expanded:bg-[color-mix(in_srgb,var(--d-warning)_22%,transparent)]';
+  if (warn.value) return 'bg-[color-mix(in_srgb,var(--d-warning-fill)_14%,transparent)] text-(--d-warning-text) hover:bg-[color-mix(in_srgb,var(--d-warning-fill)_22%,transparent)] hover:text-(--d-warning-text) aria-expanded:bg-[color-mix(in_srgb,var(--d-warning-fill)_22%,transparent)]';
   return 'bg-(--d-hover) text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) aria-expanded:bg-(--d-border2)';
 });
 </script>
@@ -212,7 +212,7 @@ const TONE = computed(() => {
     :aria-expanded="menuOpen"
     :aria-label="ariaLabel"
     :title="title"
-    class="d-press ms-1 flex h-4.5 max-w-full min-w-0 shrink justify-start gap-1 overflow-hidden rounded-full ps-0.5 pe-0 text-10.5 font-normal whitespace-nowrap focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 [&_svg]:size-2.5"
+    class="d-press ms-1 flex h-4.5 max-w-full min-w-0 shrink justify-start gap-1 overflow-hidden rounded-full ps-0.5 pe-0 text-10.5 font-normal whitespace-nowrap focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 [&_svg]:size-2.5"
     :class="TONE"
     @click.stop="openMenu"
     @keydown="onKeydown"

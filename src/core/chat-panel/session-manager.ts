@@ -17,6 +17,7 @@ import type { ForkContext, ForkSpawnArgs } from "../../shared/types/session";
 import type { EffortLevel } from "../../shared/types/settings";
 import type { DesignPanels, DesignSeed } from "../design/tools/start-design";
 import type { ForgeToolsPort } from "../pi-session/tools/forge-tools";
+import type { ThemeToolsHost } from "../pi-session/tools/theme-tools";
 
 export interface SessionManagerConfig {
   getEnabledMcpServers: (folderKey: string) => McpScope;
@@ -41,6 +42,8 @@ export interface SessionManagerConfig {
   getRawBrowserService: () => BrowserService;
   /** A chat panel's GitHub and GitLab tools; absent, or undefined for a panel, where chats have none. */
   forgeTools?: (panelId: string, host: PanelHost) => ((folder: () => string) => ForgeToolsPort) | undefined;
+  /** The desktop theme tools: this computer's desktop core's, or a daemon's relay to the turn's device. */
+  themeTools?: ThemeToolsHost;
   /** The folder's Compass service, or null for a folder with no project index. */
   getCompassService: (folderKey: string) => CompassService | null;
   onAssistantTextFinal?: (text: string, panelId: string) => void;
@@ -62,6 +65,7 @@ export class SessionManager {
   private readonly getMemoryService: SessionManagerConfig["getMemoryService"];
   private readonly getRawBrowserService: SessionManagerConfig["getRawBrowserService"];
   private readonly forgeTools: SessionManagerConfig["forgeTools"];
+  private readonly themeTools: SessionManagerConfig["themeTools"];
   private readonly getCompassService: SessionManagerConfig["getCompassService"];
   private readonly onAssistantTextFinal: SessionManagerConfig["onAssistantTextFinal"];
   private readonly platform: PlatformWithWorktrees;
@@ -81,6 +85,7 @@ export class SessionManager {
     this.getMemoryService = config.getMemoryService;
     this.getRawBrowserService = config.getRawBrowserService;
     this.forgeTools = config.forgeTools;
+    this.themeTools = config.themeTools;
     this.getCompassService = config.getCompassService;
     this.onAssistantTextFinal = config.onAssistantTextFinal;
     this.platform = config.platform;
@@ -172,6 +177,7 @@ export class SessionManager {
       ...(piCompassService ? { compassService: piCompassService } : {}),
       browser: { service: piBrowserService, chat: host },
       ...(forgeTools ? { forgeTools } : {}),
+      ...(this.themeTools ? { themeTools: this.themeTools } : {}),
       teamService,
       ...(onSpawnFork !== undefined ? { onSpawnFork } : {}),
       ...(forkContext !== undefined ? { forkContext } : {}),

@@ -49,14 +49,28 @@ describe('host latency in the shell', () => {
     expect(root.attributes()).not.toHaveProperty('aria-label');
   });
 
+  it('colors every tone shape from its fill token, and only the offline ring from the text color', () => {
+    for (const props of [{ connection: 'connected' }, { connection: 'connected', slow: true }, { connection: 'failed' }] as const) {
+      const root = dot(props).get('[data-testid="host-status-dot"]');
+      expect(root.classes().filter((name) => name.startsWith('text-'))).toEqual([]);
+      expect(root.html()).not.toContain('currentColor');
+    }
+    expect(dot({ connection: 'failed' }).get('circle').classes()).toContain('fill-(--d-danger-fill)');
+    // the cross lies on the danger fill, so it takes the token whose contrast on that fill is checked
+    expect(dot({ connection: 'failed' }).get('path').classes()).toEqual(['stroke-(--d-on-danger)']);
+    const offline = dot({ connection: 'offline' }).get('[data-testid="host-status-dot"]');
+    expect(offline.classes()).toContain('text-(--d-faint)');
+    expect(offline.get('circle').attributes('stroke')).toBe('currentColor');
+  });
+
   it('keeps the green center and adds a warning ring while slow, read out as slow', () => {
     const slow = dot({ connection: 'connected', slow: true, label: 'Slow connection to prod-1 (620 ms)' });
     const root = slow.get('[data-testid="host-status-dot"]');
     expect(root.attributes()).toMatchObject({ 'data-shape': 'slow', 'aria-label': 'Slow connection to prod-1 (620 ms)', role: 'img' });
-    expect(root.classes()).toContain('text-(--d-success)');
     const circles = slow.findAll('circle');
     expect(circles.map((circle) => circle.attributes('r'))).toEqual(['2.5', '4.2']);
-    expect(circles[1]!.classes()).toContain('stroke-(--d-warning)');
+    expect(circles[0]!.classes()).toContain('fill-(--d-success-fill)');
+    expect(circles[1]!.classes()).toContain('stroke-(--d-warning-fill)');
     expect(dot({ connection: 'connected', label: 'prod-1 · 38 ms' }).findAll('circle').map((circle) => circle.attributes('r'))).toEqual(['4']);
   });
 
@@ -68,7 +82,9 @@ describe('host latency in the shell', () => {
     await nextTick();
     const root = wrapper.get('[data-testid="host-status-dot"]');
     expect(root.attributes('data-shape')).toBe('connecting');
-    expect(root.classes()).toEqual(expect.arrayContaining(['d-pulsing', 'text-(--d-warning)', 'transition-colors', 'duration-200']));
+    expect(root.classes()).toEqual(expect.arrayContaining(['d-pulsing', 'transition-colors', 'duration-200']));
+    expect(wrapper.get('[data-testid="host-status-dot"] circle').classes()).toContain('stroke-(--d-warning-fill)');
+    expect(wrapper.get('[data-testid="host-status-dot"] path').classes()).toContain('fill-(--d-warning-fill)');
     await wrapper.setProps({ connection: 'connected', reconnect: undefined });
     expect(wrapper.get('[data-testid="host-status-flash"]').classes()).toContain('d-flash-once');
     vi.advanceTimersByTime(RECONNECTED_MS);
@@ -83,12 +99,12 @@ describe('host latency in the shell', () => {
     expect(svg.attributes('aria-hidden')).toBe('true');
     expect(svg.classes()).toEqual(expect.arrayContaining(['h-5', 'w-19']));
     const first = wrapper.get('path');
-    expect(first.classes()).toEqual(expect.arrayContaining(['d-draw', 'stroke-(--d-accent)']));
+    expect(first.classes()).toEqual(expect.arrayContaining(['d-draw', 'stroke-(--d-accent-fill)']));
     expect(first.attributes('d')?.split('L')).toHaveLength(3);
     await wrapper.setProps({ history: [38, 40, 36, 640], slow: true, measurements: 4 });
     const next = wrapper.get('path');
     expect(next.element).not.toBe(first.element);
-    expect(next.classes()).toContain('stroke-(--d-warning)');
+    expect(next.classes()).toContain('stroke-(--d-warning-fill)');
     // a reading that leaves a full history unchanged still draws again
     await wrapper.setProps({ measurements: 5 });
     expect(wrapper.get('path').element).not.toBe(next.element);

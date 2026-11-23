@@ -29,7 +29,7 @@ const tone = computed(() => ({ running: 'accent', waiting: 'warning', idle: 'fai
       data-testid="focus-overlay-title"
       class="min-h-lh w-full truncate text-13 font-semibold text-(--d-text)"
     >
-      <Transition enter-active-class="animate-[d-fade_.2s_var(--ease-out)]">
+      <Transition enter-active-class="d-fade-in">
         <span v-if="title !== undefined">{{ title }}</span>
       </Transition>
     </p>

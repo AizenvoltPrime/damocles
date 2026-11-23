@@ -214,6 +214,17 @@ async function removeOrphanedTempFiles(target: string): Promise<void> {
   }
 }
 
+/** Writes `data` to the new or emptied `file` and flushes it to the disk, so a rename of it after a crash never names an empty file. */
+export async function writeFlushed(file: string, data: string | Uint8Array, mode: number): Promise<void> {
+  const handle = await fs.open(file, 'w', mode);
+  try {
+    await handle.writeFile(data);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 async function replaceFile(
   target: string,
   current: string | undefined,
@@ -228,14 +239,7 @@ async function replaceFile(
   await removeOrphanedTempFiles(target);
   const tempPath = `${target}.${process.pid}.tmp`;
   try {
-    const handle = await fs.open(tempPath, 'w', nextMode ?? 0o666);
-    try {
-      await handle.writeFile(text, 'utf-8');
-      // Flushed before the rename, so a crash cannot leave the renamed target empty.
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
+    await writeFlushed(tempPath, text, nextMode ?? 0o666);
     // open's mode is masked by umask; the kept or required mode is applied exactly.
     if (nextMode !== undefined) await fs.chmod(tempPath, nextMode);
     const lost = compromised();

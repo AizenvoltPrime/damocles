@@ -204,7 +204,7 @@ describe('team tool cards', () => {
   it.each(names)('makes %s expandable', async (name) => {
     const wrapper = card({ id: 't-1', name, input: {}, status: 'completed' });
 
-    await wrapper.trigger('click');
+    await wrapper.get('[data-tool-card]').trigger('click');
 
     expect(useUIStore()).toMatchObject({ expandedToolId: 't-1', expandedToolSource: 'session' });
   });
@@ -402,7 +402,9 @@ describe('the card frame', () => {
     const tool = card({ id: 't-1', name: 'Bash', input: { command: 'ls' }, status });
     const special = skill(status);
 
-    expect(tool.classes()).toEqual(special.classes());
+    const classes = tool.get('[data-tool-card]').classes();
+    expect(classes).toContain('border');
+    expect(classes).toEqual(special.get('[data-tool-card]').classes());
     // The skill card draws no body glyph for these statuses, so its last glyph is the status icon.
     expect(headerPaths(tool)).toContain(headerPaths(special).at(-1));
     expect(tool.find('.d-spinning').exists()).toBe(special.find('.d-spinning').exists());
@@ -410,7 +412,7 @@ describe('the card frame', () => {
 
   // The badge transition animates the wrapper, so the spinner's endless spin never holds the leaving icon after a Stop.
   it('swaps the status icon through a wrapper keyed by the icon, never the spinning icon itself', async () => {
-    const frame = mount(ToolCardFrame, { props: { icon: LoadingSpinner, name: 'WebFetch', status: 'pending' as ToolCall['status'] }, global: { plugins: [i18n] } });
+    const frame = mount(ToolCardFrame, { props: { tool: 'WebFetch', icon: LoadingSpinner, name: 'WebFetch', status: 'pending' as ToolCall['status'] }, global: { plugins: [i18n] } });
     const wrapper = (): Element => frame.get('[data-testid="tool-card-status-icon"]').element;
     const pending = wrapper();
     expect(pending.classList.contains('d-spinning')).toBe(false);
@@ -426,7 +428,7 @@ describe('the card frame', () => {
 
   it('animates only through the motion.css classes', () => {
     for (const status of ['pending', 'running', 'awaiting_approval'] as const) {
-      expect(card({ id: 't-1', name: 'Bash', input: { command: 'ls' }, status, liveOutput: 'x' }).html()).not.toContain('animate-[');
+      expect(card({ id: 't-1', name: 'Bash', input: { command: 'ls' }, status, liveOutput: 'x' }).html()).not.toContain('animate-');
     }
   });
 });

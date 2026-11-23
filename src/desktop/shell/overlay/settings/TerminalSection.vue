@@ -300,7 +300,7 @@ const parseFontFamily: InputParse<string> = (raw) => {
           <!-- No shadcn Alert part exists in components/ui; a danger-tinted card lists each refused entry. -->
           <Card
             v-if="report.problems.length > 0"
-            class="overflow-hidden rounded-lg border-[color-mix(in_srgb,var(--d-danger)_35%,var(--d-border))] bg-[color-mix(in_srgb,var(--d-danger)_7%,var(--d-card))] shadow-none"
+            class="overflow-hidden rounded-lg border-[color-mix(in_srgb,var(--d-danger-fill)_35%,var(--d-border))] bg-[color-mix(in_srgb,var(--d-danger-fill)_7%,var(--d-card))] shadow-none"
           >
             <ul>
               <li
@@ -308,7 +308,7 @@ const parseFontFamily: InputParse<string> = (raw) => {
                 :key="`${index}:${problem.name ?? ''}:${problem.reason}`"
                 data-testid="terminal-profile-problem"
                 :data-reason="problem.reason"
-                class="flex items-start gap-2.5 px-3 py-2 not-first:border-t not-first:border-[color-mix(in_srgb,var(--d-danger)_20%,var(--d-border))]"
+                class="flex items-start gap-2.5 px-3 py-2 not-first:border-t not-first:border-[color-mix(in_srgb,var(--d-danger-fill)_20%,var(--d-border))]"
               >
                 <CircleAlert
                   aria-hidden="true"

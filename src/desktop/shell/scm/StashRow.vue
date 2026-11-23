@@ -42,7 +42,7 @@ const name = computed(() => `stash@{${props.row.stash.index}}`);
     :aria-label="t('scm.stashAria', { name, description, detail })"
     :tabindex="current ? 0 : -1"
     :title="`${name}: ${description}`"
-    class="scm-row group/row flex cursor-pointer items-center gap-1.75 rounded-6 pr-1 pl-1.5 outline-none select-none hover:bg-(--d-hover) focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
+    class="scm-row group/row flex cursor-pointer items-center gap-1.75 rounded-6 pr-1 pl-1.5 outline-none select-none hover:bg-(--d-hover) focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent-fill)]"
     :class="arrival ?? ''"
     :style="{ height: `${height}px` }"
     @click="emit('activate')"

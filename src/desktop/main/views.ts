@@ -15,7 +15,8 @@ import { GestureGrant, isActivationKey, isPrimaryClick } from './clipboard-gestu
 import type { PanelStateStore } from './panel-state-store';
 import { APP_ORIGIN, isPanelId, panelPageUrl } from './protocol';
 import { loadAppPage, loggableUrl, registerPanelContents } from './security';
-import { currentTheme, currentThemeKind, THEME_BACKGROUND } from './theme';
+import { chatSeeThrough, currentTheme, shownBackground } from './theme';
+import { parkedBounds, revealAfterPaint } from './chat-reveal';
 
 export interface SenderEvent {
   readonly sender: unknown;
@@ -61,6 +62,29 @@ export function isWebviewState(value: unknown): boolean {
 // A page that kills its renderer on every load is left dead rather than reloaded in a loop.
 const MAX_CRASHES_IN_WINDOW = 3;
 const CRASH_WINDOW_MS = 60_000;
+// A see-through chat view's background: the shell's wallpaper shows wherever its page paints nothing.
+const SEE_THROUGH = '#00000000';
+// An isolated world of main's own, apart from the preload's, where it waits for a page's frames.
+const PAINT_WORLD_ID = 1001;
+
+// one wait per page, so every switch to a chat that is still loading shares its listener
+const firstFrames = new WeakMap<WebContents, Promise<void>>();
+
+/** Settles once the page has loaded and rendered two frames since: the second one is on screen. */
+function firstFrame(contents: WebContents): Promise<void> {
+  const pending = firstFrames.get(contents);
+  if (pending) return pending;
+  const wait = awaitFirstFrame(contents).finally(() => firstFrames.delete(contents));
+  firstFrames.set(contents, wait);
+  return wait;
+}
+
+async function awaitFirstFrame(contents: WebContents): Promise<void> {
+  if (contents.isDestroyed()) return;
+  if (contents.isLoadingMainFrame() || contents.getURL() === '') await new Promise<void>((resolve) => contents.once('did-finish-load', () => resolve()));
+  if (contents.isDestroyed()) return;
+  await contents.executeJavaScriptInIsolatedWorld(PAINT_WORLD_ID, [{ code: 'new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))' }]);
+}
 
 export { CHAT_WORKER_SRC };
 
@@ -175,8 +199,9 @@ interface PanelViewsDeps {
   readonly connection: (panel: DesktopPanel) => PanelConnection | undefined;
   // a chip's Cancel or Discard on one of the page's held messages
   readonly onQueueAction: (panel: DesktopPanel, action: PanelQueueAction) => void;
-  // a core message on its way to a remote chat's page; true when main took it (a held message core refused)
-  readonly takeCoreMessage: (panel: DesktopPanel, type: string, json: string) => boolean;
+  // a core message on its way to a remote chat's page: the text the page gets, which main may have built again from its own
+  // record (a theme card), or undefined when main took it (a held message core refused) or delivers none
+  readonly takeCoreMessage: (panel: DesktopPanel, type: string, json: string) => string | undefined;
   // a link the user clicked in a remote chat's page (OpenUrl.userClick); a local chat's goes to its core, which opens it
   readonly openRemoteLink: (authority: string, url: string) => void;
   readonly preloadPath: string;
@@ -191,8 +216,12 @@ interface PanelViewsDeps {
   readonly onReveal: (chat: DesktopPanel) => void;
   // The chat's page crashed more than MAX_CRASHES_IN_WINDOW times within CRASH_WINDOW_MS and is left dead.
   readonly onRendererGaveUp: (panel: DesktopPanel) => void;
+  // A chat's page went away other than by a clean exit (the theme crash loop counts it); its restart follows as before.
+  readonly onRendererGone: (panel: DesktopPanel) => void;
   // The stored session a chat's saved state names changed.
   readonly onSavedSessionChange: (chat: DesktopPanel) => void;
+  // A chat's page opened its first modal layer or closed its last (DesktopPanel.modalOpen).
+  readonly onModalChange: (chat: DesktopPanel) => void;
   // An overlay popup is open, and so holds keyboard focus.
   readonly popupOpen: () => boolean;
   // The selected chat is another project's, kept while that project's host needs the user: its view hides (keptChatWithheld).
@@ -246,6 +275,8 @@ export class DesktopPanel implements PanelHost {
   private readonly invokeChannels: string[] = [];
   // a click or activation key main observed in a remote chat's page, which its Allow YOLO ask takes
   private readonly yoloGesture = new GestureGrant<true>();
+  // the chat's page shows a modal layer (PANEL_CHANNELS.modal); false again once its page navigates or goes away
+  private modal = false;
   private readonly owner: PanelViews;
   private readonly deps: PanelViewsDeps;
 
@@ -276,14 +307,14 @@ export class DesktopPanel implements PanelHost {
       },
     });
     registerPanelContents(this.view.webContents);
-    this.view.setBackgroundColor(THEME_BACKGROUND[currentThemeKind()]);
+    this.view.setBackgroundColor(this.background());
     this.view.setVisible(false);
 
     this.onIpc(PANEL_CHANNELS.init, (event) => {
       const host = this.authority === 'local' ? undefined : deps.hostLabel(this.authority);
       const connection = this.kind === 'chat' && this.authority !== 'local' ? deps.connection(this) : undefined;
       const hostNames = this.kind === 'chat' && this.authority === 'local' ? deps.hostNames() : undefined;
-      const init: PanelInit = { state: this.state, theme: currentTheme(), ...(host ? { host } : {}), ...(this.offline ? { offline: this.offline } : {}), ...(connection ? { connection } : {}), ...(hostNames ? { hostNames } : {}) };
+      const init: PanelInit = { state: this.state, theme: this.theme(), ...(host ? { host } : {}), ...(this.offline ? { offline: this.offline } : {}), ...(connection ? { connection } : {}), ...(hostNames ? { hostNames } : {}) };
       event.returnValue = init;
     }, (event) => { event.returnValue = null; });
     this.onIpc(PANEL_CHANNELS.post, (_event, payload) => {
@@ -323,6 +354,13 @@ export class DesktopPanel implements PanelHost {
       }
       deps.onQueueAction(this, { action, id });
     });
+    this.onIpc(PANEL_CHANNELS.modal, (_event, payload) => {
+      if (this.kind !== 'chat' || typeof payload !== 'boolean') {
+        deps.log(`[views] panel ${this.panelId}: dropped a malformed modal report`);
+        return;
+      }
+      this.setModal(payload);
+    });
     this.onIpc(PANEL_CHANNELS.setState, (_event, payload) => {
       const normalized = asJsonValue(payload, MAX_STATE_JSON_CHARS);
       const state = normalized?.value;
@@ -349,11 +387,16 @@ export class DesktopPanel implements PanelHost {
       });
       contents.on('blur', () => this.yoloGesture.clear());
     }
-    contents.on('did-navigate', () => owner.committed(this));
+    contents.on('did-navigate', () => {
+      this.setModal(false);
+      owner.committed(this);
+    });
     contents.on('dom-ready', () => owner.domReady(this));
     contents.on('render-process-gone', (_event, details) => {
       deps.log(`[views] panel ${this.panelId} renderer gone (${details.reason})`);
+      this.setModal(false);
       if (this.disposed || details.reason === 'clean-exit') return;
+      if (this.kind === 'chat') deps.onRendererGone(this);
       const now = Date.now();
       this.crashes = [...this.crashes.filter((at) => now - at < CRASH_WINDOW_MS), now];
       if (this.crashes.length > MAX_CRASHES_IN_WINDOW) {
@@ -399,6 +442,16 @@ export class DesktopPanel implements PanelHost {
 
   get active(): boolean {
     return this.visible && this.deps.window.isFocused();
+  }
+
+  get modalOpen(): boolean {
+    return this.modal;
+  }
+
+  private setModal(open: boolean): void {
+    if (this.disposed || this.modal === open) return;
+    this.modal = open;
+    this.deps.onModalChange(this);
   }
 
   // A hidden view keeps its page running.
@@ -464,8 +517,8 @@ export class DesktopPanel implements PanelHost {
     // A folder update may move the chat to another project.
     if (this.kind === 'chat' && type === 'workspaceFolderUpdate') this.owner.changed();
     if (this.page && PAGE_STATE_TYPES.has(type) && observePageMessage(this.page, JSON.parse(json))) this.owner.pageChanged(this);
-    if (this.kind === 'chat' && this.authority !== 'local' && this.deps.takeCoreMessage(this, type, json)) return;
-    this.send(json);
+    const delivered = this.kind === 'chat' && this.authority !== 'local' ? this.deps.takeCoreMessage(this, type, json) : json;
+    if (delivered !== undefined) this.send(delivered);
   }
 
   // A crashed renderer has no frame to receive it; the reload's ready replays what the page needs.
@@ -480,9 +533,19 @@ export class DesktopPanel implements PanelHost {
     if (!this.disposed) this.messages.fire(message);
   }
 
-  sendTheme(theme: PanelTheme): void {
-    this.view.setBackgroundColor(THEME_BACKGROUND[theme.kind]);
-    if (!this.webContents.isDestroyed() && !this.webContents.isCrashed()) this.webContents.send(PANEL_CHANNELS.theme, theme);
+  // A chat view is see-through over its slot while the chat panel shows a wallpaper, which the shell draws under it.
+  private background(): string {
+    return this.kind === 'chat' && chatSeeThrough() ? SEE_THROUGH : shownBackground();
+  }
+
+  // A chat page gets the transcript's custom CSS; a browser page gets none.
+  private theme(): PanelTheme {
+    return this.kind === 'chat' ? currentTheme('region', 'chat') : currentTheme();
+  }
+
+  sendTheme(): void {
+    this.view.setBackgroundColor(this.background());
+    if (!this.webContents.isDestroyed() && !this.webContents.isCrashed()) this.webContents.send(PANEL_CHANNELS.theme, this.theme());
   }
 
   // the chat's host was renamed or recolored on this computer
@@ -659,6 +722,8 @@ export class PanelViews {
   private readonly retainedPanels = new WeakSet<DesktopPanel>();
   // DIP rectangle of the chat slot; undefined until the shell first reports it
   private contentBounds: Rectangle | undefined;
+  // a see-through switch: the chat shown parked until it has painted, and the chat that keeps the slot until then
+  private revealing: { readonly chat: DesktopPanel; readonly from: DesktopPanel | undefined } | undefined;
   // The editor's focus overlay covers the window, so the chat view hides under the shell's scrim.
   private focusOverlay = false;
   private readonly deps: PanelViewsDeps;
@@ -728,18 +793,34 @@ export class PanelViews {
     return this.selectedId === undefined ? undefined : this.panels.get(this.selectedId);
   }
 
+  /** The chat on screen in the chat slot: during a see-through switch the one stepping aside, else the selected one. */
+  inSlot(): DesktopPanel | undefined {
+    return this.revealing ? this.revealing.from : this.selected();
+  }
+
   show(panelId: string, options: { readonly focus: ShowFocus }): void {
     const next = this.panels.get(panelId);
     if (!next || next.chat) return;
     this.launchFocus = undefined;
     const previous = this.selected();
     this.selectedId = panelId;
-    if (previous && previous !== next) {
-      previous.view.setVisible(false);
-      previous.fireViewState();
+    const shownOther = this.chats().some((chat) => chat !== next && chat.view.getVisible());
+    if (shownOther && !next.view.getVisible() && chatSeeThrough() && !this.focusOverlay && !this.deps.withholds(next)) this.revealPainted(next, previous);
+    else {
+      this.revealing = undefined;
+      if (previous && previous !== next) {
+        previous.view.setVisible(false);
+        previous.fireViewState();
+      }
+      // a parked view a newer switch superseded hides too
+      for (const chat of this.chats()) {
+        if (chat === next || chat === previous || !chat.view.getVisible()) continue;
+        chat.view.setVisible(false);
+        chat.fireViewState();
+      }
+      next.view.setVisible(true);
+      this.layout();
     }
-    next.view.setVisible(true);
-    this.layout();
     this.deps.pages.chatSelected(next);
     if (options.focus === true) this.focus(next);
     else if (options.focus === 'whenReady') this.launchFocus = { panel: next, ready: false };
@@ -750,6 +831,39 @@ export class PanelViews {
   // A chat core reveals is selected through the owner, which tracks the selected project.
   reveal(chat: DesktopPanel): void {
     this.deps.onReveal(chat);
+  }
+
+  // Over a wallpaper the new chat view would show an empty frame before its page paints, so it renders parked first and swaps in.
+  private revealPainted(next: DesktopPanel, previous: DesktopPanel | undefined): void {
+    // a switch that supersedes one still parked leaves the slot to the chat that already has it
+    this.revealing = { chat: next, from: this.revealing ? this.revealing.from : previous };
+    void revealAfterPaint({
+      park: () => {
+        const area = this.area();
+        if (this.deps.window.isDestroyed() || !area) return;
+        const { width, height } = this.deps.window.getContentBounds();
+        next.view.setBounds(parkedBounds(area, { width, height }));
+        next.view.setVisible(true);
+      },
+      painted: () => firstFrame(next.webContents),
+      current: () => this.revealing?.chat === next && this.selected() === next && !next.webContents.isDestroyed(),
+      swap: () => {
+        this.revealing = undefined;
+        this.layout();
+        for (const chat of this.chats()) {
+          if (chat === next || (chat !== previous && !chat.view.getVisible())) continue;
+          chat.view.setVisible(false);
+          chat.fireViewState();
+        }
+        // retention may unload the chat that stepped aside now
+        this.deps.onChange();
+      },
+    });
+  }
+
+  /** The chat still shown while a see-through switch waits for the new one to paint; retention keeps it until the swap. */
+  leaving(chat: DesktopPanel): boolean {
+    return this.revealing !== undefined && chat !== this.revealing.chat && chat.view.getVisible();
   }
 
   setContentBounds(bounds: Rectangle): void {
@@ -778,9 +892,11 @@ export class PanelViews {
     for (const panel of this.panels.values()) if (panel.kind === 'chat' && panel.authority === 'local') panel.sendHostNames(hostNames);
   }
 
-  broadcastTheme(theme: PanelTheme): void {
-    this.deps.window.setBackgroundColor(THEME_BACKGROUND[theme.kind]);
-    for (const panel of this.panels.values()) panel.sendTheme(theme);
+  broadcastTheme(): void {
+    // the window's closed handler ends a transient preview after the window is destroyed
+    if (this.deps.window.isDestroyed()) return;
+    this.deps.window.setBackgroundColor(shownBackground());
+    for (const panel of this.panels.values()) panel.sendTheme();
   }
 
   // Chats closed while the host tears down keep their persisted state, so the next start restores them.
@@ -815,7 +931,8 @@ export class PanelViews {
   // The kind is checked against the panel's own: a chat shows the chat or error page, a browser page its toolbar or none.
   pageHtml(panel: DesktopPanel, page: PageSpec): string {
     const uri = (...parts: string[]): string => this.resourceUriFor(path.join(this.deps.resourceRoot, ...parts));
-    const themeCss = currentTheme().css;
+    const theme = currentTheme();
+    const themeCss = theme.css;
     if (panel.kind === 'chat' && page.kind === 'chat') {
       return chatPageHtml({
         lang: this.deps.language(),
@@ -826,6 +943,7 @@ export class PanelViews {
         styleUri: uri('dist', 'webview', 'assets', 'index.css'),
         logoUri: uri('resources', 'icon.png'),
         themeCss,
+        trustedCss: theme.trustedCss,
       });
     }
     if (panel.kind === 'chat' && page.kind === 'error') {
@@ -927,8 +1045,20 @@ export class PanelViews {
     if (index >= 0) this.order.splice(index, 1);
     if (!this.retaining(panel) && panel.authority === 'local') this.deps.states.delete(panel.panelId);
     if (this.selectedId === panel.panelId) this.selectedId = undefined;
+    if (panel === this.revealing?.chat) this.endReveal();
+    else if (panel === this.revealing?.from) this.revealing = { chat: this.revealing.chat, from: undefined };
     this.deps.pages.chatClosed(panel);
     this.deps.onChange();
+  }
+
+  // The parked chat closed before it painted, so its swap never runs: the chats it was replacing leave the screen.
+  private endReveal(): void {
+    this.revealing = undefined;
+    for (const chat of this.chats()) {
+      if (!chat.view.getVisible()) continue;
+      chat.view.setVisible(false);
+      chat.fireViewState();
+    }
   }
 
   private createPage(request: CreatePanelRequest): DesktopPanel {
@@ -958,7 +1088,8 @@ export class PanelViews {
   // a screen reader finds it under them; a withheld chat hides under the shell's placeholder.
   private layout(): void {
     const chat = this.selected();
-    if (!chat) return;
+    // a parked chat takes its slot when its reveal swaps
+    if (!chat || chat === this.revealing?.chat) return;
     const area = this.area();
     const withheld = this.deps.withholds(chat);
     const shown = !this.focusOverlay && !withheld && area !== undefined && area.width > 0 && area.height > 0;

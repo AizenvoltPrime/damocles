@@ -91,7 +91,7 @@ watch(() => output.value.length, async () => {
       <div
         v-if="version === 1"
         data-testid="host-wsl1-note"
-        class="flex gap-2 rounded-8 bg-(--d-warning)/12 px-2.5 py-2 text-12 text-(--d-warning-text)"
+        class="flex gap-2 rounded-8 bg-(--d-warning-fill)/12 px-2.5 py-2 text-12 text-(--d-warning-text)"
       >
         <Gauge
           aria-hidden="true"
@@ -136,7 +136,7 @@ watch(() => output.value.length, async () => {
         tabindex="-1"
         data-testid="convert-wsl2-steps"
         :aria-label="t('remote.wsl.steps', { name: hostName })"
-        class="flex flex-col gap-1.5 rounded-6 focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent)"
+        class="flex flex-col gap-1.5 rounded-6 focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent-fill)"
       >
         <li
           v-for="step in WSL_CONVERSION_STEPS"
@@ -158,11 +158,11 @@ watch(() => output.value.length, async () => {
               />
               <Check
                 v-else-if="run.steps[step] === 'done'"
-                class="size-3.5 animate-[d-icon-in_.3s_var(--ease-spring)] text-(--d-success-text)"
+                class="size-3.5 d-icon-in text-(--d-success-text)"
               />
               <CircleX
                 v-else-if="run.steps[step] === 'failed'"
-                class="size-3.5 animate-[d-icon-in_.3s_var(--ease-spring)] text-(--d-danger-text)"
+                class="size-3.5 d-icon-in text-(--d-danger-text)"
               />
               <span
                 v-else
@@ -204,7 +204,7 @@ watch(() => output.value.length, async () => {
                 dir="ltr"
                 tabindex="0"
                 :aria-label="t('remote.wsl.output')"
-                class="m-0 max-h-30 overflow-y-auto rounded-8 border border-(--d-border) bg-(--d-code) px-2.5 py-2 font-mono text-11/relaxed whitespace-pre-wrap text-(--d-text) focus-visible:outline-1 focus-visible:outline-(--d-accent)"
+                class="m-0 max-h-30 overflow-y-auto rounded-8 border border-(--d-border) bg-(--d-code) px-2.5 py-2 font-mono text-11/relaxed whitespace-pre-wrap text-(--d-text) focus-visible:outline-1 focus-visible:outline-(--d-accent-fill)"
               ><template v-if="output.length === 0"><span class="text-(--d-faint-text)">{{ t('remote.wsl.outputEmpty') }}</span></template><span
                 v-for="(line, index) in output"
                 v-else
@@ -240,7 +240,7 @@ watch(() => output.value.length, async () => {
       role="alert"
       data-testid="convert-wsl2-failure"
       :data-code="failure.code"
-      class="timeline-grow flex flex-col gap-1.5 rounded-8 bg-(--d-danger)/12 px-2.5 py-2 text-12 text-(--d-danger-text)"
+      class="timeline-grow flex flex-col gap-1.5 rounded-8 bg-(--d-danger-fill)/12 px-2.5 py-2 text-12 text-(--d-danger-text)"
     >
       <p>{{ failure.text }}</p>
       <template v-if="failure.message">

@@ -55,7 +55,7 @@ watch([() => props.hover, () => props.width, () => props.height], async ([hover]
         v-for="(segment, index) in hover.segments"
         :key="`${hover.key}:${index}`"
         data-testid="terminal-link-underline"
-        class="terminal-link-underline absolute h-px bg-(--d-accent)"
+        class="terminal-link-underline absolute h-px bg-(--d-accent-fill)"
         :style="{ left: `${segment.left}px`, top: `${segment.top}px`, width: `${segment.width}px` }"
       />
     </template>

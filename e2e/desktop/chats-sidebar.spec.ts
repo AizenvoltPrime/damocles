@@ -5,7 +5,7 @@ import { activeChat, expect, test } from './support/fixtures';
 import { git } from './support/git';
 import { seedStubModel } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
-import { selectedProjectKey, shellState } from './support/shell';
+import { onMainWindow, selectedProjectKey, shellState } from './support/shell';
 import { addProject, chatInput, hostMessages, postFromWebview, recordHostMessages, sendAndAwaitEcho } from './support/ui';
 import { chatEntry, chatList, chatRow, clickChat, clickRowAction, clickSectionAction, listChats, projectKeyOf, projectRow, readyShell, renameInline, sectionAction } from './support/shell-ui';
 import { answerConfirm, answerTagPicker, confirmDialog, focusedMenuItem, overlayMenu, overlayViewState, readyOverlay } from './support/overlay';
@@ -153,7 +153,7 @@ test('sidebar edits: rename, tag and delete change the session files for loaded 
     await overlay.keyboard.press('Escape');
     await expect(overlayMenu(overlay)).toHaveCount(0);
     await expect.poll(async () => (await overlayViewState(app)).visible).toBe(false);
-    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.webContents.isFocused())).toBe(true);
+    await expect.poll(() => onMainWindow(app, (win) => win.webContents.isFocused())).toBe(true);
     await expect(chatList(shell)).toBeFocused();
 
     // Rename a loaded chat inline and an unloaded one from the menu.

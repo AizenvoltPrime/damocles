@@ -86,11 +86,15 @@ export function writeAsar(asarPath: string, files: Record<string, string | Buffe
   writeFileSync(asarPath, Buffer.concat([header, ...data]));
 }
 
-export function readAsarFile(asarPath: string, dataOffset: number, entry: AsarFileEntry): string {
+export function readAsarBytes(asarPath: string, dataOffset: number, entry: AsarFileEntry): Buffer {
   const fd = openSync(asarPath, 'r');
   try {
-    return readExactly(fd, entry.size, dataOffset + Number(entry.offset)).toString('utf8');
+    return readExactly(fd, entry.size, dataOffset + Number(entry.offset));
   } finally {
     closeSync(fd);
   }
+}
+
+export function readAsarFile(asarPath: string, dataOffset: number, entry: AsarFileEntry): string {
+  return readAsarBytes(asarPath, dataOffset, entry).toString('utf8');
 }

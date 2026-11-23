@@ -347,6 +347,7 @@ const hasPeek = computed(() => !isFileOperation.value && !isStructuredOutput.val
 
 <template>
   <ToolCardFrame
+    :tool="toolCall.name"
     :icon="toolIconComponent"
     :name="displayName"
     :arg="headerArg"
@@ -456,7 +457,7 @@ const hasPeek = computed(() => !isFileOperation.value && !isStructuredOutput.val
     >
       <p class="flex items-center gap-1.5 text-10 tracking-[.06em] text-(--d-faint) uppercase">
         <span
-          class="d-pulsing size-1.5 rounded-full bg-(--d-accent)"
+          class="d-pulsing size-1.5 rounded-full bg-(--d-accent-fill)"
           aria-hidden="true"
         />{{ t('toolCall.liveOutput') }}
       </p>
@@ -489,7 +490,7 @@ const hasPeek = computed(() => !isFileOperation.value && !isStructuredOutput.val
               <code
                 v-if="cronCreateMeta"
                 class="rounded px-1 py-0.5 text-xs"
-                :class="cronCreateMeta.recurring ? 'bg-(--d-accent-soft) text-(--d-accent-text)' : 'bg-[color-mix(in_srgb,var(--d-warning)_14%,transparent)] text-(--d-warning-text)'"
+                :class="cronCreateMeta.recurring ? 'bg-(--d-accent-soft) text-(--d-accent-text)' : 'bg-[color-mix(in_srgb,var(--d-warning-fill)_14%,transparent)] text-(--d-warning-text)'"
               >
                 {{ cronCreateMeta.recurring ? t('toolOverlay.cronInfo.recurring') : t('toolOverlay.cronInfo.oneShot') }}
               </code>
@@ -514,7 +515,7 @@ const hasPeek = computed(() => !isFileOperation.value && !isStructuredOutput.val
 
     <div
       v-if="isRunning"
-      class="d-sweep-bar h-0.5 bg-(--d-hover) text-(--d-accent)"
+      class="d-sweep-bar h-0.5 bg-(--d-hover) [--tone:var(--d-accent-fill)]"
       aria-hidden="true"
     />
   </ToolCardFrame>

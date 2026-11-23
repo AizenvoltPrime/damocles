@@ -62,8 +62,9 @@ describe.each(CARDS)('%s on a cancelled call', (_name, component) => {
     expect(paths).not.toContain(BAN_PATH);
   });
 
-  it('dims the card the way it dims an abandoned one', () => {
-    expect(render(component, 'cancelled').html()).toContain('opacity-60');
+  // The plan card is trusted UI, which never takes an opacity: IntersectionObserver v2 would count it as hidden.
+  it('dims the card the way it dims an abandoned one, except the trusted plan card', () => {
+    expect(render(component, 'cancelled').html().includes('opacity-60')).toBe(component !== ExitPlanModeToolCard);
     expect(render(component, 'completed').html()).not.toContain('opacity-60');
   });
 

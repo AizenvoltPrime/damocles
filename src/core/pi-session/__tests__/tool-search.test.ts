@@ -4,8 +4,11 @@ import {
   BUILTIN_DEFERRED_GROUPS,
   deferredToolNames,
   initialActiveToolNames,
+  loadableToolNames,
+  nestedLoadableToolNames,
   resolveToolSearchEntries,
 } from '../tools/deferred-tools';
+import { THEME_PI_TOOL_NAMES, THEME_TOOL_GUIDANCE } from '../tools/theme-tool-specs';
 import {
   createToolSearchTool,
   mcpGroupsOf,
@@ -283,12 +286,30 @@ describe('deferredToolNames / initialActiveToolNames — the deferral algebra', 
     expect(byGroup.web).toEqual(WEB_PI_TOOL_NAMES);
     expect(byGroup.image).toEqual(IMAGE_PI_TOOL_NAMES);
     expect(byGroup.forge).toEqual(FORGE_PI_TOOL_NAMES);
+    expect(byGroup.theme).toEqual(THEME_PI_TOOL_NAMES);
     expect(byGroup.mcp_resources).toEqual(MCP_RESOURCE_TOOL_NAMES);
     // Pinned because it is the order the model reads. The claim is narrow: `web` comes after `browser`,
     // `image` after `web`, and `mcp_resources` comes last. NOT "mirrors `FULL_TOOL_CATALOG`" — that runs
     // compass → browser → web → image and already disagrees. A new group needs a deliberate position and
     // a deliberate edit here.
-    expect(BUILTIN_DEFERRED_GROUPS.map((g) => g.group)).toEqual(['browser', 'compass', 'web', 'image', 'forge', 'mcp_resources']);
+    expect(BUILTIN_DEFERRED_GROUPS.map((g) => g.group)).toEqual(['browser', 'compass', 'web', 'image', 'forge', 'theme', 'mcp_resources']);
+  });
+
+  it('the theme group carries its guidance line, is loadable only where this computer reaches the app, and never in a design chat or a nested agent', () => {
+    expect(BUILTIN_DEFERRED_GROUPS.find((g) => g.group === 'theme')?.guidance).toBe(THEME_TOOL_GUIDANCE);
+    const deferred = [...THEME_PI_TOOL_NAMES, nth(BROWSER_PI_TOOL_NAMES, 0)];
+    const local = { browser: true, forge: false, theme: true, relayedTool: () => true };
+    expect(loadableToolNames(deferred, local, false)).toEqual(deferred);
+    expect(loadableToolNames(deferred, { ...local, theme: false }, false)).toEqual([nth(BROWSER_PI_TOOL_NAMES, 0)]);
+    expect(loadableToolNames(deferred, local, true).some((name) => THEME_PI_TOOL_NAMES.includes(name))).toBe(false);
+    expect(nestedLoadableToolNames(loadableToolNames(deferred, local, false))).toEqual([nth(BROWSER_PI_TOOL_NAMES, 0)]);
+  });
+
+  it('theme-tool-specs.ts imports only typebox, types and the leaf tool-names module, never the tool bodies', async () => {
+    const { readFile } = await import('fs/promises');
+    const source = await readFile(new URL('../tools/theme-tool-specs.ts', import.meta.url), 'utf8');
+    const runtime = [...source.matchAll(/^import (?!type )[^;]*?from\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]!);
+    expect(runtime.sort()).toEqual(['../../../shared/tool-names', 'typebox']);
   });
 
   it('defers the resource tools only when the caller passes them, since an Always-loaded resource server makes them direct', () => {
@@ -523,6 +544,17 @@ describe('createToolSearchTool — execute', () => {
         setLocalForgeAccounts(() => false);
       }
     }
+  });
+
+  it('names the design-chat rule and the main-chat rule for the theme tools, and loads nothing', async () => {
+    const names = ALL_DEFERRABLE.filter((name) => !THEME_PI_TOOL_NAMES.includes(name));
+    const design = await run(['theme', 'ThemeSet'], snapshot({ names, design: true }));
+    expect(design.text).toContain('Not available: theme, ThemeSet. A design chat cannot use the theme tools.');
+    expect(design.activate).not.toHaveBeenCalled();
+    const nested = await run(['theme'], snapshot({ names, nested: true }));
+    expect(nested.text).toContain('Not available: theme. Only the main chat can use the theme tools, not a subagent or a team member.');
+    expect(nested.text).not.toContain('Not available in this session');
+    expect(nested.activate).not.toHaveBeenCalled();
   });
 
   it('activates exactly one tool for an exact name', async () => {
@@ -802,7 +834,7 @@ describe('ToolSearch tool definition — shape', () => {
     // becoming "derived into unreadable prose".
     const blurb = (tool.parameters as unknown as { properties: { tools: { description: string } } }).properties.tools.description;
     for (const g of BUILTIN_DEFERRED_GROUPS) expect(blurb, g.group).toContain(g.group);
-    expect(blurb).toBe('Group names (browser, compass, web, image, forge, mcp_resources, an MCP server name listed in the description) and/or exact tool names to load.');
+    expect(blurb).toBe('Group names (browser, compass, web, image, forge, theme, mcp_resources, an MCP server name listed in the description) and/or exact tool names to load.');
   });
 
   /**

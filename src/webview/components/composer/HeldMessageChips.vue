@@ -49,7 +49,7 @@ const label = (text: string, imageCount: number): string => (text.trim() !== '' 
         data-testid="held-message"
         :data-status="message.status"
         class="inline-flex max-w-full min-w-0 items-center gap-1.5 rounded-8 border border-dashed bg-(--d-card) py-1.25 ps-2 pe-1.5 text-11.5"
-        :class="message.status === 'queued' ? 'border-(--d-border2)' : 'border-(--d-danger)/45'"
+        :class="message.status === 'queued' ? 'border-(--d-border2)' : 'border-(--d-danger-fill)/45'"
       >
         <CloudOff
           v-if="message.status === 'queued'"

@@ -3,13 +3,10 @@ import * as path from 'node:path';
 import { jsonConfigWritesSettled, writeJsonConfig } from '../../core/config/json-config-write';
 import {
   DEFAULT_GRID_LAYOUT,
-  GRID_PANES,
-  GRID_SLOTS,
   MAX_SHELL_COORDINATE,
   MIN_SECTION_SIZE,
   MIN_SIDEBAR_WIDTH,
   SIDEBAR_SECTIONS,
-  type GridPane,
   type ShellGridLayout,
   type ShellGridSizes,
   type ShellLayout,
@@ -35,6 +32,11 @@ import {
   SCM_VIEW_MODES,
   type ScmViewOptions,
 } from '../preload/shell-channels';
+import {
+  parseGridLayout as parseArrangementGridLayout,
+  parseGridSizes as parseArrangementGridSizes,
+  parseSectionOrder as parseArrangementSectionOrder,
+} from '../../shared/themes/arrangement';
 import { MAX_CONTEXT_LINES, MAX_REPLACEMENT_LENGTH, MAX_SEARCH_GLOBS_LENGTH, MAX_SEARCH_HISTORY, MAX_SEARCH_PATTERN_LENGTH } from '../../shared/text-search';
 import { SEARCH_DEFAULT_VIEW_MODES } from '../local-services/desktop-configuration';
 import { isRelativeFilePath } from '../../shared/relative-path';
@@ -140,36 +142,11 @@ function parseSection(raw: unknown): ShellSectionLayout | undefined {
   return { collapsed, size };
 }
 
-function isGridPane(value: unknown): value is GridPane {
-  return (GRID_PANES as readonly unknown[]).includes(value);
-}
-
 /** The grid's sash sizes from the shell or the file, or undefined unless both are in range. */
-export function parseGridSizes(raw: unknown): ShellGridSizes | undefined {
-  if (!isRecord(raw)) return undefined;
-  const sideWidth = field(raw, 'sideWidth');
-  const bottomHeight = field(raw, 'bottomHeight');
-  if (!inRange(sideWidth, 0, MAX_SHELL_COORDINATE) || !inRange(bottomHeight, 0, MAX_SHELL_COORDINATE)) return undefined;
-  return { sideWidth, bottomHeight };
-}
+export const parseGridSizes: (raw: unknown) => ShellGridSizes | undefined = parseArrangementGridSizes;
 
 /** A grid layout from the shell or the file, or undefined unless its slots are a permutation of the panes and every field is in range. */
-export function parseGridLayout(raw: unknown): ShellGridLayout | undefined {
-  if (!isRecord(raw)) return undefined;
-  const slots = field(raw, 'slots');
-  const visible = field(raw, 'visible');
-  const maximized = field(raw, 'maximized');
-  if (!isRecord(slots) || !isRecord(visible)) return undefined;
-  const [main, side, bottom] = GRID_SLOTS.map((slot) => field(slots, slot));
-  if (!isGridPane(main) || !isGridPane(side) || !isGridPane(bottom) || new Set([main, side, bottom]).size !== GRID_PANES.length) return undefined;
-  const editor = field(visible, 'editor');
-  const terminal = field(visible, 'terminal');
-  if (typeof editor !== 'boolean' || typeof terminal !== 'boolean') return undefined;
-  const sizes = parseGridSizes(raw);
-  if (!sizes) return undefined;
-  if (maximized !== null && !isGridPane(maximized)) return undefined;
-  return { slots: { main, side, bottom }, visible: { editor, terminal }, ...sizes, maximized };
-}
+export const parseGridLayout: (raw: unknown) => ShellGridLayout | undefined = parseArrangementGridLayout;
 
 function boundedString(value: unknown, max: number): value is string {
   return typeof value === 'string' && value.length <= max;
@@ -266,15 +243,7 @@ function parseScmViewOptions(raw: unknown): ScmViewOptions | undefined {
  * The sidebar's section order, or undefined unless it names every section exactly once. An order 3.9.0 saved names every
  * section but the Graph, which goes right after Source control, as in the default order.
  */
-export function parseSectionOrder(raw: unknown): ShellLayout['sectionOrder'] | undefined {
-  if (!Array.isArray(raw)) return undefined;
-  const order = raw.filter((name): name is ShellLayout['sectionOrder'][number] => (SIDEBAR_SECTIONS as readonly unknown[]).includes(name));
-  if (order.length !== raw.length || new Set(order).size !== order.length) return undefined;
-  if (order.length === SIDEBAR_SECTIONS.length) return order;
-  if (order.length !== SIDEBAR_SECTIONS.length - 1 || order.includes('graph')) return undefined;
-  const scm = order.indexOf('scm');
-  return [...order.slice(0, scm + 1), 'graph', ...order.slice(scm + 1)];
-}
+export const parseSectionOrder: (raw: unknown) => ShellLayout['sectionOrder'] | undefined = parseArrangementSectionOrder;
 
 // A repository root key: an absolute path in its host's rules (a remote host's may be either flavor) with no NUL, as ScmRepoSummary.root gives it.
 function isGraphRoot(key: string): boolean {

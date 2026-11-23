@@ -33,3 +33,7 @@ resources/server-bin/helpers/*.c text eol=lf
 resources/server-bin/**/*.cmd text eol=crlf
 # patch-package applies each patch to node_modules' LF files; a CRLF checkout would not apply.
 patches/*.patch text eol=lf
+# Built-in theme assets are named by the SHA-256 of their bytes, which a line-ending conversion would change.
+resources/themes/** -text
+# generate-theme-schema.ts writes LF, and its --check and test compare the committed file with that output byte for byte.
+schemas/theme.schema.json text eol=lf

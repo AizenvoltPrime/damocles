@@ -7,13 +7,14 @@ import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { app } from 'electron';
 import { MAX_CONSOLE_ERRORS } from '../../../shared/design-render';
+import { optionArgs } from '../cli';
 import { hardenWebContents, loggableUrl } from '../security';
 import { DESIGN_RENDERER_DATA_PREFIX, DESIGN_RENDERER_DATA_SWITCH, DESIGN_RENDERER_SWITCH, MAX_TEXT_CHARS, readRequest, type MainToRenderer, type RendererToMain } from './design-renderer-protocol';
 import { openOffscreenPage, type RunnerPage } from './design-runner';
 import { createDesignSession } from './design-session';
 
 export function isDesignRendererLaunch(argv: readonly string[]): boolean {
-  return argv.includes(DESIGN_RENDERER_SWITCH);
+  return optionArgs(argv).includes(DESIGN_RENDERER_SWITCH);
 }
 
 // A frozen main thread never sees its channel close, so a worker thread ends the process once main has gone.
@@ -59,7 +60,7 @@ export function runDesignRenderer(argv: readonly string[]): void {
     process.stderr.write(`${line.slice(0, MAX_TEXT_CHARS)}\n`);
   };
   reportFailures(process, log, (code) => app.exit(code));
-  const data = argv.find((arg) => arg.startsWith(DESIGN_RENDERER_DATA_SWITCH))?.slice(DESIGN_RENDERER_DATA_SWITCH.length);
+  const data = optionArgs(argv).find((arg) => arg.startsWith(DESIGN_RENDERER_DATA_SWITCH))?.slice(DESIGN_RENDERER_DATA_SWITCH.length);
   if (!process.send || data === undefined || path.dirname(data) !== path.resolve(os.tmpdir()) || !path.basename(data).startsWith(DESIGN_RENDERER_DATA_PREFIX)) {
     log('[design-renderer] started without its channel or data folder');
     app.exit(1);

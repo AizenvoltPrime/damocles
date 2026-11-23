@@ -48,4 +48,6 @@ export interface DamoclesBridge {
   // chat's page and before the init, after which onHostNames hears it, and again after a host is added, renamed, recolored or forgotten
   getHostNames(): Readonly<Record<string, BridgeHostName>> | undefined;
   onHostNames(listener: (hostNames: Readonly<Record<string, BridgeHostName>>) => void): () => void;
+  // a chat page opened its first modal layer or closed its last; the shell's chat gutter, beside the page, shows a scrim meanwhile
+  setModalOpen(open: boolean): void;
 }

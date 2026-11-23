@@ -62,6 +62,14 @@ export function openOverlayCount(): number {
   return stack.value.length;
 }
 
+/**
+ * Calls `report` now and each time the page goes from no overlay to one or back. Every stack entry is a modal layer over the
+ * whole page, so the desktop shell dims the chat gutter beside the page with it. Call once per page, from its root component.
+ */
+export function reportOverlayOpen(report: (open: boolean) => void): void {
+  watch(() => stack.value.length > 0, report, { immediate: true });
+}
+
 /** The root element of the top overlay that registered one, where focus goes back when the control that opened a closing overlay is gone. */
 export function topOverlayRoot(): HTMLElement | null {
   for (let index = stack.value.length - 1; index >= 0; index--) {

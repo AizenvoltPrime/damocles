@@ -122,17 +122,18 @@ function messagesOf(argument: ts.Expression, source: ts.SourceFile, seen: Set<ts
 }
 
 /**
- * Every message a process renders through a bundle: core's `l()` in every file that imports it (core, the desktop processes,
- * VS Code) and in core/l10n.ts, which declares it; VS Code's own `vscode.l10n.t`; and desktop main's and its services' `t`.
- * The desktop shell's renderers translate with their own catalogs and are not read.
+ * Every message a process renders through a bundle: `l()` in every file that imports it (core, the desktop processes, VS Code
+ * and the shared modules they run), from core/l10n.ts or from shared/localized-text.ts, which declares it; VS Code's own
+ * `vscode.l10n.t`; and desktop main's and its services' `t`. The desktop shell's renderers translate with their own catalogs
+ * and are not read.
  */
 function translatedMessages(): Map<string, string> {
   const messages = new Map<string, string>();
-  const files = ['src/core', 'src/desktop', 'src/vscode'].flatMap((dir) => sourceFiles(path.join(ROOT, dir)));
+  const files = ['src/core', 'src/desktop', 'src/shared', 'src/vscode'].flatMap((dir) => sourceFiles(path.join(ROOT, dir)));
   for (const file of files) {
     const where = path.relative(ROOT, file);
     const text = fs.readFileSync(file, 'utf8');
-    const callsL = where === path.join('src', 'core', 'l10n.ts') || /import\s*\{[^}]*\bl\b[^}]*\}\s*from\s*['"][^'"]*\/l10n['"]/.test(text);
+    const callsL = where === path.join('src', 'core', 'l10n.ts') || /import\s*\{[^}]*\bl\b[^}]*\}\s*from\s*['"][^'"]*\/(?:l10n|localized-text(?:\.ts)?)['"]/.test(text);
     const callsVsCode = where.startsWith(path.join('src', 'vscode'));
     const callsT = where.startsWith(path.join('src', 'desktop')) && !where.startsWith(path.join('src', 'desktop', 'shell'));
     if (!callsL && !callsVsCode && !callsT) continue;

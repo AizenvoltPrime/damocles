@@ -29,7 +29,7 @@ const rows = computed(() => props.journeys.map((journey) => ('waiver' in journey
       >
         <span
           class="mt-1.25 size-1.5 flex-none rotate-45"
-          :class="journey.waiver ? 'border border-(--d-design)' : 'bg-(--d-design)'"
+          :class="journey.waiver ? 'border border-(--d-design-fill)' : 'bg-(--d-design-fill)'"
           aria-hidden="true"
         />
         <span class="min-w-0 text-pretty">

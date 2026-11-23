@@ -741,6 +741,17 @@ export class PanelManager {
     const describeSkill = (name: string) => this.describeSkill(name, this.panels.get(panelId)?.folder ?? folder);
     const permissionHandler = new PermissionHandler(this.platform, getPiCodingAgent, panelId, settingsFolderOf(folder), describeSkill);
     permissionHandler.setPostMessage((msg) => this.postMessage(host, msg));
+    permissionHandler.setDevicePost((messageFor) => {
+      if (!host.views || !host.viewHost) {
+        const message = messageFor(undefined);
+        if (message) this.postMessage(host, message);
+        return;
+      }
+      for (const clientId of new Set(host.views().map((view) => view.clientId))) {
+        const message = messageFor(clientId);
+        if (message) this.postMessage(deviceHost(host, clientId), message);
+      }
+    });
     // Before the session is created, which takes its tool set from the mode. A design chat inherits no permissions (PD-50).
     const inherited = options?.design ? undefined : source?.permissionHandler.getPermissions() ?? options?.permissions;
     if (options?.design) permissionHandler.setPermissionMode("default");

@@ -8,12 +8,29 @@ import type { BranchNameCheck, ProtectedPushState } from '../../shared/forge/pro
 import type { PanelTheme } from './panel-channels';
 import {
   OVERLAY_CHANNELS,
+  THEME_EDITOR_CHANNELS,
+  type ThemeEditorArrangementResult,
+  type ThemeEditorFontResult,
+  type ThemeEditorOutside,
+  type ThemeEditorFlashResult,
+  type ThemeEditorSpriteResult,
+  type ThemeEditorImageResult,
+  type ProjectLookImageResult,
+  type ThemeExportPlanResult,
+  type ThemeExportSaveResult,
+  type ThemeInstallCommitResult,
+  type ThemeInstallStart,
+  type OverlayStoreResult,
+  type OverlayStoreView,
+  type ThemeEditorResult,
+  type ThemeEditorSession,
   type CloseRemoteRow,
   type ConnectStartResult,
   type ContainerFolderPick,
   type ContainerListResult,
   type ConnectStepEvent,
   type DamoclesOverlayApi,
+  type OverlayInstallCurrent,
   type HostCardInfo,
   type HostParseResult,
   type HostRun,
@@ -30,6 +47,8 @@ import {
   type InputBrowseResult,
   type OverlayPrefs,
   type OverlayPrefWrite,
+  type OverlayThemeResult,
+  type OverlayThemesResult,
   type OverlayRasterRequest,
   type OverlayRequest,
   type OverlaySettingsAttached,
@@ -47,6 +66,8 @@ import {
 import type { ChatsContinueWorktree, ChatsWorktreeOptions, DropZonesPointer } from './shell-channels';
 import type { ChimeTone, NotificationCenterState } from './notifications';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
+import type { ThemeShowRefusal } from '../../shared/themes/agent';
+import type { ThemeExportFontBytes, ThemeInstallProgress } from '../../shared/themes/install';
 import type { SettingsTarget } from '../../shared/settings-sections';
 import type { ReleaseIndex, ReleaseNotes, UpdateSnapshot, VersionInfo } from './updates';
 import type { TerminalPickShells, TerminalProfileReport } from './terminal-channels';
@@ -57,6 +78,11 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
   return () => {
     ipcRenderer.removeListener(channel, handler);
   };
+}
+
+// The page's reactive proxies do not survive a structured clone; the font bytes travel as they are.
+function plainFonts(fonts: readonly ThemeExportFontBytes[]): ThemeExportFontBytes[] {
+  return fonts.map((font) => ({ family: font.family, bytes: font.bytes }));
 }
 
 // The overlay HTML carries the theme from its creation; this keeps it current after a theme change.
@@ -129,6 +155,70 @@ const api: DamoclesOverlayApi = {
   setPref: (key, value) => ipcRenderer.invoke(OVERLAY_CHANNELS.prefsSet, { key, value }) as Promise<PopupAnswer<OverlayPrefWrite>>,
   relaunch: () => ipcRenderer.invoke(OVERLAY_CHANNELS.relaunch) as Promise<PopupAnswer<void>>,
   resetLayout: () => ipcRenderer.invoke(OVERLAY_CHANNELS.layoutReset) as Promise<PopupAnswer<void>>,
+  getThemes: () => ipcRenderer.invoke(OVERLAY_CHANNELS.themesList, {}) as Promise<PopupAnswer<OverlayThemesResult>>,
+  // a JSON copy: the page's reactive proxies do not survive a structured clone
+  themeAction: (action) => ipcRenderer.invoke(OVERLAY_CHANNELS.themesAct, JSON.parse(JSON.stringify(action))) as Promise<PopupAnswer<OverlayThemeResult>>,
+  projectLookImage: () => ipcRenderer.invoke(OVERLAY_CHANNELS.projectLookImage, {}) as Promise<PopupAnswer<ProjectLookImageResult>>,
+  onThemesChanged: (listener) => subscribe<unknown>(OVERLAY_CHANNELS.themesChanged, () => listener()),
+  importTheme: () => ipcRenderer.invoke(OVERLAY_CHANNELS.themesImport, {}) as Promise<PopupAnswer<ThemeInstallStart>>,
+  installFromUrl: (url) => ipcRenderer.invoke(OVERLAY_CHANNELS.themesInstallUrl, { url }) as Promise<PopupAnswer<ThemeInstallStart>>,
+  installCommit: (request) => ipcRenderer.invoke(OVERLAY_CHANNELS.themesInstallCommit, {
+    installId: request.installId,
+    useArrangement: request.useArrangement,
+    ...(request.onClash !== undefined ? { onClash: request.onClash } : {}),
+  }) as Promise<PopupAnswer<ThemeInstallCommitResult>>,
+  installCancel: (installId) => ipcRenderer.invoke(OVERLAY_CHANNELS.themesInstallCancel, { installId }) as Promise<PopupAnswer<void>>,
+  installAllowFlash: (installId, sha256) => ipcRenderer.invoke(OVERLAY_CHANNELS.themesInstallAllowFlash, { installId, sha256 }) as Promise<PopupAnswer<boolean>>,
+  exportPlan: (themeId, installedFonts) => ipcRenderer.invoke(OVERLAY_CHANNELS.themesExportPlan, {
+    themeId,
+    ...(installedFonts !== undefined ? { installedFonts: plainFonts(installedFonts) } : {}),
+  }) as Promise<PopupAnswer<ThemeExportPlanResult>>,
+  exportSave: (themeId, installedFonts) => ipcRenderer.invoke(OVERLAY_CHANNELS.themesExportSave, { themeId, installedFonts: plainFonts(installedFonts) }) as Promise<PopupAnswer<ThemeExportSaveResult>>,
+  installCurrent: () => ipcRenderer.invoke(OVERLAY_CHANNELS.themesInstallCurrent, {}) as Promise<PopupAnswer<OverlayInstallCurrent>>,
+  onInstallChanged: (listener) => subscribe<unknown>(OVERLAY_CHANNELS.themesInstallChanged, () => listener()),
+  onInstallProgress: (listener) => subscribe<ThemeInstallProgress>(OVERLAY_CHANNELS.themesInstallProgress, listener),
+  storeList: (refresh) => ipcRenderer.invoke(OVERLAY_CHANNELS.themesStoreList, { refresh }) as Promise<PopupAnswer<OverlayStoreResult>>,
+  storeInstall: (entryId) => ipcRenderer.invoke(OVERLAY_CHANNELS.themesStoreInstall, { entryId }) as Promise<PopupAnswer<ThemeInstallStart>>,
+  cancelPrepare: () => ipcRenderer.invoke(OVERLAY_CHANNELS.themesPrepareCancel, {}) as Promise<PopupAnswer<void>>,
+  onStoreUpdated: (listener) => subscribe<OverlayStoreView>(OVERLAY_CHANNELS.themesStoreUpdated, listener),
+  themeEditor: {
+    getSession: () => ipcRenderer.invoke(THEME_EDITOR_CHANNELS.getSession, {}) as Promise<ThemeEditorSession | null>,
+    onSession: (listener) => subscribe<ThemeEditorSession>(THEME_EDITOR_CHANNELS.session, listener),
+    onPreviewTakenOver: (listener) => subscribe<unknown>(THEME_EDITOR_CHANNELS.previewTakenOver, () => listener()),
+    onPreviewRefused: (listener) => subscribe<ThemeShowRefusal | null>(THEME_EDITOR_CHANNELS.previewRefused, listener),
+    preview: (preview) => {
+      ipcRenderer.send(THEME_EDITOR_CHANNELS.preview, JSON.parse(JSON.stringify(preview)));
+    },
+    save: (save) => ipcRenderer.invoke(THEME_EDITOR_CHANNELS.save, JSON.parse(JSON.stringify(save))) as Promise<ThemeEditorResult>,
+    duplicate: (sessionId) => ipcRenderer.invoke(THEME_EDITOR_CHANNELS.duplicate, { sessionId }) as Promise<ThemeEditorResult>,
+    close: (sessionId) => {
+      ipcRenderer.send(THEME_EDITOR_CHANNELS.close, { sessionId });
+    },
+    setDirty: (sessionId, dirty) => {
+      ipcRenderer.send(THEME_EDITOR_CHANNELS.dirty, { sessionId, dirty });
+    },
+    onMoveAsked: (listener) => subscribe<unknown>(THEME_EDITOR_CHANNELS.moveAsked, () => listener()),
+    answerMove: (sessionId, discard) => {
+      ipcRenderer.send(THEME_EDITOR_CHANNELS.moveAnswer, { sessionId, discard });
+    },
+    captureArrangement: (sessionId) => ipcRenderer.invoke(THEME_EDITOR_CHANNELS.captureArrangement, { sessionId }) as Promise<ThemeEditorArrangementResult>,
+    onOutside: (listener) => subscribe<ThemeEditorOutside>(THEME_EDITOR_CHANNELS.outside, listener),
+    reload: (sessionId) => {
+      ipcRenderer.send(THEME_EDITOR_CHANNELS.reload, { sessionId });
+    },
+    peek: (on) => {
+      ipcRenderer.send(THEME_EDITOR_CHANNELS.peek, on);
+    },
+    openSettings: () => {
+      ipcRenderer.send(THEME_EDITOR_CHANNELS.openSettings, {});
+    },
+    importFontFile: (sessionId) => ipcRenderer.invoke(THEME_EDITOR_CHANNELS.importFontFile, { sessionId }) as Promise<ThemeEditorFontResult>,
+    importFontBytes: (sessionId, bytes) => ipcRenderer.invoke(THEME_EDITOR_CHANNELS.importFontBytes, { sessionId, bytes }) as Promise<ThemeEditorFontResult>,
+    importImageFile: (sessionId) => ipcRenderer.invoke(THEME_EDITOR_CHANNELS.importImageFile, { sessionId }) as Promise<ThemeEditorImageResult>,
+    onImportProgress: (listener) => subscribe<number>(THEME_EDITOR_CHANNELS.importProgress, (fraction) => listener(typeof fraction === 'number' ? fraction : 0)),
+    allowFlash: (sessionId, sha256) => ipcRenderer.invoke(THEME_EDITOR_CHANNELS.allowFlash, { sessionId, sha256 }) as Promise<ThemeEditorFlashResult>,
+    importSpriteFile: (sessionId, strip) => ipcRenderer.invoke(THEME_EDITOR_CHANNELS.importSpriteFile, { sessionId, ...(strip ? { strip: { frames: strip.frames, fps: strip.fps } } : {}) }) as Promise<ThemeEditorSpriteResult>,
+  },
   getUpdate: () => ipcRenderer.invoke(OVERLAY_CHANNELS.updateGet) as Promise<PopupAnswer<UpdateSnapshot>>,
   onUpdate: (listener) => subscribe<UpdateSnapshot>(OVERLAY_CHANNELS.updateState, listener),
   checkForUpdates: () => ipcRenderer.invoke(OVERLAY_CHANNELS.updateCheck) as Promise<PopupAnswer<void>>,

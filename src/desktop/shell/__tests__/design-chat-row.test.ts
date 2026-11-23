@@ -54,7 +54,7 @@ describe('a design chat in the sidebar', () => {
     await flushPromises();
     const row = finished.get('[data-chat-id="design"]');
     expect(row.get('[data-testid="chat-design-dot"]').attributes('data-state')).toBe('finished');
-    expect(row.get('[data-testid="chat-design-dot"]').classes()).toContain('bg-(--d-success)');
+    expect(row.get('[data-testid="chat-design-dot"]').classes()).toContain('bg-(--d-success-fill)');
     expect(row.text()).toContain('Finished v2,');
 
     const running = mountChats(fakeShellApi([{ ...DESIGN, design: { parentId: 'parent', finishedVersion: 2 } }, PARENT]));
@@ -70,7 +70,7 @@ describe('a design chat in the sidebar', () => {
 
     const waiting = mountChats(fakeShellApi([{ ...DESIGN, status: 'waiting' }, PARENT]));
     await flushPromises();
-    expect(waiting.get('[data-chat-id="design"] [data-testid="chat-design-dot"]').classes()).toContain('bg-(--d-warning)');
+    expect(waiting.get('[data-chat-id="design"] [data-testid="chat-design-dot"]').classes()).toContain('bg-(--d-warning-fill)');
     expect(waiting.get('[data-chat-id="design"]').text()).toContain('Needs you,');
   });
 

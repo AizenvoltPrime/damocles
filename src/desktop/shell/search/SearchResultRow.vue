@@ -81,6 +81,13 @@ const label = computed(() => {
 });
 
 const indent = computed(() => `${INDENT_START_REM + (props.row.level - 1) * INDENT_REM}rem`);
+
+// The row's actions lie over its text, which is masked under them rather than covered: the row may be see-through.
+// --strip is the strip's reach into the text: its buttons (1.25rem each), their gap and its padding, less the row's own.
+const strip = computed(() => (props.replaceMode ? '[--strip:calc(var(--spacing)*1+2.5rem)]' : '[--strip:calc(var(--spacing)*0.5+1.25rem)]'));
+const textMask = computed(() => (props.inlineActions && props.row.kind === 'match'
+  ? '@max-[30rem]/results:group-focus-within:mask-[linear-gradient(to_left,transparent_var(--strip),black_calc(var(--strip)+0.75rem))] @max-[30rem]/results:group-hover:mask-[linear-gradient(to_left,transparent_var(--strip),black_calc(var(--strip)+0.75rem))] @min-[30rem]/results:flex-initial'
+  : 'group-focus-within:mask-[linear-gradient(to_left,transparent_var(--strip),black_calc(var(--strip)+0.75rem))] group-hover:mask-[linear-gradient(to_left,transparent_var(--strip),black_calc(var(--strip)+0.75rem))]'));
 </script>
 
 <template>
@@ -99,76 +106,83 @@ const indent = computed(() => `${INDENT_START_REM + (props.row.level - 1) * INDE
     :aria-label="label"
     :tabindex="current ? 0 : -1"
     :title="row.kind === 'match' ? undefined : visibleText(path)"
-    class="search-row group relative flex cursor-pointer items-center gap-1.25 pr-2 outline-none select-none hover:bg-(--d-hover) focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
-    :class="selected ? 'bg-(--d-accent-soft) hover:bg-(--d-accent-soft)' : ''"
+    class="search-row group relative flex cursor-pointer items-center gap-1.25 pr-2 outline-none select-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent-fill)]"
+    :class="[selected ? 'bg-(--d-accent-soft)' : 'hover:bg-(--d-hover)', strip]"
     :style="{ height: `${height}px`, paddingLeft: indent }"
     @click="emit('activate', $event)"
     @dblclick="row.kind === 'match' && emit('open')"
     @focus="emit('focus')"
     @contextmenu.prevent="emit('menu', $event)"
   >
-    <template v-if="row.kind !== 'match'">
-      <span class="flex w-3.5 shrink-0 text-(--d-faint)">
-        <ChevronRight
-          aria-hidden="true"
-          class="size-3 transition-transform duration-150 ease-out"
-          :class="row.expanded ? 'rotate-90' : ''"
-        />
-      </span>
-      <FilePen
-        v-if="untitled"
-        aria-hidden="true"
-        class="size-3.5 shrink-0 text-(--d-muted)"
-      />
-      <FileIcon
-        v-else
-        :path="path"
-        :directory="row.kind === 'folder'"
-        :open="row.kind === 'folder' && row.expanded"
-        class="size-3.5 shrink-0"
-      />
-      <span class="min-w-0 truncate text-12.5 text-(--d-text)">{{ visibleText(row.kind === 'folder' ? row.node.label : name) }}</span>
-      <span
-        v-if="row.kind === 'file' && showFolder && dir !== ''"
-        class="min-w-0 flex-1 truncate text-11 text-(--d-faint-text)"
-      >{{ visibleText(dir) }}</span>
-      <span
-        v-else
-        class="flex-1"
-      />
-      <span
-        data-testid="search-row-count"
-        :title="badgeTitle"
-        class="shrink-0 rounded-full bg-(--d-border2) px-1.5 font-mono text-10.5/4 text-(--d-muted) tabular-nums transition-opacity duration-150 group-focus-within:opacity-0 group-hover:opacity-0"
-      >{{ count.toLocaleString(locale) }}</span>
-    </template>
-    <template v-else-if="preview">
-      <span
-        v-if="lineCell !== ''"
-        data-testid="search-row-line"
-        :title="lineTitle"
-        class="shrink-0 font-mono text-10.5 text-(--d-faint-text) tabular-nums"
-      >{{ lineCell }}</span>
-      <span
-        class="min-w-0 flex-1 truncate text-12 text-(--d-muted)"
-        :class="inlineActions ? '@min-[30rem]/results:flex-initial' : ''"
-      >
-        <span>{{ preview.before }}</span><template v-if="replacing"><del
-          data-testid="search-row-removed"
-          class="rounded-xs bg-(--d-del) text-(--d-danger-text) line-through decoration-1"
-        >{{ preview.match }}</del><ins
-          data-testid="search-row-inserted"
-          class="rounded-xs bg-(--d-add) text-(--d-success-text) no-underline"
-        >{{ inserted }}</ins></template><mark
-          v-else
-          data-testid="search-row-match"
-          class="rounded-xs bg-(--d-accent-soft) font-semibold text-(--d-accent-text)"
-        >{{ preview.match }}</mark><span>{{ preview.after }}</span>
-      </span>
-    </template>
     <span
-      class="absolute inset-y-px right-px flex items-center gap-0.5 bg-(--d-panel) pr-1 pl-1.5 opacity-0 transition-opacity duration-150 group-focus-within:opacity-100 group-hover:bg-[linear-gradient(var(--d-hover),var(--d-hover))] group-hover:opacity-100"
-      :class="inlineActions && row.kind === 'match' ? '@min-[30rem]/results:static @min-[30rem]/results:bg-transparent @min-[30rem]/results:group-hover:bg-none' : ''"
+      data-testid="search-row-text"
+      class="flex min-w-0 flex-1 items-center gap-1.25"
+      :class="textMask"
+    >
+      <template v-if="row.kind !== 'match'">
+        <span class="flex w-3.5 shrink-0 text-(--d-faint)">
+          <ChevronRight
+            aria-hidden="true"
+            class="size-3 transition-transform duration-150 ease-out"
+            :class="row.expanded ? 'rotate-90' : ''"
+          />
+        </span>
+        <FilePen
+          v-if="untitled"
+          aria-hidden="true"
+          class="size-3.5 shrink-0 text-(--d-muted)"
+        />
+        <FileIcon
+          v-else
+          :path="path"
+          :directory="row.kind === 'folder'"
+          :open="row.kind === 'folder' && row.expanded"
+          class="size-3.5 shrink-0"
+        />
+        <span class="min-w-0 truncate text-12.5 text-(--d-text)">{{ visibleText(row.kind === 'folder' ? row.node.label : name) }}</span>
+        <span
+          v-if="row.kind === 'file' && showFolder && dir !== ''"
+          class="min-w-0 flex-1 truncate text-11 text-(--d-faint-text)"
+        >{{ visibleText(dir) }}</span>
+        <span
+          v-else
+          class="flex-1"
+        />
+        <span
+          data-testid="search-row-count"
+          :title="badgeTitle"
+          class="shrink-0 rounded-full bg-(--d-border2) px-1.5 font-mono text-10.5/4 text-(--d-muted) tabular-nums transition-opacity duration-150 group-focus-within:opacity-0 group-hover:opacity-0"
+        >{{ count.toLocaleString(locale) }}</span>
+      </template>
+      <template v-else-if="preview">
+        <span
+          v-if="lineCell !== ''"
+          data-testid="search-row-line"
+          :title="lineTitle"
+          class="shrink-0 font-mono text-10.5 text-(--d-faint-text) tabular-nums"
+        >{{ lineCell }}</span>
+        <span
+          class="min-w-0 flex-1 truncate text-12 text-(--d-muted)"
+          :class="inlineActions ? '@min-[30rem]/results:flex-initial' : ''"
+        >
+          <span>{{ preview.before }}</span><template v-if="replacing"><del
+            data-testid="search-row-removed"
+            class="rounded-xs bg-(--d-del) text-(--d-danger-text) line-through decoration-1"
+          >{{ preview.match }}</del><ins
+            data-testid="search-row-inserted"
+            class="rounded-xs bg-(--d-add) text-(--d-success-text) no-underline"
+          >{{ inserted }}</ins></template><mark
+            v-else
+            data-testid="search-row-match"
+            class="rounded-xs bg-(--d-accent-soft) font-semibold text-(--d-accent-text)"
+          >{{ preview.match }}</mark><span>{{ preview.after }}</span>
+        </span>
+      </template>
+    </span>
+    <span
+      data-testid="search-row-actions"
+      class="absolute inset-y-px right-px flex items-center gap-0.5 pr-1 pl-1.5 opacity-0 transition-opacity duration-150 group-focus-within:opacity-100 group-hover:opacity-100"
+      :class="inlineActions && row.kind === 'match' ? '@min-[30rem]/results:static' : ''"
     >
       <Button
         v-if="replaceMode"
@@ -177,7 +191,7 @@ const indent = computed(() => `${INDENT_START_REM + (props.row.level - 1) * INDE
         size="icon-sm"
         tabindex="-1"
         data-testid="search-row-replace"
-        class="size-5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25"
+        class="d-hit-free size-[1.25rem] rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25"
         :aria-label="row.kind === 'match' ? t('search.replaceOne') : t('search.replaceAll')"
         :title="row.kind === 'match' ? t('search.replaceOne') : t('search.replaceAll')"
         @click.stop="emit('replace')"
@@ -197,7 +211,7 @@ const indent = computed(() => `${INDENT_START_REM + (props.row.level - 1) * INDE
         size="icon-sm"
         tabindex="-1"
         data-testid="search-row-dismiss"
-        class="size-5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25"
+        class="d-hit-free size-[1.25rem] rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.25"
         :aria-label="t('search.dismiss')"
         :title="t('search.dismiss')"
         @click.stop="emit('dismiss')"

@@ -1,6 +1,6 @@
 import { expect, test } from './support/fixtures';
 import { hostMessage, openProjectChat } from './support/screenshots';
-import { chatInput } from './support/ui';
+import { chatInput, promptReady } from './support/ui';
 
 const question = (toolUseId: string): Record<string, unknown> => ({
   type: 'requestQuestion',
@@ -19,6 +19,7 @@ test('a dock prompt takes focus as it appears, but never from the composer the u
   await tab.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await hostMessage(app, tab, question('e2e-q1'));
   await expect(options.getByRole('option', { name: /In memory/ })).toBeFocused();
+  await promptReady(card);
   await tab.keyboard.press('ArrowDown');
   await tab.keyboard.press('Enter');
   await expect(card.getByText('Review your answers')).toBeVisible();

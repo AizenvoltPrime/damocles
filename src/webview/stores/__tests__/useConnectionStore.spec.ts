@@ -30,6 +30,7 @@ beforeEach(() => {
       return () => undefined;
     },
     allowYolo: async () => false,
+    setModalOpen: () => undefined,
     queueAction: (action) => void actions.push(action),
   };
 });

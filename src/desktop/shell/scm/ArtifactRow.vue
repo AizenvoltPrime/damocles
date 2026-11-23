@@ -141,7 +141,7 @@ function onAction(event: MouseEvent, action: ScmAction): void {
     :aria-label="ariaLabel"
     :tabindex="current ? 0 : -1"
     :title="tooltip"
-    class="group/row relative flex items-center gap-1.5 rounded-6 pr-1 outline-none select-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
+    class="group/row relative flex items-center gap-1.5 rounded-6 pr-1 outline-none select-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent-fill)]"
     :class="[row.kind === 'note' ? 'cursor-default' : 'cursor-pointer hover:bg-(--d-hover)', arrival?.cls ?? '']"
     :style="{ height: `${height}px`, paddingLeft: indent, ...(arrival ? { '--reveal-index': String(arrival.index) } : {}) }"
     @click="row.kind !== 'note' && emit('select')"

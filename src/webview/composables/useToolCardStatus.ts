@@ -69,10 +69,10 @@ function borderClassFor(status: ToolStatus): string {
   switch (status) {
     case "awaiting_approval":
     case "blocked":
-      return "border-[color-mix(in_srgb,var(--d-warning)_45%,var(--d-border))]";
+      return "border-[color-mix(in_srgb,var(--d-warning-fill)_45%,var(--d-border))]";
     case "denied":
     case "failed":
-      return "border-[color-mix(in_srgb,var(--d-danger)_45%,var(--d-border))]";
+      return "border-[color-mix(in_srgb,var(--d-danger-fill)_45%,var(--d-border))]";
     case "abandoned":
     case "cancelled":
     case "unrecorded":
@@ -150,6 +150,37 @@ export interface ToolCardStatus {
   /** The motion.css class alone, for an icon that takes its colour from a chip. */
   statusMotion: ComputedRef<string>;
   cardClass: ComputedRef<string>;
+}
+
+/** A tool card's `data-tool-status`, the values docs/themes.md promises theme CSS; the set may gain values, never lose one. */
+export type ToolHookStatus = "running" | "done" | "error" | "blocked" | "stopped";
+
+export function toolHookStatus(status: ToolStatus): ToolHookStatus {
+  switch (status) {
+    case "pending":
+    case "running":
+      return "running";
+    case "awaiting_approval":
+    case "blocked":
+      return "blocked";
+    case "approved":
+    case "completed":
+      return "done";
+    case "denied":
+    case "failed":
+      return "error";
+    case "abandoned":
+    case "cancelled":
+    case "unrecorded":
+      return "stopped";
+  }
+}
+
+/** The hook of an agent or team card, which draws its agent's or run's state, not its tool call's. */
+export function agentHookStatus(status: "running" | "completed" | "failed" | "cancelled", awaitingUser = false): ToolHookStatus {
+  if (status === "running") return awaitingUser ? "blocked" : "running";
+  if (status === "completed") return "done";
+  return status === "failed" ? "error" : "stopped";
 }
 
 /** A call's measured `execute()` time as its card's meta chip shows it. */

@@ -57,7 +57,7 @@ function onKeydown(event: KeyboardEvent): void {
     :placeholder="t('terminal.renamePlaceholder')"
     spellcheck="false"
     autocomplete="off"
-    class="terminal-rename -ml-1.25 h-5 min-w-0 flex-1 rounded-5 border-(--d-accent) bg-(--d-input) px-1 py-0 text-(--d-text) shadow-[0_0_0_2px_var(--d-accent-soft)] focus-visible:ring-0 focus-visible:ring-offset-0"
+    class="terminal-rename -ml-1.25 h-5 min-w-0 flex-1 rounded-5 border-(--d-accent-fill) bg-(--d-input) px-1 py-0 text-(--d-text) shadow-[0_0_0_2px_var(--d-accent-soft)] focus-visible:ring-0 focus-visible:ring-offset-0"
     @keydown="onKeydown"
     @blur="finish(true)"
     @click.stop

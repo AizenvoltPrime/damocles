@@ -43,7 +43,7 @@ const title = computed(() => props.chat.title || t('chats.newChat'));
 // The hover actions take the status dot's place, so the dot hides only when there are actions to show.
 const offersActions = computed(() => (['rename', 'tag', 'delete'] as const).some((action) => chatOffers(props.chat, action)));
 const model = computed(() => (props.chat.model ? modelLabel(props.chat.model) : undefined));
-const DESIGN_DOT = { running: 'd-pulsing bg-(--d-design)', waiting: 'bg-(--d-warning)', finished: 'bg-(--d-success)' } as const;
+const DESIGN_DOT = { running: 'd-pulsing bg-(--d-design-fill)', waiting: 'bg-(--d-warning-fill)', finished: 'bg-(--d-success-fill)' } as const;
 // A superseded design chat is read-only, so it has no state to show: its lock says so instead.
 const superseded = computed(() => props.chat.design?.superseded === true);
 const designDot = computed((): keyof typeof DESIGN_DOT | undefined => {
@@ -107,7 +107,7 @@ function onRenameKeydown(event: KeyboardEvent): void {
   <div
     v-if="renaming"
     role="none"
-    class="flex h-full animate-[d-fade_.15s] items-center gap-1.5 rounded-lg bg-(--d-hover) px-1.5"
+    class="flex h-full d-fade-in items-center gap-1.5 rounded-lg bg-(--d-hover) px-1.5"
     data-testid="chat-rename"
     @keydown.stop
   >
@@ -122,7 +122,7 @@ function onRenameKeydown(event: KeyboardEvent): void {
       :maxlength="MAX_CHAT_NAME_LENGTH"
       :aria-label="t('chats.rename')"
       :placeholder="t('chats.renamePlaceholder')"
-      class="h-6 min-w-0 flex-1 rounded-md border border-(--d-accent) bg-(--d-input) px-2 text-xs text-(--d-text) outline-none"
+      class="h-6 min-w-0 flex-1 rounded-md border border-(--d-accent-fill) bg-(--d-input) px-2 text-xs text-(--d-text) outline-none"
       @keydown="onRenameKeydown"
     >
     <Button
@@ -166,8 +166,8 @@ function onRenameKeydown(event: KeyboardEvent): void {
     :data-design-of="chat.design?.parentId"
     :data-superseded="superseded || undefined"
     :data-nested="nested ? 'true' : undefined"
-    class="group/row relative flex h-full cursor-pointer items-center gap-2 rounded-lg py-1.5 pr-1.5 transition-colors hover:bg-(--d-hover)"
-    :class="[nested ? 'pl-6.5' : 'pl-2', selected ? 'bg-(--d-accent-soft) font-semibold' : '', active ? 'group-focus-visible/list:outline group-focus-visible/list:-outline-offset-1 group-focus-visible/list:outline-(--d-accent)' : '']"
+    class="group/row relative flex h-full cursor-pointer items-center gap-2 rounded-lg py-1.5 pr-1.5 transition-colors"
+    :class="[nested ? 'pl-6.5' : 'pl-2', selected ? 'bg-(--d-accent-soft) font-semibold' : 'hover:bg-(--d-hover)', active ? 'group-focus-visible/list:outline group-focus-visible/list:-outline-offset-1 group-focus-visible/list:outline-(--d-accent-fill)' : '']"
     @click="emit('select')"
     @contextmenu.prevent="emit('menu', $event)"
   >
@@ -208,7 +208,7 @@ function onRenameKeydown(event: KeyboardEvent): void {
       <CircleAlert
         v-else-if="chat.status === 'waiting'"
         aria-hidden="true"
-        class="size-3.25 animate-[d-pulse_1.4s_infinite] text-(--d-warning)"
+        class="size-3.25 d-pulsing text-(--d-warning)"
       />
       <!-- A running worktree chat keeps its worktree icon and pulses it, so the place stays readable. -->
       <MessageSquareCode
@@ -329,7 +329,7 @@ function onRenameKeydown(event: KeyboardEvent): void {
           as="span"
           variant="tone"
           data-testid="chat-tag"
-          class="flex min-w-11 shrink gap-0.75 overflow-hidden border-(--d-border2) px-1.5 py-0 text-10/3.75 font-normal text-(--d-muted) transition-none hover:border-(--d-accent) hover:text-(--d-accent-text)"
+          class="flex min-w-11 shrink gap-0.75 overflow-hidden border-(--d-border2) px-1.5 py-0 text-10/3.75 font-normal text-(--d-muted) transition-none hover:border-(--d-accent-fill) hover:text-(--d-accent-text)"
           :class="nested ? 'max-w-20' : 'ml-0.5 max-w-27.5'"
           :title="t('chats.showTagged', { tag: chat.tag })"
           @click.stop="emit('filterTag', chat.tag ?? '')"
@@ -353,7 +353,7 @@ function onRenameKeydown(event: KeyboardEvent): void {
     <!-- Mouse shortcuts; keyboard users reach the same actions through the context menu, F2 and Delete. -->
     <span
       aria-hidden="true"
-      class="hidden shrink-0 animate-[d-fade_.12s] items-center gap-px group-hover/row:flex"
+      class="hidden shrink-0 d-actions-in items-center gap-px group-hover/row:flex"
     >
       <Button
         v-if="chatOffers(chat, 'rename')"
@@ -388,7 +388,7 @@ function onRenameKeydown(event: KeyboardEvent): void {
         size="icon-sm"
         tabindex="-1"
         data-testid="chat-action-delete"
-        class="size-5.5 rounded-md text-(--d-danger) opacity-80 hover:bg-(--d-danger)/15 hover:text-(--d-danger) hover:opacity-100 [&_svg]:size-3"
+        class="size-5.5 rounded-md text-(--d-danger) opacity-80 hover:bg-(--d-danger-fill)/15 hover:text-(--d-danger) hover:opacity-100 [&_svg]:size-3"
         :title="t('chats.delete')"
         @click.stop="emit('delete')"
       >

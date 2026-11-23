@@ -621,10 +621,20 @@ describe('the composer box size', () => {
 
     expect(wrapper.get('textarea').classes()).toEqual(expect.arrayContaining([
       'field-sizing-content',
-      'min-h-[round(calc(2lh+1.125rem),0.0625rem)]',
+      'min-h-[round(calc(2lh+var(--spacing)*4.5),0.0625rem)]',
       'max-h-50',
       'overflow-y-auto',
     ]));
+    wrapper.unmount();
+  });
+
+  // The box is border-box and its padding scales with the theme's density, so the two-row minimum adds the same padding.
+  it('adds its own vertical padding, in spacing units, to the two-row minimum', () => {
+    const wrapper = composer();
+    const classes = wrapper.get('textarea').classes();
+    const padding = (side: 'pt' | 'pb'): number => Number(classes.find((name) => name.startsWith(`${side}-`))!.slice(3));
+
+    expect(classes).toContain(`min-h-[round(calc(2lh+var(--spacing)*${padding('pt') + padding('pb')}),0.0625rem)]`);
     wrapper.unmount();
   });
 

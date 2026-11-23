@@ -147,7 +147,7 @@ const issueKey = (issue: DesignCheckIssue, index: number): string => `${issue.ru
             >{{ issue.message }}</span>
             <span
               v-if="issue.hint"
-              class="flex min-w-0 flex-col gap-0.5 border-s-2 border-[color-mix(in_srgb,var(--d-design)_45%,var(--d-border2))] ps-2 text-(--d-muted)"
+              class="flex min-w-0 flex-col gap-0.5 border-s-2 border-[color-mix(in_srgb,var(--d-design-fill)_45%,var(--d-border2))] ps-2 text-(--d-muted)"
               data-testid="design-check-issue-hint"
             >
               <span class="text-10.5 text-(--d-faint-text)">{{ t('design.check.hint') }}<template v-if="issue.skill"> · <span

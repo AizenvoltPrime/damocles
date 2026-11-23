@@ -39,19 +39,14 @@ const shape = computed((): Shape => {
     :aria-label="label"
     :aria-hidden="label === undefined ? 'true' : undefined"
     class="relative inline-flex size-2.5 shrink-0 transition-colors duration-200 ease-out"
-    :class="{
-      'text-(--d-success)': shape === 'connected' || shape === 'slow',
-      'd-pulsing text-(--d-warning)': shape === 'connecting',
-      'text-(--d-danger)': shape === 'failed',
-      'text-(--d-faint)': shape === 'offline',
-    }"
+    :class="{ 'd-pulsing': shape === 'connecting', 'text-(--d-faint)': shape === 'offline' }"
   >
     <!-- Back after it showed it was away: a green glow lights up once. -->
     <span
       v-if="view.kind.value === 'reconnected'"
       aria-hidden="true"
       data-testid="host-status-flash"
-      class="d-flash-once pointer-events-none absolute -inset-0.5 rounded-full bg-(--d-success)/40"
+      class="d-flash-once pointer-events-none absolute -inset-0.5 rounded-full bg-(--d-success-fill)/40"
     />
     <Transition name="t-icon">
       <svg
@@ -65,21 +60,21 @@ const shape = computed((): Shape => {
           cx="5"
           cy="5"
           r="4"
-          fill="currentColor"
+          class="fill-(--d-success-fill)"
         />
         <template v-else-if="shape === 'slow'">
           <circle
             cx="5"
             cy="5"
             r="2.5"
-            fill="currentColor"
+            class="fill-(--d-success-fill)"
           />
           <circle
             cx="5"
             cy="5"
             r="4.2"
             fill="none"
-            class="stroke-(--d-warning)"
+            class="stroke-(--d-warning-fill)"
             stroke-width="1.5"
           />
         </template>
@@ -89,12 +84,12 @@ const shape = computed((): Shape => {
             cy="5"
             r="3.7"
             fill="none"
-            stroke="currentColor"
+            class="stroke-(--d-warning-fill)"
             stroke-width="1.5"
           />
           <path
             d="M5 1.3a3.7 3.7 0 0 1 0 7.4z"
-            fill="currentColor"
+            class="fill-(--d-warning-fill)"
           />
         </template>
         <template v-else-if="shape === 'failed'">
@@ -102,11 +97,11 @@ const shape = computed((): Shape => {
             cx="5"
             cy="5"
             r="4.4"
-            fill="currentColor"
+            class="fill-(--d-danger-fill)"
           />
           <path
             d="M3.3 3.3l3.4 3.4M6.7 3.3 3.3 6.7"
-            class="stroke-(--d-card)"
+            class="stroke-(--d-on-danger)"
             stroke-width="1.3"
             stroke-linecap="round"
           />

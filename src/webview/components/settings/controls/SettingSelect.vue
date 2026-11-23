@@ -14,9 +14,11 @@ import {
 import { usePopperZIndex } from '@/composables/useOverlayEscape';
 import { remPx } from '@/composables/useRemPx';
 import { closeWhenSettingsBusy } from '../settings-view';
+import { IsolatedText } from '../../isolated-text';
 
 export interface SelectOption<V extends string> {
   value: V;
+  // a user's name inside it is marked with isolated(), and shows as a bdi element
   label: string;
   hint?: string;
   disabled?: boolean;
@@ -31,6 +33,8 @@ const props = defineProps<{
   disabled?: boolean;
   /** Emits a pick of the option already selected too. */
   reselectable?: boolean;
+  /** The id of the text that describes the control. */
+  describedby?: string;
 }>();
 
 const emit = defineEmits<{
@@ -68,9 +72,9 @@ function cancelPick(option: SelectOption<T>, event: Event): void {
     <SelectTrigger
       class="sm-select"
       :aria-label="label"
-      :aria-describedby="selectedReason ? reasonId : undefined"
+      :aria-describedby="[describedby, selectedReason ? reasonId : undefined].filter(Boolean).join(' ') || undefined"
     >
-      <span class="sm-select-value">{{ selected?.label ?? placeholder ?? modelValue }}</span>
+      <span class="sm-select-value"><IsolatedText :text="selected?.label ?? placeholder ?? modelValue" /></span>
       <span
         v-if="selectedReason"
         :id="reasonId"
@@ -106,7 +110,7 @@ function cancelPick(option: SelectOption<T>, event: Event): void {
               :aria-describedby="option.hint ? optionHintId(index) : undefined"
             >
               <span class="sm-option-text">
-                <SelectItemText>{{ option.label }}</SelectItemText>
+                <SelectItemText><IsolatedText :text="option.label" /></SelectItemText>
                 <span
                   v-if="option.hint"
                   :id="optionHintId(index)"

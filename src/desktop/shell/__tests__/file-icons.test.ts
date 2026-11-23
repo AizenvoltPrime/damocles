@@ -99,11 +99,16 @@ describe('FileIcon', () => {
     folder.unmount();
   });
 
-  // A link badge must hide the icon's corner in the row's own colour, whether the row is plain, hovered or selected.
-  it('paints the link badge in the row\'s --row-bg over the panel the row sits on', () => {
+  // A painted badge background would cover a theme's wallpaper and differ from a hovered or selected row; a mask shows either.
+  it('masks the icon\'s corner under the link badge instead of painting over it', () => {
     const link = mount(FileIcon, { props: { path: 'src', directory: true, link: true } });
+    const icon = link.get('[data-testid="file-icon-link"] > :first-child');
+    expect(icon.classes()).toEqual(expect.arrayContaining(['mask-exclude', 'mask-[100%_100%,--spacing(2)_--spacing(2)]', 'mask-position-[0_0,0_100%]']));
     const badge = link.get('[data-testid="file-icon-link"] > span');
-    expect(badge.classes()).toEqual(expect.arrayContaining(['bg-(--d-panel)', 'bg-[linear-gradient(var(--row-bg),var(--row-bg))]']));
+    expect(badge.classes().filter((name) => name.startsWith('bg-'))).toEqual([]);
+    const plain = mount(FileIcon, { props: { path: 'src', directory: true } });
+    expect(plain.classes()).not.toContain('mask-exclude');
     link.unmount();
+    plain.unmount();
   });
 });

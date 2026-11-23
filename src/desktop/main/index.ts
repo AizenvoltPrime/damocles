@@ -4,7 +4,7 @@ import { connect as netConnect } from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { app, BrowserWindow, clipboard, dialog, Menu, net, powerMonitor, screen, session, shell as electronShell, webContents, WebContentsView, type WebContents } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, Menu, nativeTheme, net, powerMonitor, screen, session, shell as electronShell, webContents, WebContentsView, type WebContents } from 'electron';
 import { installLogSink, log, showLog } from '../../core/logger';
 import { processProfiler, StallMonitor } from '../local-services/stall-monitor';
 import type { WalkHost } from '../../core/search-walk/walk-host';
@@ -19,7 +19,7 @@ import { migrateRenamedSearchSettings } from './search-settings-migration';
 import { deleteRetiredSecrets } from '../../core/config/retired-secrets';
 import { providerKeyStored } from '../../core/pi-session/custom-providers';
 import { PROVIDER_SECRET_KEYS } from '../../core/pi-session/explore-providers';
-import { DAMOCLES_DESIGNS_DIR, DAMOCLES_HOME_DIR, FOLDER_IDENTITIES_PATH, WORKTREES_ROOT_DIR } from '../../core/paths';
+import { DAMOCLES_DESIGNS_DIR, DAMOCLES_HOME_DIR, FOLDER_IDENTITIES_PATH, THEMES_DIR, WORKTREES_ROOT_DIR } from '../../core/paths';
 import { resolveSshExecutable, resolveSshKeygenExecutable } from '../../core/system-tools';
 import { folderKey, folderKeyOn } from '../../core/workspace-folders/folder-key';
 import { chatRecordHolding, folderContains, liveWorkingFolders } from '../../core/worktrees/records';
@@ -33,7 +33,8 @@ import type { ChatPermissions, CoreRequests, PanelCreate } from '../core-protoco
 import type { RelayView } from './core-services/host-services';
 import type { StoredSession } from '../../shared/types/session';
 import type { ChatAttachmentInput } from '../../shared/types/chat-attachment';
-import { MAX_OVERLAY_TAGS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRect, type OverlayRequest, type OverlaySettingsAwayState } from '../preload/overlay-channels';
+import { MAX_OVERLAY_TAGS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRect, type OverlayRequest, type OverlaySettingsAwayState, type OverlayState, type OverlayThemesResult, type ThemeEditorResult } from '../preload/overlay-channels';
+import { characterAssets, characterState, parseProjectsFile, PROJECTS_FILE, type PinEdit } from '../../shared/themes/characters';
 import type { NotificationHost, NotificationProject } from '../preload/notifications';
 import { canCheck, type UpdateSnapshot, type VersionInfo } from '../preload/updates';
 import {
@@ -99,7 +100,7 @@ import { showHeldChat } from './held-chat';
 import { isActiveActivity } from '../../shared/chat-retention';
 import { chatTitle, panelTitle, storedTitle } from './chat-title';
 import { chatActions, refusesMirrored } from './chat-actions';
-import { parseCliPathAction, parseUserDataDir } from './cli';
+import { END_OF_OPTIONS, isSafeThemeLaunch, optionArgs, parseCliPathAction, parseUserDataDir, registersLinkScheme, relaunchArgs } from './cli';
 import { CoreHost } from './core-host';
 import { bounded, createQuitJoins, detachRemotes, QuitLifecycle, shutDown } from './shutdown';
 import {
@@ -108,6 +109,7 @@ import {
   DESKTOP_CONFIGURATION,
   FILES_EXCLUDE_SETTING,
   FORGE_AGENT_TOOLS_SETTING,
+  THEMES_AGENT_TOOLS_SETTING,
   GIT_BLAME_EDITOR_DECORATION_SETTING,
   SEARCH_EXCLUDE_SETTING,
   isDesktopSettingValue,
@@ -124,6 +126,10 @@ import {
   TERMINAL_DEFAULT_PROFILE_SETTING,
   TERMINAL_PROFILES_SETTING,
   THEME_SETTING,
+  THEMES_DARK_SETTING,
+  THEMES_LIGHT_SETTING,
+  SHOW_WALLPAPERS_SETTING,
+  WALLPAPER_CONTRAST_SETTING,
   type DesktopLanguageSetting,
 } from '../local-services/desktop-configuration';
 import { BackupStore } from './documents/backups';
@@ -146,7 +152,7 @@ import { EDITOR_CONFIRM_DOCUMENT_BYTES } from '../../shared/types/messages';
 import { LAST_DOWNLOAD_FOLDER_KEY, TransferGestures } from './files/transfer-gestures';
 import { filesFailureMessage, settleFilesAction, type FilesAction, type FilesFailed } from './files/files-failure';
 import { QuickOpenIndex, QuickOpenPicker } from './quick-open';
-import { CommandPalette, desktopCommands } from './commands';
+import { acceleratorLabel, CommandPalette, desktopCommands, NEXT_WALLPAPER_ACCELERATOR } from './commands';
 import {
   buildNewTerminalMenu,
   joinTerminalItems,
@@ -218,7 +224,13 @@ import { createDesktopNotificationService, type DesktopNotifications } from './p
 import { logUncaughtErrors } from '../local-services/process-errors';
 import { ProjectList } from './projects';
 import { announceInstalledVersion, ReleaseNotesSource } from './release-notes';
-import { appResourceUri, handleAppProtocol, registerAppScheme } from './protocol';
+import { appResourceUri, handleAppProtocol, registerAppScheme, THEME_RENDER_PAGE_URL, THEME_SHOT_URL_PREFIX } from './protocol';
+import { AgentThemes, type AgentThemesDeps } from './themes/agent-themes';
+import { ThemeRenderer } from './themes/theme-renderer';
+import { createThemeRenderSession, openThemeRenderPage, themeRenderHtml } from './themes/theme-render-page';
+import { ThemeCommands } from './theme-commands';
+import { keepKnownHosts } from './remote/keep-hosts';
+import { readPickedFont } from './themes/font-file';
 import { createAvatarCache } from './forge/avatar-cache';
 import { forgeE2eServers } from './forge/e2e-forge-servers';
 import { restrictPermissions, hardenWebContents } from './security';
@@ -230,12 +242,44 @@ import { NO_SCM_MENU_STATE, ScmHost, type ScmWorktreeDeps } from './scm/scm-host
 import type { ScmWorktreeChat } from '../preload/scm-channels';
 import { createLauncherPool, FOLDER_PROCESSES_CLOSE_MS, installProcessLauncher, lockThreadSpawns, processLauncher, runProcess, whenProcessesClosed, type Launcher } from '../../core/process-launcher';
 import { allJsonConfigWritesSettled } from '../../core/config/json-config-write';
-import { userConfigBase } from '../../core/config/local-config-path';
+import { userConfigBase, type ConfigNotices } from '../../core/config/local-config-path';
+import { createThemePathRule, type ThemePathRule } from '../../core/themes/network-rule';
 import { createScmClient, type ScmClient } from './scm/scm-client';
 import { SUBCALL_USAGE_LEDGER_PATH } from '../../core/paths';
 import { TaskbarBadges } from './taskbar-badges';
 import { TaskbarCounter } from './taskbar-counter';
-import { currentTheme, currentThemeKind, followThemeSettings, onThemeChange, THEME_BACKGROUND } from './theme';
+import {
+  currentBaseShown, currentDensity, currentShown, currentTextSize, currentTheme, currentThemeKind, currentWallpaperMotion, currentWallpapers, followThemeSettings, FONT_FACE_CSS, invalidateWallpaperStats,
+  namedFontBlob, namedImageBlob, onThemeChange, preferredThemeId, safeStartReason, setHeldLook, setMotionEnvironment, setSafeStart, setThemePreview, setWallpaperCycle, setWallpaperEnvironment,
+  setWallpaperFlashReader, setWallpaperStatsReader, shownBackground, trustedBackground, wallpaperCycleChanged, currentCharacters, namedSpriteBlob, setProjectPins,
+  projectLookOf, setProjectLooks, setSelectedProject,
+  currentScheduleView, reevaluateTheme, setAppearanceSchedule, setReportedTimeZone, setThemeClock, themeNow, themePreference,
+  heldLookSettled, onThemeInputsChange,
+} from './theme';
+import { APPEARANCE_FILE, parseAppearanceSchedule, THEME_TICK_MS } from '../../shared/themes/schedule';
+import { openThemeBlob, readStoreThumb, readThemeBlob, readThemeThumb, readWallpaperFlash, readWallpaperPalette, readWallpaperStats, type NamedBlob } from './themes/theme-blobs';
+import { countdownOwnerOf, readStateJson } from './themes/pending-confirm';
+import { MAX_STATE_FILE_BYTES } from '../../shared/themes/limits';
+import { cycleAt, ThemeState, WallpaperCycle } from './themes/theme-state';
+import { isWallpaperAsset } from '../../shared/themes/wallpapers';
+import { batterySaverOn } from './themes/power-saver-win32';
+import { HeldTimers } from './themes/held-timers';
+import { KeepFocus } from './themes/keep-focus';
+import { KEEP_CHANGES_MS } from '../../shared/themes/agent';
+import { builtinName, overlayThemeEntry, themeFilePath, ThemeLibrary } from './themes/theme-files';
+import { SAFE_THEME_FLAG } from './themes/appearance';
+import { ThemeCrashLoop } from './themes/crash-loop';
+import { THEME_DOCK_REM, ThemeEditorDock, type ThemeEditorRead } from './themes/editor-dock';
+import { ThemeSharing } from './themes/theme-sharing';
+import { THEME_LINK_SCHEME } from '../../shared/themes/theme-links';
+import { THEME_ARCHIVE_EXTENSION } from '../../shared/themes/install';
+import { arrangementOf, arrangementRoom, minimumScale, withArrangement } from './themes/arrangement';
+import { BUILTIN_THEME_ID } from '../../shared/themes/builtin';
+import { MAX_FONT_BYTES } from '../../shared/themes/fonts';
+import { sanitizeThemeCss, themeCssFamilies } from '../../shared/themes/css-sanitizer';
+import type { Arrangement, ThemeFile } from '../../shared/themes/schema';
+import { parseArrangement } from '../../shared/themes/arrangement';
+import type { LookKind } from '../../shared/themes/tokens';
 import { LIGHT_THEME } from '../theme-palettes';
 import { AppTray } from './tray';
 import { TrustStore } from './trust-store';
@@ -348,7 +392,8 @@ import { upContainer } from './remote/containers/container-connect';
 import { runDevcontainerTrustGate, type DevcontainerTrustVerdict } from './remote/containers/devcontainer-trust';
 import { devcontainersCliPath } from './platform/app-paths';
 import type { ContainerHostRecord } from './remote/host-store';
-import type { EditorOpenLink, ReopenInContainerResult } from '../preload/shell-channels';
+import type { EditorOpenLink, ProjectLookResult, ReopenInContainerResult } from '../preload/shell-channels';
+import type { ProjectLookImageResult } from '../preload/overlay-channels';
 import { FILES_CONFIRM_DRAG_AND_DROP_SETTING, FILES_CONFIRM_PASTE_NATIVE_SETTING, REMOTE_CONTAINER_ENGINE_SETTING } from '../local-services/desktop-configuration';
 import { openAsProject, openFolderAsProject, type OpenAsProjectDeps } from './open-as-project';
 import { waitForRemoteFolderConnection } from './e2e-open-folder';
@@ -374,7 +419,8 @@ import { UserRelays, relayedUserSettingKeys } from './remote/user-relays';
 import { ForeignViewRelay } from './remote/foreign-view-relay';
 import { LOOPBACK_HOST, PortsController } from './remote/ports/ports-controller';
 import { relayBrowserTool, typedRemoteAddress } from './remote/browser-relay';
-import { relayForgeDescribe, relayForgeTool, type ForgeRelayDeps } from './remote/forge-relay';
+import { hostProjectOf, relayForgeDescribe, relayForgeTool, type ForgeRelayDeps } from './remote/forge-relay';
+import { allowRelayedInstallFlash, RelayedConsents, RelayedInstalls, RelayedPreviews, relayTheme, tellShotGone, type RelayedShotsDeps, type ThemeRelayDeps } from './remote/theme-relay';
 import { rewriteOutbound } from './remote/ports/url-rewrite';
 import { memoryDocument } from './platform/editor-document';
 import type { HostDiffView } from './platform/editor-service';
@@ -386,6 +432,8 @@ import { PanelViews, type DesktopPanel, type PageStrings, type ShowFocus } from 
 import {
   boundsToPersist,
   clampToWorkAreas,
+  DEFAULT_WINDOW_HEIGHT,
+  DEFAULT_WINDOW_WIDTH,
   defaultWindowBounds,
   MIN_WINDOW_HEIGHT,
   MIN_WINDOW_WIDTH,
@@ -411,12 +459,24 @@ const MESSAGE_DETAIL_BUDGET = 1800;
 const CHAT_PANEL: PanelOptions = { kind: 'chat', title: 'Damocles', localResourceRoots: [] };
 // Playwright's hooks (globalThis.__damoclesE2e and core's e2e.* requests), in the unpackaged app only.
 const E2E_HOOKS = !app.isPackaged && process.env['DAMOCLES_E2E_HOOKS'] === '1';
+// The GPU process's first report of the run: getGPUFeatureStatus() answers software until then. Listened for from here so a
+// test cannot miss it.
+const E2E_GPU_REPORTED = E2E_HOOKS ? new Promise<void>((resolve) => app.once('gpu-info-update', () => resolve())) : undefined;
 // The loopback authority (a local folder through a daemon this app starts), in the unpackaged app only.
 const LOOPBACK = !app.isPackaged && (E2E_HOOKS || process.env['DAMOCLES_LOOPBACK'] === '1');
 // The ssh config and release URL e2e runs point the transport at (dev builds with the e2e hooks only).
 const SSH_ENVIRONMENT = sshEnvironment({ packaged: app.isPackaged, env: process.env });
 const REMOTE_E2E = remoteE2eEnvironment({ packaged: app.isPackaged, env: process.env });
 const FORGE_E2E_SERVERS = forgeE2eServers({ packaged: app.isPackaged, env: process.env });
+// The folder core reads https://e2e.test/<name> theme downloads from (unpackaged with the e2e hooks only; every check still runs).
+const THEME_E2E_DOWNLOADS = E2E_HOOKS ? process.env['DAMOCLES_E2E_THEME_DOWNLOADS'] : undefined;
+// The community store list core reads in its place, https://e2e.test/<name> from that folder, and the test key it is signed
+// with (unpackaged with the e2e hooks only; the list is verified as any other).
+const THEME_E2E_STORE = (() => {
+  const listUrl = E2E_HOOKS ? process.env['DAMOCLES_E2E_THEME_STORE_LIST'] : undefined;
+  const publicKeyPem = E2E_HOOKS ? process.env['DAMOCLES_E2E_THEME_STORE_KEY'] : undefined;
+  return listUrl !== undefined && publicKeyPem !== undefined && THEME_E2E_DOWNLOADS !== undefined ? { listUrl, publicKeyPem } : undefined;
+})();
 // how often a busy daemon of another protocol is asked for its runs and its mirror: its frozen commands carry no events
 const OTHER_PROTOCOL_POLL_MS = 5000;
 // the window an OS shutdown or an update's quit gives the token pushes, inside the quit's own bound
@@ -595,6 +655,7 @@ const resourceRoot = layout.packaged ? layout.asarPath : layout.repoRoot;
 
 class DesktopApp {
   private readonly userDataDir = app.getPath('userData');
+  private readonly themesOwner = countdownOwnerOf(this.userDataDir);
   private readonly logsDir = path.join(this.userDataDir, 'logs');
   // D36: Show Log opens a log sink's file as a read-only editor tab.
   // account pictures of this computer's core's Git hosting accounts, served by the app protocol
@@ -607,6 +668,17 @@ class DesktopApp {
   private readonly state: DesktopKeyValueState;
   private readonly trust: TrustStore;
   private readonly usageWarnings: UsageWarningStore;
+  // each look's wallpaper set (theme-state.json)
+  private readonly themeState: ThemeState;
+  // the e2e hooks' record of theme blob answers, and the motion inputs they pin
+  private readonly servedThemeBlobs: Array<{ readonly sha256: string; readonly status: number; readonly contentRange: string | null }> = [];
+  // the characters the overlay and the notifier were last told of, as JSON
+  private overlayCharacters = 'null';
+  private pinnedMotion: Parameters<typeof setMotionEnvironment>[0] = {};
+  // an e2e run's regional format, since app.getSystemLocale() is the machine's
+  private pinnedSystemLocale: string | undefined;
+  // an e2e run that set the schedule's clock fires the theme tick itself (themeTick)
+  private themeTickHeld = false;
   // read in start(), before anything lists a project
   private hostStore: HostStore | undefined;
   private ports: PortsController | undefined;
@@ -768,7 +840,13 @@ class DesktopApp {
     return this.askMessage(question, signal);
   };
   private readonly lifecycle = new QuitLifecycle({
-    app,
+    // a relaunch tries the user's theme again and handles no link or command line request twice (relaunchArgs)
+    app: {
+      quit: () => app.quit(),
+      relaunch: () => app.relaunch({ args: relaunchArgs(process.argv) }),
+      once: (event, listener) => app.once(event, listener),
+      removeListener: (event, listener) => app.removeListener(event, listener),
+    },
     release: () => this.closeRelease.release(),
     dispose: () => this.disposeAll(),
     log: (line) => log(line),
@@ -785,7 +863,7 @@ class DesktopApp {
   private readonly notifier: NotifierHost = new NotifierHost({
     platform: process.platform,
     preloadPath: path.join(__dirname, 'preload-overlay.js'),
-    state: () => ({ locale: this.requireLocalization().language, platform: shellPlatform(process.platform) }),
+    state: () => this.overlayState(),
     // A popup's action brings the window forward before it runs, except a link's Open, whose browser comes forward instead.
     resolveToast: (id, action) => {
       if (action !== undefined && !this.notificationCenter.isLinkRequest(id)) this.showWindow();
@@ -798,6 +876,112 @@ class DesktopApp {
       this.toastFocusOrigin = undefined;
     },
     pendingToasts: () => this.notificationCenter.pendingToasts(),
+    log: (line) => log(line),
+  });
+  // reached lazily, since the platform is made after the theme fields that take this
+  private readonly themeNotices: ConfigNotices = { warn: (message, actions, options) => this.requirePlatform().notifications.warn(message, actions, options) };
+  // main's own network rule for the theme files, never core's verdict
+  private readonly themeFiles: ThemePathRule = createThemePathRule(THEMES_DIR, this.themeNotices);
+  // the agent's theme tools: previews and screenshots, the keep-changes banner, a card's Show in window (main/themes/agent-themes.ts)
+  private readonly themeRenderer = new ThemeRenderer({
+    openPage: (gone) => openThemeRenderPage(THEME_RENDER_PAGE_URL, gone),
+    readBlob: async (sha256, mime, kind) => (await readThemeBlob(THEMES_DIR, sha256, () => ({ kind, mime }), (sha) => this.themeLibrary?.packedAsset(sha), this.themeNotices))?.bytes,
+    // the editor's import and the install cards that wait on the check, which core knows
+    progress: (sha256, fraction) => {
+      this.themeDock?.importProgress(fraction);
+      this.client()?.themesAnalyzeProgress(sha256, fraction).catch((err: unknown) => log(`[themes] the install cards were not told a flash check's progress: ${err instanceof Error ? err.message : String(err)}`));
+    },
+    log: (line) => log(line),
+  });
+  private readonly relayedPreviews = new RelayedPreviews({
+    features: (authority) => this.authorities?.connection(authority)?.features,
+    send: async (authority, ended) => this.requireRemoteCore(authority).client.themeShowEndedRemote(ended),
+    log: (line) => log(line),
+  });
+  private readonly relayedConsents = new RelayedConsents({ now: () => Date.now(), log: (line) => log(line) });
+  private readonly relayedShots: RelayedShotsDeps = {
+    features: (authority) => this.authorities?.connection(authority)?.features,
+    send: async (authority, shotId) => this.requireRemoteCore(authority).client.themeScreenshotGoneRemote(shotId),
+    log: (line) => log(line),
+  };
+  private readonly relayedInstalls = new RelayedInstalls({
+    features: (authority) => this.authorities?.connection(authority)?.features,
+    sendUpdated: async (authority, preview) => this.requireRemoteCore(authority).client.themeInstallUpdatedRemote(preview),
+    sendProgress: async (authority, progress) => this.requireRemoteCore(authority).client.themeInstallProgressRemote(progress),
+    sendExpired: async (authority, installId) => this.requireRemoteCore(authority).client.themeInstallExpiredRemote(installId),
+    log: (line) => log(line),
+  });
+  // the e2e hooks' hold on the keep-changes countdown, which a test then ends itself (DAMOCLES_E2E_HOOKS, unpackaged only)
+  private readonly keepChangesTimers = E2E_HOOKS ? new HeldTimers() : undefined;
+  private readonly agentThemes: AgentThemes = new AgentThemes({
+    root: THEMES_DIR,
+    owner: this.themesOwner,
+    notices: this.themeNotices,
+    renderer: this.themeRenderer,
+    shotUrlPrefix: THEME_SHOT_URL_PREFIX,
+    captureWindow: () => this.captureWindowForTheme(),
+    core: {
+      keep: (entryId) => this.requireLocalClient().themesKeep(entryId),
+      revert: async (entryId) => {
+        const { undone, arrangement } = await this.requireLocalClient().themesUndoPending(entryId);
+        return { reverted: undone !== undefined, ...(arrangement !== undefined ? { arrangement } : {}) };
+      },
+      // a remote card's end goes to the core that raised it
+      showEnded: async (promptId, reason) => this.relayedPreviews.ended(promptId, reason) ?? this.requireLocalClient().themesShowEnded(promptId, reason),
+      // a remote chat's shot is that host's core's to hear of, any other this computer's
+      screenshotGone: async (shotId) => {
+        const authority = this.relayedConsents.shotGone(shotId);
+        return authority !== undefined ? tellShotGone(this.relayedShots, authority, shotId) : this.requireLocalClient().themesScreenshotGone(shotId);
+      },
+    },
+    setPreview: (preview) => setThemePreview(preview),
+    editorTakenOver: () => this.themeDock?.previewTakenOver(),
+    editorRefused: (reason) => this.themeDock?.previewRefused(reason),
+    shownKind: () => currentBaseShown().kind,
+    shownState: () => {
+      const shown = currentShown();
+      return { kind: shown.kind, themeId: shown.themeId, decidedBy: shown.decidedBy };
+    },
+    setHeldLook: (next) => setHeldLook(next),
+    heldLookSettled: () => heldLookSettled(),
+    currentArrangement: () => arrangementOf(this.windowLayout.sidebar()),
+    applyArrangement: (arrangement, density) => this.applyCheckedArrangement(arrangement, density),
+    shellChanged: () => this.shellStateChanged(),
+    countdownEnded: () => this.keepCountdownEnded(),
+    ...(this.keepChangesTimers ? { timers: this.keepChangesTimers } : {}),
+    log: (line) => log(line),
+  });
+  // the user's theme commands: the menu's, the palette's and Settings › Appearance's (main/theme-commands.ts)
+  private readonly themeCommands = new ThemeCommands({
+    client: () => (this.core.current()?.isReady() ? this.client() : undefined),
+    settings: {
+      get: (key) => this.requirePlatform().settings.get(key),
+      update: (key, value, target) => this.requirePlatform().settings.update(key, value, target),
+    },
+    shown: () => currentBaseShown(),
+    shownKind: () => currentThemeKind(),
+    preferred: (kind) => preferredThemeId(this.requirePlatform().settings.get<unknown>(kind === 'dark' ? THEMES_DARK_SETTING : THEMES_LIGHT_SETTING)),
+    now: () => themeNow(),
+    entry: (themeId) => this.themeLibrary?.entry(themeId),
+    selectedProject: () => this.selectedProjectKey,
+    safeStart: () => {
+      setSafeStart('reset');
+      this.shellStateChanged();
+    },
+    arrangement: () => arrangementOf(this.windowLayout.sidebar()),
+    applyArrangement: (arrangement, density) => this.applyArrangement(arrangement, density),
+    openEditor: async (themeId) => {
+      this.overlaySettings?.close();
+      return (await this.themeDock?.open(themeId)) === true;
+    },
+    revealThemeFile: (themeId) => this.requirePlatform().shell.revealPath(themeFilePath(THEMES_DIR, themeId)),
+    openProjectLook: (projectKey) => {
+      this.openProjectLook(projectKey).then((result) => {
+        if (result.kind === 'failed') void this.notificationCenter.notice('warning', result.reason, []);
+      }, this.themeCommands.failed('Project Look'));
+    },
+    notice: (severity, message, actions) => this.notificationCenter.notice(severity, message, actions),
+    t: (message, ...args) => this.requireLocalization().t(message, ...args),
     log: (line) => log(line),
   });
   private readonly taskbar = new TaskbarCounter({
@@ -834,6 +1018,20 @@ class DesktopApp {
   // settles once the launch's tabs and selection are restored, when a command-line request may open its files
   private markWindowReady: () => void = () => undefined;
   private readonly windowReady = new Promise<void>((resolve) => { this.markWindowReady = resolve; });
+  // Built before the first command line is read; its deps read the window, core and localization at each call.
+  private readonly themeSharing: ThemeSharing = new ThemeSharing({
+    core: () => this.client(),
+    openInstallCard: () => this.openInstallCard(),
+    pickImportFile: () => this.pickThemeImportFile(),
+    pickExportPath: (fileName) => this.pickThemeExportPath(fileName),
+    notify: (message) => {
+      void this.notifications.warn(message);
+    },
+    t: (message, ...args) => this.requireLocalization().t(message, ...args),
+    render: (text) => this.requireLocalization().render(text),
+    log: (line) => log(line),
+    storeChanged: () => this.overlaySettings?.themesChanged(),
+  });
   private readonly notificationCenter: NotificationCenter = new NotificationCenter({
     render: (text) => this.requireLocalization().render(text),
     doNotDisturb: () => this.state.global.get<boolean>(DO_NOT_DISTURB_KEY, false) === true,
@@ -901,6 +1099,12 @@ class DesktopApp {
   private shell: ShellHost | undefined;
   private overlay: OverlayHost | undefined;
   private overlaySettings: OverlaySettings | undefined;
+  // the theme editor docked at the window's right edge; one per window, its view made when it first opens
+  private themeDock: ThemeEditorDock | undefined;
+  // renderer crashes under a custom look; two within a minute switch this run to safe start
+  private readonly themeCrashLoop = new ThemeCrashLoop();
+  // the theme files main paints from, read and validated again here (docs/invariants.md "Desktop themes")
+  private themeLibrary: ThemeLibrary | undefined;
   private quickOpenPicker: QuickOpenPicker | undefined;
   private readonly backups = new BackupStore(this.userDataDir, (line) => log(line));
   // Files' trash and permanent delete; the e2e hooks replace them to fail on demand.
@@ -1016,7 +1220,8 @@ class DesktopApp {
   private readonly disposables: Disposable[] = [];
   // Settles once the window is gone and the requests its shell and overlay pages made were answered.
   private windowClosed: Promise<void> = Promise.resolve();
-  // The selected project; the selected chat belongs to it once one is selected.
+  // The selected project; the selected chat belongs to it once one is selected. Its own look shows once shellStateChanged
+  // tells the theme of it, which every change of the selection ends in.
   private selectedProjectKey: string | undefined;
   // ShellState.layoutRevision
   private layoutRevision = 0;
@@ -1246,6 +1451,7 @@ class DesktopApp {
   });
   // The part F6 moved keyboard focus from into the desktop popups, until focus is anywhere else or the popup window loses it.
   private toastFocusOrigin: FocusPart | undefined;
+  private readonly keepFocus = new KeepFocus<FocusPart>();
   // What the main window focuses once it gains focus (a part left from the popups, or an overlay popup opened while it was
   // unfocused), until a later focusOn places focus, that popup closes or the window does.
   private focusOnActivation: FocusPart | 'overlay' | undefined;
@@ -1263,6 +1469,7 @@ class DesktopApp {
     this.state = createDesktopKeyValueState(this.userDataDir, (line) => log(line));
     this.trust = new TrustStore(this.userDataDir, this.ask, (message, ...args) => this.requireLocalization().t(message, ...args), (line) => log(line));
     this.usageWarnings = new UsageWarningStore(this.userDataDir, (line) => log(line));
+    this.themeState = new ThemeState(this.userDataDir);
   }
 
   private startStallMonitor(bootLog: (line: string) => void): StallMonitor | undefined {
@@ -1283,12 +1490,22 @@ class DesktopApp {
     this.languageSetting = readLanguageSetting(path.join(DAMOCLES_HOME_DIR, 'settings.json'), bootLog);
     if (this.languageSetting !== 'system') app.commandLine.appendSwitch('lang', this.languageSetting);
     // dist/cli.js starts a second instance with its request, which this one handles
+    // a damocles:// link arrives the same way on Windows and Linux, the OS starting the app with the link as an argument
     app.on('second-instance', (_event, argv) => {
       this.showWindow();
       this.takeCommandLine(argv);
+      this.themeSharing.takeArgv(argv);
+    });
+    // macOS hands a link to the running app, and to one it launches before ready, so this listens from the start
+    app.on('open-url', (event, url) => {
+      event.preventDefault();
+      this.themeSharing.takeOpenUrl(url);
     });
     // a first launch's own request, from dist/cli.js; its wait marker is claimed now and the request handled once the window is ready
     this.takeCommandLine(process.argv);
+    // a link that launched the app waits in the queue until the window and core are ready
+    this.themeSharing.takeArgv(process.argv);
+    this.disposables.push({ dispose: () => this.themeSharing.dispose() });
     app.on('web-contents-created', (_event, contents) => {
       // a remote chat page's links, and a remote project's HTML preview's, go through the link checks, as a click in a remote terminal does
       hardenWebContents(contents, (url) => {
@@ -1323,6 +1540,7 @@ class DesktopApp {
     installProcessLauncher(this.launcher);
     await mergeLoginShellEnv(processLauncher(), bootLog);
     await app.whenReady();
+    await registerThemeLinkScheme();
     // macOS and Linux shut down: the quit is let finish, keeping the remote runs with no question
     const shutdown = (event: Electron.Event): void => {
       event.preventDefault();
@@ -1360,13 +1578,26 @@ class DesktopApp {
     handleAppProtocol(resourceRoot, {
       panel: (panelId) => this.views?.htmlFor(panelId),
       shell: () => shellHtml(currentTheme(), localization.language),
-      overlay: () => overlayHtml(currentTheme(), localization.language),
+      overlay: () => overlayHtml(currentTheme('root'), localization.language),
       // The overlay bundle, which shows only its toast stack at this path.
-      notifier: () => overlayHtml(currentTheme(), localization.language),
+      notifier: () => overlayHtml(currentTheme('root'), localization.language),
+      // The overlay bundle at its theme editor route: trusted UI whole, so its page palette is the trusted one.
+      themeEditor: () => overlayHtml(currentTheme('root'), localization.language),
       forgeAvatar: (key) => {
         const client = this.client();
         return client?.forgeAvatarKnown(key) === true ? this.forgeAvatars.get(key) : Promise.resolve(undefined);
       },
+      themeBlob: (sha256) => openThemeBlob(THEMES_DIR, sha256, (sha) => this.namedBlob(sha), (sha) => this.themeLibrary?.packedAsset(sha), this.themeNotices),
+      themeCache: (sha256, file) => readThemeThumb(THEMES_DIR, sha256, file, this.themeNotices),
+      storeThumb: (sha256) => readStoreThumb(THEMES_DIR, sha256, this.themeNotices),
+      themeShot: (id) => this.agentThemes.shot(id),
+      ...(E2E_HOOKS ? { themeBlobServed: (sha256: string, status: number, contentRange: string | null) => this.servedThemeBlobs.push({ sha256, status, contentRange }) } : {}),
+    });
+    // the theme renderer's page loads in a session of its own, the only one that serves the blobs of its running job
+    createThemeRenderSession(resourceRoot, {
+      themeRender: () => themeRenderHtml(FONT_FACE_CSS),
+      themeBlob: (sha256) => openThemeBlob(THEMES_DIR, sha256, (sha) => this.renderJobBlob(sha) ?? this.namedBlob(sha), (sha) => this.themeLibrary?.packedAsset(sha), this.themeNotices),
+      ...(E2E_HOOKS ? { themeBlobServed: (sha256: string, status: number, contentRange: string | null) => this.servedThemeBlobs.push({ sha256, status, contentRange }) } : {}),
     });
 
     [this.hostStore, this.remoteState] = await Promise.all([HostStore.open(this.userDataDir, bootLog), RemoteState.open(this.userDataDir, bootLog)]);
@@ -1469,9 +1700,18 @@ class DesktopApp {
       showSession: (sessionId) => this.showSessionOf('local', sessionId),
       openDesignPreview: (corePanelId, designId, relPath) => this.openDesignPreview('local', corePanelId, designId, relPath),
       designRender: this.designRenderFor('local'),
+      themes: {
+        ...this.agentThemes.services(),
+        // core's cancel frees the renderer, which runs one job at a time
+        'themes.analyze': ({ sha256, mime, width, height, kind, durationMs }, signal) => this.themeRenderer.analyze(sha256, mime, { width, height }, kind ?? 'image', durationMs, signal),
+        'themes.analyzeSprite': ({ sha256, mime, width, height, strip, animated }, signal) => this.themeRenderer.analyzeSprite(sha256, { mime, width, height, ...(strip ? { strip } : {}), animated }, signal),
+      },
       git: git.available ? { available: true, path: git.path, version: git.version } : { available: false, reason: git.reason },
       e2eHooks: E2E_HOOKS,
       ...(FORGE_E2E_SERVERS ? { e2eForgeServers: FORGE_E2E_SERVERS } : {}),
+      ...(THEME_E2E_DOWNLOADS ? { e2eThemeDownloads: path.resolve(THEME_E2E_DOWNLOADS) } : {}),
+      themesOwner: this.themesOwner,
+      ...(THEME_E2E_STORE ? { e2eThemeStore: THEME_E2E_STORE } : {}),
       paths: {
         resourceRoot: appPaths.resourceRoot,
         unpackedRoot: appPaths.unpackedRoot,
@@ -1550,6 +1790,7 @@ class DesktopApp {
       shell: this.platform.shell,
       state: this.state.global,
       checkAutomatically: () => this.platform?.settings.get<boolean>(UPDATE_CHECK_AUTOMATICALLY_SETTING, true) !== false,
+      storeCheck: () => this.core.run('The community store check', (core) => core.client.themesStoreBackgroundCheck()),
       onResume: (listener) => {
         powerMonitor.on('resume', listener);
         return { dispose: () => powerMonitor.removeListener('resume', listener) };
@@ -1569,14 +1810,65 @@ class DesktopApp {
     this.disposables.push(this.presenceProbe.onDidAnswerLate((folder) => this.folderAnsweredLate(folder)));
     this.disposables.push(this.presenceProbe.onDidAdmit(() => this.folderChecksAdmitted()));
 
-    // Before the window exists, which takes its background from the effective theme.
+    // Before the window exists, which takes its background from the shown look.
+    if (isSafeThemeLaunch(process.argv)) {
+      log('[themes] started with the default theme (safe start)');
+      setSafeStart('launch');
+    }
+    const themeLibrary = new ThemeLibrary({ root: THEMES_DIR, resourceRoot, watchers: this.platform.fileWatchers, log: (line) => log(line), notifications: this.themeNotices });
+    this.themeLibrary = themeLibrary;
+    setWallpaperStatsReader((sha256) => readWallpaperStats(THEMES_DIR, sha256, this.themeNotices));
+    setWallpaperFlashReader((sha256) => readWallpaperFlash(THEMES_DIR, sha256, this.themeNotices));
+    await this.themeState.load((line) => log(line), this.themeNotices);
+    setWallpaperCycle((look) => this.themeState.shownIndex(look, Date.now()));
+    this.followPower();
+    // without GPU compositing every blurred wallpaper and see-through view would be drawn in software
+    const gpuCompositing = (): boolean => app.getGPUFeatureStatus().gpu_compositing.startsWith('enabled');
+    setWallpaperEnvironment({ gpuCompositing: gpuCompositing(), reducedTransparency: nativeTheme.prefersReducedTransparency === true });
+    const gpuChanged = (): void => setWallpaperEnvironment({ gpuCompositing: gpuCompositing(), reducedTransparency: nativeTheme.prefersReducedTransparency === true });
+    app.on('gpu-info-update', gpuChanged);
+    this.disposables.push({ dispose: () => app.removeListener('gpu-info-update', gpuChanged) });
+    await themeLibrary.load();
+    await this.readProjectPins();
+    await this.readAppearanceSchedule();
+    this.followThemeClock();
+    await this.agentThemes.beforeFirstPaint();
+    const wallpaperCycle = new WallpaperCycle({
+      state: this.themeState,
+      shown: () => {
+        const shown = currentBaseShown();
+        return shown.builtin ? undefined : { themeId: shown.themeId, kind: shown.kind, sets: shown.look.wallpapers?.length ?? 0, minutes: shown.look.cycle?.minutes };
+      },
+      now: () => Date.now(),
+      log: (line) => log(line),
+    });
     this.disposables.push(
-      followThemeSettings(this.platform.settings),
-      onThemeChange((theme) => {
-        this.views?.broadcastTheme(theme);
-        this.shell?.sendTheme(theme);
-        this.overlay?.sendTheme(theme);
-        this.notifier.sendTheme(theme);
+      this.agentThemes,
+      this.themeRenderer,
+      themeLibrary,
+      followThemeSettings(this.platform.settings, themeLibrary),
+      themeLibrary.onDidChange(() => {
+        this.overlaySettings?.themesChanged();
+        this.themeDock?.libraryChanged().catch(this.report('Checking the theme the editor holds'));
+      }),
+      // core writes a pick into the settings file, which this process reads after it; a pick of the kind that does not show
+      // changes no palette, so Settings hears of it here
+      this.platform.settings.onDidChange('damocles.desktop.themes', () => {
+        this.overlaySettings?.themesChanged();
+        this.endRelayedPreviewWhileOff();
+      }),
+      this.themeState.onDidChange(() => wallpaperCycleChanged()),
+      onThemeInputsChange(() => this.agentThemes.inputsChanged()),
+      wallpaperCycle,
+      onThemeChange(() => {
+        wallpaperCycle.schedule();
+        this.views?.broadcastTheme();
+        this.shell?.sendTheme(currentTheme('region', 'shell'));
+        const rootTheme = currentTheme('root');
+        this.overlay?.sendTheme(rootTheme);
+        this.notifier.sendTheme(rootTheme);
+        this.themeDock?.sendTheme(rootTheme);
+        this.overlaySettings?.themesChanged();
         this.shellStateChanged();
       }),
       this.projects.onDidChange(() => {
@@ -1859,6 +2151,28 @@ class DesktopApp {
     return this.core.current()?.client;
   }
 
+  private requireLocalClient(): CoreClient {
+    const client = this.client();
+    if (!client) throw new Error("This computer's Damocles engine is not running");
+    return client;
+  }
+
+  // ThemeRead's screenshot: the window's page, and the chat view on screen in the chat slot over it, both in device pixels.
+  private async captureWindowForTheme(): ReturnType<AgentThemesDeps['captureWindow']> {
+    const window = this.window;
+    if (!window || window.isDestroyed()) throw new Error('The window is closed');
+    const shell = await window.webContents.capturePage();
+    const scale = shell.getSize().width / Math.max(1, window.getContentBounds().width);
+    const chat = this.views?.inSlot();
+    if (!chat || !chat.view.getVisible()) return { shell: new Uint8Array(shell.toPNG()) };
+    const bounds = chat.view.getBounds();
+    const image = await chat.webContents.capturePage();
+    return {
+      shell: new Uint8Array(shell.toPNG()),
+      chat: { png: new Uint8Array(image.toPNG()), bounds: { x: Math.round(bounds.x * scale), y: Math.round(bounds.y * scale), width: Math.round(bounds.width * scale), height: Math.round(bounds.height * scale) } },
+    };
+  }
+
   private requireLocalization(): DesktopLocalizationService {
     if (!this.localization) throw new Error('Localization used before startup finished');
     return this.localization;
@@ -2025,10 +2339,30 @@ class DesktopApp {
     void core.ready.catch(() => undefined).then(() => this.userRelays?.forgesChanged()).catch(this.report('Reading the Git hosting servers for remote hosts'));
     // a Forget host while the engine was halted left that host's bindings and host defaults, which this core drops
     void core.ready.then(() => this.keepForgeHosts(client), () => undefined).catch(this.report('Dropping the Git hosting bindings of forgotten hosts'));
+    void core.ready.then(() => this.readProjectLooks(client), () => undefined).catch(this.report('Reading the project looks'));
+    // a keep-changes countdown the previous core left: this core reverts it at its start
+    void core.ready.then(() => this.agentThemes.coreStarted(), () => undefined).catch(this.report('Reading the unsettled theme change'));
+    // a theme link that launched the app opens once the window and this core are ready
+    void Promise.all([this.windowReady, core.ready]).then(() => this.themeSharing.markReady(), () => undefined);
     // a finished move whose host part an earlier core's end cut short; the launch's core is asked before its chats reopen
     if (restarted) void core.ready.then(() => this.localRelocationsReached(hosted), () => undefined).catch(this.report('Looking for moved projects'));
     for (const key of [...this.catalogRows.keys()]) if (authorityKeyOfProject(key) === 'local') this.catalogRows.delete(key);
     const subscriptions = [
+      // a staged install's update reaches the remote core that asked for it, else the Settings install card
+      client.onThemesInstallUpdated((preview) => {
+        this.relayedConsents.installUpdated(preview);
+        if (!this.relayedInstalls.updated(preview)) this.themeSharing.installUpdated(preview);
+      }),
+      client.onThemesInstallProgress((progress) => {
+        if (!this.relayedInstalls.progress(progress)) this.themeSharing.installProgress(progress);
+      }),
+      // core dropped an install that waited too long: the remote core that asked for it hears, else the Settings install card
+      client.onThemesInstallExpired((installId) => {
+        const authority = this.relayedInstalls.expired(installId);
+        if (authority !== undefined) this.relayedConsents.installEnded(authority, installId);
+        else this.themeSharing.installExpired(installId);
+      }),
+      client.onThemesStoreUpdated((view, listRead) => this.themeSharing.storeUpdated(view, listRead)),
       client.onWorktreeState((event) => this.onWorktreeState(event)),
       client.onFoldersChanged(() => {
         this.followSelectedChat();
@@ -2059,8 +2393,25 @@ class DesktopApp {
         if (this.views) this.selectChat(sessionId, 'local').catch(this.report('Opening a conversation here'));
       }),
       client.onDesignChanged((designId, paths) => this.designPreviews?.designChanged('local', designId, paths)),
+      // a pick or an undo changes the history and the settings, not only theme files, so Settings lists again either way
+      client.onThemesChanged(() => {
+        this.themeLibrary?.coreChanged().then(() => this.agentThemes.themesChanged()).catch(this.report('Reading the theme files'));
+        const reads = [
+          this.readProjectPins().catch(this.report('Reading the project characters')),
+          this.readProjectLooks(client).catch(this.report('Reading the project looks')),
+          this.readAppearanceSchedule().catch(this.report('Reading the theme schedule')),
+        ];
+        // core also says so after it wrote a wallpaper's or a sprite's analysis
+        invalidateWallpaperStats();
+        // after the reads, so the list Settings asks for next is never older than the change it was told of
+        void Promise.all(reads).then(() => this.overlaySettings?.themesChanged());
+      }),
       client.onWorktreeRecords((records) => this.worktreeRecords.apply(records)),
-      client.onRelocationsChanged(() => this.relocationsChanged('local')),
+      client.onRelocationsChanged(() => {
+        this.relocationsChanged('local');
+        // a pending relocation's looks show under where it leads
+        this.readProjectLooks(client).catch(this.report('Reading the project looks'));
+      }),
       client.onNewChatInWorktree((projectPath, worktreeId) => {
         this.newChatInWorktree({ projectKey: folderKey(projectPath), worktreeId }).catch(this.newChatInWorktreeFailure());
       }),
@@ -2091,6 +2442,7 @@ class DesktopApp {
       hasEnded: () => core.hasEnded(),
       dispose: async () => {
         this.overlaySettings?.coreEnded(client);
+        this.agentThemes.coreEnded();
         await this.beforeCoreDispose();
         for (const subscription of subscriptions) subscription.dispose();
         const views = (this.views?.chats() ?? []).filter((view) => view.authority === 'local');
@@ -2200,7 +2552,7 @@ class DesktopApp {
       minHeight: MIN_WINDOW_HEIGHT,
       title: 'Damocles',
       ...(mac ? {} : { icon: windowIcon(resourceRoot) }),
-      backgroundColor: THEME_BACKGROUND[currentThemeKind()],
+      backgroundColor: shownBackground(),
       // AD7: frameless. macOS draws its traffic lights; on Windows and Linux the shell's title bar draws the window controls,
       // since native ones (titleBarOverlay) paint above every view and the overlay's scrim cannot cover them.
       titleBarStyle: 'hidden',
@@ -2224,14 +2576,21 @@ class DesktopApp {
     if (!mac) window.setMenuBarVisibility(false);
     if (placement?.maximized) window.maximize();
     if (placement?.fullScreen) window.setFullScreen(true);
-    // a blurred window polls no CI
-    window.on('blur', () => this.ciWindowFocused(false));
-    window.on('focus', () => this.ciWindowFocused(true));
+    // a blurred window polls no CI and plays no moving wallpaper
+    window.on('blur', () => {
+      this.ciWindowFocused(false);
+      this.motionChanged({ focused: false });
+    });
+    window.on('focus', () => {
+      this.ciWindowFocused(true);
+      this.motionChanged({ focused: true });
+    });
     this.ciWindowFocused(window.isFocused());
+    this.motionChanged({ focused: window.isFocused(), minimized: window.isMinimized() });
     const overlay = new OverlayHost({
       window,
       preloadPath: path.join(__dirname, 'preload-overlay.js'),
-      state: () => ({ locale: this.requireLocalization().language, platform: shellPlatform(process.platform) }),
+      state: () => this.overlayState(),
       focusOutside: () => this.focusOn('chat'),
       // Activation is asynchronous on X11 and Electron focuses the window's own page as it activates, so the overlay takes
       // focus from the window's focus event.
@@ -2299,8 +2658,14 @@ class DesktopApp {
       focusAway: () => this.focusAwayFromPage(),
       focusPart: (step) => this.focusPart(step),
     });
-    const designPreviews = this.createDesignPreviews(window, () => views.retainingStates, () => overlay.restack());
-    this.htmlPreviews?.attach(window, () => overlay.restack());
+    const themeDock = this.createThemeDock(window, overlay);
+    // Every view added goes under the editor dock, and the dock under the overlay.
+    const restack = (): void => {
+      themeDock.raise();
+      overlay.restack();
+    };
+    const designPreviews = this.createDesignPreviews(window, () => views.retainingStates, restack);
+    this.htmlPreviews?.attach(window, restack);
     const pageTabs: BrowserTabSource = {
       tabs: () => [...browserTabs.tabs(), ...designPreviews.tabs()],
       close: (tabId) => (designPreviews.holds(tabId) ? designPreviews.close(tabId) : browserTabs.close(tabId)),
@@ -2336,7 +2701,7 @@ class DesktopApp {
         },
         connection: (panel) => this.panelConnection(panel),
         onQueueAction: (panel, action) => this.heldMessageAction(panel, action),
-        takeCoreMessage: (panel, type, json) => this.takeHeldVerdict(panel, type, json),
+        takeCoreMessage: (panel, type, json) => (this.takeHeldVerdict(panel, type, json) ? undefined : this.relayedConsents.card(panel, type, json)),
         states: this.states,
         pages: {
           pageAdded: (page) => browserTabs.pageAdded(page),
@@ -2351,17 +2716,21 @@ class DesktopApp {
         },
         log: (line) => log(line),
         onChange: () => this.viewsChanged(),
-        onRestack: () => overlay.restack(),
+        onRestack: restack,
         onReveal: (chat) => this.showChat(chat, { focus: true }),
         onRendererGaveUp: (panel) => this.chatGaveUp(panel),
+        onRendererGone: () => this.rendererCrashed('a chat page'),
         onSavedSessionChange: (chat) => this.chatChanged(chat),
+        onModalChange: (chat) => {
+          if (this.views?.selected() === chat) this.shell?.stateChanged();
+        },
         popupOpen: () => overlay.mode === 'full',
         withholds: (chat) => this.chatWithheld(chat),
         openRemoteLink: (authority, url) => { this.requireOpenUrl().userClick(authority, url).catch(this.report('Open Link')); },
       },
       (absolutePath) => appResourceUri(resourceRoot, absolutePath),
     );
-    overlay.restack();
+    restack();
     const overlaySettings = new OverlaySettings({
       overlay,
       settings: this.requirePlatform().settings,
@@ -2372,6 +2741,11 @@ class DesktopApp {
         void this.lifecycle.relaunch();
       },
       resetLayout: () => this.resetLayout(),
+      themes: {
+        list: () => this.overlayThemes(),
+        act: (action) => this.themeCommands.act(action),
+        setStoreEnabled: (enabled) => this.core.run('The community store setting', (core) => core.client.themesStoreSetEnabled(enabled)),
+      },
       terminalProfiles: () => this.terminalProfileReport(),
       log: (line) => log(line),
       languageAtLaunch: this.languageSetting,
@@ -2383,8 +2757,12 @@ class DesktopApp {
         await this.requireRemoteHosts().openConnect(hostId, { purpose: 'signIn' }).catch(this.shellFailure('Connect to Host', 'Damocles could not open the Connect dialog: {0}'));
       },
       hostAway: (authority) => this.settingsHostAway(authority),
+      closed: () => this.themeSharing.settingsClosed(),
     });
+    const detachSharing = this.themeSharing.attach(overlay, () => overlaySettings.showing());
     const shell: ShellHost = new ShellHost(window, this.shellActions(views, browserTabs, overlay, window), (line) => log(line), () => this.shellGaveUp(shell));
+    // custom CSS never enters the shell's HTML: ShellHost gives each loaded document the latest theme, which its preload sets as textContent
+    shell.sendTheme(currentTheme('region', 'shell'));
     const terminals = this.requireTerminals();
     terminals.attach({ state: (state) => shell.terminalState(state), data: (data) => shell.terminalData(data), screen: (screen) => shell.terminalScreen(screen), focus: (id) => shell.focusTerminal(id) });
     // A restored shell's first output (its banner and prompt) is pushed only to a loaded page, after ShellHost's own load handler.
@@ -2438,7 +2816,12 @@ class DesktopApp {
       this.reattachedAuthorities.clear();
       shell.dispose();
       overlaySettings.dispose();
+      detachSharing();
       unregisterForgeOverlay();
+      themeDock.dispose();
+      this.themeRenderer.closePage('The Damocles window closed.');
+      this.agentThemes.windowClosed();
+      setThemePreview(undefined);
       overlay.dispose();
       this.ciWindowFocused(false);
       if (this.window === window) {
@@ -2453,6 +2836,7 @@ class DesktopApp {
         this.overlay = undefined;
         this.overlaySettings = undefined;
         this.quickOpenPicker = undefined;
+        this.themeDock = undefined;
       }
       this.tray?.relocalize();
       closed(Promise.all([shell.settled(), overlay.settled()]).then(() => undefined));
@@ -2466,8 +2850,14 @@ class DesktopApp {
       this.tray?.relocalize();
       this.publishVisibleAuthorities();
     });
-    window.on('minimize', () => this.publishVisibleAuthorities());
-    window.on('restore', () => this.publishVisibleAuthorities());
+    window.on('minimize', () => {
+      this.publishVisibleAuthorities();
+      this.motionChanged({ minimized: true });
+    });
+    window.on('restore', () => {
+      this.publishVisibleAuthorities();
+      this.motionChanged({ minimized: false });
+    });
     onWindowActivated(window, () => {
       this.notificationCenter.windowFocused();
       this.flash('overlay', false);
@@ -2492,7 +2882,9 @@ class DesktopApp {
     this.overlay = overlay;
     this.overlaySettings = overlaySettings;
     this.quickOpenPicker = quickOpenPicker;
+    this.themeDock = themeDock;
     this.editorPane?.reopened();
+    overlay.handleWhileOpen(OVERLAY_CHANNELS.projectLookImage, () => overlay.isOpen('projectLook'), () => this.projectLookImage(window));
     overlay.load();
     shell.load();
   }
@@ -3801,6 +4193,7 @@ class DesktopApp {
   private chatClosed(panel: DesktopPanel): void {
     this.servedRoots.release(panel.panelId);
     this.heldPrompts.closed(panel.panelId);
+    this.relayedConsents.pageClosed(panel.panelId);
     const projectKey = this.projectOf(panel);
     this.chatsChanged(projectKey);
     if (panel.authority !== 'local') {
@@ -3901,7 +4294,7 @@ class DesktopApp {
       const holdsMessages = token !== undefined && (this.offlineQueue?.queued(token).length ?? 0) > 0;
       return [{
         id: chat.panelId,
-        selected: chat === selected || settingsHold,
+        selected: chat === selected || settingsHold || views.leaving(chat),
         active: isActiveActivity(this.activityOf(chat)) || this.browserTabs?.holdsPages(chat) === true || this.designPreviews?.holdsTabs(chat) === true,
         holdsMessages,
         holdsKeptPrompt: this.heldPrompts.startedWithPrompt(chat.panelId) && this.sessionIdOf(chat) === undefined,
@@ -3976,6 +4369,7 @@ class DesktopApp {
         ask: this.ask,
         discard: (chats) => this.discardWaitingChats(chats),
         forgetAccounts: (projectKey) => this.requireForgeHost().forgetProject(projectKey).catch(this.report('Forgetting the project\'s Git hosting accounts')),
+        forgetLook: (projectKey) => this.core.run('Remove Project', (core) => core.client.themesForgetProject(projectKey)).catch(this.report('Forgetting the project\'s look and characters')),
         remove: async () => {
           if (remote) {
             this.releaseRemoteTerminals(remote, hostTerminals!);
@@ -4328,6 +4722,7 @@ class DesktopApp {
       store: this.requireHostStore(),
       mirror: (hostId) => this.sessionMirrorOf(hostId),
       relocateBindings: (fromKey, toKey) => this.core.run('Locate Project', (core) => core.client.relocateForgeBindings(fromKey, toKey)),
+      relocateLooks: (fromKey, toKey) => this.core.run('Locate Project', (core) => core.client.themesRelocateProject(fromKey, toKey)),
       addHostAlias: (alias) => this.core.run('Locate Project', (core) => core.client.addHostAlias(alias)),
     });
     const relocated = new RelocatedProjects({
@@ -4563,8 +4958,425 @@ class DesktopApp {
     this.shellStateChanged();
   }
 
-  private async toggleTheme(): Promise<void> {
-    await this.requirePlatform().settings.update(THEME_SETTING, currentThemeKind() === 'dark' ? 'light' : 'dark', 'user');
+  // Toggle Wallpapers: the user's own switch, which main writes itself, so it works while the engine is down.
+  private async toggleWallpapers(): Promise<void> {
+    const settings = this.requirePlatform().settings;
+    await settings.update(SHOW_WALLPAPERS_SETTING, settings.get<unknown>(SHOW_WALLPAPERS_SETTING) === false, 'user');
+  }
+
+  // Next Wallpaper: the shown look's next set, kept in theme-state.json; the editor's preview shows the set it edits instead.
+  private async nextWallpaper(): Promise<void> {
+    const shown = currentBaseShown();
+    const sets = shown.look.wallpapers?.length ?? 0;
+    if (sets < 2 || shown.builtin) {
+      void this.notificationCenter.notice('info', this.requireLocalization().t('The look on screen has fewer than two wallpaper sets, so there is no next one.'), []);
+      return;
+    }
+    // from the set on screen when the write's turn comes, so two quick presses move two sets on
+    await this.themeState.advance(shown.themeId, shown.kind, (position) => {
+      const now = Date.now();
+      return { index: (cycleAt(position ?? { index: 0, at: now }, sets, shown.look.cycle?.minutes, now).index + 1) % sets, at: now };
+    });
+  }
+
+  private motionChanged(next: Parameters<typeof setMotionEnvironment>[0]): void {
+    setMotionEnvironment({ ...next, ...this.pinnedMotion });
+  }
+
+  // Power state that pauses moving wallpapers: on-battery and on-ac where Electron sends them (macOS, Windows), and every
+  // THEME_TICK_MS isOnBatteryPower() for Linux, which sends neither, and Windows battery saver, which no event reports.
+  private followPower(): void {
+    const read = (): void => {
+      this.motionChanged({ onBattery: powerMonitor.isOnBatteryPower(), batterySaver: batterySaverOn(process.platform, undefined, (line) => log(line)) === true });
+    };
+    const onBattery = (): void => this.motionChanged({ onBattery: true });
+    const onAc = (): void => this.motionChanged({ onBattery: false });
+    powerMonitor.on('on-battery', onBattery);
+    powerMonitor.on('on-ac', onAc);
+    powerMonitor.on('resume', read);
+    read();
+    const tick = setInterval(read, THEME_TICK_MS);
+    tick.unref();
+    this.disposables.push({
+      dispose: () => {
+        clearInterval(tick);
+        powerMonitor.removeListener('on-battery', onBattery);
+        powerMonitor.removeListener('on-ac', onAc);
+        powerMonitor.removeListener('resume', read);
+      },
+    });
+  }
+
+  // Settings › Appearance's list: core's, every theme validated again here, a broken one's reason in this UI's language.
+  private async overlayThemes(): Promise<OverlayThemesResult> {
+    const client = this.client();
+    // a rejected invoke reaches the page under Electron's own English prefix, so the engine being down is an answer in the UI's language
+    if (!client) return { ok: false, error: this.requireLocalization().t("This computer's Damocles engine is not running.") };
+    const [{ themes }, { entries }] = await Promise.all([client.themesList(), client.themesHistory()]);
+    const listed = themes.map((listing) => overlayThemeEntry(listing, this.requireLocalization()));
+    const names = new Map(listed.flatMap((entry): Array<[string, string]> => (entry.status === 'ok' ? [[entry.id, entry.name]] : [])));
+    const shown = currentBaseShown();
+    if (shown.decidedBy === 'preview') throw new Error('The look without a transient preview was decided by one');
+    const settings = this.requirePlatform().settings;
+    const { state, now, zone, osKind } = currentScheduleView();
+    const scheduleView = { schedule: state.schedule, ...(state.override ? { override: state.override } : {}), now, zone, osKind, systemLocale: this.pinnedSystemLocale ?? app.getSystemLocale() };
+    return {
+      ok: true,
+      themes: listed.map((entry) => {
+        const fromName = entry.status === 'ok' && entry.theme.origin?.from !== undefined ? names.get(entry.theme.origin.from) : undefined;
+        return fromName === undefined ? entry : { ...entry, fromName };
+      }),
+      shown: {
+        themeId: shown.themeId, kind: shown.kind, decidedBy: shown.decidedBy, ...(shown.until !== undefined ? { until: shown.until } : {}), ...(shown.fallback ? { fallback: shown.fallback } : {}),
+        ...(shown.touches !== undefined ? { touched: true as const } : {}),
+      },
+      preferred: { dark: preferredThemeId(settings.get<unknown>(THEMES_DARK_SETTING)), light: preferredThemeId(settings.get<unknown>(THEMES_LIGHT_SETTING)) },
+      mode: themePreference(settings.get<unknown>(THEME_SETTING)),
+      schedule: scheduleView,
+      history: entries,
+    };
+  }
+
+  // An arrangement core sent, for an agent's pick, its undo or the keep-changes revert, checked again and put in place as a
+  // manual pick puts one (ThemeCommands).
+  private applyCheckedArrangement(raw: unknown, density?: number): void {
+    const arrangement = parseArrangement(raw);
+    if (!arrangement) throw new Error('The window arrangement core sent is not valid');
+    this.applyArrangement(arrangement, density);
+  }
+
+  // A theme's arrangement in this window, clamped to its size and to the minimums at the text size and `density`; the shell
+  // takes it as main's own layout (layoutRevision).
+  private applyArrangement(arrangement: Arrangement, density: number = currentDensity()): void {
+    const window = this.window && !this.window.isDestroyed() ? this.window : undefined;
+    const [width = DEFAULT_WINDOW_WIDTH, height = DEFAULT_WINDOW_HEIGHT] = window ? window.getContentSize() : [];
+    const current = this.windowLayout.sidebar();
+    const room = arrangementRoom(
+      window ? { width, height, zoom: window.webContents.getZoomFactor() } : undefined,
+      this.savedWindowSize(),
+      { width: DEFAULT_WINDOW_WIDTH, height: DEFAULT_WINDOW_HEIGHT },
+    );
+    const next = withArrangement(current, arrangement, room, minimumScale(currentTextSize(), density));
+    this.windowLayout.setSidebar(next);
+    this.layoutRevision += 1;
+    this.shellStateChanged();
+    if (current.grid.visible.terminal !== next.grid.visible.terminal) this.postTerminalShown();
+  }
+
+  // The size the window opens at before it exists: its saved placement's, or its display's when it opens maximized or full screen.
+  private savedWindowSize(): { readonly width: number; readonly height: number } | undefined {
+    const placement = this.windowLayout.window();
+    if (!placement) return undefined;
+    if (!placement.maximized && !placement.fullScreen) return placement.bounds;
+    const display = screen.getDisplayMatching(placement.bounds);
+    return placement.fullScreen ? display.size : display.workAreaSize;
+  }
+
+  // Help › Restart with Default Theme: the next run starts in safe start; nothing is written.
+  private restartWithDefaultTheme(): void {
+    const args = relaunchArgs(process.argv);
+    const relaunch = (): void => app.relaunch({ args: [...args, SAFE_THEME_FLAG] });
+    app.once('quit', relaunch);
+    void this.lifecycle.quit().then((cancelled) => {
+      if (cancelled) app.removeListener('quit', relaunch);
+    });
+  }
+
+  // Every project's own look as core maps it through a pending relocation; main checks each again before it paints one.
+  private async readProjectLooks(client: CoreClient): Promise<void> {
+    const { looks } = await client.themesProjectLooks();
+    setProjectLooks(looks);
+    this.shellStateChanged();
+  }
+
+  // Project look… from the project's menu: the dialog in the overlay, then core saves what it answered as one history entry.
+  // Selecting the project shows the look; nothing here applies a window arrangement.
+  private async openProjectLook(key: string): Promise<ProjectLookResult> {
+    const localization = this.requireLocalization();
+    const client = this.client();
+    const overlay = this.overlay;
+    if (!client || !overlay) return { kind: 'failed', reason: localization.t("This computer's Damocles engine is not running.") };
+    const name = this.remoteProject(key)?.name ?? this.projectByKey(key).name;
+    const { themes } = await client.themesList();
+    const entries = themes.map((listing) => overlayThemeEntry(listing, localization));
+    const listed = entries.flatMap((entry) => (entry.status === 'ok' ? [{ id: entry.id, name: entry.name, theme: entry.theme }] : []));
+    const unusable = entries.flatMap((entry) => (entry.status !== 'ok' && entry.name !== undefined ? [{ id: entry.id, name: entry.name }] : []));
+    const settings = this.requirePlatform().settings;
+    const look = projectLookOf(key);
+    const answer = await overlay.request({
+      kind: 'projectLook',
+      projectKey: key,
+      projectName: name,
+      ...(look ? { look } : {}),
+      themes: listed,
+      ...(unusable.length > 0 ? { unusable } : {}),
+      preferred: { dark: preferredThemeId(settings.get<unknown>(THEMES_DARK_SETTING)), light: preferredThemeId(settings.get<unknown>(THEMES_LIGHT_SETTING)) },
+      shownKind: currentThemeKind(),
+    }, this.window?.webContents);
+    if (answer.kind !== 'projectLook') return { kind: 'cancelled' };
+    const saved = answer.look;
+    await client.themesSetProjectLook({ projectKey: key, look: saved, name });
+    await this.readProjectLooks(client);
+    // a theme that is listed but cannot show (broken, or of a newer Damocles) still has a name; one that is gone has none
+    const savedTheme = saved?.mode === 'full' ? entries.find((entry) => entry.id === saved.themeId) : undefined;
+    const themeName = savedTheme?.name;
+    const missingTheme = saved?.mode === 'full' && saved.themeId !== BUILTIN_THEME_ID && savedTheme?.status !== 'ok';
+    return { kind: 'saved', look: saved === null ? 'none' : saved.mode, ...(themeName !== undefined ? { themeName } : {}), ...(missingTheme ? { missingTheme: true as const } : {}) };
+  }
+
+  // The project look dialog's Choose image…: main's file dialog, then core stores and analyzes the image as a wallpaper.
+  private async projectLookImage(window: BrowserWindow): Promise<ProjectLookImageResult> {
+    const t = (message: string): string => this.requireLocalization().t(message);
+    const client = this.client();
+    if (!client) return { ok: false, error: t("This computer's Damocles engine is not running.") };
+    try {
+      const filters = [{ name: t('Images and videos'), extensions: ['png', 'jpg', 'jpeg', 'webp', 'avif', 'gif', 'apng', 'mp4', 'm4v', 'webm'] }];
+      const picked = await dialog.showOpenDialog(window, { title: t('Choose a Wallpaper Image or Video'), properties: ['openFile'], filters });
+      const file = picked.canceled ? undefined : picked.filePaths[0];
+      if (file === undefined) return { ok: false, cancelled: true };
+      return { ok: true, image: await client.themesImportImage(file), name: path.basename(file) };
+    } catch (err) {
+      return { ok: false, error: errorMessage(err) };
+    }
+  }
+
+  // A theme link's card: Settings › Appearance opens (a closed window first) and its modal reads the card from ThemeSharing once it shows.
+  private async openInstallCard(): Promise<boolean> {
+    this.showWindow();
+    const overlay = this.overlay;
+    const settings = this.overlaySettings;
+    if (!overlay || !settings) return false;
+    await overlay.whenLoaded();
+    if (this.overlaySettings !== settings) return false;
+    settings.show({ section: 'appearance' }).finally(() => this.remoteHosts?.dropUnshownRuns()).catch(this.report('Settings'));
+    return settings.sendWhenShown(OVERLAY_CHANNELS.themesInstallChanged, {});
+  }
+
+  // Settings' Import: Damocles theme files and VS Code color themes.
+  private async pickThemeImportFile(): Promise<string | undefined> {
+    const t = (message: string): string => this.requireLocalization().t(message);
+    const filters = [{ name: t('Themes'), extensions: [THEME_ARCHIVE_EXTENSION, 'json', 'jsonc', 'vsix'] }];
+    const options = { title: t('Import Theme'), properties: ['openFile' as const], filters };
+    const window = this.window;
+    const picked = await (window ? dialog.showOpenDialog(window, options) : dialog.showOpenDialog(options));
+    return picked.canceled ? undefined : picked.filePaths[0];
+  }
+
+  // Export's save dialog, proposing core's file name in the folder the dialog last showed; app.getPath('documents') throws
+  // where the Documents folder is missing or redirected.
+  private async pickThemeExportPath(fileName: string): Promise<string | undefined> {
+    const t = (message: string): string => this.requireLocalization().t(message);
+    const options = { title: t('Export Theme'), defaultPath: fileName, filters: [{ name: t('Damocles theme'), extensions: [THEME_ARCHIVE_EXTENSION] }] };
+    const window = this.window;
+    const result = await (window ? dialog.showSaveDialog(window, options) : dialog.showSaveDialog(options));
+    return result.canceled ? undefined : result.filePath;
+  }
+
+  // appearance.json or projects.json, which core writes. Main checks what it holds again before it uses it.
+  private readThemeJson(fileName: string): Promise<unknown> {
+    return readStateJson(this.themeFiles, path.join(THEMES_DIR, fileName), MAX_STATE_FILE_BYTES, log);
+  }
+
+  // projects.json's character pins
+  private async readProjectPins(): Promise<void> {
+    setProjectPins(parseProjectsFile(await this.readThemeJson(PROJECTS_FILE)));
+  }
+
+  // appearance.json's schedule and pick
+  private async readAppearanceSchedule(): Promise<void> {
+    setAppearanceSchedule(parseAppearanceSchedule(await this.readThemeJson(APPEARANCE_FILE)));
+  }
+
+  // The schedule is evaluated by state, so evaluating it again is safe: every THEME_TICK_MS, after sleep and when the screen
+  // unlocks, besides every input change and each zone the shell page reports.
+  private followThemeClock(): void {
+    const tick = setInterval(() => {
+      if (!this.themeTickHeld) reevaluateTheme();
+    }, THEME_TICK_MS);
+    tick.unref();
+    powerMonitor.on('resume', reevaluateTheme);
+    powerMonitor.on('unlock-screen', reevaluateTheme);
+    this.disposables.push({
+      dispose: () => {
+        clearInterval(tick);
+        powerMonitor.removeListener('resume', reevaluateTheme);
+        powerMonitor.removeListener('unlock-screen', reevaluateTheme);
+      },
+    });
+  }
+
+  // A shell or chat page crashed: under a custom look the second crash within a minute switches this run to safe start.
+  private rendererCrashed(what: string): void {
+    if (!this.themeCrashLoop.crashed(Date.now(), !currentShown().builtin)) return;
+    log(`[themes] ${what} crashed twice within a minute under a custom theme; this run shows the default theme`);
+    setSafeStart('crashLoop');
+    this.shellStateChanged();
+  }
+
+  // The safe-start banner's Use my theme: the theme shows again, and the crash count starts over.
+  private useMyTheme(): void {
+    this.themeCrashLoop.reset();
+    setSafeStart(undefined);
+    this.shellStateChanged();
+  }
+
+  private createThemeDock(window: BrowserWindow, overlay: OverlayHost): ThemeEditorDock {
+    return new ThemeEditorDock({
+      window,
+      preloadPath: path.join(__dirname, 'preload-overlay.js'),
+      log: (line) => log(line),
+      onChange: () => this.shellStateChanged(),
+      onRestack: () => overlay.restack(),
+      theme: () => currentTheme('root'),
+      background: () => trustedBackground(),
+      session: (themeId) => this.themeEditorSession(themeId),
+      preview: (preview) => this.agentThemes.editorPreview(preview),
+      save: (themeId, theme, pins, baseHash) => this.saveEditedTheme(themeId, theme, pins, baseHash),
+      engineDown: () => this.requireLocalization().t("This computer's Damocles engine is not running."),
+      baseHash: async (themeId) => {
+        const client = this.client();
+        return client ? (await client.themesBaseHash(themeId)).hash ?? null : undefined;
+      },
+      arrangement: () => arrangementOf(this.windowLayout.sidebar()),
+      duplicate: async (themeId) => {
+        const client = this.client();
+        const entry = this.themeLibrary?.entry(themeId);
+        if (!client || entry?.status !== 'ok') return { error: this.requireLocalization().t("This computer's Damocles engine is not running.") };
+        try {
+          const name = [...this.requireLocalization().t('{0} copy', entry.theme.name)].slice(0, 64).join('');
+          return { themeId: (await client.themesDuplicate(themeId, name)).themeId };
+        } catch (err) {
+          return { error: err instanceof Error ? err.message : String(err) };
+        }
+      },
+      copyNotOpened: () => this.requireLocalization().t('The copy was made, but the theme editor could not open it. Open it from Settings › Appearance.'),
+      closed: () => this.openSettings({ section: 'appearance' }),
+      openSettings: () => this.openSettings({ section: 'appearance' }),
+      peeked: () => {
+        if (!window.isDestroyed()) window.webContents.focus();
+      },
+      pickFontFile: async () => {
+        const t = (message: string): string => this.requireLocalization().t(message);
+        const picked = await dialog.showOpenDialog(window, { title: t('Add a Font File'), properties: ['openFile'], filters: [{ name: t('Fonts'), extensions: ['woff2', 'woff', 'ttf', 'otf'] }] });
+        const file = picked.canceled ? undefined : picked.filePaths[0];
+        if (file === undefined) return undefined;
+        try {
+          return await readPickedFont(file, MAX_FONT_BYTES);
+        } catch (err) {
+          log(`[themes] the font file could not be read: ${errorText(err)}`);
+          throw new Error(t('Damocles could not read the font file.'));
+        }
+      },
+      importFont: async (bytes) => {
+        const client = this.client();
+        if (!client) throw new Error(this.requireLocalization().t("This computer's Damocles engine is not running."));
+        return client.themesImportFont(bytes);
+      },
+      fontTooLarge: () => this.requireLocalization().t('This font is larger than {0} MB, the most a theme bundles.', String(MAX_FONT_BYTES / 1024 / 1024)),
+      pickImageFile: async () => {
+        const t = (message: string): string => this.requireLocalization().t(message);
+        const filters = [{ name: t('Images and videos'), extensions: ['png', 'jpg', 'jpeg', 'webp', 'avif', 'gif', 'apng', 'mp4', 'm4v', 'webm'] }];
+        const picked = await dialog.showOpenDialog(window, { title: t('Choose a Wallpaper Image or Video'), properties: ['openFile'], filters });
+        return picked.canceled ? undefined : picked.filePaths[0];
+      },
+      importImage: async (file) => {
+        const client = this.client();
+        if (!client) throw new Error(this.requireLocalization().t("This computer's Damocles engine is not running."));
+        return client.themesImportImage(file);
+      },
+      allowFlash: async (sha256) => {
+        const client = this.client();
+        if (!client) throw new Error(this.requireLocalization().t("This computer's Damocles engine is not running."));
+        if (!(await client.themesAllowFlash(sha256))) return undefined;
+        invalidateWallpaperStats();
+        return readWallpaperFlash(THEMES_DIR, sha256, this.themeNotices);
+      },
+      notChecked: () => this.requireLocalization().t('This file has not been checked for flashing yet, so it cannot be allowed.'),
+      pickSpriteFile: async () => {
+        const t = (message: string): string => this.requireLocalization().t(message);
+        const filters = [{ name: t('Images'), extensions: ['png', 'apng', 'gif', 'webp', 'svg'] }];
+        const picked = await dialog.showOpenDialog(window, { title: t('Choose a Character Image'), properties: ['openFile'], filters });
+        return picked.canceled ? undefined : picked.filePaths[0];
+      },
+      importSprite: async (file, strip) => {
+        const client = this.client();
+        if (!client) throw new Error(this.requireLocalization().t("This computer's Damocles engine is not running."));
+        return client.themesImportSprite({ file, ...(strip ? { strip } : {}) });
+      },
+    });
+  }
+
+  // What a theme main read, the transient preview or the open theme editor's imports declare a blob to be: the blobs any
+  // page of the app may load.
+  private namedBlob(sha256: string): NamedBlob | undefined {
+    const font = namedFontBlob(sha256);
+    if (font) return { kind: 'font', mime: font.mime };
+    const sprite = namedSpriteBlob(sha256);
+    if (sprite) return { kind: 'sprite', mime: sprite.mime };
+    return namedImageBlob(sha256) ?? this.themeDock?.namedBlob(sha256);
+  }
+
+  // What the theme renderer's running job declares a blob to be: a drawn theme's bundled font, or the file under analysis,
+  // which no check has passed yet. Served only in the renderer's own session.
+  private renderJobBlob(sha256: string): NamedBlob | undefined {
+    const font = this.agentThemes.namedFontBlob(sha256);
+    if (font) return { kind: 'font', mime: font.mime };
+    const analyzing = this.themeRenderer.currentImage();
+    return analyzing?.sha256 === sha256 ? { kind: analyzing.kind, mime: analyzing.mime } : undefined;
+  }
+
+  private async themeEditorSession(themeId: string): Promise<ThemeEditorRead | undefined> {
+    // the hash before the read, so a write that lands between the two makes a later save name an older file and be refused
+    const baseHash = (await this.client()?.themesBaseHash(themeId).catch((err: unknown) => {
+      log(`[themes] the file of ${themeId} could not be hashed for the editor: ${errorText(err)}`);
+      return undefined;
+    }))?.hash;
+    // a theme core just wrote is read before the dock opens on it
+    await this.themeLibrary?.load();
+    const entry = this.themeLibrary?.entry(themeId);
+    if (entry?.status !== 'ok') return undefined;
+    const shownKind = currentBaseShown().kind;
+    const kind: LookKind = entry.theme.looks[shownKind] ? shownKind : shownKind === 'dark' ? 'light' : 'dark';
+    const from = entry.theme.origin?.from;
+    const source = from === undefined ? undefined : this.themeLibrary?.entry(from);
+    const fromName = source?.status === 'ok' ? source.theme.name : undefined;
+    const wallpapers = Object.fromEntries((await Promise.all(Object.entries(entry.theme.assets ?? {}).filter(([, asset]) => isWallpaperAsset(asset)).map(async ([sha]) => {
+      const [stats, palette, flash] = await Promise.all([readWallpaperStats(THEMES_DIR, sha, this.themeNotices), readWallpaperPalette(THEMES_DIR, sha, this.themeNotices), readWallpaperFlash(THEMES_DIR, sha, this.themeNotices)]);
+      return stats ? [[sha, { stats, ...(palette ? { palette } : {}), ...(flash ? { flash } : {}) }]] : [];
+    }))).flat());
+    const contrast = this.requirePlatform().settings.get<unknown>(WALLPAPER_CONTRAST_SETTING) === 'warn' ? 'warn' : 'raiseDim';
+    const characterSets = [...(this.themeLibrary?.entries().values() ?? [])].flatMap((other) => (other.status === 'ok' && other.id !== themeId && other.theme.characters
+      ? [{ themeId: other.id, name: (other.builtin ? builtinName(other.id, this.requireLocalization()) : undefined) ?? other.theme.name, characters: other.theme.characters, assets: Object.fromEntries(characterAssets(other.theme).flatMap((sha) => (other.theme.assets?.[sha] ? [[sha, other.theme.assets[sha]!]] : []))) }]
+      : []));
+    const spriteShas = new Set([...characterAssets(entry.theme), ...characterSets.flatMap((set) => Object.keys(set.assets))]);
+    const sprites = Object.fromEntries((await Promise.all([...spriteShas].map(async (sha) => {
+      const flash = await readWallpaperFlash(THEMES_DIR, sha, this.themeNotices);
+      return flash ? [[sha, flash] as const] : [];
+    }))).flat());
+    const states = this.views ? this.projectCounts(this.views) : new Map<string, { running: number; waiting: number }>();
+    const projects = (this.views ? this.shellState(this.views).projects : []).map((project) => ({ key: project.key, name: project.name, state: characterState(states.get(project.key) ?? { running: 0, waiting: 0 }) }));
+    const pins = await this.readThemeJson(PROJECTS_FILE);
+    return {
+      themeId, builtin: entry.builtin, theme: entry.theme, kind, ...(fromName !== undefined ? { fromName } : {}), wallpapers, wallpaperContrast: contrast,
+      sprites, projects, pins: parseProjectsFile(pins), characterSets, nextWallpaperShortcut: acceleratorLabel(NEXT_WALLPAPER_ACCELERATOR, process.platform),
+      ...(baseHash !== undefined ? { baseHash } : {}),
+    };
+  }
+
+  // The draft is written whole: its window arrangement is the one the dock shows, never one read here.
+  private async saveEditedTheme(themeId: string, theme: ThemeFile, pins: readonly PinEdit[], baseHash: string): Promise<ThemeEditorResult & { readonly baseHash?: string }> {
+    const client = this.client();
+    if (!client) return { ok: false, error: this.requireLocalization().t("This computer's Damocles engine is not running.") };
+    try {
+      const saved = await client.themesSaveTheme({ themeId, theme, ...(pins.length > 0 ? { pins } : {}), baseHash });
+      if (saved.changed) return { ok: false, reason: 'changed' };
+      // core stored the CSS as this same pass keeps it: the sanitizer is pure and both run it on the saved theme
+      const { kept, dropped, droppedMore } = sanitizeThemeCss(theme.css ?? {}, { families: themeCssFamilies(theme) });
+      return { ok: true, css: { kept, dropped, droppedMore }, ...(saved.hash !== undefined ? { baseHash: saved.hash } : {}) };
+    } catch (err) {
+      log(`[themes] saving ${themeId} from the editor failed: ${err instanceof Error ? err.message : String(err)}`);
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
   private shellActions(views: PanelViews, browserTabs: BrowserTabs, overlay: OverlayHost, window: BrowserWindow): ShellActions {
@@ -4576,6 +5388,14 @@ class DesktopApp {
       },
       retryRelocation: reportFailure((key: string) => this.retryRelocation(key), this.shellFailure('Retry Move', 'Damocles could not retry moving the project: {0}')),
       abandonRelocation: reportFailure((key: string) => this.abandonRelocation(key), this.shellFailure('Stop Moving', 'Damocles could not stop moving the project: {0}')),
+      projectLook: async (key) => {
+        try {
+          return await this.openProjectLook(key);
+        } catch (err) {
+          log(`[themes] the project look was not saved: ${errorText(err)}`);
+          return { kind: 'failed', reason: errorMessage(err) };
+        }
+      },
       removeProject: (key) => this.removeProject(key),
       selectProject: reportFailure((key: string) => this.selectProject(key), this.shellFailure('Select Project', 'Damocles could not open the project: {0}')),
       grantTrust: reportFailure(async (key: string) => {
@@ -4600,7 +5420,7 @@ class DesktopApp {
         OVERLAY_DISMISSED,
       ),
       openAppMenu: (anchor) => popupApplicationMenu(window, anchor),
-      toggleTheme: () => { this.toggleTheme().catch(this.shellFailure('Toggle Theme', 'Damocles could not change the theme: {0}')); },
+      toggleTheme: () => { this.themeCommands.toggle().catch(this.themeCommands.failed('Toggle Theme')); },
       renameHost: reportFailure(
         (hostId: string, name: string) => this.requireRemoteHosts().rename(hostId, name),
         // null is the one report: the shell's rename field says the name was not saved
@@ -4680,6 +5500,17 @@ class DesktopApp {
       update: () => this.requireUpdates().snapshot(),
       runUpdateAction: (action) => runUpdateAction(action, this.aboutDeps()),
       setContentBounds: (bounds) => views.setContentBounds(bounds),
+      setThemeDockBounds: (bounds) => this.themeDock?.setBounds(bounds),
+      setPageMotion: ({ visible, reducedMotion }) => this.motionChanged({ visible, osReducedMotion: reducedMotion }),
+      setTimeZone: (zone) => {
+        if (setReportedTimeZone(zone)) log(`[themes] the theme schedule follows the time zone ${zone}`);
+      },
+      endThemeDockPeek: () => this.themeDock?.setPeek(false),
+      useMyTheme: () => this.useMyTheme(),
+      keepThemeChanges: reportFailure(() => this.agentThemes.keep(), this.shellFailure('Keep Theme Change', 'Damocles could not keep the theme change: {0}')),
+      revertThemeChanges: reportFailure(() => this.agentThemes.revert(), this.shellFailure('Revert Theme Change', 'Damocles could not revert the theme change: {0}')),
+      stopShowingProposal: reportFailure(() => this.agentThemes.stopShowing(), this.shellFailure('Stop Showing', 'Damocles could not stop showing the proposal in the window: {0}')),
+      rendererGone: () => this.rendererCrashed('the window'),
       // Main owns the sidebar's visibility and the grid's slots, visibility and maximized pane. The shell owns the sizes and
       // Search states while it runs, each part reporting only its own fields, so main stores them without publishing.
       setSidebarLayout: (reported) => this.windowLayout.setSidebar({ ...this.windowLayout.sidebar(), ...reported }),
@@ -4846,6 +5677,7 @@ class DesktopApp {
       },
       setFocusedPart: (part) => {
         this.shellFocusedPart = part;
+        if (part !== 'keepChanges') this.keepFocus.left();
         this.refreshMenuState();
       },
       terminal: {
@@ -5526,6 +6358,48 @@ class DesktopApp {
         relocationPauseAfter: (sessions: number | null, mode: 'pause' | 'hang') => this.core.run('E2E relocation', (core) => core.client.e2eRelocationPauseAfter(sessions, mode)),
         // the folder chats open in when none is named, as main's mirror of core's folder targets holds it now
         defaultProjectKey: () => this.client()?.defaultTarget()?.key,
+        // every theme blob answer since launch: a media element reads a video in byte ranges
+        themeBlobResponses: () => [...this.servedThemeBlobs],
+        themeStore: {
+          // the updater's own store check, under its "Check for updates automatically" switch; only the packaged gate is skipped
+          backgroundCheck: () => this.requireUpdates().checkStore(),
+          // every request the community store made since the last call
+          fetches: async () => (await this.core.run('e2e', (core) => core.client.e2eThemeStoreFetches())).fetches,
+        },
+        // an e2e window may never get focus from the OS, and its machine may run on battery; what is pinned here holds
+        pinMotion: (pinned: Parameters<typeof setMotionEnvironment>[0]) => {
+          this.pinnedMotion = { ...this.pinnedMotion, ...pinned };
+          this.motionChanged({});
+        },
+        // the keep-changes countdown: after hold() no countdown ends by the clock, and expire() ends the running one as its
+        // timeout does (false when none waits)
+        keepChanges: {
+          hold: () => this.keepChangesTimers?.hold(KEEP_CHANGES_MS),
+          expire: () => (this.keepChangesTimers?.fire() ?? 0) > 0,
+        },
+        // main's schedule clock reads `now` from this call on and runs on from there, and main's own THEME_TICK_MS tick
+        // stops, so nothing evaluates the schedule again but an input change, a power event or themeTick(); null gives back
+        // Date.now and the tick
+        themeClock: (now: number | null) => {
+          const setAt = Date.now();
+          this.themeTickHeld = now !== null;
+          setThemeClock(now === null ? undefined : () => now + (Date.now() - setAt));
+        },
+        themeTick: () => reevaluateTheme(),
+        // the GPU compositing status once the GPU process has reported
+        gpuCompositing: async () => {
+          await E2E_GPU_REPORTED;
+          return app.getGPUFeatureStatus().gpu_compositing;
+        },
+        // the regional format the schedule screen is told, in place of the machine's; null gives the machine's back
+        themeSystemLocale: (locale: string | null) => {
+          this.pinnedSystemLocale = locale ?? undefined;
+        },
+        // what the window shows without a transient preview, nativeTheme.themeSource and the zone schedules use
+        themeShown: () => {
+          const shown = currentBaseShown();
+          return { themeId: shown.themeId, kind: shown.kind, decidedBy: shown.decidedBy, until: shown.until, touches: shown.touches, themeSource: nativeTheme.themeSource, zone: currentScheduleView().zone };
+        },
         // this computer's core records a remote chat's voice: a stand-in recorder with a fixed transcript, and its starts
         voice: {
           fake: (transcript: string) => this.core.run('E2E voice', (core) => core.client.e2eFakeVoice(transcript)),
@@ -6127,6 +7001,8 @@ class DesktopApp {
       services: (features) => this.remoteServicesOf(authority, features),
       lastEpoch: this.remoteState?.coreEpoch(authority) ?? null,
       openTabs: (core, rejoin, kept) => this.openRemoteChats(core, rejoin, kept).finally(() => {
+        // an install of this host that expired while it was away ends its card now
+        void this.relayedInstalls.connected(authority);
         this.reselectRemote.delete(authority);
         this.overlaySettings?.coreReady(authority);
       }),
@@ -6460,6 +7336,13 @@ class DesktopApp {
     }
     // ahead of the offline queue, so a user-setting write saves on this computer while the host is away
     if (this.foreignViews.fromView(panel.panelId, message)) return true;
+    // a remote chat's install card stages on this computer, so its Allow flashing goes to this computer's core, never the chat's
+    if (panel.authority !== 'local' && (message as { type?: unknown }).type === 'allowThemeInstallFlash') {
+      allowRelayedInstallFlash(this.themeRelayDeps(panel.authority), message, new AbortController().signal).catch(this.report('Allowing a theme wallpaper to flash'));
+      return true;
+    }
+    // a theme card's press counts only as main saw it here, and only while it goes on to the chat's core: none is held while the host is away
+    if (panel.authority !== 'local') this.relayedConsents.pressed(panel, message, !panel.offline && this.authorities?.connection(panel.authority) !== undefined);
     if (this.holdWhileAway(panel, message)) return true;
     const dropped = ownRemoteDrop(panel.authority, message);
     if (dropped) {
@@ -6542,6 +7425,7 @@ class DesktopApp {
         mcpReadResource: ({ server, uri }, signal) => this.requireUserRelays().mcpReadResource(authority, server, uri, signal),
         forgeTool: ({ clientId: _clientId, ...call }, signal) => relayForgeTool(this.forgeRelayDeps(authority), call, signal),
         forgeDescribe: ({ clientId: _clientId, ...call }, signal) => relayForgeDescribe(this.forgeRelayDeps(authority), call, signal),
+        theme: (method, params, signal) => relayTheme(this.themeRelayDeps(authority), method, params, signal),
       },
       base: {
         render: deps.render,
@@ -6578,6 +7462,65 @@ class DesktopApp {
       describe: (params, signal) => this.core.run('A GitHub or GitLab tool for a remote chat', (core) => core.client.forgeDescribe(params, signal)),
       log: (line) => log(line),
     };
+  }
+
+  // A remote chat's theme tools: this computer's switch, its name, the host's projects here, and its core, the only writer.
+  private themeRelayDeps(authority: string): ThemeRelayDeps {
+    const shots = this.agentThemes.services();
+    return {
+      authority,
+      enabled: () => this.themeToolsOn(),
+      computer: () => os.hostname(),
+      project: (folder) => {
+        const project = hostProjectOf({ authority, projects: () => this.remoteProjects(), os: () => this.knownAuthorityOs(authority) }, folder);
+        return project ? { key: project.key, name: project.name } : undefined;
+      },
+      core: {
+        'themes.relay.read': (params, signal) => this.core.run('A theme tool for a remote chat', (core) => core.client.themeRelay('themes.relay.read', params, signal)),
+        'themes.relay.uploadStart': (params, signal) => this.core.run('A theme tool for a remote chat', (core) => core.client.themeRelay('themes.relay.uploadStart', params, signal)),
+        'themes.relay.uploadChunk': (params, signal) => this.core.run('A theme tool for a remote chat', (core) => core.client.themeRelay('themes.relay.uploadChunk', params, signal)),
+        'themes.relay.stage': (params, signal) => this.core.run('A theme tool for a remote chat', (core) => core.client.themeRelay('themes.relay.stage', params, signal)),
+        'themes.relay.commit': (params, signal) => this.core.run('A theme tool for a remote chat', (core) => core.client.themeRelay('themes.relay.commit', params, signal)),
+        'themes.relay.discard': (params, signal) => this.core.run('A theme tool for a remote chat', (core) => core.client.themeRelay('themes.relay.discard', params, signal)),
+        'themes.relay.preview': (params, signal) => this.core.run('A theme tool for a remote chat', (core) => core.client.themeRelay('themes.relay.preview', params, signal)),
+        'themes.relay.installPrepare': (params, signal) => this.core.run('A theme tool for a remote chat', (core) => core.client.themeRelay('themes.relay.installPrepare', params, signal)),
+        'themes.relay.installCommit': (params, signal) => this.core.run('A theme tool for a remote chat', (core) => core.client.themeRelay('themes.relay.installCommit', params, signal)),
+        'themes.relay.installCancel': (params, signal) => this.core.run('A theme tool for a remote chat', (core) => core.client.themeRelay('themes.relay.installCancel', params, signal)),
+        'themes.relay.allowFlash': (params, signal) => this.core.run('A theme tool for a remote chat', (core) => core.client.themeRelay('themes.relay.allowFlash', params, signal)),
+      },
+      screenshots: {
+        take: async (signal) => shots['themes.screenshotTake']({}, signal),
+        read: async (shotId, signal) => (await shots['themes.screenshotRead']({ shotId }, signal)).png,
+        drop: async (shotId) => {
+          await shots['themes.screenshotDrop']({ shotId }, new AbortController().signal);
+        },
+      },
+      shotGone: (shotId) => tellShotGone(this.relayedShots, authority, shotId),
+      previews: this.relayedPreviews,
+      installs: this.relayedInstalls,
+      consents: this.relayedConsents,
+      log: (line) => log(line),
+    };
+  }
+
+  private themeToolsOn(): boolean {
+    const value = this.requireCoreDeps().platform.settings.get<unknown>(THEMES_AGENT_TOOLS_SETTING);
+    return isDesktopSettingValue(THEMES_AGENT_TOOLS_SETTING, value) ? value === true : DESKTOP_CONFIGURATION[THEMES_AGENT_TOOLS_SETTING]!.default === true;
+  }
+
+  // The tools were turned off here: a remote card's proposal leaves the window, and its core hears it stopped.
+  private endRelayedPreviewWhileOff(): void {
+    const strip = this.agentThemes.proposalStrip();
+    if (!strip || this.themeToolsOn() || !this.relayedPreviews.shows(strip.promptId)) return;
+    this.agentThemes.stopShowing().catch(this.report('Ending the Show in window of a remote chat'));
+  }
+
+  // Forget host: main's own record of the host's theme cards, presses, shots, previews and installs.
+  private forgetRelayedThemes(authority: string): void {
+    const drop = this.agentThemes.services()['themes.screenshotDrop'];
+    for (const shotId of this.relayedConsents.forgetAuthority(authority)) void drop({ shotId }, new AbortController().signal);
+    this.relayedPreviews.forgetAuthority(authority);
+    this.relayedInstalls.forgetAuthority(authority);
   }
 
   // The authority's trust as its core reads it: the host store's grants for its projects, for the new folder of each move of its
@@ -6814,8 +7757,10 @@ class DesktopApp {
       forgetChats: () => {
         this.offlineQueue?.forgetAuthority(authority);
         this.lastChats.forgetAuthority(authority);
+        this.forgetRelayedThemes(authority);
       },
       forgetForgeBindings: () => this.requireForgeHost().forgetHost(authority),
+      forgetThemeLooks: () => this.core.run('Forget host', (core) => core.client.themesForgetHost(authority)),
       forgetRemoteState: () => this.requireRemoteState().forgetAuthority(authority),
       log: (line) => log(line),
     });
@@ -7253,7 +8198,7 @@ class DesktopApp {
   // A command-line request (docs/invariants.md "The damocles command"), handled once the window shows the launch's tabs.
   private takeCommandLine(argv: readonly string[]): void {
     const quitting = this.lifecycle.phase === 'disposing' || this.lifecycle.phase === 'done';
-    this.requireCliRequests().fromArgv(argv, this.windowReady, quitting).catch(this.report('A damocles command'));
+    this.requireCliRequests().fromArgv(optionArgs(argv), this.windowReady, quitting).catch(this.report('A damocles command'));
   }
 
   private requireCliRequests(): CliRequests {
@@ -8193,14 +9138,8 @@ class DesktopApp {
 
   // The authorities this computer still holds (a saved host's, or one with listed projects): the local core drops the account
   // bindings and host defaults of every other.
-  private async keepForgeHosts(client: CoreClient): Promise<void> {
-    const store = this.hostStore;
-    if (!store) {
-      log('[forge] the host store is not open, so no forgotten host\'s account bindings are dropped');
-      return;
-    }
-    const kept = new Set([...store.hosts().flatMap((record) => store.authorityOf(record.id) ?? []), ...store.projects().map(({ authorityKey }) => authorityKey)]);
-    await client.forgeKeepHosts([...kept]);
+  private keepForgeHosts(client: CoreClient): Promise<void> {
+    return keepKnownHosts(this.hostStore, client, (line) => log(line));
   }
 
   // The saved host record an authority key names; undefined for a key no saved host holds (loopback included).
@@ -9502,9 +10441,8 @@ class DesktopApp {
     return this.authorities?.state(authorityKey) ?? 'offline';
   }
 
-  private shellState(views: PanelViews): Omit<ShellState, 'revision'> {
-    const client = this.client();
-    const defaultKey = client?.defaultTarget()?.key;
+  // Each project's loaded chats that run and that wait on the user.
+  private projectCounts(views: PanelViews): Map<string, { running: number; waiting: number }> {
     const counts = new Map<string, { running: number; waiting: number }>();
     for (const chat of views.chats()) {
       const key = this.projectOf(chat);
@@ -9515,6 +10453,31 @@ class DesktopApp {
       if (status === 'waiting') count.waiting++;
       counts.set(key, count);
     }
+    return counts;
+  }
+
+  // The overlay's and the notifier's state: the UI language, and the characters Quick Open and the notifications draw.
+  private overlayState(): OverlayState {
+    const characters = this.overlayCharacterState();
+    return { locale: this.requireLocalization().language, platform: shellPlatform(process.platform), ...(characters ? { characters } : {}) };
+  }
+
+  private overlayCharacterState(): OverlayState['characters'] {
+    const shown = currentCharacters();
+    if (!shown) return undefined;
+    const counts = this.views ? [...this.projectCounts(this.views)] : [];
+    const states = Object.fromEntries(counts.flatMap(([key, count]) => {
+      const state = characterState(count);
+      return state === 'idle' ? [] : [[key, state] as const];
+    }));
+    const selected = this.selectedProjectKey;
+    return { shown, states, ...(selected !== undefined ? { selected } : {}) };
+  }
+
+  private shellState(views: PanelViews): Omit<ShellState, 'revision'> {
+    const client = this.client();
+    const defaultKey = client?.defaultTarget()?.key;
+    const counts = this.projectCounts(views);
     const { t } = this.requireLocalization();
     const local = this.projects.folders().map((folder): ShellProject => {
       const key = folderKey(folder.fsPath);
@@ -9568,7 +10531,12 @@ class DesktopApp {
         ...(presence !== 'present' && !this.relocatesOn(project.authorityKey) ? { locateUnsupported: true as const } : {}),
       };
     });
-    const byKey = new Map([...local, ...remote].map((project) => [project.key, project]));
+    // the palette mark of a project with its own look
+    const marked = (project: ShellProject): ShellProject => {
+      const look = projectLookOf(project.key);
+      return look ? { ...project, look: look.mode } : project;
+    };
+    const byKey = new Map([...local, ...remote].map((project) => [project.key, marked(project)]));
     const projects = (this.hostStore?.order([...byKey.keys()]) ?? [...byKey.keys()]).map((key) => byKey.get(key)!);
     const shownChat = views.selected();
     const selected = this.selectedProjectChat(shownChat);
@@ -9576,6 +10544,11 @@ class DesktopApp {
     const selectedTitle = selected ? this.titleOf(selected) : undefined;
     const selectedDesign = selected ? this.designOf(selected) : undefined;
     const projectKey = this.selectedProjectKey ?? defaultKey;
+    const safeStart = safeStartReason();
+    const keepChanges = this.agentThemes.keepState();
+    const themeProposal = this.agentThemes.proposalStrip();
+    const wallpapers = currentWallpapers();
+    const characters = currentCharacters();
     return {
       locale: this.requireLocalization().language,
       platform: shellPlatform(process.platform),
@@ -9583,10 +10556,18 @@ class DesktopApp {
       projects,
       selected: { ...(projectKey !== undefined ? { projectKey } : {}), ...(selectedId !== undefined ? { chatId: selectedId } : {}) },
       chatViewShown: shownChat !== undefined && !this.chatWithheld(shownChat),
+      chatModal: shownChat !== undefined && !this.chatWithheld(shownChat) && shownChat.modalOpen,
       ...(selected && selectedId !== undefined ? { selectedChat: { id: selectedId, ...(selectedTitle !== undefined ? { title: selectedTitle } : {}), status: statusOf(this.activityOf(selected)), ...(selectedDesign !== undefined ? { design: selectedDesign } : {}) } } : {}),
       effectiveTheme: currentThemeKind(),
       layout: this.windowLayout.sidebar(),
       layoutRevision: this.layoutRevision,
+      dockInset: this.themeDock?.isOpen() === true ? THEME_DOCK_REM : 0,
+      dockPeek: this.themeDock?.peeking() === true,
+      ...(safeStart !== undefined ? { safeStart: { reason: safeStart } } : {}),
+      ...(keepChanges ? { keepChanges } : {}),
+      ...(themeProposal ? { themeProposal } : {}),
+      ...(wallpapers ? { wallpapers: wallpapers.regions, wallpaperPaused: currentWallpaperMotion().paused } : {}),
+      ...(characters ? { characters } : {}),
       shortcuts: shellShortcutLabels(),
       notifications: this.notificationCenter.bell(),
       engineHalted: this.core.halted(),
@@ -9652,8 +10633,17 @@ class DesktopApp {
   }
 
   private shellStateChanged(): void {
+    // the selected project's own look follows the selection here, once the selection state is whole; its theme listeners
+    // end in this function again
+    setSelectedProject(this.selectedProjectKey);
     this.views?.withholdingChanged();
     this.shell?.stateChanged();
+    const characters = JSON.stringify(this.overlayCharacterState() ?? null);
+    if (characters !== this.overlayCharacters) {
+      this.overlayCharacters = characters;
+      this.overlay?.stateChanged();
+      this.notifier.stateChanged();
+    }
     this.updateWindowTitle();
     this.publishHostAttention();
     this.publishChatConnections();
@@ -9806,6 +10796,8 @@ class DesktopApp {
     const views = this.views;
     if (!views || !this.shell) return;
     const parts: FocusPart[] = [];
+    // the keep-changes banner leads while it counts, so Keep and Revert are one F6 away
+    if (this.agentThemes.counting()) parts.push('keepChanges');
     if (this.windowLayout.sidebar().sidebarVisible) parts.push('sidebar');
     if (this.windowLayout.sidebar().grid.visible.editor && this.editorPane?.hasTabs()) parts.push('editor');
     if (views.selected()) parts.push('chat');
@@ -9816,8 +10808,17 @@ class DesktopApp {
     const index = current === undefined ? (delta === 1 ? -1 : 0) : parts.indexOf(current);
     const next = parts[(index + delta + parts.length) % parts.length]!;
     if (next === 'toasts' && current !== 'toasts') this.toastFocusOrigin = current ?? 'chat';
+    if (next === 'keepChanges' && current !== 'keepChanges') this.keepFocus.entered(current ?? 'chat');
     if (current === 'toasts' && next !== 'toasts') this.leavePopupsFor(next);
     else this.focusOn(next);
+  }
+
+  // The banner's buttons go with its countdown: focus still on them returns to the part F6 took it from, else to the chat.
+  private keepCountdownEnded(): void {
+    const part = this.keepFocus.ended(this.focusedPart() === 'keepChanges', 'chat');
+    if (part === undefined) return;
+    this.shellFocusedPart = null;
+    this.focusOn(part);
   }
 
   // Escape in the popups, or their last card going while they hold focus, gives focus back to the part F6 took it from;
@@ -9844,6 +10845,7 @@ class DesktopApp {
     if (!views) return;
     if (part === 'overlay' && this.overlay?.mode === 'full') this.overlay.focus();
     else if (part === 'toasts') this.notifier.focusToasts();
+    else if (part === 'keepChanges' && this.agentThemes.counting()) this.shell?.focusPart('keepChanges');
     else if (part === 'sidebar' && this.windowLayout.sidebar().sidebarVisible) this.shell?.focusPart('sidebar');
     else if ((part === 'editor' || part === 'terminal') && this.windowLayout.sidebar().grid.visible[part]) this.shell?.focusPart(part);
     else if (views.selected()) views.focusChat();
@@ -10019,6 +11021,11 @@ class DesktopApp {
       selectDefaultTerminalProfile: () => { this.selectDefaultTerminalProfile().catch(report('Select Default Profile')); },
       paste: (matchStyle) => this.paste(matchStyle),
       toggleSidebar: () => this.toggleSidebar(),
+      resetTheme: () => { this.themeCommands.reset().catch(this.themeCommands.failed('Reset Theme to Default')); },
+      toggleWallpapers: () => { this.toggleWallpapers().catch(this.themeCommands.failed('Toggle Wallpapers')); },
+      nextWallpaper: () => { this.nextWallpaper().catch(this.themeCommands.failed('Next Wallpaper')); },
+      undoThemeChange: () => { this.themeCommands.undoCommand().catch(this.themeCommands.failed('Undo Theme Change')); },
+      restartWithDefaultTheme: () => this.restartWithDefaultTheme(),
       openSettings: () => this.openSettings({}),
       selectRelativeChat: (delta) => { this.selectRelativeChat(delta).catch(report('Select Chat')); },
       focusPart: (delta) => this.focusPart(delta),
@@ -10272,6 +11279,7 @@ class DesktopApp {
       this.hostStore?.flush(),
       this.remoteState?.flush(),
       this.usageWarnings.flush(),
+      this.themeState.flush(),
       this.state.flush(),
       this.platform?.flush(),
       allJsonConfigWritesSettled(),
@@ -10321,6 +11329,19 @@ async function runCliPathAction(action: 'add' | 'remove' | 'invalid'): Promise<n
     log(`[cli-path] --cli-path ${action} failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
     return 1;
   }
+}
+
+// Must equal the uninstaller electron-builder's NSIS target writes beside the executable: "Uninstall <productName>.exe".
+const WINDOWS_UNINSTALLER = 'Uninstall Damocles.exe';
+
+// The damocles:// scheme: macOS and Linux register it from the package (electron-builder `protocols`), but the NSIS installer
+// writes no protocol keys, so the installed Windows app registers itself, with `--` before the link so that no word of a
+// link is read as a flag. An unpacked build, a development run and a run with --user-data-dir never register
+// (docs/invariants.md "Desktop packaging and updates").
+async function registerThemeLinkScheme(): Promise<void> {
+  const installed = (): Promise<boolean> => fs.promises.stat(path.join(path.dirname(process.execPath), WINDOWS_UNINSTALLER)).then((stat) => stat.isFile(), () => false);
+  if (!(await registersLinkScheme({ platform: process.platform, packaged: app.isPackaged, argv: process.argv, installed }))) return;
+  if (!app.setAsDefaultProtocolClient(THEME_LINK_SCHEME, process.execPath, [END_OF_OPTIONS])) log(`[themes] Windows refused to register the ${THEME_LINK_SCHEME}:// scheme`);
 }
 
 // Before anything reads a path: the name decides the default userData folder.

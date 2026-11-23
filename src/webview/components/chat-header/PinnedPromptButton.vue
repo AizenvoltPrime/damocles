@@ -32,7 +32,7 @@ const preview = computed(() => {
         />
         <span
           aria-hidden="true"
-          class="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-(--d-warning) animate-[d-pulse_1.4s_infinite]"
+          class="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-(--d-warning-fill) d-pulsing"
         />
       </button>
     </TooltipTrigger>

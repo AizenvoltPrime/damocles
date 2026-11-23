@@ -28,12 +28,49 @@
   --d-mono: var(--vscode-editor-font-family, ui-monospace, monospace);
   --d-mono-size: var(--vscode-editor-font-size, 12px);
   --d-font-size: var(--vscode-font-size, 13px);
+  /* Desktop themes' style; VS Code keeps today's spacing, corners, line spacing and chat column. */
+  --d-line-scale: 1;
+  --d-radius-scale: 1;
+  --d-density: 1;
+  --d-chat-column: 50rem;
+  --d-hit-min: auto;
+  /* Desktop wallpapers' pane tokens and surface alpha; VS Code shows no wallpaper, so every pane stays opaque. */
+  --d-pane-sidebar: var(--d-panel);
+  --d-pane-chat: var(--d-bg);
+  --d-pane-editor: var(--d-bg);
+  --d-pane-terminal: var(--d-bg);
+  --d-pane-titlebar: var(--d-panel);
+  --d-surface-alpha: 1;
   /* Black or white by WCAG luminance against 0.179, where both reach the same ratio (4.58:1) on the fill. */
   --d-on-danger: color(from var(--d-danger) srgb-linear clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) / 1);
   --d-on-warning: color(from var(--d-warning) srgb-linear clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) / 1);
   --d-on-success: color(from var(--d-success) srgb-linear clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) / 1);
   --d-on-info: color(from var(--d-info) srgb-linear clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) / 1);
   --d-on-design: color(from var(--d-design) srgb-linear clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) / 1);
+
+  /* Fills, borders, rings and tints take a tone's -fill token, text the tone itself; VS Code has one color for both. */
+  --d-accent-fill: var(--d-accent);
+  --d-success-fill: var(--d-success);
+  --d-warning-fill: var(--d-warning);
+  --d-danger-fill: var(--d-danger);
+  --d-info-fill: var(--d-info);
+  --d-design-fill: var(--d-design);
+  /* A host's safety colors; desktop pins them to its built-in tones whatever the theme. */
+  --d-safety-accent: var(--d-accent);
+  --d-safety-success: var(--d-success);
+  --d-safety-warning: var(--d-warning);
+  --d-safety-danger: var(--d-danger);
+  --d-safety-info: var(--d-info);
+  --d-safety-on-accent: var(--d-on-accent);
+  --d-safety-on-success: var(--d-on-success);
+  --d-safety-on-warning: var(--d-on-warning);
+  --d-safety-on-danger: var(--d-on-danger);
+  --d-safety-on-info: var(--d-on-info);
+  --d-safety-accent-text: var(--d-accent-text);
+  --d-safety-success-text: var(--d-success-text);
+  --d-safety-warning-text: var(--d-warning-text);
+  --d-safety-danger-text: var(--d-danger-text);
+  --d-safety-info-text: var(--d-info-text);
 
   --d-accent-soft: color-mix(in srgb, var(--d-accent) 15%, transparent);
   /* Text on a tint of its tone, a hover or a diff row: leaning toward the theme foreground gains contrast in dark, light and high contrast themes alike. */

@@ -58,7 +58,7 @@ async function dismiss(): Promise<void> {
     :data-place="place"
     :aria-hidden="inList || undefined"
     :aria-label="inList ? undefined : t('wsl.notice.label', { name: projectName })"
-    class="flex items-start gap-2 rounded-lg bg-(--d-info)/12 text-(--d-info-text)"
+    class="flex items-start gap-2 rounded-lg bg-(--d-info-fill)/12 text-(--d-info-text)"
     :class="place === 'row' ? 'ms-8 me-1 px-2 py-1.5 text-11' : 'px-2.5 py-2 text-12'"
     @click.stop
     @contextmenu.stop
@@ -106,7 +106,7 @@ async function dismiss(): Promise<void> {
         :variant="place === 'row' ? 'link' : 'outline'"
         data-testid="wsl-notice-reopen"
         class="gap-1.5 text-11 font-semibold text-(--d-info-text) [&_svg]:size-3"
-        :class="place === 'row' ? 'h-auto p-0 underline-offset-2' : 'h-6 rounded-6 border-(--d-info)/40 bg-transparent px-2 hover:bg-(--d-info)/15 hover:text-(--d-info-text)'"
+        :class="place === 'row' ? 'h-auto p-0 underline-offset-2' : 'h-6 rounded-6 border-(--d-info-fill)/40 bg-transparent px-2 hover:bg-(--d-info-fill)/15 hover:text-(--d-info-text)'"
         :aria-busy="reopening || undefined"
         :tabindex="inList ? -1 : undefined"
         :disabled="reopening"
@@ -130,7 +130,7 @@ async function dismiss(): Promise<void> {
       variant="ghost"
       size="icon-sm"
       data-testid="wsl-notice-dismiss"
-      class="-me-0.5 -mt-0.5 size-5 shrink-0 rounded-md text-(--d-info-text) hover:bg-(--d-info)/15 [&_svg]:size-3"
+      class="-me-0.5 -mt-0.5 size-5 shrink-0 rounded-md text-(--d-info-text) hover:bg-(--d-info-fill)/15 [&_svg]:size-3"
       :tabindex="inList ? -1 : undefined"
       :aria-label="t('wsl.notice.dismiss', { name: projectName })"
       :title="t('wsl.notice.dismiss', { name: projectName })"

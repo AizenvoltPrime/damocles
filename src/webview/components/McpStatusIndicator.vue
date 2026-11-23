@@ -21,9 +21,9 @@ const summary = computed(() => {
   const failed = props.servers.filter((s) => s.status === 'failed').length;
   const pending = props.servers.filter((s) => s.status === 'pending').length;
   const head = t('chatHeader.mcp', { n: connected }, connected);
-  if (pending > 0) return { connected, label: `${head} · ${t('mcpIndicator.connecting', { connected, total })}`, dot: 'bg-(--d-warning) d-pulsing' };
-  if (failed > 0) return { connected, label: `${head} · ${t('mcpIndicator.withFailures', { connected, total, failed })}`, dot: 'bg-(--d-danger)' };
-  return { connected, label: head, dot: connected > 0 ? 'bg-(--d-success)' : 'bg-(--d-faint)' };
+  if (pending > 0) return { connected, label: `${head} · ${t('mcpIndicator.connecting', { connected, total })}`, dot: 'bg-(--d-warning-fill) d-pulsing' };
+  if (failed > 0) return { connected, label: `${head} · ${t('mcpIndicator.withFailures', { connected, total, failed })}`, dot: 'bg-(--d-danger-fill)' };
+  return { connected, label: head, dot: connected > 0 ? 'bg-(--d-success-fill)' : 'bg-(--d-faint)' };
 });
 </script>
 

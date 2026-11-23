@@ -50,11 +50,22 @@ export interface PermissionQuery {
   readonly isMainFrame: boolean;
 }
 
-// The one exception to deny-all: the chat's copy buttons use navigator.clipboard.writeText, which Chromium gates behind clipboard-sanitized-write.
+// The WebContents that read installed fonts: the theme editor dock (its Type section) and the overlay view (a theme's
+// export), never the popup window's page, which runs the same bundle.
+const localFontsContents = new WeakSet<WebContents>();
+
+export function registerLocalFontsContents(contents: WebContents): void {
+  localFontsContents.add(contents);
+}
+
+// The two exceptions to deny-all: the chat's copy buttons use navigator.clipboard.writeText, which Chromium gates behind
+// clipboard-sanitized-write; the theme editor dock and the overlay read installed fonts through queryLocalFonts(), gated
+// behind local-fonts.
 export function isPermissionAllowed(query: PermissionQuery): boolean {
-  return query.permission === 'clipboard-sanitized-write'
+  const granted = query.permission === 'clipboard-sanitized-write' ? panelContents : query.permission === 'local-fonts' ? localFontsContents : undefined;
+  return granted !== undefined
     && query.contents !== null
-    && panelContents.has(query.contents)
+    && granted.has(query.contents)
     && query.isMainFrame
     && isAppOrigin(query.requester);
 }

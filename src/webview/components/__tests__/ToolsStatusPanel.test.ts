@@ -309,3 +309,38 @@ describe('ToolsStatusPanel switches set on the host', () => {
     expect(wrapper.find('[data-testid="tools-group-host-note"]').exists()).toBe(false);
   });
 });
+
+describe('ToolsStatusPanel theme group', () => {
+  const THEME_SNAPSHOT: ToolsSnapshot = {
+    groups: [
+      { group: 'forge', enabled: true, available: true },
+      { group: 'theme', enabled: true, available: true, setOnHost: true },
+      { group: 'subagents', enabled: true, available: true },
+    ],
+    tools: [
+      tool('ForgePipelines', 'forge', true),
+      tool('Agent', 'subagents', true),
+      tool('ThemeRead', 'theme', true),
+      tool('ThemeSet', 'theme', true),
+      tool('ThemeSchedule', 'theme', false),
+    ],
+  };
+
+  it('lists the theme tools after forge, under the group switch, and its host link opens Appearance', async () => {
+    const post = vi.spyOn(api, 'postMessage');
+    const wrapper = mountPanel(THEME_SNAPSHOT);
+    await nextTick();
+
+    expect(wrapper.findAll('[data-testid="tools-group"]').map((node) => node.attributes('data-group'))).toEqual(['forge', 'theme', 'subagents']);
+    expect(switchNamed('theme').getAttribute('aria-label')).toBe('Enable Theme tools');
+
+    const theme = group(wrapper, 'theme');
+    await theme.get('button[aria-expanded]').trigger('click');
+    const rows = theme.findAll('[data-testid="tools-row"]');
+    expect(rows.map((row) => ['ThemeRead', 'ThemeSet', 'ThemeSchedule'].find((name) => row.text().includes(name)))).toEqual(['ThemeRead', 'ThemeSet', 'ThemeSchedule']);
+    expect(rows.map((row) => row.get('[role="switch"]').attributes('aria-checked'))).toEqual(['true', 'true', 'false']);
+
+    await group(wrapper, 'theme').get('[data-testid="tools-open-host-settings"]').trigger('click');
+    expect(openAppSettingsPosts(post)).toEqual([{ type: 'openAppSettings', section: 'appearance', scope: 'machine' }]);
+  });
+});

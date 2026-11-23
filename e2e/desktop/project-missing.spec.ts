@@ -5,7 +5,7 @@ import { activeChat, expect, test } from './support/fixtures';
 import { seedStubModel, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { readyOverlay } from './support/overlay';
-import { recordedToasts, recordToasts, shellState } from './support/shell';
+import { recordedToasts, recordToasts, SHELL_URL, shellState } from './support/shell';
 import { chatRow, clickChat, projectRow, readyShell } from './support/shell-ui';
 import { addProject, chatInput, sendAndAwaitEcho } from './support/ui';
 import { scmSection } from './support/scm';
@@ -34,9 +34,9 @@ async function loadedSessionIds(app: ElectronApplication): Promise<string[]> {
 
 // What main does when the window gains focus, without depending on the OS giving it focus.
 async function focusWindow(app: ElectronApplication): Promise<void> {
-  await app.evaluate(({ app: electronApp, BrowserWindow }) => {
-    electronApp.emit('browser-window-focus', {}, BrowserWindow.getAllWindows()[0]);
-  });
+  await app.evaluate(({ app: electronApp, BrowserWindow }, shellUrl) => {
+    electronApp.emit('browser-window-focus', {}, BrowserWindow.getAllWindows().find((win) => win.webContents.getURL().startsWith(shellUrl)));
+  }, SHELL_URL);
 }
 
 test('a project whose folder moved while the app was closed shows Folder not found, opens none of its chats, and opens its last chat once the folder is back', async ({ home, launch }) => {

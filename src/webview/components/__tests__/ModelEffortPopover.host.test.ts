@@ -34,6 +34,7 @@ window.damoclesBridge = {
   onConnection: () => () => undefined,
   allowYolo: async () => false,
   queueAction: () => undefined,
+  setModalOpen: () => undefined,
 };
 
 const { default: ModelEffortPopover } = await import('../composer/ModelEffortPopover.vue');

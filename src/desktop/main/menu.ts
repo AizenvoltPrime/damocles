@@ -64,7 +64,7 @@ export function shellShortcutLabels(platform: NodeJS.Platform = process.platform
 
 // The part holding keyboard focus, F6's stops: the shell's sidebar and editor (its page tabs' views included), the selected chat
 // the terminal (while it shows a terminal) and the desktop popups' window.
-export type FocusPart = 'sidebar' | 'editor' | 'terminal' | 'chat' | 'toasts';
+export type FocusPart = 'sidebar' | 'editor' | 'terminal' | 'chat' | 'toasts' | 'keepChanges';
 
 // What the context-bound items act on: a selected chat, the browser feature, a page tab as the active editor tab and the
 // part holding keyboard focus (undefined while the window has none, or the title bar has it), and whether the update
@@ -211,6 +211,16 @@ export interface MenuActions {
   // Edit › Paste (matchStyle: macOS Paste and Match Style): through main into a terminal with keyboard focus, else native
   paste(matchStyle: boolean): void;
   toggleSidebar(): void;
+  // both preferred looks back to the built-in Damocles theme
+  resetTheme(): void;
+  // damocles.desktop.themes.showWallpapers off, or on again
+  toggleWallpapers(): void;
+  // the shown look's next wallpaper set
+  nextWallpaper(): void;
+  // reverses the newest theme change in the history
+  undoThemeChange(): void;
+  // relaunches with --damocles-safe-theme
+  restartWithDefaultTheme(): void;
   openSettings(): void;
   // 1 selects the next chat of the selected project's list, -1 the previous one
   selectRelativeChat(delta: 1 | -1): void;
@@ -461,6 +471,11 @@ export function installApplicationMenu(
       item(MENU_IDS.newBrowserPage),
       item(MENU_IDS.toggleBrowserDevTools),
       item(MENU_IDS.chooseClientCertificate),
+      { type: 'separator' },
+      item(MENU_IDS.resetTheme),
+      item(MENU_IDS.toggleWallpapers),
+      item(MENU_IDS.nextWallpaper),
+      item(MENU_IDS.undoThemeChange),
     ],
   };
   const t = (label: string): string => l10n.t(label);
@@ -528,9 +543,10 @@ export function installApplicationMenu(
       // No close role here: its CmdOrCtrl+W would compete with Close Editor.
       : [{ role: 'minimize', label: t('Minimize') }],
   };
-  const helpMenu: MenuItemConstructorOptions = { id: 'damocles.menu.help', label: t('Help'), submenu: [...aboutItems, ...cliItems] };
+  const restartItems: MenuItemConstructorOptions[] = [{ type: 'separator' }, item(MENU_IDS.restartWithDefaultTheme)];
+  const helpMenu: MenuItemConstructorOptions = { id: 'damocles.menu.help', label: t('Help'), submenu: mac ? [item(MENU_IDS.restartWithDefaultTheme)] : [...aboutItems, ...cliItems, ...restartItems] };
   const template: MenuItemConstructorOptions[] = mac
-    ? [appMenu, fileMenu, editMenu, viewMenu, chatMenu, windowMenu]
+    ? [appMenu, fileMenu, editMenu, viewMenu, chatMenu, windowMenu, helpMenu]
     : [fileMenu, editMenu, viewMenu, chatMenu, windowMenu, helpMenu];
   installedItems = items;
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));

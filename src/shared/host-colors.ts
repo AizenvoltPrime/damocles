@@ -31,10 +31,13 @@ export interface HostColorLook {
   style?: Record<string, string>;
 }
 
-/** The tone class, plus the custom color's channels that `.d-tone-custom` reads; `untinted` is the tone of a host with no color. */
+/**
+ * The tone class, plus the custom color's channels that `.d-tone-custom` reads; `untinted` is the tone of a host with no color.
+ * A tone also takes `d-safety`, whose rules in src/webview/style.css read the --d-safety-* tokens, the built-in tones whatever the theme.
+ */
 export function hostColorLook(color: HostColor | undefined, untinted: HostTone | 'muted' = 'muted'): HostColorLook {
   if (color === undefined) return { class: `d-tone-${untinted}` };
-  if (isHostTone(color)) return { class: `d-tone-${color}` };
+  if (isHostTone(color)) return { class: `d-tone-${color} d-safety` };
   const { r, g, b, alpha } = hexColorParts(color);
   return { class: 'd-tone-custom', style: { '--host-rgb': `${r} ${g} ${b}`, '--host-alpha': String(alpha) } };
 }

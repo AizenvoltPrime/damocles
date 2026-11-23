@@ -225,8 +225,8 @@ const BUTTON = 'd-press size-6.5 shrink-0 rounded-md text-(--d-muted) hover:bg-(
           'mx-1 flex h-6 min-w-0 flex-1 items-center gap-1.5 rounded-7 border bg-(--d-input) pr-2.5 transition-[border-color,box-shadow] duration-150',
           notSecure && !refused ? 'pl-0.75' : 'pl-2.25',
           refused
-            ? 'border-(--d-danger) focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--d-danger)_22%,transparent)]'
-            : 'border-(--d-border) hover:border-(--d-border2) focus-within:border-(--d-accent) focus-within:shadow-[0_0_0_3px_var(--d-accent-soft)]',
+            ? 'border-(--d-danger-fill) focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--d-danger-fill)_22%,transparent)]'
+            : 'border-(--d-border) hover:border-(--d-border2) focus-within:border-(--d-accent-fill) focus-within:shadow-[0_0_0_3px_var(--d-accent-soft)]',
         )"
       >
         <Transition
@@ -352,7 +352,7 @@ const BUTTON = 'd-press size-6.5 shrink-0 rounded-md text-(--d-muted) hover:bg-(
       >
         <div
           data-testid="browser-progress"
-          class="browser-progress h-full bg-(--d-accent)"
+          class="browser-progress h-full bg-(--d-accent-fill)"
           :data-phase="progress"
           @transitionend="onProgressEnd"
         />

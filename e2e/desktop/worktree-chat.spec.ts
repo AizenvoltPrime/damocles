@@ -7,7 +7,7 @@ import { git } from './support/git';
 import { writeUserSettings } from './support/hermetic';
 import { chatRequests } from './support/openai-stub';
 import { menuItem, overlayMenu, readyOverlay } from './support/overlay';
-import { pressKeys, shellPage, shellState } from './support/shell';
+import { onMainWindow, pressKeys, shellPage, shellState } from './support/shell';
 import { dismiss, openProjectChat } from './support/screenshots';
 import { activeTab, DOCUMENT_END, editorShows, editorState, openInEditor } from './support/editor';
 import { setSection, submenuItem } from './support/scm';
@@ -201,7 +201,7 @@ test('D63 options, an opt-in left before sending, then the first send: setup rev
     });
 
     await test.step('in a narrow sidebar at a larger font the branch chips end in an ellipsis inside their headers, with the full branch in their names', async () => {
-      const [width, height] = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.getContentSize() as [number, number]);
+      const [width, height] = await onMainWindow(app, (win) => win.getContentSize() as [number, number]);
       await setContentSize(app, 900, 660);
       await shell.evaluate(() => document.documentElement.style.setProperty('--d-font-size', '16px'));
       const chips = () => shell.evaluate(() => [...document.querySelectorAll('[data-testid="files-branch-chip"]')].map((chip) => {

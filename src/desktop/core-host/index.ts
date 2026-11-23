@@ -23,6 +23,7 @@ import { createParentPortTransport } from './parent-port';
 import { createCorePlatform, type CorePlatform } from './platform';
 import { startCoreScm } from './scm';
 import { startCoreForge } from './forge';
+import { startCoreThemes } from './themes';
 import { createChatRepositories } from './forge-repository';
 import { createFinishHolds, startCoreWorktrees } from './worktrees';
 
@@ -100,10 +101,12 @@ async function start(port: ParentChannel): Promise<void> {
   const worktrees = startCoreWorktrees(platform, scm, finishHolds, (line) => log(line));
   platform.setWorktrees(worktrees.services);
   const forge = startCoreForge(platform, scm, (line) => log(line));
+  const themes = startCoreThemes(platform, (line) => log(line));
 
   const service = startCoreService(platform, {
     finishHolds,
     ...(forge ? { forge } : {}),
+    ...(themes ? { themeTools: themes.agent } : {}),
     forgeRepositories: createChatRepositories(scm, (line) => log(line)),
     chatFolders: coreLocal.chatFolders,
     setPlatform: (next) => coreLocal.setPlatform(next),
@@ -112,7 +115,8 @@ async function start(port: ParentChannel): Promise<void> {
       worktrees.dispose();
       scm.dispose();
       forge?.dispose();
-      await Promise.all([scm.close(), tempFoldersSettled(), heldRepoLocksReleased(), coreLocal.settings.flush(), coreLocal.fileWatchers.close(), walks.close()]);
+      themes?.dispose();
+      await Promise.all([scm.close(), tempFoldersSettled(), heldRepoLocksReleased(), coreLocal.settings.flush(), coreLocal.fileWatchers.close(), walks.close(), themes?.settled()]);
       for (const disposable of owned.reverse()) disposable.dispose();
       coreLocal.dispose();
     },

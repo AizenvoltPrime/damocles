@@ -1,0 +1,476 @@
+{
+  "schemaVersion": 1,
+  "id": "damocles-arcade",
+  "name": "Arcade",
+  "description": "Neon night colors and six pixel characters for your projects, idle, running and waiting.",
+  "author": "Damocles",
+  "license": "MIT",
+  "looks": {
+    "dark": {
+      "colors": {
+        "background": "#0d0b1a",
+        "panel": "#151229",
+        "text": "#ece8ff",
+        "accent": "#ff6bb5",
+        "success": "#5cf28a",
+        "warning": "#ffd23f",
+        "danger": "#ff6b6b",
+        "info": "#5cc8ff"
+      }
+    }
+  },
+  "style": {
+    "radius": 0.5
+  },
+  "characters": {
+    "name": "Arcade",
+    "characters": [
+      {
+        "name": "Pip",
+        "states": {
+          "idle": {
+            "strip": {
+              "asset": "edcb039ab8d54755c8344750b844636b8d4df194c5c4cd42b0367fe9e5016427",
+              "frameWidth": 10,
+              "frameHeight": 10,
+              "frames": 2,
+              "fps": 2
+            }
+          },
+          "running": {
+            "strip": {
+              "asset": "45cfdd4cbdb4147ebb11c915729478a42e98f60b4b9bddb0b5b393c3fb218dc9",
+              "frameWidth": 10,
+              "frameHeight": 10,
+              "frames": 4,
+              "fps": 6
+            }
+          },
+          "waiting": {
+            "strip": {
+              "asset": "55d46947073788f9e2471f1706d288ca7ad093b19563214a877c8e920a9d7c51",
+              "frameWidth": 10,
+              "frameHeight": 10,
+              "frames": 2,
+              "fps": 2
+            }
+          }
+        }
+      },
+      {
+        "name": "Mochi",
+        "states": {
+          "idle": {
+            "strip": {
+              "asset": "3a4cc60476a71fd4f5c0e78f26dbe66c8db8ef8191c3bbbd10093d7386da6227",
+              "frameWidth": 10,
+              "frameHeight": 10,
+              "frames": 2,
+              "fps": 2
+            }
+          },
+          "running": {
+            "strip": {
+              "asset": "bb7c6784316b313f04561fdec039a6736fe77410a95e02e23684af6aa8e9de7f",
+              "frameWidth": 10,
+              "frameHeight": 10,
+              "frames": 4,
+              "fps": 6
+            }
+          },
+          "waiting": {
+            "strip": {
+              "asset": "0bc6b455b02ed5c9ca6c6201160722cf103db1c2149c897f22df35ec1b22e1e9",
+              "frameWidth": 10,
+              "frameHeight": 10,
+              "frames": 2,
+              "fps": 2
+            }
+          }
+        }
+      },
+      {
+        "name": "Bolt",
+        "states": {
+          "idle": {
+            "strip": {
+              "asset": "3cfab2b1103a090a14adc36a258e3d14b2bac3b18e1431be7be6e5a835204f77",
+              "frameWidth": 10,
+              "frameHeight": 10,
+              "frames": 2,
+              "fps": 2
+            }
+          },
+          "running": {
+            "strip": {
+              "asset": "0058d0341ad0462286bb926c7a97a4238314962f66fef82deb66365fd25b0d19",
+              "frameWidth": 10,
+              "frameHeight": 10,
+              "frames": 4,
+              "fps": 6
+            }
+          },
+          "waiting": {
+            "strip": {
+              "asset": "17bf114e5c2139a8e0bb76cce5fa827bc99742e299c687b8177556468cf9974a",
+              "frameWidth": 10,
+              "frameHeight": 10,
+              "frames": 2,
+              "fps": 2
+            }
+          }
+        }
+      },
+      {
+        "name": "Gloop",
+        "states": {
+          "idle": {
+            "strip": {
+              "asset": "87411dd54fe9af42e275acef071950330b5c201ec4515d9d243e3bcb683879d9",
+              "frameWidth": 10,
+              "frameHeight": 10,
+              "frames": 2,
+              "fps": 2
+            }
+          },
+          "running": {
+            "strip": {
+              "asset": "a1f490e08ebbe77206d3adbb46f979993134e2ccb42e38da78addb131918f7e5",
+              "frameWidth": 10,
+              "frameHeight": 10,
+              "frames": 4,
+              "fps": 6
+            }
+          },
+          "waiting": {
+            "strip": {
+              "asset": "2408c1dad9f24e9d255587beb3655d48788d4c2e8e3a552fb8d01c8f9eb28fb0",
+              "frameWidth": 10,
+              "frameHeight": 10,
+              "frames": 2,
+              "fps": 2
+            }
+          }
+        }
+      },
+      {
+        "name": "Nova",
+        "states": {
+          "idle": {
+            "strip": {
+              "asset": "537cc4e628c7bf0fde894537ccf678396a0cd95af217b58d78c02f5be019bf35",
+              "frameWidth": 10,
+              "frameHeight": 10,
+              "frames": 2,
+              "fps": 2
+            }
+          },
+          "running": {
+            "strip": {
+              "asset": "691be6d7c32ff765dfcd917719c1277c90c5cc6c173383b2672c66fac9cabfb5",
+              "frameWidth": 10,
+              "frameHeight": 10,
+              "frames": 4,
+              "fps": 6
+            }
+          },
+          "waiting": {
+            "strip": {
+              "asset": "8fad2c237ab5e7505225417709a06bd5fb702c97e657bce24df41af1d5419ce1",
+              "frameWidth": 10,
+              "frameHeight": 10,
+              "frames": 2,
+              "fps": 2
+            }
+          }
+        }
+      },
+      {
+        "name": "Fizz",
+        "states": {
+          "idle": {
+            "strip": {
+              "asset": "aff01ae727cc53dc6f992e7b5c88167d8d30c50856684a5edd74d2b91a67e705",
+              "frameWidth": 10,
+              "frameHeight": 10,
+              "frames": 2,
+              "fps": 2
+            }
+          },
+          "running": {
+            "strip": {
+              "asset": "16c5de55e2f621110c56031293989712d635e2ceb2e316bc0f9bf9c27f6a29ad",
+              "frameWidth": 10,
+              "frameHeight": 10,
+              "frames": 4,
+              "fps": 6
+            }
+          },
+          "waiting": {
+            "strip": {
+              "asset": "855e4d6f15be1bab2324b20ce1e80232ca4ade7d045c1d9878ece73c3b858cbf",
+              "frameWidth": 10,
+              "frameHeight": 10,
+              "frames": 2,
+              "fps": 2
+            }
+          }
+        }
+      }
+    ]
+  },
+  "assets": {
+    "edcb039ab8d54755c8344750b844636b8d4df194c5c4cd42b0367fe9e5016427": {
+      "kind": "sprite",
+      "mime": "image/svg+xml",
+      "bytes": 648,
+      "width": 20,
+      "height": 10,
+      "frames": 2,
+      "durationMs": 1000,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    },
+    "45cfdd4cbdb4147ebb11c915729478a42e98f60b4b9bddb0b5b393c3fb218dc9": {
+      "kind": "sprite",
+      "mime": "image/svg+xml",
+      "bytes": 1220,
+      "width": 40,
+      "height": 10,
+      "frames": 4,
+      "durationMs": 667,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    },
+    "55d46947073788f9e2471f1706d288ca7ad093b19563214a877c8e920a9d7c51": {
+      "kind": "sprite",
+      "mime": "image/svg+xml",
+      "bytes": 775,
+      "width": 20,
+      "height": 10,
+      "frames": 2,
+      "durationMs": 1000,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    },
+    "3a4cc60476a71fd4f5c0e78f26dbe66c8db8ef8191c3bbbd10093d7386da6227": {
+      "kind": "sprite",
+      "mime": "image/svg+xml",
+      "bytes": 598,
+      "width": 20,
+      "height": 10,
+      "frames": 2,
+      "durationMs": 1000,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    },
+    "bb7c6784316b313f04561fdec039a6736fe77410a95e02e23684af6aa8e9de7f": {
+      "kind": "sprite",
+      "mime": "image/svg+xml",
+      "bytes": 1118,
+      "width": 40,
+      "height": 10,
+      "frames": 4,
+      "durationMs": 667,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    },
+    "0bc6b455b02ed5c9ca6c6201160722cf103db1c2149c897f22df35ec1b22e1e9": {
+      "kind": "sprite",
+      "mime": "image/svg+xml",
+      "bytes": 725,
+      "width": 20,
+      "height": 10,
+      "frames": 2,
+      "durationMs": 1000,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    },
+    "3cfab2b1103a090a14adc36a258e3d14b2bac3b18e1431be7be6e5a835204f77": {
+      "kind": "sprite",
+      "mime": "image/svg+xml",
+      "bytes": 523,
+      "width": 20,
+      "height": 10,
+      "frames": 2,
+      "durationMs": 1000,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    },
+    "0058d0341ad0462286bb926c7a97a4238314962f66fef82deb66365fd25b0d19": {
+      "kind": "sprite",
+      "mime": "image/svg+xml",
+      "bytes": 965,
+      "width": 40,
+      "height": 10,
+      "frames": 4,
+      "durationMs": 667,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    },
+    "17bf114e5c2139a8e0bb76cce5fa827bc99742e299c687b8177556468cf9974a": {
+      "kind": "sprite",
+      "mime": "image/svg+xml",
+      "bytes": 650,
+      "width": 20,
+      "height": 10,
+      "frames": 2,
+      "durationMs": 1000,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    },
+    "87411dd54fe9af42e275acef071950330b5c201ec4515d9d243e3bcb683879d9": {
+      "kind": "sprite",
+      "mime": "image/svg+xml",
+      "bytes": 523,
+      "width": 20,
+      "height": 10,
+      "frames": 2,
+      "durationMs": 1000,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    },
+    "a1f490e08ebbe77206d3adbb46f979993134e2ccb42e38da78addb131918f7e5": {
+      "kind": "sprite",
+      "mime": "image/svg+xml",
+      "bytes": 965,
+      "width": 40,
+      "height": 10,
+      "frames": 4,
+      "durationMs": 667,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    },
+    "2408c1dad9f24e9d255587beb3655d48788d4c2e8e3a552fb8d01c8f9eb28fb0": {
+      "kind": "sprite",
+      "mime": "image/svg+xml",
+      "bytes": 650,
+      "width": 20,
+      "height": 10,
+      "frames": 2,
+      "durationMs": 1000,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    },
+    "537cc4e628c7bf0fde894537ccf678396a0cd95af217b58d78c02f5be019bf35": {
+      "kind": "sprite",
+      "mime": "image/svg+xml",
+      "bytes": 598,
+      "width": 20,
+      "height": 10,
+      "frames": 2,
+      "durationMs": 1000,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    },
+    "691be6d7c32ff765dfcd917719c1277c90c5cc6c173383b2672c66fac9cabfb5": {
+      "kind": "sprite",
+      "mime": "image/svg+xml",
+      "bytes": 1118,
+      "width": 40,
+      "height": 10,
+      "frames": 4,
+      "durationMs": 667,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    },
+    "8fad2c237ab5e7505225417709a06bd5fb702c97e657bce24df41af1d5419ce1": {
+      "kind": "sprite",
+      "mime": "image/svg+xml",
+      "bytes": 725,
+      "width": 20,
+      "height": 10,
+      "frames": 2,
+      "durationMs": 1000,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    },
+    "aff01ae727cc53dc6f992e7b5c88167d8d30c50856684a5edd74d2b91a67e705": {
+      "kind": "sprite",
+      "mime": "image/svg+xml",
+      "bytes": 548,
+      "width": 20,
+      "height": 10,
+      "frames": 2,
+      "durationMs": 1000,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    },
+    "16c5de55e2f621110c56031293989712d635e2ceb2e316bc0f9bf9c27f6a29ad": {
+      "kind": "sprite",
+      "mime": "image/svg+xml",
+      "bytes": 1016,
+      "width": 40,
+      "height": 10,
+      "frames": 4,
+      "durationMs": 667,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    },
+    "855e4d6f15be1bab2324b20ce1e80232ca4ade7d045c1d9878ece73c3b858cbf": {
+      "kind": "sprite",
+      "mime": "image/svg+xml",
+      "bytes": 675,
+      "width": 20,
+      "height": 10,
+      "frames": 2,
+      "durationMs": 1000,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    }
+  }
+}

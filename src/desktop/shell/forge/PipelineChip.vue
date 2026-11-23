@@ -83,7 +83,7 @@ defineExpose({ showJobs });
     :aria-expanded="open"
     :aria-label="name"
     :title="title"
-    class="d-press h-7 shrink-0 gap-1.25 rounded-7 border border-(--d-border2) bg-(--d-card) px-2.25 py-0 font-mono text-11 font-normal text-(--d-muted) transition-colors duration-150 hover:border-(--d-accent) hover:bg-(--d-card) hover:text-(--d-text) focus-visible:border-(--d-accent) focus-visible:ring-0 focus-visible:ring-offset-0 aria-expanded:border-(--d-accent) aria-expanded:text-(--d-text) [&_svg]:size-3"
+    class="d-press h-7 shrink-0 gap-1.25 rounded-7 border border-(--d-border2) bg-(--d-card) px-2.25 py-0 font-mono text-11 font-normal text-(--d-muted) transition-colors duration-150 hover:border-(--d-accent-fill) hover:bg-(--d-card) hover:text-(--d-text) focus-visible:border-(--d-accent-fill) focus-visible:ring-0 focus-visible:ring-offset-0 aria-expanded:border-(--d-accent-fill) aria-expanded:text-(--d-text) [&_svg]:size-3"
     @click="showJobs"
   >
     <!-- The spin sits on the wrapper, so the icon's own t-icon entrance never fights it. -->

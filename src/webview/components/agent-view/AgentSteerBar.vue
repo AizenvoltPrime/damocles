@@ -31,7 +31,7 @@ function onKeydown(event: KeyboardEvent): void {
     data-testid="agent-steer-bar"
   >
     <div class="flex items-center gap-2">
-      <label class="flex h-8.5 min-w-0 flex-1 items-center gap-2 rounded-10 border border-(--d-border2) bg-(--d-input) px-3 focus-within:border-(--d-accent)">
+      <label class="flex h-8.5 min-w-0 flex-1 items-center gap-2 rounded-10 border border-(--d-border2) bg-(--d-input) px-3 focus-within:border-(--d-accent-fill)">
         <Send
           class="size-3.25 flex-none text-(--d-warning)"
           aria-hidden="true"
@@ -50,7 +50,7 @@ function onKeydown(event: KeyboardEvent): void {
       <button
         type="button"
         class="d-press flex h-8.5 flex-none items-center gap-1.5 rounded-10 px-3.5 text-12.5 font-semibold transition-colors"
-        :class="canSend ? 'bg-(--d-warning) text-(--d-on-warning)' : 'bg-(--d-hover) text-(--d-faint)'"
+        :class="canSend ? 'bg-(--d-warning-fill) text-(--d-on-warning)' : 'bg-(--d-hover) text-(--d-faint)'"
         :disabled="!canSend"
         :aria-busy="sending || undefined"
         data-testid="agent-steer-send"

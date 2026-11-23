@@ -97,7 +97,7 @@ watch(() => store.moved.value, async (moved) => {
               size="sm"
               variant="outline"
               data-testid="terminal-empty-new"
-              class="d-press mt-1 h-7 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-3 text-xs hover:border-(--d-accent) hover:bg-(--d-card) [&_svg]:size-3.5"
+              class="d-press mt-1 h-7 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-3 text-xs hover:border-(--d-accent-fill) hover:bg-(--d-card) [&_svg]:size-3.5"
               @click="api.terminal.openNew()"
             >
               <Plus aria-hidden="true" />{{ t('terminal.new') }}

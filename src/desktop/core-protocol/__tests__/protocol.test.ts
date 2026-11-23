@@ -5,6 +5,9 @@ import { CORE_TO_MAIN, MAIN_TO_CORE, MAX_KEY_CHARS, type CoreToMain, type MainTo
 import { MAX_DESIGN_ID_CHARS } from '../../../shared/design-paths';
 import { MAX_CHANGED_PATHS } from '../../../shared/design-render';
 import { MAX_MARKUP_JSON_CHARS } from '../../../shared/design-markup';
+import { MAX_RELAYED_THEME_PNG_BYTES } from '../../../shared/themes/relay';
+import type { ThemeHistoryChange } from '../../../shared/themes/changes';
+import { MAX_PROJECT_KEY_CHARS, MAX_PROJECT_LOOKS } from '../../../shared/themes/project-looks';
 import { arr, data, INVALID, obj, opt, str } from '../schema';
 import { EDITOR_HARD_MAX_DOCUMENT_BYTES } from '../../../shared/types/messages';
 import { CLIENT_TO_WORKSPACE } from '../../workspace/messages';
@@ -174,6 +177,202 @@ describe('a project path\'s confinement and Files answers', () => {
     expect(result({ ...entry, sessionStore: true })).toEqual({ ...entry, sessionStore: true });
     expect(result(entry)).toEqual(entry);
     expect(result({ ...entry, sessionStore: false })).toBe(INVALID);
+  });
+});
+
+describe('the theme history on the wire', () => {
+  type Kind = ThemeHistoryChange['kind'];
+  // One accepted and one refused value per change kind; a new kind does not compile until it has a row.
+  const CHANGES: { readonly [K in Kind]: { readonly taken: Extract<ThemeHistoryChange, { kind: K }>; readonly refused: unknown } } = {
+    pick: { taken: { kind: 'pick', look: 'dark', theme: 'Night', was: 'Damocles' }, refused: { kind: 'pick', look: 'dark', theme: 'Night', was: '' } },
+    save: { taken: { kind: 'save', theme: 'Night', picked: ['dark', 'light'] }, refused: { kind: 'save', theme: 'Night', picked: ['dark', 'light', 'dark'] } },
+    create: { taken: { kind: 'create', theme: 'Night' }, refused: { kind: 'create', theme: '' } },
+    schedule: { taken: { kind: 'schedule', enabled: true, rules: 2, mode: 'dark' }, refused: { kind: 'schedule', enabled: true, rules: 1.5 } },
+    hold: { taken: { kind: 'hold', theme: 'Night', look: 'light' }, refused: { kind: 'hold', theme: 'Night', look: 'auto' } },
+    resume: { taken: { kind: 'resume' }, refused: { kind: 'Resume' } },
+    rename: { taken: { kind: 'rename', theme: 'Night', was: 'Dusk' }, refused: { kind: 'rename', theme: 'x'.repeat(257), was: 'Dusk' } },
+    delete: { taken: { kind: 'delete', theme: 'Night' }, refused: { kind: 'delete', theme: '' } },
+    projectLook: { taken: { kind: 'projectLook', project: '', look: 'touches' }, refused: { kind: 'projectLook', project: 'app', look: 'some' } },
+    storeRemoved: { taken: { kind: 'storeRemoved', themes: ['Aurora'] }, refused: { kind: 'storeRemoved', themes: [''] } },
+    wallpapersOff: { taken: { kind: 'wallpapersOff' }, refused: { kind: 'wallpapers-off' } },
+    reset: { taken: { kind: 'reset' }, refused: { kind: 7 } },
+    other: { taken: { kind: 'other' }, refused: { kind: 'teleport' } },
+    restore: { taken: { kind: 'restore', before: { kind: 'other' } }, refused: { kind: 'restore', before: { kind: 'restore', before: { kind: 'reset' } } } },
+  };
+  const entries = MAIN_TO_CORE.requests['themes.history'].result;
+  const entry = (change: unknown, more: Record<string, unknown> = {}): Record<string, unknown> => ({ id: 'e', at: 1, actor: { kind: 'user' }, change, ...more });
+
+  it.each(Object.entries(CHANGES))('takes a %s change with the fields of its kind and refuses one without them', (_kind, { taken, refused }) => {
+    expect(entries({ entries: [entry(taken)] })).toEqual({ entries: [entry(taken)] });
+    expect(entries({ entries: [entry(refused)] })).toBe(INVALID);
+    expect(MAIN_TO_CORE.requests['themes.undo'].result({ undone: taken })).toEqual({ undone: taken });
+    // the entry an Undo names is optional, and an id when given
+    expect(MAIN_TO_CORE.requests['themes.undo'].params({})).toEqual({});
+    expect(MAIN_TO_CORE.requests['themes.undo'].params({ expected: 'e1' })).toEqual({ expected: 'e1' });
+    expect(MAIN_TO_CORE.requests['themes.undo'].params({ expected: '' })).toBe(INVALID);
+    expect(MAIN_TO_CORE.requests['themes.undo'].params({ expected: 'e'.repeat(129) })).toBe(INVALID);
+    expect(CORE_TO_MAIN.requests['themes.pendingExtended'].params({ entryId: 'e', change: refused })).toBe(INVALID);
+  });
+
+  it('drops a field a change kind does not have', () => {
+    expect(entries({ entries: [entry({ kind: 'reset', theme: 'x' })] })).toEqual({ entries: [entry({ kind: 'reset' })] });
+  });
+
+  it('takes an agent actor only with a chat id of 1 to 128 characters, and cannotUndo only as true', () => {
+    const agent = (chatId: string): unknown => ({ entries: [{ ...entry({ kind: 'reset' }), actor: { kind: 'agent', chatId, title: '' } }] });
+    expect(entries(agent('c'.repeat(128)))).not.toBe(INVALID);
+    expect(entries(agent('c'.repeat(129)))).toBe(INVALID);
+    expect(entries(agent(''))).toBe(INVALID);
+    expect(entries({ entries: [entry({ kind: 'other' }, { cannotUndo: true })] })).toEqual({ entries: [entry({ kind: 'other' }, { cannotUndo: true })] });
+    expect(entries({ entries: [entry({ kind: 'other' }, { cannotUndo: false })] })).toBe(INVALID);
+  });
+
+  it('carries the window arrangement a revert at core start put back, beside how the countdown ended', () => {
+    const settled = CORE_TO_MAIN.requests['themes.pendingSettled'].params;
+    expect(settled({ entryId: 'e', outcome: 'reverted', arrangement: { sidebarWidth: 300 } })).toEqual({ entryId: 'e', outcome: 'reverted', arrangement: { sidebarWidth: 300 } });
+    expect(settled({ entryId: 'e', outcome: 'kept' })).toEqual({ entryId: 'e', outcome: 'kept' });
+  });
+
+  it("says when core's start ended the countdown, and when it left one another running Damocles counts", () => {
+    const settled = CORE_TO_MAIN.requests['themes.pendingSettled'].params;
+    expect(settled({ entryId: 'e', outcome: 'kept', atStart: true })).toEqual({ entryId: 'e', outcome: 'kept', atStart: true });
+    expect(settled({ entryId: 'e', outcome: 'kept', atStart: 'yes' })).toBe(INVALID);
+    const elsewhere = CORE_TO_MAIN.requests['themes.pendingElsewhere'].params;
+    expect(elsewhere({ entryId: 'e' })).toEqual({ entryId: 'e' });
+    expect(elsewhere({ entryId: '' })).toBe(INVALID);
+  });
+});
+
+describe('the theme requests main sends', () => {
+  it('has no request that nothing sends', () => {
+    expect(Object.keys(MAIN_TO_CORE.requests)).not.toContain('themes.save');
+    expect(Object.keys(MAIN_TO_CORE.requests)).not.toContain('themes.schedule');
+  });
+
+  it('carries the schedule screen\'s rules alone, up to the number a schedule holds', () => {
+    const params = MAIN_TO_CORE.requests['themes.setScheduleRules'].params;
+    const rule = { days: ['mon'], minute: 420, theme: 'damocles', look: 'auto' };
+    expect(params({ rules: [rule] })).toEqual({ rules: [rule] });
+    expect(params({ rules: [] })).toEqual({ rules: [] });
+    expect(params({ rules: Array.from({ length: 48 }, () => rule) })).not.toBe(INVALID);
+    expect(params({ rules: Array.from({ length: 49 }, () => rule) })).toBe(INVALID);
+    expect(params({ rules: [{ ...rule, minute: 1440 }] })).toBe(INVALID);
+    expect(params({ schedule: { enabled: true, rules: [rule] } })).toBe(INVALID);
+  });
+
+  it('carries the hash of the file the editor opened with its save, and the save\'s answer: the new hash, or that the file moved', () => {
+    const { params, result } = MAIN_TO_CORE.requests['themes.saveTheme'];
+    const save = { themeId: 'damocles', theme: {} };
+    const hash = 'a'.repeat(64);
+    expect(params(save)).toEqual(save);
+    expect(params({ ...save, baseHash: hash })).toEqual({ ...save, baseHash: hash });
+    expect(params({ ...save, baseHash: 'abc' })).toBe(INVALID);
+    expect(result({ hash })).toEqual({ hash });
+    expect(result({ changed: true })).toEqual({ changed: true });
+    expect(result({ changed: false })).toBe(INVALID);
+    expect(MAIN_TO_CORE.requests['themes.baseHash'].params({ themeId: 'damocles' })).toEqual({ themeId: 'damocles' });
+    expect(MAIN_TO_CORE.requests['themes.baseHash'].result({})).toEqual({});
+    expect(MAIN_TO_CORE.requests['themes.baseHash'].result({ hash })).toEqual({ hash });
+    expect(MAIN_TO_CORE.requests['themes.baseHash'].result({ hash: 'A'.repeat(64) })).toBe(INVALID);
+  });
+
+  it('carries the project looks up to the caps their reader keeps', () => {
+    const looks = MAIN_TO_CORE.requests['themes.projectLooks'].result;
+    const look = { mode: 'touches', accent: '#ff00aa' };
+    const many = (count: number): Record<string, unknown> => Object.fromEntries(Array.from({ length: count }, (_, at) => [`c:/work/${at}`, look]));
+    expect(looks({ looks: many(MAX_PROJECT_LOOKS) })).not.toBe(INVALID);
+    expect(looks({ looks: many(MAX_PROJECT_LOOKS + 1) })).toBe(INVALID);
+    expect(looks({ looks: { ['x'.repeat(MAX_PROJECT_KEY_CHARS)]: look } })).not.toBe(INVALID);
+    expect(looks({ looks: { ['x'.repeat(MAX_PROJECT_KEY_CHARS + 1)]: look } })).toBe(INVALID);
+  });
+
+  it('takes a theme id only in the lowercase form every theme has', () => {
+    const remove = MAIN_TO_CORE.requests['themes.delete'].params;
+    expect(remove({ themeId: '0f8fad5b-d9cb-469f-a165-70867728950e' })).not.toBe(INVALID);
+    expect(remove({ themeId: 'damocles-arcade' })).not.toBe(INVALID);
+    for (const themeId of ['', 'New folder', 'Night', 'my_theme', '../x', 'x'.repeat(65)]) expect(remove({ themeId })).toBe(INVALID);
+  });
+});
+
+describe("a remote chat's theme relay on the wire", () => {
+  it('takes about only as one of its five words, so no other text of a remote core reaches a log or the store', () => {
+    const read = CORE_TO_MAIN.requests['user.theme.read'].params;
+    for (const about of ['current', 'installed', 'theme', 'schedule', 'project']) expect(read({ clientId: 'c', request: { about } })).toEqual({ clientId: 'c', request: { about } });
+    expect(read({ clientId: 'c', request: {} })).toEqual({ clientId: 'c', request: {} });
+    expect(read({ clientId: 'c', request: { about: 'x\ny' } })).toBe(INVALID);
+    expect(read({ clientId: 'c', request: { about: 'other' } })).toBe(INVALID);
+    expect(MAIN_TO_CORE.requests['themes.relay.read'].params({ authority: 'ssh+h1', request: { about: 'x\ny' } })).toBe(INVALID);
+  });
+
+  it('bounds a screenshot answer at 16 MiB', () => {
+    const shot = CORE_TO_MAIN.requests['user.theme.screenshot'].result;
+    expect(shot({ png: new Uint8Array(MAX_RELAYED_THEME_PNG_BYTES) })).not.toBe(INVALID);
+    expect(shot({ png: new Uint8Array(MAX_RELAYED_THEME_PNG_BYTES + 1) })).toBe(INVALID);
+  });
+
+  it("carries pressed only from main to its own core, as a boolean; a remote core's commit has no such field", () => {
+    expect(CORE_TO_MAIN.requests['user.theme.commit'].params({ clientId: 'c', stageId: 's', pressed: true })).toEqual({ clientId: 'c', stageId: 's' });
+    expect(CORE_TO_MAIN.requests['user.theme.installCommit'].params({ clientId: 'c', installId: 'i', useArrangement: false, chat: { id: 's' }, pressed: true })).toEqual({ clientId: 'c', installId: 'i', useArrangement: false, chat: { id: 's' } });
+    const commit = MAIN_TO_CORE.requests['themes.relay.commit'].params;
+    expect(commit({ authority: 'ssh+h1', stageId: 's', pressed: false })).toEqual({ authority: 'ssh+h1', stageId: 's', pressed: false });
+    expect(commit({ authority: 'ssh+h1', stageId: 's' })).toEqual({ authority: 'ssh+h1', stageId: 's' });
+    expect(commit({ authority: 'ssh+h1', stageId: 's', pressed: 1 })).toBe(INVALID);
+    expect(commit({ authority: 'ssh+h1', stageId: 's', pressed: 'true' })).toBe(INVALID);
+  });
+
+  it('takes a ThemeRead theme id only as the tool sends it: never empty, at most 64 characters', () => {
+    const read = CORE_TO_MAIN.requests['user.theme.read'].params;
+    expect(read({ clientId: 'c', request: { about: 'theme', theme: 'x'.repeat(64) } })).not.toBe(INVALID);
+    expect(read({ clientId: 'c', request: { about: 'theme', theme: '' } })).toBe(INVALID);
+    expect(read({ clientId: 'c', request: { about: 'theme', theme: 'x'.repeat(65) } })).toBe(INVALID);
+    expect(MAIN_TO_CORE.requests['themes.relay.read'].params({ authority: 'ssh+h1', request: { theme: '' } })).toBe(INVALID);
+  });
+
+  it("bounds a remote chat's id as the history actor it becomes, where the remote core's request arrives", () => {
+    const stage = { tool: 'set', input: {}, toolCallId: 't', planMode: false };
+    const install = { installId: 'i', useArrangement: false };
+    for (const [length, taken] of [[128, true], [129, false]] as const) {
+      const chat = { id: 'c'.repeat(length) };
+      const answers = [
+        CORE_TO_MAIN.requests['user.theme.stage'].params({ clientId: 'c', ...stage, chat }),
+        CORE_TO_MAIN.requests['user.theme.installCommit'].params({ clientId: 'c', ...install, chat }),
+        MAIN_TO_CORE.requests['themes.relay.stage'].params({ authority: 'ssh+h1', request: { ...stage, chat } }),
+        MAIN_TO_CORE.requests['themes.relay.installCommit'].params({ authority: 'ssh+h1', ...install, chat }),
+      ];
+      for (const answer of answers) expect(answer !== INVALID).toBe(taken);
+    }
+  });
+
+  it("bounds a card's prompt id alike on every request that names it", () => {
+    for (const [length, taken] of [[128, true], [129, false]] as const) {
+      const promptId = 'p'.repeat(length);
+      const answers = [
+        CORE_TO_MAIN.requests['user.theme.preview'].params({ clientId: 'c', stageId: 's', promptId, on: true }),
+        MAIN_TO_CORE.requests['themes.relay.preview'].params({ authority: 'ssh+h1', stageId: 's', promptId, on: true }),
+        MAIN_TO_CORE.requests['user.theme.showEnded'].params({ stageId: 's', promptId, reason: 'stopped' }),
+        CORE_TO_MAIN.requests['themes.showInWindow'].params({ promptId, theme: {} }),
+        CORE_TO_MAIN.requests['themes.stopShowing'].params({ promptId }),
+        MAIN_TO_CORE.requests['themes.showEnded'].params({ promptId, reason: 'stopped' }),
+      ];
+      for (const answer of answers) expect(answer !== INVALID).toBe(taken);
+    }
+  });
+
+  it('carries the expiry of a staged install from this core to main, and from main to the remote core that staged it', () => {
+    expect(CORE_TO_MAIN.events['themes.install.expired']({ installId: 'i' })).toEqual({ installId: 'i' });
+    expect(CORE_TO_MAIN.events['themes.install.expired']({})).toBe(INVALID);
+    expect(MAIN_TO_CORE.requests['user.theme.installExpired'].params({ installId: 'i' })).toEqual({ installId: 'i' });
+    expect(MAIN_TO_CORE.requests['user.theme.installExpired'].params({ installId: '' })).toBe(INVALID);
+  });
+
+  it('takes keepDraft on a discard only as a boolean, and a discard without it', () => {
+    const fromHost = CORE_TO_MAIN.requests['user.theme.discard'].params;
+    const toCore = MAIN_TO_CORE.requests['themes.relay.discard'].params;
+    expect(fromHost({ clientId: 'c', stageId: 's' })).toEqual({ clientId: 'c', stageId: 's' });
+    expect(fromHost({ clientId: 'c', stageId: 's', keepDraft: true })).toEqual({ clientId: 'c', stageId: 's', keepDraft: true });
+    expect(fromHost({ clientId: 'c', stageId: 's', keepDraft: 'yes' })).toBe(INVALID);
+    expect(toCore({ authority: 'ssh+h1', stageId: 's', keepDraft: true })).toEqual({ authority: 'ssh+h1', stageId: 's', keepDraft: true });
+    expect(toCore({ authority: 'ssh+h1', stageId: 's', keepDraft: 1 })).toBe(INVALID);
   });
 });
 
@@ -847,5 +1046,40 @@ describe('forge messages', () => {
     const relayed = CORE_TO_MAIN.requests['askpass.credential'].result;
     expect(relayed({ kind: 'delegate' })).toEqual({ kind: 'delegate' });
     expect(relayed({ kind: 'refused', message: 'No account was chosen for gitlab.com, so git got no credentials.' })).not.toBe(INVALID);
+  });
+});
+describe('the community store view', () => {
+  const view = MAIN_TO_CORE.requests['themes.store.list'].result;
+  const seeds = { background: '#101418', panel: '#151a20', text: '#e6edf3', accent: '#4cc2ff', success: '#3fcf8e', warning: '#f0b429', danger: '#f2555a', info: '#8ab4ff' };
+  const entry = {
+    id: 'aurora', name: 'Aurora', author: 'Ada', description: '', kinds: ['dark'], version: '1.1.0', colors: { dark: seeds }, fonts: [{ family: 'Inter', license: 'OFL-1.1' }], licenses: ['CC0-1.0'],
+    hasCss: false, hasLayout: false, hasCharacters: false, hasMoving: false, minAppVersion: '3.8.0', thumbnails: { dark: [{ panel: 'chat', sha256: 'c'.repeat(64) }] },
+    status: 'update', installedThemeId: 'theme-1', installedVersion: '1.0.0',
+  };
+  const listed = { state: 'cached', fetchedAt: 5, refusedReason: { message: 'GitHub answered HTTP {0}.', args: ['503'] }, entries: [entry] };
+
+  it('is parsed entry by entry, and a field main does not know is dropped', () => {
+    expect(view(listed)).toEqual(listed);
+    expect(view({ state: 'off', entries: [] })).toEqual({ state: 'off', entries: [] });
+    expect(view({ ...listed, extra: 1, entries: [{ ...entry, extra: '<img>' }] })).toEqual(listed);
+    expect(CORE_TO_MAIN.events['themes.store.updated']({ view: listed, listRead: false })).toEqual({ view: listed, listRead: false });
+    expect(CORE_TO_MAIN.events['themes.store.updated']({ view: listed, listRead: 'yes' })).toBe(INVALID);
+  });
+
+  it.each([
+    ['a state it does not have', { ...listed, state: 'stale' }],
+    ['a reason that is not a text', { ...listed, refusedReason: 'plain' }],
+    ['an entry id that is no entry id', { ...listed, entries: [{ ...entry, id: '../x' }] }],
+    ['a name past its limit', { ...listed, entries: [{ ...entry, name: 'n'.repeat(129) }] }],
+    ['a description past its limit', { ...listed, entries: [{ ...entry, description: 'd'.repeat(2001) }] }],
+    ['a kind that is no look', { ...listed, entries: [{ ...entry, kinds: ['sepia'] }] }],
+    ['a color that is not #rrggbb', { ...listed, entries: [{ ...entry, colors: { dark: { ...seeds, accent: 'url(x)' } } }] }],
+    ['a thumbnail whose sha256 is not one', { ...listed, entries: [{ ...entry, thumbnails: { dark: [{ panel: 'chat', sha256: '../../x' }] } }] }],
+    ['a thumbnail on a panel the app does not have', { ...listed, entries: [{ ...entry, thumbnails: { dark: [{ panel: 'span', sha256: 'c'.repeat(64) }] } }] }],
+    ['a flag that is not a boolean', { ...listed, entries: [{ ...entry, hasCss: 'yes' }] }],
+    ['a status it does not have', { ...listed, entries: [{ ...entry, status: 'pending' }] }],
+    ['more entries than a list holds', { ...listed, entries: Array.from({ length: 2001 }, () => entry) }],
+  ])('is refused with %s', (_name, raw) => {
+    expect(view(raw)).toBe(INVALID);
   });
 });

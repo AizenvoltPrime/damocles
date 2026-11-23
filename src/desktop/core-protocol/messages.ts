@@ -54,6 +54,7 @@ import { GIT_HOST, parseCredentialFields, parseCredentialOrigin, isCredentialVal
 import type { PageSpec } from '../../shared/panel-html';
 import { brokerEnvOf, CLIENT_PENDING_REASONS, MAX_BROKER_ENV_NAME_CHARS, MAX_BROKER_ENV_VALUE_CHARS, MAX_BROKER_ENV_VARS, MAX_BROKER_EXPIRES_IN_MS, MAX_GLOBAL_MEMORY_CONTENT_CHARS, MAX_GLOBAL_MEMORY_ID_CHARS, MAX_GLOBAL_MEMORY_LABEL_CHARS, MAX_GLOBAL_MEMORY_TAGS, MAX_HELD_MEMORY_QUEUES, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, MAX_RELAYED_MCP_TIMEOUT_MS, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, type BrokerAnswer, type BrowserToolAnswer, type ClientAuth, type ClientGlobalProfile, type ClientMcp, type ClientPolicy, type ClientUser, type GlobalMemoryListPage, type GlobalMemoryListRequest, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type ListedGlobalMemory, type GlobalMemoryWrite, type HeldAuth, type HeldMemoryQueue, type RelayedGlobalMemory, type RelayedMcpServer, type SearchedGlobalMemory } from '../../shared/remote-user';
 import type { RelayedServedFile, ServedFile, ServedFileAnswer } from '../../shared/served-file-url';
+import { MAX_COMPUTER_NAME_CHARS, MAX_RELAYED_THEME_PNG_BYTES, MAX_RELAYED_THEME_TEXT_CHARS, MAX_THEME_UPLOAD_BYTES, THEME_READ_ABOUT, THEME_UPLOAD_CHUNK_BYTES, type RelayedThemeProject, type ThemeCommitAnswer, type ThemeContentPart, type ThemeReadAnswer, type ThemeReadRequest, type ThemeShowEnded, type ThemeStageAnswer, type ThemeStageRequest, type UserThemeCalls } from '../../shared/themes/relay';
 import type { UserProfile } from '../../shared/types/memory';
 import { JOURNEY_FAILURES, type DesignCapture, type DesignJourneyRun, type DesignPreviewAnswer, type DesignPreviewFile, type DesignPreviewInfo, type DesignProbeResult, type DesignRender, type DesignRenderRequest, type JourneyStep } from '../../shared/types/design';
 import { MAX_JOURNEY_MESSAGE_CHARS, MAX_JOURNEY_OUTLINE_CHARS, MAX_JOURNEY_STEPS, parseJourneySteps } from '../../shared/design-journey';
@@ -66,8 +67,29 @@ import { EDITOR_HARD_MAX_DOCUMENT_BYTES, WORKTREE_PHASES, type ChatPlace, type C
 import { MAX_CALL_ARGS, REPOSITORY_CALLS, SCM_CALLS, WORKTREE_CALLS, type RepositoryCall, type ScmCall, type WorktreeCall } from './scm-calls';
 import { arr, bool, bytes, data, dict, either, finite, int, INVALID, localized, maybe, nonEmpty, none, num, obj, oneOf, opt, str, type Parser } from './schema';
 import type { LocalizedText } from '../../shared/localized-text';
+import { LOOK_SEEDS, PANELS, type Arrangement, type AssetMeta, type LookColors } from '../../shared/themes/schema';
+import { parseArrangement } from '../../shared/themes/arrangement';
+import { MAX_FONT_BYTES, type FontImport } from '../../shared/themes/fonts';
+import { MAX_EXPORT_FONTS } from '../../shared/themes/install';
+import type { ThemeExportFontBytes, ThemeExportPlan, ThemeExportPlanned, ThemeExportWritten, ThemeInstallCommit, ThemeInstallCommitted, ThemeInstallFrom, ThemeInstallPrepared, ThemeInstallPreview, ThemeInstallProgress } from '../../shared/themes/install';
+import { MAX_ENTRY_FONTS, MAX_ENTRY_LICENSES, MAX_ENTRY_THUMBS, MAX_STORE_ENTRIES, STORE_ENTRY_ID, STORE_TEXT_LIMITS, type StoreView } from '../../shared/themes/store';
+import {
+  isFlashRecord, isImageStats, isWallpaperPalette, MAX_STILL_BYTES, MAX_THUMB_BYTES, MAX_VIDEO_MS, type FlashRecord, type ImageStats, type WallpaperImport, type WallpaperKind, type WallpaperPalette,
+} from '../../shared/themes/wallpapers';
+import {
+  MAX_CHANGE_ID_CHARS, parseThemeActor, parseThemeHistoryChange, type ThemeActor, type ThemeHistoryChange, type ThemeHistoryEntry, type ThemeModeValue,
+} from '../../shared/themes/changes';
+import { parseScheduleRules, type ScheduleRule } from '../../shared/themes/schedule';
+import { MAX_STRIP_FRAMES, THEME_ID } from '../../shared/themes/limits';
+import { COUNTDOWN_OWNER, THEME_SHOW_END_REASONS, THEME_SHOW_REFUSALS, type ThemeShowEndReason, type ThemeShowRefusal } from '../../shared/themes/agent';
+import { MAX_PINNED_PROJECTS, MAX_SPRITE_BYTES, MAX_SPRITE_FPS, MAX_SPRITE_SIDE, type CharacterStrip, type PinEdit, type SpriteImport } from '../../shared/themes/characters';
+import { checkProjectLook, MAX_PROJECT_KEY_CHARS, MAX_PROJECT_LOOKS, type ProjectLook } from '../../shared/themes/project-looks';
+import type { LookKind } from '../../shared/themes/tokens';
 import { MAX_CERTIFICATE_FIELD_CHARS, type ClientCertificateFilter } from '../../shared/client-certificate';
 import { MAX_IMAGE_BASE64_LENGTH } from '../../shared/types/content';
+
+// A moving wallpaper's flash check as the theme renderer answers it, never with an allowance.
+export type FlashVerdict = Omit<FlashRecord, 'allowed'>;
 
 export const MAX_ID_CHARS = 128;
 // secret and memento keys
@@ -262,6 +284,22 @@ export interface CoreRequests {
   // the call's target, and a write's approval card when approval is set; only bounded, masked text comes back
   'user.forge.tool': Call<{ readonly clientId: string; readonly viewId?: string } & RelayedForgeRequest, ForgeToolAnswer>;
   'user.forge.describe': Call<{ readonly clientId: string; readonly viewId?: string; readonly approval: boolean } & RelayedForgeRequest, ForgeDescribeAnswer>;
+  // a daemon's core: a chat's theme tool's store and window work, run by exactly the client clientId names, whose own core
+  // alone writes; its main refuses while the theme tools are off there
+  'user.theme.read': Call<{ readonly clientId: string } & UserThemeCalls['read']['params'], UserThemeCalls['read']['result']>;
+  'user.theme.uploadStart': Call<{ readonly clientId: string } & UserThemeCalls['uploadStart']['params'], UserThemeCalls['uploadStart']['result']>;
+  'user.theme.uploadChunk': Call<{ readonly clientId: string } & UserThemeCalls['uploadChunk']['params'], UserThemeCalls['uploadChunk']['result']>;
+  'user.theme.stage': Call<{ readonly clientId: string } & UserThemeCalls['stage']['params'], UserThemeCalls['stage']['result']>;
+  'user.theme.commit': Call<{ readonly clientId: string } & UserThemeCalls['commit']['params'], UserThemeCalls['commit']['result']>;
+  'user.theme.discard': Call<{ readonly clientId: string } & UserThemeCalls['discard']['params'], void>;
+  'user.theme.preview': Call<{ readonly clientId: string } & UserThemeCalls['preview']['params'], UserThemeCalls['preview']['result']>;
+  'user.theme.screenshotTake': Call<{ readonly clientId: string }, UserThemeCalls['screenshotTake']['result']>;
+  'user.theme.screenshot': Call<{ readonly clientId: string } & UserThemeCalls['screenshot']['params'], UserThemeCalls['screenshot']['result']>;
+  'user.theme.screenshotDrop': Call<{ readonly clientId: string } & UserThemeCalls['screenshotDrop']['params'], void>;
+  // ThemeSet install on the pinned device (feature themes); its card's Allow flashing never crosses from a remote core
+  'user.theme.installPrepare': Call<{ readonly clientId: string } & UserThemeCalls['installPrepare']['params'], UserThemeCalls['installPrepare']['result']>;
+  'user.theme.installCommit': Call<{ readonly clientId: string } & UserThemeCalls['installCommit']['params'], UserThemeCalls['installCommit']['result']>;
+  'user.theme.installCancel': Call<{ readonly clientId: string } & UserThemeCalls['installCancel']['params'], void>;
   // answers once what core posted to the view before is within the flow window of the host's queue toward the page; with
   // viewKey, of that one view's page only, else of every view's
   'views.drained': Call<{ readonly viewId: string; readonly viewKey?: string }, void>;
@@ -287,6 +325,50 @@ export interface CoreRequests {
   'design.replayJourney': Call<{ readonly panelId: string; readonly designId: string; readonly relPath: string; readonly state: string | null; readonly steps: readonly JourneyStep[]; readonly reducedMotion: boolean }, void>;
   // runs the host's Locate flow for the listed project with this key, the core's own folderKey of its path
   'window.locateProjectFolder': Call<{ readonly folderKey: string }, void>;
+  // this computer's core only, for the agent's theme tools (feature themes); a daemon's core builds none of them
+  // a drawn preview of `theme`, which main validates: a 1280x800 PNG of its miniature with sample content only
+  'themes.render': Call<{ readonly theme: unknown; readonly mode: 'dark' | 'light' | 'split' }, { readonly png: Uint8Array }>;
+  // a screenshot of the window kept in main's memory under a one-time id, shown at url until dropped or 10 minutes pass
+  'themes.screenshotTake': Call<object, { readonly shotId: string; readonly url: string; readonly width: number; readonly height: number }>;
+  'themes.screenshotRead': Call<{ readonly shotId: string }, { readonly png: Uint8Array }>;
+  'themes.screenshotDrop': Call<{ readonly shotId: string }, void>;
+  // an on-the-fly change core applied and marked pendingConfirm: answers once the keep-changes banner ends. entryId names the
+  // countdown (the mark's entry); chatId (feature themes) the chat that changed
+  'themes.applied': Call<{ readonly entryId: string; readonly chatId?: string; readonly chatTitle?: string; readonly change: ThemeHistoryChange; readonly previousName?: string }, { readonly outcome: 'kept' | 'reverted' }>;
+  // a change the banner did not make ended it, and core already cleared the mark; atStart: core's start did, which reverts
+  // a countdown no running app counts, and otherwise reverted is the user's Undo of the countdown's first change
+  'themes.pendingSettled': Call<{ readonly entryId: string; readonly outcome: 'kept' | 'reverted'; readonly arrangement?: unknown; readonly atStart?: boolean }, void>;
+  // core's start left the countdown of entryId as it is: another running Damocles on the themes folder counts it (feature themes)
+  'themes.pendingElsewhere': Call<{ readonly entryId: string }, void>;
+  // a change that is not on the fly joined the countdown of entryId, which restarts (feature themes); chatId and
+  // chatTitle name the chat that made it, absent for the user
+  'themes.pendingExtended': Call<{ readonly entryId: string; readonly change: ThemeHistoryChange; readonly chatId?: string; readonly chatTitle?: string }, void>;
+  // this window's arrangement (feature themes): what ThemeSet layout current saves, and what an agent's pick or undo
+  // replaces, which its history entry keeps
+  'themes.currentArrangement': Call<object, { readonly arrangement: Arrangement }>;
+  // an arrangement put in place as a manual pick puts it (feature themes), which main checks again; density, the
+  // theme's, scales its minimums, and absent the shown look's does
+  'themes.applyArrangement': Call<{ readonly arrangement: unknown; readonly density?: number }, void>;
+  // a card's Show in window: main paints `theme`, which it validates, as the one transient preview; the newest one wins
+  // refused: the window cannot paint the proposal now, so nothing shows and the card's toggle stays off
+  'themes.showInWindow': Call<{ readonly promptId: string; readonly chatTitle?: string; readonly theme: unknown }, { readonly refused?: ThemeShowRefusal }>;
+  'themes.stopShowing': Call<{ readonly promptId: string }, void>;
+  // what the window shows now
+  'themes.state': Call<object, { readonly kind: LookKind; readonly themeId: string; readonly decidedBy: string }>;
+  // a wallpaper blob decoded in main's theme renderer (feature themes): its 480 px WebP thumbnail, luminance
+  // percentiles, proposed palette and decoded size, which core writes under cache/<sha256>/; refused when its pixels do not
+  // match its size. A moving wallpaper (kind animated or video, feature themes) also answers its first frame as PNG and
+  // its flash check
+  'themes.analyze': Call<
+    { readonly sha256: string; readonly mime: string; readonly width: number; readonly height: number; readonly kind?: WallpaperKind; readonly durationMs?: number },
+    { readonly thumb: Uint8Array; readonly stats: ImageStats; readonly palette: WallpaperPalette; readonly width: number; readonly height: number; readonly still?: Uint8Array; readonly flash?: FlashVerdict }
+  >;
+  // a character sprite blob decoded in main's theme renderer (feature themes): every frame of an animated image or a
+  // strip checked for flashing, and an animated image's or an SVG's first frame as PNG
+  'themes.analyzeSprite': Call<
+    { readonly sha256: string; readonly mime: string; readonly width: number; readonly height: number; readonly strip?: CharacterStrip; readonly animated: boolean },
+    { readonly still?: Uint8Array; readonly flash: FlashVerdict }
+  >;
 }
 
 export type { BrokerAnswer, BrowserToolAnswer, ClientAuth, ClientPolicy, ClientUser, HeldAuth };
@@ -499,6 +581,98 @@ export interface MainRequests {
   'forge.fork': Call<{ readonly serverId: string; readonly accountId: string; readonly path: string }, ForkOutcome>;
   'forge.openMergeRequest': Call<{ readonly serverId: string; readonly accountId: string; readonly upstreamPath: string; readonly forkPath: string; readonly branch: string; readonly targetBranch?: string; readonly template?: string }, MergeRequestPage>;
   'forge.openOrgAccess': Call<{ readonly accountId: string; readonly org: string }, boolean>;
+  // this computer's core only (docs/invariants.md "Desktop themes"); a daemon's core builds no theme store and serves none
+  'themes.list': Call<object, { readonly themes: readonly ThemeListing[] }>;
+  'themes.duplicate': Call<{ readonly themeId: string; readonly name: string }, { readonly themeId: string }>;
+  'themes.delete': Call<{ readonly themeId: string }, void>;
+  'themes.rename': Call<{ readonly themeId: string; readonly name: string }, void>;
+  // a user theme replaced whole by `theme`, which core validates; keys the file has that this format does not know, and its
+  // origin, are kept; its custom CSS is stored as sanitizeThemeCss keeps it, which main computes the same way for the editor
+  // pins (feature themes): projects.json's pins of that theme, changed in the same history entry
+  // baseHash: the hash themes.baseHash gave for the file the editor opened; the answer is `changed` when the file moved since
+  'themes.saveTheme': Call<{ readonly themeId: string; readonly theme: unknown; readonly pins?: readonly PinEdit[]; readonly baseHash?: string }, { readonly hash?: string; readonly changed?: true }>;
+  // the hash of a user theme's file as it is now; none when it has no file or the file is no theme this Damocles can edit
+  'themes.baseHash': Call<{ readonly themeId: string }, { readonly hash?: string }>;
+  // the preferred look of that kind, written to damocles.desktop.themes.<kind>; arrangementBefore: the window arrangement main
+  // replaces with the theme's own, kept in the history entry. While the schedule runs the pick also holds over it from `at`
+  // (main's clock, feature themes) until the next rule start
+  // recorded: false for the look already preferred, which is no history entry, so main applies no window arrangement
+  'themes.pick': Call<{ readonly themeId: string; readonly kind: LookKind; readonly arrangementBefore?: unknown; readonly at?: number }, { readonly recorded: boolean }>;
+  // the Mode row (feature themes): damocles.desktop.theme; System turns a schedule off in the same history entry
+  'themes.setMode': Call<{ readonly mode: ThemeModeValue }, void>;
+  // the schedule screen's mode (feature themes); Use a schedule and Off change a System mode to `showing`
+  'themes.setScheduleMode': Call<{ readonly choice: 'system' | 'schedule' | 'off'; readonly showing: LookKind }, void>;
+  // the schedule screen's rules (feature themes), replacing appearance.json's schedule as one history entry
+  // the schedule screen's rules (feature themes), replacing appearance.json's rules as one history entry; core keeps whether
+  // the schedule is on
+  'themes.setScheduleRules': Call<{ readonly rules: readonly ScheduleRule[] }, void>;
+  // Resume schedule now (feature themes): the pick that holds over the schedule ends
+  'themes.resumeSchedule': Call<object, void>;
+  // Toggle Theme while the schedule runs (feature themes): `kind` of `themeId` holds over it from `at` until the next
+  // rule start; the preferred looks stay
+  'themes.hold': Call<{ readonly themeId: string; readonly kind: LookKind; readonly at: number }, void>;
+  // both preferred looks back to the built-in theme, in one write; projectKey (feature themes): the selected
+  // project, whose own look turns off in the same history entry
+  'themes.reset': Call<{ readonly projectKey?: string }, void>;
+  // every project look by project key (feature themes), a pending relocation's also under where the aliases lead;
+  // main checks each again
+  'themes.projectLooks': Call<object, { readonly looks: Readonly<Record<string, ProjectLook>> }>;
+  // the project's own look, or none for null, as one history entry naming the project by `name`
+  'themes.setProjectLook': Call<{ readonly projectKey: string; readonly look: ProjectLook | null; readonly name: string }, void>;
+  // a remote project's move, Remove Project, Forget host and the hosts this computer still holds: the looks and pins follow
+  'themes.relocateProject': Call<{ readonly fromKey: string; readonly toKey: string }, void>;
+  'themes.forgetProject': Call<{ readonly projectKey: string }, void>;
+  'themes.forgetHost': Call<{ readonly authorityKey: string }, void>;
+  'themes.keepHosts': Call<{ readonly authorityKeys: readonly string[] }, void>;
+  // the undo history, newest first
+  'themes.history': Call<object, { readonly entries: readonly ThemeHistoryEntry[] }>;
+  // reverses the newest change; arrangement: the window arrangement it gives back, which main applies. expected (feature
+  // themes): the entry the caller means, refused when it is no longer the newest
+  'themes.undo': Call<{ readonly expected?: string }, { readonly undone?: ThemeHistoryChange; readonly arrangement?: unknown }>;
+  // the keep-changes banner's revert (feature themes): while the mark names entryId, that entry and every later one
+  // undone, else nothing; arrangement (feature themes): the window arrangement the countdown's changes replaced
+  'themes.undoPending': Call<{ readonly entryId: string }, { readonly undone?: ThemeHistoryChange; readonly arrangement?: unknown }>;
+  // the keep-changes banner's Keep: core clears pendingConfirm while it still names entryId (feature themes)
+  'themes.keep': Call<{ readonly entryId: string }, void>;
+  // main ended a card's Show in window: another transient preview took over, or the strip's Stop showing (feature themes)
+  'themes.showEnded': Call<{ readonly promptId: string; readonly reason: ThemeShowEndReason }, void>;
+  // main let go of a screenshot to hold newer ones, so the card that shows it closes
+  'themes.screenshotGone': Call<{ readonly shotId: string }, void>;
+  // puts back what the entry and every later one changed, as one new entry; arrangementNow: the window's, kept for its undo
+  'themes.restore': Call<{ readonly entryId: string; readonly arrangementNow?: unknown }, { readonly arrangement?: unknown }>;
+  // a font file stored as a theme blob (feature themes); refused for a collection, a restricted font or one too large
+  'themes.importFont': Call<{ readonly bytes: Uint8Array }, FontImport>;
+  // a wallpaper the user picked in main's file dialog, read, checked from its header and stored as a blob, then analyzed
+  // (feature themes); refused past its kind's caps or undecodable
+  'themes.importImage': Call<{ readonly file: string }, WallpaperImport>;
+  // a character sprite the user picked in main's file dialog, cut into strip's frames when given, checked from its header,
+  // stored as a blob and checked by the theme renderer (feature themes); refused past the sprite caps
+  'themes.importSprite': Call<{ readonly file: string; readonly strip?: { readonly frames: number; readonly fps: number } }, SpriteImport>;
+  // the theme editor's "Allow flashing for this file" (feature themes): this computer's allowance, written beside the file's
+  // flash check; false when the file has none yet
+  'themes.allowFlash': Call<{ readonly sha256: string }, boolean>;
+  // sharing (feature themes): a .damocles-theme or VS Code theme file, or an https URL, read and checked into a staged install
+  // the install card shows; nothing is installed before commit
+  'themes.install.prepare': Call<{ readonly from: ThemeInstallFrom }, ThemeInstallPrepared>;
+  'themes.install.commit': Call<ThemeInstallCommit, ThemeInstallCommitted>;
+  // the staged install and the blobs only it named go
+  'themes.install.cancel': Call<{ readonly installId: string }, void>;
+  // the export's file name and its fonts' license verdicts; installedFonts: the bytes of the installed fonts the theme names
+  'themes.export.plan': Call<{ readonly themeId: string; readonly installedFonts?: readonly ThemeExportFontBytes[] }, ThemeExportPlanned>;
+  // one .damocles-theme written to the absolute path main's save dialog chose; a Restricted font refuses it
+  'themes.export.write': Call<{ readonly themeId: string; readonly path: string; readonly installedFonts: readonly ThemeExportFontBytes[] }, ThemeExportWritten>;
+  // Browse (feature themes): the community store's verified list; refresh false reuses one under a day old, true fetches
+  // it (Check for updates); off and zero requests while damocles.desktop.themes.store is off
+  'themes.store.list': Call<{ readonly refresh: boolean }, StoreView>;
+  // Browse's Install or Update (feature themes): the entry's file downloaded from a GitHub release host, checked
+  // against its pinned size and SHA-256 before it is read, and staged for the install card; commit and cancel are themes.install.*
+  'themes.store.install': Call<{ readonly entryId: string }, ThemeInstallPrepared>;
+  // main's update check (feature themes): the list, without thumbnails, only while the store setting is
+  // on and a store theme is installed; fetched: a request was made
+  'themes.store.backgroundCheck': Call<object, { readonly fetched: boolean }>;
+  // Settings' Community store switch (feature themes): core writes damocles.desktop.themes.store itself, so
+  // no store request goes out after it is off, and a Browse that lists again once this answers reads the new value
+  'themes.store.setEnabled': Call<{ readonly enabled: boolean }, void>;
   // a held design's widths and one screen's declared states; nothing: not held, or the screen cannot be read
   'design.info': Call<{ readonly designId: string; readonly relPath: string }, DesignPreviewInfo | undefined>;
   // design.info that also says a page is missing (no file there); main asks it only of a core listing design.infoMissing
@@ -559,6 +733,8 @@ export interface MainRequests {
   'e2e.stubOAuth': Call<{ readonly account: string; readonly expiresInMs: number; readonly offline?: boolean }, void>;
   // after this many sessions the sessions step commits, the relocation pauses as stopped, or hangs holding its lock; null clears
   'e2e.relocationPauseAfter': Call<RelocationPauseAfter, void>;
+  // this computer's core (feature themes): every request the community store made since the last call, then cleared
+  'e2e.themeStoreFetches': Call<object, { readonly fetches: readonly { readonly url: string; readonly purpose: 'list' | 'thumbnail' }[] }>;
   // this computer's core: a credential for a daemon's broker, resolved and refreshed by its own pi
   // force: refreshed under pi's lock even while the token is not expiring (Keep running)
   'user.resolveCredential': Call<{ readonly provider: string; readonly force?: boolean }, BrokerAnswer>;
@@ -596,6 +772,40 @@ export interface MainRequests {
   // remote chat's view, under whose proxy a refusal is recorded for its notice's actions
   'user.forge.tool': Call<{ readonly request: ForgeToolRequest; readonly viewId?: string; readonly toolCallId: string }, ForgeToolAnswer>;
   'user.forge.describe': Call<{ readonly request: ForgeToolRequest; readonly viewId?: string; readonly toolCallId: string; readonly approval: boolean }, ForgeDescribeAnswer>;
+  // this computer's core: a remote chat's theme tool on this computer's store, for the authority main names; project: the
+  // host project main mapped the chat's folder to
+  'themes.relay.read': Call<{ readonly authority: string; readonly request: ThemeReadRequest; readonly project?: RelayedThemeProject }, ThemeReadAnswer>;
+  'themes.relay.uploadStart': Call<{ readonly authority: string } & UserThemeCalls['uploadStart']['params'], UserThemeCalls['uploadStart']['result']>;
+  'themes.relay.uploadChunk': Call<{ readonly authority: string } & UserThemeCalls['uploadChunk']['params'], UserThemeCalls['uploadChunk']['result']>;
+  'themes.relay.stage': Call<{ readonly authority: string; readonly request: ThemeStageRequest; readonly project?: RelayedThemeProject }, ThemeStageAnswer>;
+  // pressed: main saw the card's Apply posted by its own page for this stage; absent reads as not pressed, and no user.theme
+  // request carries it
+  'themes.relay.commit': Call<{ readonly authority: string; readonly stageId: string; readonly pressed?: boolean }, ThemeCommitAnswer>;
+  'themes.relay.discard': Call<{ readonly authority: string; readonly stageId: string; readonly keepDraft?: boolean }, void>;
+  'themes.relay.preview': Call<{ readonly authority: string } & UserThemeCalls['preview']['params'], UserThemeCalls['preview']['result']>;
+  // a remote chat's ThemeSet install (feature themes): downloaded only while web search is on here, staged for the
+  // authority, which alone commits or cancels it; allowFlash comes from main for a press on that authority's chat page here
+  'themes.relay.installPrepare': Call<{ readonly authority: string; readonly url: string }, ThemeInstallPrepared>;
+  'themes.relay.installCommit': Call<{ readonly authority: string } & UserThemeCalls['installCommit']['params'], ThemeInstallCommitted>;
+  'themes.relay.installCancel': Call<{ readonly authority: string; readonly installId: string }, void>;
+  'themes.relay.allowFlash': Call<{ readonly authority: string; readonly installId: string; readonly sha256: string }, { readonly allowed: boolean }>;
+  // a daemon's core: the window of the device that made the stage (the request's actor) ended its card's Show in window
+  // (feature themes)
+  'user.theme.showEnded': Call<ThemeShowEnded, void>;
+  // a daemon's core (feature themes): the sending client's window let go of a screenshot it took for a card of that core
+  'user.theme.screenshotGone': Call<{ readonly shotId: string }, void>;
+  // a daemon's core: the device (the request's actor) updated an install it staged for this core, and how far one of its flash
+  // checks is (feature themes)
+  'user.theme.installUpdated': Call<{ readonly preview: ThemeInstallPreview }, void>;
+  'user.theme.installProgress': Call<ThemeInstallProgress, void>;
+  // a daemon's core: the install its chat staged on the pinned device waited too long there and was dropped (feature themes)
+  'user.theme.installExpired': Call<{ readonly installId: string }, void>;
+  // this computer's core: the Settings install card's Allow flashing for this file (feature themes), only for a
+  // wallpaper the staged install lists as flagged
+  'themes.install.allowFlash': Call<{ readonly installId: string; readonly sha256: string }, boolean>;
+  // this computer's core: how far the theme renderer's flash check of a wallpaper is, for the install cards that wait on it
+  // (feature themes)
+  'themes.analyzeProgress': Call<{ readonly sha256: string; readonly fraction: number }, void>;
   // this computer's core: a proxy for a remote chat's view, which only FOREIGN_VIEW_MESSAGES reach
   'panels.attachForeign': Call<{ readonly authority: string; readonly viewId: string }, void>;
   'panels.detachForeign': Call<{ readonly viewId: string }, void>;
@@ -609,6 +819,13 @@ export type ScmCommitOutcome =
   | { readonly ok: false; readonly reason: 'failed'; readonly error: LocalizedText };
 
 export type SettingsViewScope = 'user' | 'machine' | 'project';
+
+// One theme as this computer's core lists it; main validates `theme` again before it shows or paints anything of it.
+export type ThemeListing =
+  // storeUpdate (feature themes): the community store lists another version of this store theme
+  | { readonly status: 'ok'; readonly id: string; readonly builtin: boolean; readonly name: string; readonly theme: unknown; readonly storeUpdate?: { readonly version: string } }
+  | { readonly status: 'broken'; readonly id: string; readonly name?: string; readonly reason: LocalizedText }
+  | { readonly status: 'needsNewer'; readonly id: string; readonly name?: string; readonly version: number };
 
 export type MentionTargetData = { readonly projectKey: string; readonly relativePath: string } | { readonly path: string };
 
@@ -653,6 +870,16 @@ export interface CoreEvents {
   'forge.bindingsChanged': BindingsChange;
   // this computer's core: a CI watch's new view, or a log watch's appended text and state
   'forge.ci.changed': CiChangedEvent;
+  // this computer's core: it wrote a theme file, so main reads the theme files again now rather than after its watcher's debounce
+  'themes.changed': object;
+  // this computer's core (feature themes): a staged install's preview changed, as a wallpaper's flash check ended
+  'themes.install.updated': { readonly preview: ThemeInstallPreview };
+  // this computer's core (feature themes): how far a staged install's wallpaper flash check is
+  'themes.install.progress': ThemeInstallProgress;
+  // this computer's core (feature themes): a staged install waited past its hour and was dropped with its blobs
+  'themes.install.expired': { readonly installId: string };
+  // this computer's core (feature themes): the store view after a list was read (listRead true) or an installed theme changed
+  'themes.store.updated': { readonly view: StoreView; readonly listRead?: boolean };
 }
 
 export interface MainEvents {
@@ -741,6 +968,9 @@ export interface MirrorTopics {
   clientMcp: ClientDelta<ClientMcp>;
   // a client's managed git servers (feature clientForges), whose takeover this core's spawns apply for that client
   clientForges: ClientDelta<ClientForges>;
+  // the daemon's: the names of FEATURES each client's attach listed that core reads, value undefined when it detached; a
+  // client's is dropped
+  clientFeatures: ClientDelta<{ readonly features: readonly string[] }>;
   // the daemon's: the client that most recently sent core a message, published before that message; a client's is dropped
   actingClient: { readonly clientId?: string };
   // the daemon's, after a removed socket folder was made again: its agent folder (CoreInit.remote.agentFolder) and the git
@@ -801,6 +1031,14 @@ export interface CoreInit {
   readonly e2eHooks: boolean;
   // this computer's core, e2e hooks only: DAMOCLES_E2E_FORGE_SERVERS as main read it (main/forge/e2e-forge-servers.ts)
   readonly e2eForgeServers?: Readonly<Partial<Record<'github.com' | 'gitlab.com', ForgeServerOverride>>>;
+  // this computer's core, e2e hooks only: DAMOCLES_E2E_THEME_DOWNLOADS, the folder a theme install's https://e2e.test/<name> reads
+  readonly e2eThemeDownloads?: string;
+  // this computer's core, e2e hooks only (feature themes): DAMOCLES_E2E_THEME_STORE_LIST, an https://e2e.test/<name> list
+  // read from e2eThemeDownloads, and DAMOCLES_E2E_THEME_STORE_KEY, the test public key (SPKI PEM) the list is signed with
+  readonly e2eThemeStore?: { readonly listUrl: string; readonly publicKeyPem: string };
+  // this computer's core (feature themes): this app among those that share the themes folder, the same at every run of it,
+  // which a keep-changes countdown's mark names (COUNTDOWN_OWNER)
+  readonly themesOwner?: string;
   // main's startup probe of git, which checkpoints follow instead of probing per session and source control runs
   readonly git: { readonly available: boolean; readonly reason?: string; readonly path?: string; readonly version?: { readonly major: number; readonly minor: number; readonly patch: number } };
   // main's app paths (main/platform/app-paths.ts), which core has no way to compute
@@ -845,6 +1083,7 @@ export interface CoreInit {
     readonly clientLanguage?: Readonly<Record<string, MirrorTopics['language']>>;
     readonly clientMcp?: Readonly<Record<string, ClientMcp>>;
     readonly clientForges?: Readonly<Record<string, ClientForges>>;
+    readonly clientFeatures?: Readonly<Record<string, MirrorTopics['clientFeatures']['value'] & object>>;
     // this computer's core: each remote authority's, by authority
     readonly clientNetwork?: Readonly<Record<string, { readonly allowedPorts: readonly number[]; readonly allowLocalNetwork: boolean }>>;
   };
@@ -899,6 +1138,42 @@ const localizedLabel = localized(MAX_LABEL_CHARS);
 const localizedMessage = localized(MAX_MESSAGE_CHARS);
 const value = data(MAX_DATA_CHARS);
 const done = none;
+const yes: Parser<true> = (raw) => (raw === true ? true : INVALID);
+// a user theme's id is a UUID and a built-in's `damocles-*`; core checks which one an operation allows
+const themeId: Parser<string> = (raw) => (typeof raw === 'string' && THEME_ID.test(raw) ? raw : INVALID);
+const themeName = nonEmpty(256);
+const seedColor: Parser<string> = (raw) => (typeof raw === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : INVALID);
+const lookColors = obj(Object.fromEntries(LOOK_SEEDS.map((seed) => [seed, seedColor])) as Record<(typeof LOOK_SEEDS)[number], Parser<string>>) as Parser<LookColors>;
+const themeListing: Parser<ThemeListing> = either<ThemeListing, ThemeListing>(
+  obj({ status: oneOf(['ok'] as const), id: themeId, builtin: bool, name: themeName, theme: data(MAX_MESSAGE_CHARS * 8), storeUpdate: opt(obj({ version: nonEmpty(64) })) }) as Parser<ThemeListing>,
+  either<ThemeListing, ThemeListing>(
+    obj({ status: oneOf(['broken'] as const), id: themeId, name: opt(themeName), reason: localizedMessage }),
+    obj({ status: oneOf(['needsNewer'] as const), id: themeId, name: opt(themeName), version: int(2, Number.MAX_SAFE_INTEGER) }),
+  ),
+);
+const themeData = data(MAX_MESSAGE_CHARS * 8);
+const imageStats: Parser<ImageStats> = (raw) => (isImageStats(raw) ? raw : INVALID);
+const wallpaperPalette: Parser<WallpaperPalette> = (raw) => (isWallpaperPalette(raw) ? raw : INVALID);
+// the renderer's verdict never carries an allowance, which only the user gives on this computer
+const flashVerdict: Parser<FlashVerdict> = (raw) => (isFlashRecord(raw) && (raw as { allowed?: unknown }).allowed === undefined ? raw : INVALID);
+const flashRecord: Parser<FlashRecord> = (raw) => (isFlashRecord(raw) ? raw : INVALID);
+const fps: Parser<number> = (raw) => (typeof raw === 'number' && Number.isFinite(raw) && raw >= 1 && raw <= MAX_SPRITE_FPS ? raw : INVALID);
+const characterStrip = obj({ frameWidth: int(1, MAX_SPRITE_SIDE), frameHeight: int(1, MAX_SPRITE_SIDE), frames: int(1, 256), fps }) as Parser<CharacterStrip>;
+const characterName: Parser<string | null> = (raw) => (raw === null ? null : typeof raw === 'string' && raw.length > 0 && raw.length <= 64 ? raw : INVALID);
+const pinEdit = obj({ projectKey: nonEmpty(MAX_PATH_CHARS), character: opt(characterName), everyTheme: opt(characterName) }) as Parser<PinEdit>;
+const projectLook: Parser<ProjectLook> = (raw) => checkProjectLook(raw) ?? INVALID;
+const projectLooks = dict(projectLook, MAX_PROJECT_KEY_CHARS, MAX_PROJECT_LOOKS);
+// a screenshot's side in device pixels: a window spanning a few 8K screens at most
+const MAX_SHOT_SIDE = 32_768;
+const lookKind = oneOf(['dark', 'light'] as const satisfies readonly LookKind[]);
+const themeMode = oneOf(['system', 'dark', 'light'] as const satisfies readonly ThemeModeValue[]);
+const scheduleRulesParser: Parser<readonly ScheduleRule[]> = (raw) => parseScheduleRules(raw) ?? INVALID;
+const arrangementParser: Parser<Arrangement> = (raw) => parseArrangement(raw) ?? INVALID;
+// A history change, actor and entry are what src/shared/themes/changes.ts parses, which the history file's reader uses too: an
+// entry core reads is one it can send.
+const themeHistoryChange: Parser<ThemeHistoryChange> = (raw) => parseThemeHistoryChange(raw) ?? INVALID;
+const themeActor: Parser<ThemeActor> = (raw) => parseThemeActor(raw) ?? INVALID;
+const themeHistoryEntry: Parser<ThemeHistoryEntry> = obj({ id: nonEmpty(MAX_CHANGE_ID_CHARS), at: finite, actor: themeActor, change: themeHistoryChange, cannotUndo: opt(yes) });
 const certificateField = opt(nonEmpty(MAX_CERTIFICATE_FIELD_CHARS));
 const certificatePrincipal = obj({ CN: certificateField, L: certificateField, O: certificateField, OU: certificateField });
 const section = oneOf(SETTINGS_SECTION_IDS);
@@ -963,6 +1238,7 @@ const relayedMcpServer: Parser<RelayedMcpServer> = obj({
 // a daemon's core builds git config from these, so a web URL must be canonical and a git host one the takeover can name
 const forgeWebUrl: Parser<string> = (raw) => (typeof raw === 'string' && raw.length <= MAX_LABEL_CHARS && isCanonicalWebUrl(raw) ? raw : INVALID);
 const forgeGitHost: Parser<string> = (raw) => (typeof raw === 'string' && raw.length <= MAX_LABEL_CHARS && GIT_HOST.test(raw) ? raw : INVALID);
+const clientFeatures = obj({ features: arr(label, MAX_ITEMS) });
 const clientForges: Parser<ClientForges> = obj({ servers: arr(obj({ id: label, webUrl: forgeWebUrl, gitHosts: arr(forgeGitHost, MAX_ITEMS), hasAccount: bool }), MAX_ITEMS), pending: opt(bool) });
 const forgeServers: Parser<ClientForges> = obj({ servers: arr(obj({ id: label, webUrl: label, gitHosts: arr(label, MAX_ITEMS), hasAccount: bool }), MAX_ITEMS) });
 const mcpResourceKind = oneOf(['resources', 'templates'] as const);
@@ -1010,7 +1286,7 @@ const chatEntry: Parser<ChatEntry> = obj({
   permissions: chatPermissions,
 });
 // A prompt id is a provider's tool call id, of no fixed length, so it takes a key's bound.
-const pendingKind = oneOf(['approval', 'question', 'plan', 'input', 'signIn', 'designVersion', 'designApproval'] as const);
+const pendingKind = oneOf(['approval', 'question', 'plan', 'input', 'signIn', 'designVersion', 'designApproval', 'themeChange', 'themeScreenshot', 'themeInstall'] as const);
 const promptOwner = either(
   obj({ kind: oneOf(['main'] as const) }),
   either(
@@ -1025,7 +1301,6 @@ const chatActivity: Parser<ChatActivity> = obj({
   background: bool,
 });
 const count = int(0, Number.MAX_SAFE_INTEGER);
-const yes: Parser<true> = (raw) => (raw === true ? true : INVALID);
 const no: Parser<false> = (raw) => (raw === false ? false : INVALID);
 // main renders the LocalizedText these carry, so it is parsed as such, never passed on as opaque data
 const turnOutcome: Parser<TurnOutcome> = either(
@@ -1047,6 +1322,55 @@ const catalogResult: Parser<CatalogResult> = either(
   either(obj({ ok: no, reason: oneOf(['leased', 'missing'] as const) }), obj({ ok: no, reason: oneOf(['invalid', 'failed'] as const), message: localizedMessage })),
 );
 const sha256Hex: Parser<string> = (raw) => (typeof raw === 'string' && /^[0-9a-f]{64}$/.test(raw) ? raw : INVALID);
+const fraction: Parser<number> = (raw) => (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : INVALID);
+const installProgress: Parser<ThemeInstallProgress> = obj({ installId: id, sha256: sha256Hex, fraction });
+// an object of at most `maxChars`; data() alone takes undefined, which would let a { refused } answer read as this branch
+const record = (maxChars: number): Parser<unknown> => {
+  const bounded = data(maxChars);
+  return (raw) => (typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? bounded(raw) : INVALID);
+};
+// the preview holds the theme and each analyzed wallpaper's thumbnail as a data URL
+const installPreview = record(MAX_MESSAGE_CHARS * 16) as Parser<ThemeInstallPreview>;
+const installPrepared = either<ThemeInstallPrepared, ThemeInstallPrepared>(obj({ preview: installPreview }), obj({ refused: localizedMessage }));
+const installCommitShape = { installId: id, onClash: opt(oneOf(['keepBoth', 'replace'] as const)), useArrangement: bool };
+const installCommitted = either<ThemeInstallCommitted, ThemeInstallCommitted>(
+  obj({ installed: obj({ themeId, name: themeName, replaced: bool, keptCopy: opt(obj({ themeId, name: themeName })) }) }),
+  obj({ refused: localizedMessage, preview: opt(installPreview) }),
+);
+// Core cuts each text to its STORE_TEXT_LIMITS characters, which are at most two UTF-16 units each.
+const storeText = (kind: keyof typeof STORE_TEXT_LIMITS): Parser<string> => nonEmpty(STORE_TEXT_LIMITS[kind] * 2);
+const storeThumbs = opt(arr(obj({ panel: oneOf(PANELS), sha256: sha256Hex }), MAX_ENTRY_THUMBS));
+const storeLooks = oneOf(['dark', 'light'] as const);
+const storeEntry = obj({
+  id: (raw: unknown) => (typeof raw === 'string' && STORE_ENTRY_ID.test(raw) ? raw : INVALID),
+  name: storeText('name'),
+  author: storeText('author'),
+  description: str(STORE_TEXT_LIMITS.description * 2),
+  kinds: arr(storeLooks, 2, 1),
+  version: storeText('version'),
+  colors: obj({ dark: opt(lookColors), light: opt(lookColors) }),
+  fonts: arr(obj({ family: storeText('name'), license: storeText('license') }), MAX_ENTRY_FONTS),
+  licenses: arr(storeText('license'), MAX_ENTRY_LICENSES),
+  hasCss: bool,
+  hasLayout: bool,
+  hasCharacters: bool,
+  hasMoving: bool,
+  minAppVersion: nonEmpty(32),
+  thumbnails: obj({ dark: storeThumbs, light: storeThumbs }),
+  status: oneOf(['available', 'installed', 'update', 'needsNewerApp'] as const),
+  installedThemeId: opt(themeId),
+  installedVersion: opt(storeText('version')),
+});
+// parsed here entry by entry, so the overlay gets no field of a shape main did not check
+const storeView: Parser<StoreView> = obj({
+  state: oneOf(['ok', 'cached', 'unreachable', 'refused', 'off', 'empty'] as const),
+  fetchedAt: opt(count),
+  refusedReason: opt(localizedMessage),
+  entries: arr(storeEntry, MAX_STORE_ENTRIES),
+});
+const exportPlan = record(MAX_MESSAGE_CHARS * 4) as Parser<ThemeExportPlan>;
+const exportFontBytes: Parser<ThemeExportFontBytes> = obj({ family: nonEmpty(64), bytes: bytes(MAX_FONT_BYTES) });
+const MAX_INSTALL_URL_CHARS = 8192;
 const sessionFileWrite: Parser<SessionFileWrite> = either(
   either(obj({ kind: oneOf(['written'] as const), mtimeMs: finite }), obj({ kind: oneOf(['changed', 'outside', 'notOwned'] as const) })),
   obj({ kind: oneOf(['refused'] as const), reason: oneOf(['held', 'otherProcess'] as const) }),
@@ -1363,6 +1687,43 @@ const ciCommitStatus: Parser<CiCommitStatus> = either<CiCommitStatus, CiCommitSt
 );
 const forgeToolInput = dict(value, MAX_KEY_CHARS, MAX_ITEMS);
 const forgeTarget = obj({ serverId: label, repoPath: label, accountId: label, sourceBranch: opt(label), targetBranch: opt(label), sourceRepoPath: opt(label), contentHash: opt(sha256Hex) });
+// a remote chat's theme tools (user.theme.*, themes.relay.*); the tool input and the card are data the core holding the store
+// checks again, as it checks a local tool call
+const themeRecord: Parser<Readonly<Record<string, unknown>>> = (raw) =>
+  (typeof raw === 'object' && raw !== null && !Array.isArray(raw) && themeData(raw) !== INVALID ? (raw as Readonly<Record<string, unknown>>) : INVALID);
+const themeContent: Parser<readonly ThemeContentPart[]> = arr(either<ThemeContentPart, ThemeContentPart>(
+  obj({ type: oneOf(['text'] as const), text: str(MAX_RELAYED_THEME_TEXT_CHARS) }),
+  obj({ type: oneOf(['image'] as const), png: bytes(MAX_RELAYED_THEME_PNG_BYTES) }),
+), 16);
+// exactly what the ThemeRead tool sends: its schema bounds `theme` at 64 characters, and the tool drops an empty one
+const themeReadRequest: Parser<ThemeReadRequest> = obj({ about: opt(oneOf(THEME_READ_ABOUT)), theme: opt(nonEmpty(64)), preview: opt(bool) });
+const themeReadAnswer: Parser<ThemeReadAnswer> = obj({ content: themeContent, isError: opt(yes) });
+const themeProject: Parser<RelayedThemeProject> = obj({ key: filePath, name: label });
+// the chat becomes a history entry's actor, so its id takes the actor's bound here, where a remote core's request arrives
+const themeChat = obj({ id: nonEmpty(MAX_CHANGE_ID_CHARS), title: opt(label) });
+const themeStageShape = {
+  tool: oneOf(['set', 'schedule'] as const), input: themeRecord, toolCallId: key, chat: themeChat, planMode: bool, upload: opt(id),
+};
+const themeStageRequest: Parser<ThemeStageRequest> = obj(themeStageShape);
+const themeStageAnswer: Parser<ThemeStageAnswer> = either<ThemeStageAnswer, ThemeStageAnswer>(
+  obj({ kind: oneOf(['done'] as const), content: themeContent, details: themeRecord, isError: opt(yes), notes: opt(str(MAX_RELAYED_THEME_TEXT_CHARS)) }) as unknown as Parser<ThemeStageAnswer>,
+  obj({
+    kind: oneOf(['change'] as const), stageId: id, card: themeRecord, details: themeRecord,
+    summary: obj({ text: str(MAX_RELAYED_THEME_TEXT_CHARS), png: opt(bytes(MAX_RELAYED_THEME_PNG_BYTES)) }),
+    onTheFly: bool, notes: opt(str(MAX_RELAYED_THEME_TEXT_CHARS)), computer: opt(str(MAX_COMPUTER_NAME_CHARS)),
+  }) as unknown as Parser<ThemeStageAnswer>,
+);
+const themeCommitAnswer: Parser<ThemeCommitAnswer> = either<ThemeCommitAnswer, ThemeCommitAnswer>(
+  obj({ outcome: oneOf(['applied', 'kept', 'reverted', 'stopped', 'outdated', 'unchanged'] as const) }),
+  obj({ refused: message, laterChange: opt(themeRecord) }) as unknown as Parser<ThemeCommitAnswer>,
+);
+const themeUploadStart = { sessionId: key, sha256: sha256Hex, bytes: int(1, MAX_THEME_UPLOAD_BYTES), name: opt(nonEmpty(255)) };
+const themeUploadChunk = { uploadId: id, offset: int(0, MAX_THEME_UPLOAD_BYTES), data: bytes(THEME_UPLOAD_CHUNK_BYTES) };
+const themeUploadAck = obj({ received: int(0, MAX_THEME_UPLOAD_BYTES), complete: bool });
+const themePreview = { stageId: id, promptId: id, on: bool };
+const themePreviewAnswer = obj({ showing: bool, refused: opt(oneOf(THEME_SHOW_REFUSALS)) });
+const themeShot = obj({ shotId: id, url: nonEmpty(MAX_ID_CHARS * 2), width: int(1, MAX_SHOT_SIDE), height: int(1, MAX_SHOT_SIDE) });
+
 const relayedForgeShape = { toolCallId: id, folder: filePath, endpoints: remoteEndpoints, pushRemote: opt(label), branch: opt(label), tool: label, input: forgeToolInput, expected: opt(forgeTarget) };
 const forgeToolRequest: Parser<ForgeToolRequest> = obj({ tool: label, input: forgeToolInput, authorityKey: label, projectKey: opt(filePath), project: label, endpoints: remoteEndpoints, pushRemote: opt(label), branch: opt(label), expected: opt(forgeTarget) });
 const forgeToolAnswer: Parser<ForgeToolAnswer> = obj({
@@ -1634,6 +1995,22 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'user.mcp.readResource': method(obj({ clientId: id, server: label, uri: message }), value),
   'user.forge.tool': method(obj({ clientId: id, viewId: opt(id), ...relayedForgeShape }), forgeToolAnswer),
   'user.forge.describe': method(obj({ clientId: id, viewId: opt(id), approval: bool, ...relayedForgeShape }), forgeDescribeAnswer),
+  'user.theme.read': method(obj({ clientId: id, request: themeReadRequest, folder: opt(filePath) }), themeReadAnswer),
+  'user.theme.uploadStart': method(obj({ clientId: id, ...themeUploadStart }), obj({ uploadId: id })),
+  'user.theme.uploadChunk': method(obj({ clientId: id, ...themeUploadChunk }), themeUploadAck),
+  'user.theme.stage': method(obj({ clientId: id, folder: opt(filePath), ...themeStageShape }), themeStageAnswer),
+  'user.theme.commit': method(obj({ clientId: id, stageId: id }), themeCommitAnswer),
+  'user.theme.discard': method(obj({ clientId: id, stageId: id, keepDraft: opt(bool) }), done),
+  'user.theme.preview': method(obj({ clientId: id, ...themePreview }), themePreviewAnswer),
+  'user.theme.screenshotTake': method(obj({ clientId: id }), themeShot),
+  'user.theme.screenshot': method(obj({ clientId: id, shotId: id }), obj({ png: bytes(MAX_RELAYED_THEME_PNG_BYTES) })),
+  'user.theme.screenshotDrop': method(obj({ clientId: id, shotId: id }), done),
+  'user.theme.installPrepare': method(
+    obj({ clientId: id, url: str(MAX_INSTALL_URL_CHARS) }),
+    either<UserThemeCalls['installPrepare']['result'], UserThemeCalls['installPrepare']['result']>(obj({ preview: installPreview, computer: str(MAX_COMPUTER_NAME_CHARS) }), obj({ refused: localizedMessage })),
+  ),
+  'user.theme.installCommit': method(obj({ clientId: id, ...installCommitShape, chat: themeChat }), installCommitted),
+  'user.theme.installCancel': method(obj({ clientId: id, installId: id }), done),
   'views.drained': method(obj({ viewId: id, viewKey }), done),
   'chats.reveal': method(obj({ viewId: id, column }), bool),
   'chats.showSession': method(obj({ sessionId: id }), done),
@@ -1650,6 +2027,27 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'design.journey': method(obj({ designId, relPath: filePath, widths: arr(renderWidth, MAX_PROBE_WIDTHS, 1), state: nullable(id), steps: journeySteps, outline: opt(bool) }), designJourneyRun),
   'design.replayJourney': method(obj({ panelId: id, designId, relPath: filePath, state: nullable(id), steps: journeySteps, reducedMotion: bool }), done),
   'window.locateProjectFolder': method(obj({ folderKey: filePath }), done),
+  'themes.render': method(obj({ theme: themeData, mode: oneOf(['dark', 'light', 'split'] as const) }), obj({ png: bytes(MAX_DATA_CHARS) })),
+  'themes.screenshotTake': method(obj({}), obj({ shotId: id, url: nonEmpty(MAX_ID_CHARS * 2), width: int(1, MAX_SHOT_SIDE), height: int(1, MAX_SHOT_SIDE) })),
+  'themes.screenshotRead': method(obj({ shotId: id }), obj({ png: bytes(MAX_DATA_CHARS) })),
+  'themes.screenshotDrop': method(obj({ shotId: id }), done),
+  'themes.applied': method(obj({ entryId: nonEmpty(MAX_ID_CHARS), chatId: opt(nonEmpty(MAX_ID_CHARS)), chatTitle: opt(str(MAX_LABEL_CHARS)), change: themeHistoryChange, previousName: opt(themeName) }), obj({ outcome: oneOf(['kept', 'reverted'] as const) })),
+  'themes.pendingSettled': method(obj({ entryId: nonEmpty(MAX_ID_CHARS), outcome: oneOf(['kept', 'reverted'] as const), arrangement: opt(value), atStart: opt(bool) }), done),
+  'themes.pendingElsewhere': method(obj({ entryId: nonEmpty(MAX_ID_CHARS) }), done),
+  'themes.pendingExtended': method(obj({ entryId: nonEmpty(MAX_ID_CHARS), change: themeHistoryChange, chatId: opt(nonEmpty(MAX_ID_CHARS)), chatTitle: opt(str(MAX_LABEL_CHARS)) }), done),
+  'themes.currentArrangement': method(obj({}), obj({ arrangement: arrangementParser })),
+  'themes.applyArrangement': method(obj({ arrangement: value, density: opt(finite) }), done),
+  'themes.showInWindow': method(obj({ promptId: id, chatTitle: opt(str(MAX_LABEL_CHARS)), theme: themeData }), obj({ refused: opt(oneOf(THEME_SHOW_REFUSALS)) })),
+  'themes.stopShowing': method(obj({ promptId: id }), done),
+  'themes.state': method(obj({}), obj({ kind: lookKind, themeId, decidedBy: id })),
+  'themes.analyze': method(
+    obj({ sha256: sha256Hex, mime: nonEmpty(64), width: int(1, 8192), height: int(1, 8192), kind: opt(oneOf(['image', 'animated', 'video'] as const)), durationMs: opt(int(0, MAX_VIDEO_MS)) }),
+    obj({ thumb: bytes(MAX_THUMB_BYTES), stats: imageStats, palette: wallpaperPalette, width: int(1, 8192), height: int(1, 8192), still: opt(bytes(MAX_STILL_BYTES)), flash: opt(flashVerdict) }),
+  ),
+  'themes.analyzeSprite': method(
+    obj({ sha256: sha256Hex, mime: nonEmpty(64), width: int(1, MAX_SPRITE_SIDE * 256), height: int(1, MAX_SPRITE_SIDE), strip: opt(characterStrip), animated: bool }),
+    obj({ still: opt(bytes(MAX_SPRITE_BYTES * 4)), flash: flashVerdict }),
+  ),
 };
 
 const MIRROR_TOPICS: Tables<MainToCore>['mirrors'] = {
@@ -1670,6 +2068,7 @@ const MIRROR_TOPICS: Tables<MainToCore>['mirrors'] = {
   clientLanguage: clientDelta(obj({ language: oneOf(['en', 'el'] as const) })),
   clientMcp: clientDelta(clientMcp),
   clientForges: clientDelta(clientForges),
+  clientFeatures: clientDelta(clientFeatures),
   clientNetwork: obj({ authority: filePath, ...clientNetworkShape }),
 };
 
@@ -1810,6 +2209,68 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
     either<MergeRequestPage, MergeRequestPage>(obj({ url: message, serverName: label }), obj({ unavailable: localizedMessage })),
   ),
   'forge.openOrgAccess': method(obj({ accountId: label, org: label }), bool),
+  'themes.list': method(obj({}), obj({ themes: arr(themeListing, MAX_ITEMS) })),
+  'themes.duplicate': method(obj({ themeId, name: themeName }), obj({ themeId })),
+  'themes.delete': method(obj({ themeId }), done),
+  'themes.rename': method(obj({ themeId, name: themeName }), done),
+  'themes.saveTheme': method(obj({ themeId, theme: themeData, pins: opt(arr(pinEdit, MAX_PINNED_PROJECTS)), baseHash: opt(sha256Hex) }), obj({ hash: opt(sha256Hex), changed: opt(yes) })),
+  'themes.baseHash': method(obj({ themeId }), obj({ hash: opt(sha256Hex) })),
+  'themes.pick': method(obj({ themeId, kind: lookKind, arrangementBefore: opt(value), at: opt(finite) }), obj({ recorded: bool })),
+  'themes.setMode': method(obj({ mode: themeMode }), done),
+  'themes.setScheduleMode': method(obj({ choice: oneOf(['system', 'schedule', 'off'] as const), showing: lookKind }), done),
+  'themes.setScheduleRules': method(obj({ rules: scheduleRulesParser }), done),
+  'themes.resumeSchedule': method(obj({}), done),
+  'themes.hold': method(obj({ themeId, kind: lookKind, at: finite }), done),
+  'themes.reset': method(obj({ projectKey: opt(filePath) }), done),
+  'themes.projectLooks': method(obj({}), obj({ looks: projectLooks })),
+  'themes.setProjectLook': method(obj({ projectKey: filePath, look: either(nul, projectLook), name: label }), done),
+  'themes.relocateProject': method(obj({ fromKey: filePath, toKey: filePath }), done),
+  'themes.forgetProject': method(obj({ projectKey: filePath }), done),
+  'themes.forgetHost': method(obj({ authorityKey: label }), done),
+  'themes.keepHosts': method(obj({ authorityKeys: arr(label, MAX_ITEMS) }), done),
+  'themes.history': method(obj({}), obj({ entries: arr(themeHistoryEntry, MAX_ITEMS) })),
+  'themes.undo': method(obj({ expected: opt(nonEmpty(MAX_ID_CHARS)) }), obj({ undone: opt(themeHistoryChange), arrangement: opt(value) })),
+  'themes.undoPending': method(obj({ entryId: nonEmpty(MAX_ID_CHARS) }), obj({ undone: opt(themeHistoryChange), arrangement: opt(value) })),
+  'themes.keep': method(obj({ entryId: nonEmpty(MAX_ID_CHARS) }), done),
+  'themes.showEnded': method(obj({ promptId: id, reason: oneOf(THEME_SHOW_END_REASONS) }), done),
+  'themes.screenshotGone': method(obj({ shotId: id }), done),
+  'themes.restore': method(obj({ entryId: nonEmpty(MAX_ID_CHARS), arrangementNow: opt(value) }), obj({ arrangement: opt(value) })),
+  'themes.importFont': method(
+    obj({ bytes: bytes(MAX_FONT_BYTES) }),
+    obj({ sha256: sha256Hex, family: themeName, embedding: oneOf(['installable', 'previewPrint', 'editable'] as const), asset: data(MAX_MESSAGE_CHARS * 2) as Parser<AssetMeta> }),
+  ),
+  'themes.importImage': method(
+    obj({ file: filePath }),
+    obj({ sha256: sha256Hex, asset: data(MAX_MESSAGE_CHARS) as Parser<WallpaperImport['asset']>, stats: imageStats, palette: wallpaperPalette, flash: opt(flashRecord) }),
+  ),
+  'themes.importSprite': method(
+    obj({ file: filePath, strip: opt(obj({ frames: int(1, MAX_STRIP_FRAMES), fps })) }),
+    obj({ sha256: sha256Hex, asset: data(MAX_MESSAGE_CHARS) as Parser<SpriteImport['asset']>, strip: opt(characterStrip), flash: opt(flashRecord) }),
+  ),
+  'themes.allowFlash': method(obj({ sha256: sha256Hex }), bool),
+  'themes.install.prepare': method(
+    obj({ from: either<ThemeInstallFrom, ThemeInstallFrom>(obj({ kind: oneOf(['file'] as const), path: filePath }), obj({ kind: oneOf(['url', 'link'] as const), url: str(MAX_INSTALL_URL_CHARS) })) }),
+    installPrepared,
+  ),
+  'themes.install.commit': method(obj(installCommitShape), installCommitted),
+  'themes.install.cancel': method(obj({ installId: id }), done),
+  'themes.install.allowFlash': method(obj({ installId: id, sha256: sha256Hex }), bool),
+  'themes.analyzeProgress': method(obj({ sha256: sha256Hex, fraction }), done),
+  'themes.store.list': method(obj({ refresh: bool }), storeView),
+  'themes.store.install': method(
+    obj({ entryId: nonEmpty(64) }),
+    either<ThemeInstallPrepared, ThemeInstallPrepared>(obj({ preview: installPreview }), obj({ refused: localizedMessage })),
+  ),
+  'themes.store.backgroundCheck': method(obj({}), obj({ fetched: bool })),
+  'themes.store.setEnabled': method(obj({ enabled: bool }), done),
+  'themes.export.plan': method(
+    obj({ themeId, installedFonts: opt(arr(exportFontBytes, MAX_EXPORT_FONTS)) }),
+    either<ThemeExportPlanned, ThemeExportPlanned>(obj({ plan: exportPlan }), obj({ refused: localizedMessage })),
+  ),
+  'themes.export.write': method(
+    obj({ themeId, path: filePath, installedFonts: arr(exportFontBytes, MAX_EXPORT_FONTS) }),
+    either<ThemeExportWritten, ThemeExportWritten>(obj({ written: obj({ bytes: int(0, Number.MAX_SAFE_INTEGER) }) }), obj({ refused: localizedMessage })),
+  ),
   'design.info': method(obj({ designId, relPath: filePath }), maybe(designPreviewInfo)),
   'design.previewAnswer': method(obj({ designId, relPath: filePath }), maybe(either(designPreviewInfo, obj({ missing: yes })))),
   'design.markup': method(obj({ panelId: id, png: str(MAX_IMAGE_BASE64_LENGTH), json: data(MAX_MARKUP_JSON_CHARS) }), either(obj({ feedbackId: id }), obj({ refused: localizedMessage }))),
@@ -1841,6 +2302,7 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'e2e.clientNetworkAnswers': method(obj({ answers: dict(arr(arr(nonEmpty(MAX_LABEL_CHARS), MAX_ACTIONS), MAX_ACTIONS, 1), MAX_KEY_CHARS, MAX_ACTIONS) }), done),
   'e2e.stubOAuth': method(obj({ account: (raw) => (typeof raw === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(raw) ? raw : INVALID), expiresInMs: int(1000, 3_600_000), offline: opt(bool) }), done),
   'e2e.relocationPauseAfter': method(obj({ sessions: nullable(int(0, MAX_ITEMS)), mode: oneOf(['pause', 'hang'] as const) }), done),
+  'e2e.themeStoreFetches': method(obj({}), obj({ fetches: arr(obj({ url: str(MAX_INSTALL_URL_CHARS), purpose: oneOf(['list', 'thumbnail'] as const) }), MAX_ITEMS) })),
   'user.resolveCredential': method(obj({ provider: id, force: opt(bool) }), brokerAnswer),
   'user.clientAuth': method(nothing, heldAuth),
   'user.credentials.push': method(obj({ provider: providerId, credential: pushedCredential }), done),
@@ -1860,6 +2322,22 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'user.mcp.readResource': method(obj({ server: label, uri: message }), value),
   'user.forge.tool': method(obj({ request: forgeToolRequest, viewId: opt(id), toolCallId: id }), forgeToolAnswer),
   'user.forge.describe': method(obj({ request: forgeToolRequest, viewId: opt(id), toolCallId: id, approval: bool }), forgeDescribeAnswer),
+  'themes.relay.read': method(obj({ authority: filePath, request: themeReadRequest, project: opt(themeProject) }), themeReadAnswer),
+  'themes.relay.uploadStart': method(obj({ authority: filePath, ...themeUploadStart }), obj({ uploadId: id })),
+  'themes.relay.uploadChunk': method(obj({ authority: filePath, ...themeUploadChunk }), themeUploadAck),
+  'themes.relay.stage': method(obj({ authority: filePath, request: themeStageRequest, project: opt(themeProject) }), themeStageAnswer),
+  'themes.relay.commit': method(obj({ authority: filePath, stageId: id, pressed: opt(bool) }), themeCommitAnswer),
+  'themes.relay.discard': method(obj({ authority: filePath, stageId: id, keepDraft: opt(bool) }), done),
+  'themes.relay.preview': method(obj({ authority: filePath, ...themePreview }), themePreviewAnswer),
+  'themes.relay.installPrepare': method(obj({ authority: filePath, url: str(MAX_INSTALL_URL_CHARS) }), installPrepared),
+  'themes.relay.installCommit': method(obj({ authority: filePath, ...installCommitShape, chat: themeChat }), installCommitted),
+  'themes.relay.installCancel': method(obj({ authority: filePath, installId: id }), done),
+  'themes.relay.allowFlash': method(obj({ authority: filePath, installId: id, sha256: sha256Hex }), obj({ allowed: bool })),
+  'user.theme.showEnded': method(obj({ stageId: id, promptId: id, reason: oneOf(THEME_SHOW_END_REASONS) }), done),
+  'user.theme.screenshotGone': method(obj({ shotId: id }), done),
+  'user.theme.installUpdated': method(obj({ preview: installPreview }), done),
+  'user.theme.installProgress': method(installProgress, done),
+  'user.theme.installExpired': method(obj({ installId: id }), done),
   'panels.attachForeign': method(obj({ authority: filePath, viewId: id }), done),
   'panels.detachForeign': method(viewRef, done),
   'panels.foreignMessage': method(obj({ viewId: id, message: value }), done),
@@ -1893,6 +2371,11 @@ export const CORE_TO_MAIN: Tables<CoreToMain> = {
     'forge.chooseAccountRows': obj(chooseAccountRowsShape),
     'forge.bindingsChanged': obj({ projectKeys: opt(arr(filePath, MAX_ITEMS)), chosen: opt(chosenBinding) }),
     'forge.ci.changed': either<CiChangedEvent, CiChangedEvent>(obj({ id, status: nullable(ciStatus) }), obj({ id, log: ciLog })),
+    'themes.changed': nothing,
+    'themes.install.updated': obj({ preview: installPreview }),
+    'themes.install.progress': installProgress,
+    'themes.install.expired': obj({ installId: id }),
+    'themes.store.updated': obj({ view: storeView, listRead: opt(bool) }),
   },
   mirrors: {
     chats: obj({ panelId: id, entry: opt(chatEntry) }),
@@ -1945,6 +2428,9 @@ export const parseCoreInit: Parser<CoreInit> = obj({
   chatBrowserPane: bool,
   e2eHooks: bool,
   e2eForgeServers: opt(obj({ 'github.com': opt(forgeServerOverride), 'gitlab.com': opt(forgeServerOverride) })),
+  e2eThemeDownloads: opt(filePath),
+  e2eThemeStore: opt(obj({ listUrl: str(MAX_INSTALL_URL_CHARS), publicKeyPem: nonEmpty(4096) })),
+  themesOwner: opt((raw) => (typeof raw === 'string' && COUNTDOWN_OWNER.test(raw) ? raw : INVALID)),
   git: obj({ available: bool, reason: opt(message), path: opt(filePath), version: opt(obj({ major: int(0, 1_000_000), minor: int(0, 1_000_000), patch: int(0, 1_000_000) })) }),
   paths: obj({
     resourceRoot: filePath,
@@ -1986,6 +2472,7 @@ export const parseCoreInit: Parser<CoreInit> = obj({
     clientLanguage: opt(dict(MIRROR_TOPICS.language, MAX_ID_CHARS, MAX_ITEMS)),
     clientMcp: opt(dict(clientMcp, MAX_ID_CHARS, MAX_ITEMS)),
     clientForges: opt(dict(clientForges, MAX_ID_CHARS, MAX_ITEMS)),
+    clientFeatures: opt(dict(clientFeatures, MAX_ID_CHARS, MAX_ITEMS)),
     clientNetwork: opt(dict(obj(clientNetworkShape), MAX_PATH_CHARS, MAX_ITEMS)),
   }),
 });

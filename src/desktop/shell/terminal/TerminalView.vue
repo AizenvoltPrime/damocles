@@ -64,6 +64,7 @@ let screenReceived = false;
 const exited = computed(() => props.terminal.status === 'exited');
 // In the editor area #editor-panel is the tabpanel, named by the terminal's editor tab, so the view is no second one inside it.
 const inPanel = computed(() => props.terminal.placement === 'panel');
+const paneToken = computed(() => (inPanel.value ? '--d-pane-terminal' : '--d-pane-editor'));
 // A terminal whose host is away takes no input until main reattaches it; its process keeps running there.
 const inputOff = computed(() => exited.value || props.terminal.status === 'reconnecting');
 // The label and dim wait for the host's grace like its dot and banner, so a short drop shows nothing; input stops at once.
@@ -574,7 +575,9 @@ async function open(): Promise<void> {
     ...initial,
     cursorInactiveStyle: 'outline',
     disableStdin: inputOff.value,
-    theme: terminalTheme(getComputedStyle(document.documentElement)),
+    // xterm's API asks for it before open() for a non-opaque background; only a GPU renderer addon reads it
+    allowTransparency: true,
+    theme: terminalTheme(getComputedStyle(document.documentElement), paneToken.value),
     // Program colours are lifted to AA against the theme's background (G26); not a setting.
     minimumContrastRatio: 4.5,
     rightClickSelectsWord: mac,
@@ -646,9 +649,10 @@ async function open(): Promise<void> {
       parsed = 0;
     });
   }));
-  stops.push(watchHostTheme(() => {
-    xterm.options.theme = terminalTheme(getComputedStyle(document.documentElement));
-  }));
+  const applyTheme = (): void => {
+    xterm.options.theme = terminalTheme(getComputedStyle(document.documentElement), paneToken.value);
+  };
+  stops.push(watchHostTheme(applyTheme), watch(paneToken, applyTheme));
   takeFocusRequest();
 }
 
@@ -750,7 +754,8 @@ defineExpose({ focus, openFind });
     :role="inPanel ? 'tabpanel' : undefined"
     :aria-labelledby="inPanel ? `terminal-row-${terminal.id} terminal-tab-${terminal.id}` : undefined"
     :aria-label="inPanel ? terminal.title : undefined"
-    class="terminal-view absolute inset-0 flex flex-col bg-(--d-bg)"
+    class="terminal-view absolute inset-0 flex flex-col"
+    :class="inPanel ? 'bg-(--d-pane-terminal)' : 'terminal-view-editor bg-(--d-pane-editor)'"
     @focusin="onFocusIn"
     @focusout="onFocusOut"
   >
@@ -771,7 +776,7 @@ defineExpose({ focus, openFind });
         >
           <span
             aria-hidden="true"
-            class="d-pulsing size-1.5 rounded-full bg-(--d-warning)"
+            class="d-pulsing size-1.5 rounded-full bg-(--d-warning-fill)"
           />
           {{ t('terminal.status.reconnecting') }}
         </p>
@@ -827,7 +832,7 @@ defineExpose({ focus, openFind });
       >
         <span
           class="flex size-5.5 shrink-0 items-center justify-center rounded-full"
-          :class="terminal.exitCode === 0 ? 'bg-[color-mix(in_srgb,var(--d-success)_14%,transparent)] text-(--d-success-text)' : 'bg-[color-mix(in_srgb,var(--d-danger)_14%,transparent)] text-(--d-danger-text)'"
+          :class="terminal.exitCode === 0 ? 'bg-[color-mix(in_srgb,var(--d-success-fill)_14%,transparent)] text-(--d-success-text)' : 'bg-[color-mix(in_srgb,var(--d-danger-fill)_14%,transparent)] text-(--d-danger-text)'"
         >
           <CircleCheck
             v-if="terminal.exitCode === 0"
@@ -847,7 +852,7 @@ defineExpose({ focus, openFind });
           size="sm"
           variant="outline"
           data-testid="terminal-restart"
-          class="d-press h-6.5 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-2.5 text-xs hover:border-(--d-accent) hover:bg-(--d-card) [&_svg]:size-3.25"
+          class="d-press h-6.5 gap-1.5 rounded-7 border-(--d-border2) bg-(--d-card) px-2.5 text-xs hover:border-(--d-accent-fill) hover:bg-(--d-card) [&_svg]:size-3.25"
           @click="restart"
         >
           <RotateCcw aria-hidden="true" />{{ t('terminal.restart') }}

@@ -8,8 +8,12 @@ import { HostStore } from '../host-store';
 import { remoteRelocation } from '../relocate-remote-project';
 import { projectMirrorFolder } from '../../../../shared/remote-mirror';
 import { SessionMirror } from '../session-mirror';
+import { createProjectLooks } from '../../../../core/themes/project-looks';
+import { createProjectsStore } from '../../../../core/themes/characters';
+import { NO_ALIASES } from '../../../../core/project-relocation/aliases';
 
 const AUTHORITY = 'ssh+prod';
+const LOOK = { mode: 'touches', accent: '#3a86ff' };
 const key = (folder: string): string => `${AUTHORITY}|${folder}`;
 const project = (folder: string) => ({ path: folder, folderKey: folder, os: 'linux' as const });
 // this run's Locate asked for it
@@ -50,6 +54,16 @@ async function setup(hostId: string | undefined, options: { readonly reopen?: bo
   }
   // what this computer's core holds: forge bindings by project key, host aliases appended once per move
   const bindings = new Map([[key('/srv/old'), 'account-1']]);
+  // this computer's projects.json, through core's own store: the project's look and its character pin
+  const themesRoot = path.join(userData, 'themes');
+  fs.mkdirSync(themesRoot, { recursive: true });
+  if (!options.reopen) fs.writeFileSync(path.join(themesRoot, 'projects.json'), JSON.stringify({ version: 1, looks: { [key('/srv/old')]: LOOK }, pins: { [key('/srv/old')]: { byTheme: { 'damocles-arcade': 'Pip' } } } }));
+  const looks = createProjectLooks({
+    projects: createProjectsStore(themesRoot, async (file, text) => fs.writeFileSync(file, text)),
+    lane: { run: (body) => body() },
+    changed: () => undefined,
+    relocations: () => ({ aliases: NO_ALIASES, pendingKeys: new Set() }),
+  });
   const aliases: Array<{ hostId: string; from: string; to: string }> = [];
   const trail: string[] = [];
   const steps = remoteRelocation({
@@ -65,6 +79,7 @@ async function setup(hostId: string | undefined, options: { readonly reopen?: bo
       bindings.delete(fromKey);
       if (!bindings.has(toKey)) bindings.set(toKey, bound);
     },
+    relocateLooks: (fromKey, toKey) => looks.relocateProject(fromKey, toKey),
     addHostAlias: async (alias) => {
       if (!aliases.some((known) => known.hostId === alias.hostId && known.from === alias.from && known.to === alias.to)) aliases.push(alias);
     },
@@ -92,10 +107,21 @@ async function setup(hostId: string | undefined, options: { readonly reopen?: bo
     report: (action) => { trail.push(`report:${action}`); },
     t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_, index: string) => args[Number(index)] ?? ''),
   });
-  return { store, root, bindings, aliases, trail, projects };
+  const projectsFile = (): { looks: Record<string, unknown>; pins: Record<string, unknown> } => JSON.parse(fs.readFileSync(path.join(themesRoot, 'projects.json'), 'utf8'));
+  return { store, root, bindings, aliases, trail, projects, projectsFile };
 }
 
 describe('the host part of a remote project\'s relocation', () => {
+  it("re-keys this computer's project look and character pins to the new remote key, once however often the host part runs", async () => {
+    const { projects, projectsFile } = await setup('prod');
+    await projects.reached(view, LOCATED);
+    const moved = projectsFile();
+    expect(moved.looks).toEqual({ [key('/srv/new')]: LOOK });
+    expect(moved.pins).toEqual({ [key('/srv/new')]: { byTheme: { 'damocles-arcade': 'Pip' } } });
+    await projects.reached(view, LOCATED);
+    expect(projectsFile()).toEqual(moved);
+  });
+
   it('moves the list entry in its slot, revokes the old trust, re-keys the bindings, renames the mirror and records the host alias', async () => {
     const { store, root, bindings, aliases, trail, projects } = await setup('prod');
     await projects.reached(view, LOCATED);
@@ -117,7 +143,7 @@ describe('the host part of a remote project\'s relocation', () => {
     await projects.reached(view, LOCATED);
     expect(trail).toEqual([]);
     // a host part cut short after the list moved runs each step again: none of them changes anything
-    const steps = remoteRelocation({ authority: { kind: 'ssh', hostId: 'prod' }, authorityKey: AUTHORITY, hostId: 'prod', os: 'linux', store, mirror: () => new SessionMirror({ root, channel: () => { throw new Error('none'); }, log: () => undefined }), relocateBindings: async () => undefined, addHostAlias: async () => undefined });
+    const steps = remoteRelocation({ authority: { kind: 'ssh', hostId: 'prod' }, authorityKey: AUTHORITY, hostId: 'prod', os: 'linux', store, mirror: () => new SessionMirror({ root, channel: () => { throw new Error('none'); }, log: () => undefined }), relocateBindings: async () => undefined, relocateLooks: async () => undefined, addHostAlias: async () => undefined });
     const from = { key: key('/srv/old'), fsPath: '/srv/old' };
     const to = { key: key('/srv/new'), fsPath: '/srv/new' };
     await steps.applyHostState(view, from, to);

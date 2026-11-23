@@ -51,7 +51,7 @@ describe('telling a parked run from a working run', () => {
   it('swaps the spinner for a pulsing dot', () => {
     expect(mountBar(true, false).find('svg.lucide-loader-circle').exists()).toBe(true);
     expect(mountBar(true, true).find('svg').exists()).toBe(false);
-    expect(mountBar(true, true).find('span.rounded-full').classes()).toContain('animate-[d-pulse_1.2s_infinite]');
+    expect(mountBar(true, true).find('span.rounded-full').classes()).toContain('d-pulsing');
   });
 
   it('drops the witty phrase, which reads as progress that is not happening', () => {

@@ -131,3 +131,30 @@ describe('FormPrompt — focus on appear', () => {
     expect(document.activeElement?.getAttribute('role')).toBe('checkbox');
   });
 });
+
+describe('FormPrompt with another form queued behind it', () => {
+  // the store shows the queued form at once and the page a flush later, so a second press in the tick is still on the first one's card
+  it.each(['Submit', 'Cancel'])('is answered once by two presses of %s in one tick, and the next press answers the queued one', async (label) => {
+    const store = useFormStore();
+    store.setForm({ toolUseId: 't1', form: { fields: [{ id: 'name', label: 'Name', type: 'text', selector: '#name' }] } });
+    store.setForm({ toolUseId: 't2', form: { fields: [{ id: 'city', label: 'City', type: 'text', selector: '#city' }] } });
+    const answered: Array<string | undefined> = [];
+    const settle = (): void => {
+      answered.push(store.pendingForm?.toolUseId);
+      store.clearForm();
+    };
+    const wrapper = mount(FormPrompt, { props: { visible: true, onSubmit: settle, onCancel: settle }, attachTo: document.body, global: { plugins: [i18n] } });
+    await flush();
+    const button = (): HTMLButtonElement => wrapper.findAll('button').find((candidate) => candidate.text() === label)!.element as HTMLButtonElement;
+
+    const first = button();
+    first.click();
+    first.click();
+    expect(answered).toEqual(['t1']);
+
+    await flush();
+    button().click();
+    expect(answered).toEqual(['t1', 't2']);
+    wrapper.unmount();
+  });
+});

@@ -74,7 +74,7 @@ const notRewindableDetail = computed(() => {
       data-testid="rewind-not-rewindable"
       class="flex items-start gap-2 p-2 rounded bg-warning/15 border border-warning/30 text-xs"
     >
-      <IconWarning class="size-3.5 mt-0.5 shrink-0 text-warning" />
+      <IconWarning class="size-3.5 mt-0.5 shrink-0 text-(--d-warning)" />
       <div class="min-w-0">
         <div class="font-medium text-(--d-warning-text)">
           {{ t('rewind.notRewindable.title') }}
@@ -142,7 +142,7 @@ const notRewindableDetail = computed(() => {
         <div
           v-else-if="listState?.status === 'error'"
           data-testid="rewind-not-restored-error"
-          class="px-3 py-1.5 text-warning"
+          class="px-3 py-1.5 text-(--d-warning)"
         >
           {{ t('rewind.notRestored.loadFailed') }}
         </div>

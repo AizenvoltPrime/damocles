@@ -3,6 +3,8 @@ import type { ClientSnapshots, ClientTopic, RemoteHost } from '../../../platform
 import type { PanelHost, TerminalToggle } from '../../../platform/window-service';
 import { heldClientAuth, type ClientMcp, type ClientPending, type HeldAuth, type RelayedMcpServer } from '../../../shared/remote-user';
 import type { ClientForges } from '../../../shared/git-credential';
+import type { ThemeShowEnded } from '../../../shared/themes/relay';
+import type { ThemeInstallPreview, ThemeInstallProgress } from '../../../shared/themes/install';
 import type { ClientAuth, ClientPolicy, ClientUser, CoreEndpoint, CoreInit, EditorMirror, MirrorTopics } from '../../core-protocol';
 import { currentActor } from '../../core-protocol/actor';
 import { agentSocketFile } from '../../core-protocol/agent-sockets';
@@ -20,6 +22,7 @@ export function createClientSnapshots(endpoint: CoreEndpoint, init: CoreInit): C
   const mcp = new Map<string, readonly RelayedMcpServer[]>(Object.entries(init.mirrors.clientMcp ?? {}).map(([clientId, value]) => [clientId, value.servers]));
   const mcpPending = new Map<string, ClientPending>(Object.entries(init.mirrors.clientMcp ?? {}).flatMap(([clientId, value]) => (value.pending === undefined ? [] : [[clientId, value.pending] as const])));
   const forges = new Map<string, ClientForges>(Object.entries(init.mirrors.clientForges ?? {}));
+  const features = new Map<string, readonly string[]>(Object.entries(init.mirrors.clientFeatures ?? {}).map(([clientId, value]) => [clientId, value.features]));
   // the daemon publishes clientAuth on every attach and without a value on every detach
   const attached = new Set(Object.keys(init.mirrors.clientAuth));
   let acting = init.mirrors.actingClient.clientId;
@@ -53,6 +56,7 @@ export function createClientSnapshots(endpoint: CoreEndpoint, init: CoreInit): C
       return value.servers;
     }, true),
     track('clientForges', forges, (value: ClientForges) => value),
+    track('clientFeatures', features, (value: MirrorTopics['clientFeatures']['value'] & object) => value.features),
     endpoint.onMirror('actingClient', (patch) => {
       acting = patch.clientId;
       changed.fire({ topic: 'actingClient' });
@@ -78,6 +82,7 @@ export function createClientSnapshots(endpoint: CoreEndpoint, init: CoreInit): C
     mcpPending: (clientId) => mcpPending.get(clientId),
     mcpClients: () => [...mcp.keys()],
     forges: (clientId) => forges.get(clientId),
+    features: (clientId) => features.get(clientId),
     onDidChange: (cb) => changed.add(cb),
     dispose: () => {
       for (const subscription of subscriptions) subscription.dispose();
@@ -91,6 +96,32 @@ export function createRemoteHost(endpoint: CoreEndpoint, init: CoreInit & { read
   let agentFolder = init.remote.agentFolder;
   const moved = endpoint.onMirror('hostSockets', (patch) => {
     agentFolder = patch.agentFolder;
+  });
+  const showEnded = new Listeners<[ThemeShowEnded & { readonly clientId: string }]>('theme show ended');
+  // the daemon stamps the sending client as the actor, whatever its envelope named
+  endpoint.serve('user.theme.showEnded', (ended) => {
+    const clientId = currentActor();
+    if (clientId !== undefined) showEnded.fire({ clientId, stageId: ended.stageId, promptId: ended.promptId, reason: ended.reason });
+  });
+  const screenshotGone = new Listeners<[{ readonly clientId: string; readonly shotId: string }]>('theme screenshot gone');
+  endpoint.serve('user.theme.screenshotGone', ({ shotId }) => {
+    const clientId = currentActor();
+    if (clientId !== undefined) screenshotGone.fire({ clientId, shotId });
+  });
+  const installUpdated = new Listeners<[{ readonly clientId: string; readonly preview: ThemeInstallPreview }]>('theme install updated');
+  endpoint.serve('user.theme.installUpdated', ({ preview }) => {
+    const clientId = currentActor();
+    if (clientId !== undefined) installUpdated.fire({ clientId, preview });
+  });
+  const installProgress = new Listeners<[ThemeInstallProgress & { readonly clientId: string }]>('theme install progress');
+  endpoint.serve('user.theme.installProgress', ({ installId, sha256, fraction }) => {
+    const clientId = currentActor();
+    if (clientId !== undefined) installProgress.fire({ clientId, installId, sha256, fraction });
+  });
+  const installExpired = new Listeners<[{ readonly clientId: string; readonly installId: string }]>('theme install expired');
+  endpoint.serve('user.theme.installExpired', ({ installId }) => {
+    const clientId = currentActor();
+    if (clientId !== undefined) installExpired.fire({ clientId, installId });
   });
   return {
     hostId: init.remote.hostId,
@@ -136,6 +167,13 @@ export function createRemoteHost(endpoint: CoreEndpoint, init: CoreInit & { read
       const viewId = viewIdOf(host);
       return endpoint.request('user.forge.describe', { clientId, ...(viewId !== undefined ? { viewId } : {}), ...request }, signal);
     },
+    themeCall: (clientId, method, params, signal) =>
+      (endpoint.request as (name: string, params: unknown, signal?: AbortSignal) => Promise<never>)(`user.theme.${method}`, { clientId, ...params }, signal),
+    onThemeShowEnded: (listener) => showEnded.add(listener),
+    onThemeScreenshotGone: (listener) => screenshotGone.add(listener),
+    onThemeInstallUpdated: (listener) => installUpdated.add(listener),
+    onThemeInstallProgress: (listener) => installProgress.add(listener),
+    onThemeInstallExpired: (listener) => installExpired.add(listener),
     shellOutput: () => {
       const decoder = new TextDecoder();
       const finder = createUrlFinder((hit) => endpoint.emit('ports.urlSeen', hit));
@@ -147,6 +185,13 @@ export function createRemoteHost(endpoint: CoreEndpoint, init: CoreInit & { read
         },
       };
     },
-    dispose: () => moved.dispose(),
+    dispose: () => {
+      moved.dispose();
+      showEnded.clear();
+      screenshotGone.clear();
+      installUpdated.clear();
+      installProgress.clear();
+      installExpired.clear();
+    },
   };
 }

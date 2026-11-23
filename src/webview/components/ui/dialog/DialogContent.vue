@@ -67,7 +67,7 @@ const dialog = injectDialogRootContext()
 
         <DialogClose
           v-if="props.showClose"
-          class="absolute right-3.5 top-3.5 flex size-7.5 items-center justify-center rounded-9 text-(--d-muted) transition-colors hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:outline-2 focus-visible:outline-(--d-accent) disabled:pointer-events-none"
+          class="absolute right-3.5 top-3.5 flex size-7.5 items-center justify-center rounded-9 text-(--d-muted) transition-colors hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:outline-2 focus-visible:outline-(--d-accent-fill) disabled:pointer-events-none"
         >
           <X
             class="size-4"

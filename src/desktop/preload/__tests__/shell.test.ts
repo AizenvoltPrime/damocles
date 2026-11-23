@@ -105,6 +105,22 @@ describe('shell preload', () => {
     ]);
   });
 
+  it('invokes the theme banners with one empty object each, the shape main reads on those channels', async () => {
+    await import('../shell');
+    const api = H.exposed!;
+    H.invoked.length = 0;
+    await api.useMyTheme();
+    await api.keepThemeChanges();
+    await api.revertThemeChanges();
+    await api.stopShowingProposal();
+    expect(H.invoked).toEqual([
+      [SHELL_CHANNELS.useMyTheme, {}],
+      [SHELL_CHANNELS.keepThemeChanges, {}],
+      [SHELL_CHANNELS.revertThemeChanges, {}],
+      [SHELL_CHANNELS.stopShowingProposal, {}],
+    ]);
+  });
+
   it('sends a collapsed Files folder as its own fields only', async () => {
     await import('../shell');
     const api = H.exposed!;

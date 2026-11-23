@@ -107,7 +107,7 @@ onUnmounted(() => {
     @mouseenter="isHovering = true"
     @mouseleave="isHovering = false"
   >
-    <div class="flex items-center justify-between px-3 py-1.5 bg-muted border-b border-border">
+    <div class="flex items-center justify-between px-3 py-1.5 bg-(--surface-card) border-b border-border">
       <span
         v-if="displayLanguage"
         class="text-xs font-mono text-muted-foreground select-none"
@@ -119,8 +119,8 @@ onUnmounted(() => {
       <Button
         variant="ghost"
         size="icon-sm"
-        class="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-primary size-6 -mr-1"
-        :class="{ 'opacity-100 text-success': hasCopied }"
+        class="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-(--d-accent) size-6 -mr-1"
+        :class="{ 'opacity-100 text-(--d-success)': hasCopied }"
         :title="t('codeBlock.copyCode')"
         @click="handleCopy"
       >
@@ -150,7 +150,7 @@ onUnmounted(() => {
 }
 
 .code-block-content {
-  background: var(--d-code);
+  background: var(--surface-code);
   padding: 0.75rem 1rem;
   color: var(--d-text);
 }

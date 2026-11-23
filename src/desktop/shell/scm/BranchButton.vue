@@ -53,7 +53,7 @@ function checkout(): void {
     :data-detached="detached || undefined"
     :title="title"
     :aria-label="ariaLabel"
-    class="d-press h-7 min-w-0 flex-1 justify-start gap-1.5 rounded-7 border border-(--d-border2) bg-(--d-card) px-2.25 py-0 font-mono text-11.5 font-normal text-(--d-text) transition-colors duration-150 hover:border-(--d-accent) hover:bg-(--d-card) hover:text-(--d-text) focus-visible:border-(--d-accent) focus-visible:ring-0 focus-visible:ring-offset-0 [&_svg]:size-3.25"
+    class="d-press h-7 min-w-0 flex-1 justify-start gap-1.5 rounded-7 border border-(--d-border2) bg-(--d-card) px-2.25 py-0 font-mono text-11.5 font-normal text-(--d-text) transition-colors duration-150 hover:border-(--d-accent-fill) hover:bg-(--d-card) hover:text-(--d-text) focus-visible:border-(--d-accent-fill) focus-visible:ring-0 focus-visible:ring-offset-0 [&_svg]:size-3.25"
     @click="checkout"
   >
     <span

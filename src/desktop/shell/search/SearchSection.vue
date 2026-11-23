@@ -900,7 +900,7 @@ const inserted = (row: ResultRow): string | undefined => {
         :role="searching ? 'progressbar' : undefined"
         :aria-label="searching ? t('search.searching') : undefined"
         :data-testid="searching ? 'search-progress' : undefined"
-        class="d-sweep-bar h-full text-(--d-accent)"
+        class="d-sweep-bar h-full [--tone:var(--d-accent-fill)]"
       />
     </div>
 

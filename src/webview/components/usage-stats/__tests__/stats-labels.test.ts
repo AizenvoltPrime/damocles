@@ -27,6 +27,7 @@ window.damoclesBridge = {
   onConnection: () => () => undefined,
   allowYolo: async () => false,
   queueAction: () => undefined,
+  setModalOpen: () => undefined,
 };
 
 const { useStatsLabels } = await import('../stats-labels');

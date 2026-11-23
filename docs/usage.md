@@ -38,7 +38,8 @@ Desktop app only:
 - `Alt+F5` / `Shift+Alt+F5`: Next or previous change in the editor; `Ctrl+K Ctrl+Alt+S`, `Ctrl+K Ctrl+N` and `Ctrl+K Ctrl+R` (`Cmd` on macOS) stage, unstage and revert the selected lines
 - `Ctrl+Shift+F` / `Cmd+Shift+F` and `Ctrl+Shift+H` / `Cmd+Shift+H`: Find in Files and Replace in Files, seeded with the editor's selection
 - `Ctrl+S` / `Cmd+S` and `Ctrl+Shift+S` / `Cmd+Shift+S`: Save and Save As in the editor
-- `F6` / `Shift+F6`: Move focus to the next or previous part of the window: the sidebar, the editor (browser tabs included), the chat, the terminal and, while one shows, the desktop pop-ups. `Escape` leaves the pop-ups
+- `F6` / `Shift+F6`: Move focus to the next or previous part of the window: the keep-changes banner while it counts, the sidebar, the editor (browser tabs included), the chat, the terminal and, while one shows, the desktop pop-ups. `Escape` leaves the pop-ups
+- `Ctrl+Alt+Shift+0`, `Ctrl+Alt+Shift+W` and `Ctrl+Alt+Shift+.` (`Cmd+Alt+Shift` on macOS): Reset Theme to Default, Toggle Wallpapers and Next Wallpaper
 - `Ctrl+,` / `Cmd+,`: Open Settings
 - `Ctrl+W` / `Cmd+W`: Close the editor tab that has focus
 

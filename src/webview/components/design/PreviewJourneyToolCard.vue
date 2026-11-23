@@ -159,17 +159,17 @@ function onWidth(value: unknown): void {
 const ICON_CLASS: Record<StepState, string> = {
   pending: 'border border-dashed border-(--d-border2)',
   waiting: 'border border-(--d-border2)',
-  active: 'bg-[color-mix(in_srgb,var(--d-design)_16%,transparent)] text-(--d-design-text)',
-  pass: 'bg-[color-mix(in_srgb,var(--d-success)_16%,transparent)] text-(--d-success-text)',
-  fail: 'bg-[color-mix(in_srgb,var(--d-danger)_18%,transparent)] text-(--d-danger-text)',
+  active: 'bg-[color-mix(in_srgb,var(--d-design-fill)_16%,transparent)] text-(--d-design-text)',
+  pass: 'bg-[color-mix(in_srgb,var(--d-success-fill)_16%,transparent)] text-(--d-success-text)',
+  fail: 'bg-[color-mix(in_srgb,var(--d-danger-fill)_18%,transparent)] text-(--d-danger-text)',
   notRun: 'border border-(--d-border)',
 };
 const ROW_CLASS: Record<StepState, string> = {
   pending: 'text-(--d-muted)',
   waiting: 'text-(--d-muted)',
-  active: 'bg-[color-mix(in_srgb,var(--d-design)_8%,transparent)] text-(--d-text)',
+  active: 'bg-[color-mix(in_srgb,var(--d-design-fill)_8%,transparent)] text-(--d-text)',
   pass: 'text-(--d-text)',
-  fail: 'bg-[color-mix(in_srgb,var(--d-danger)_7%,transparent)] text-(--d-text)',
+  fail: 'bg-[color-mix(in_srgb,var(--d-danger-fill)_7%,transparent)] text-(--d-text)',
   notRun: 'text-(--d-faint-text)',
 };
 </script>
@@ -185,7 +185,7 @@ const ROW_CLASS: Record<StepState, string> = {
     :duration-ms="toolCall.durationMs"
     status-note
     :abandon-reason="toolCall.abandonReason"
-    :data-tool="toolCall.name"
+    :tool="toolCall.name"
     data-testid="preview-journey-card"
     :data-passed="details ? String(details.passed) : undefined"
     :data-revealing="revealing || undefined"
@@ -195,7 +195,7 @@ const ROW_CLASS: Record<StepState, string> = {
       <span
         v-if="counter"
         class="flex h-4.5 flex-none items-center rounded-full px-1.75 font-mono text-10.5 font-semibold tabular-nums"
-        :class="counter.passed === counter.total ? 'bg-[color-mix(in_srgb,var(--d-success)_14%,transparent)] text-(--d-success-text)' : revealing ? 'bg-(--d-hover) text-(--d-muted)' : 'bg-[color-mix(in_srgb,var(--d-danger)_14%,transparent)] text-(--d-danger-text)'"
+        :class="counter.passed === counter.total ? 'bg-[color-mix(in_srgb,var(--d-success-fill)_14%,transparent)] text-(--d-success-text)' : revealing ? 'bg-(--d-hover) text-(--d-muted)' : 'bg-[color-mix(in_srgb,var(--d-danger-fill)_14%,transparent)] text-(--d-danger-text)'"
         data-testid="preview-journey-counter"
       >
         <span
@@ -232,7 +232,7 @@ const ROW_CLASS: Record<StepState, string> = {
           v-for="chip in widthChips"
           :key="chip.width"
           :value="String(chip.width)"
-          class="d-press h-5.5 min-w-0 gap-1 rounded-full border border-(--d-border) px-2 text-11 font-normal text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 data-[state=on]:border-(--d-border2) data-[state=on]:bg-(--d-hover) data-[state=on]:text-(--d-text) [&_svg]:size-3"
+          class="d-press h-5.5 min-w-0 gap-1 rounded-full border border-(--d-border) px-2 text-11 font-normal text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 data-[state=on]:border-(--d-border2) data-[state=on]:bg-(--d-hover) data-[state=on]:text-(--d-text) [&_svg]:size-3"
           data-testid="preview-journey-width"
           :data-width="chip.width"
           :data-passed="String(chip.passed)"
@@ -286,7 +286,7 @@ const ROW_CLASS: Record<StepState, string> = {
             >
               <span
                 v-if="row.state === 'active'"
-                class="pointer-events-none absolute -inset-0.75 rounded-full shadow-[inset_0_0_0_2px_var(--d-design)] animate-[d-attention-ring_1.1s_var(--ease-out)_infinite]"
+                class="pointer-events-none absolute -inset-0.75 rounded-full shadow-[inset_0_0_0_2px_var(--d-design-fill)] d-attention-loop"
               />
               <Transition name="t-icon">
                 <!-- The wrapper is what leaves: the spinner's endless spin on the leaving element would hold it for a whole turn. -->
@@ -350,7 +350,7 @@ const ROW_CLASS: Record<StepState, string> = {
             class="flex min-w-0 items-start gap-2 text-(--d-muted)"
           >
             <span
-              class="mt-1.25 size-1.5 flex-none rotate-45 border border-(--d-design)"
+              class="mt-1.25 size-1.5 flex-none rotate-45 border border-(--d-design-fill)"
               aria-hidden="true"
             />
             <span class="min-w-0 text-pretty wrap-anywhere">{{ item }}</span>
@@ -378,7 +378,7 @@ const ROW_CLASS: Record<StepState, string> = {
           v-if="canReplay"
           type="button"
           variant="ghost"
-          class="d-press d-tone-design h-7 gap-1.5 rounded-7 bg-(--tone)/12 px-2.5 text-xs font-semibold hover:bg-(--tone)/20 hover:text-(--d-design-text) focus-visible:ring-1 focus-visible:ring-(--d-design) focus-visible:ring-offset-0 [&_svg]:size-3"
+          class="d-press d-tone-design h-7 gap-1.5 rounded-7 bg-(--tone)/12 px-2.5 text-xs font-semibold hover:bg-(--tone)/20 hover:text-(--d-design-text) focus-visible:ring-1 focus-visible:ring-(--d-design-fill) focus-visible:ring-offset-0 [&_svg]:size-3"
           :disabled="replaying"
           :aria-busy="replaying || undefined"
           data-testid="preview-journey-replay"
@@ -415,7 +415,7 @@ const ROW_CLASS: Record<StepState, string> = {
       <p
         v-if="refusal !== undefined"
         role="status"
-        class="flex items-start gap-2 border-t border-[color-mix(in_srgb,var(--d-danger)_25%,transparent)] bg-[color-mix(in_srgb,var(--d-danger)_8%,transparent)] px-3 py-2 text-(--d-danger-text)"
+        class="flex items-start gap-2 border-t border-[color-mix(in_srgb,var(--d-danger-fill)_25%,transparent)] bg-[color-mix(in_srgb,var(--d-danger-fill)_8%,transparent)] px-3 py-2 text-(--d-danger-text)"
         data-testid="preview-journey-replay-refusal"
       >
         <CircleAlert
@@ -441,7 +441,7 @@ const ROW_CLASS: Record<StepState, string> = {
     />
     <div
       v-if="awaiting"
-      class="d-sweep-bar h-0.5 bg-(--d-hover) text-(--d-design)"
+      class="d-sweep-bar h-0.5 bg-(--d-hover) [--tone:var(--d-design-fill)]"
       aria-hidden="true"
     />
   </ToolCardFrame>

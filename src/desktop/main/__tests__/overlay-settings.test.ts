@@ -14,7 +14,7 @@ import type { FakePanelHost } from '../../../__mocks__/fake-platform';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { MAX_SETTINGS_MESSAGE_CHARS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayPrefs, type OverlayPrefWrite, type OverlayRequest, type OverlaySettingsAway, type OverlaySettingsAwayState, type PopupAnswer } from '../../preload/overlay-channels';
 import { DESKTOP_CONFIGURATION, LANGUAGE_SETTING, TERMINAL_PROFILES_SETTING } from '../../local-services/desktop-configuration';
-import { hostAwayOf, hostCoreFacts, lookupOnUpCore, OverlaySettings, settingsPageChat, type HostCoreFacts, type HostCoreSources, type SettingsScopes, type SettingsViewHost } from '../overlay-settings';
+import { hostAwayOf, hostCoreFacts, lookupOnUpCore, OverlaySettings, parseThemeAction, settingsPageChat, type HostCoreFacts, type HostCoreSources, type SettingsScopes, type SettingsViewHost } from '../overlay-settings';
 import type { RemoteConnection } from '../remote/connection';
 import { CoreHost } from '../core-host';
 import { WebviewPrompts } from '../../../core/chat-panel/webview-prompts';
@@ -36,13 +36,15 @@ function fakeOverlay() {
   const requests: OverlayRequest[] = [];
   const dismissed: string[] = [];
   let answer: ((value: OverlayAnswer) => void) | undefined;
+  let shown: (() => void) | undefined;
   const overlay = {
     on: (channel: string, handler: (...args: unknown[]) => void) => { listeners.set(channel, handler); },
     handle: (channel: string, handler: (...args: unknown[]) => unknown) => { handlers.set(channel, handler); },
     handleWhileOpen: fakeHandleWhileOpen(handlers),
     send: (channel: string, payload: unknown) => { sent.push({ channel, payload }); },
-    request: (request: OverlayRequest) => {
+    request: (request: OverlayRequest, _returnFocus?: unknown, onShown?: () => void) => {
       requests.push(request);
+      shown = onShown;
       return new Promise<OverlayAnswer>((resolve) => { answer = resolve; });
     },
     dismiss: (kind: string) => {
@@ -58,6 +60,8 @@ function fakeOverlay() {
     fire: (channel: string, ...args: unknown[]) => listeners.get(channel)!(...args),
     invoke: (channel: string, ...args: unknown[]) => handlers.get(channel)!(...args),
     close: () => answer!({ kind: 'settings', closed: true }),
+    // the page reported the open request shown
+    shown: () => shown!(),
   };
 }
 
@@ -84,6 +88,9 @@ async function setup() {
   let target = first.panelId;
   const relaunch = vi.fn();
   const resetLayout = vi.fn();
+  const themeAct = vi.fn(async (_action: unknown) => ({ ok: true as const }));
+  const setStoreEnabled = vi.fn(async (_enabled: boolean) => undefined);
+  const closed = vi.fn();
   const harness = h;
   // core's side of the settings modal, as core-service.ts serves it
   const attached = new Map<number, { readonly panelId: string; readonly view: AttachedView }>();
@@ -115,6 +122,7 @@ async function setup() {
     focused: () => undefined,
     relaunch,
     resetLayout,
+    themes: { list: async () => ({ ok: true as const, themes: [], shown: { themeId: 'damocles', kind: 'dark', decidedBy: 'system' }, preferred: { dark: 'damocles', light: 'damocles' }, mode: 'system', schedule: { schedule: { enabled: false, rules: [] }, now: 0, zone: 'UTC', osKind: 'dark', systemLocale: 'en-GB' }, history: [] }), act: themeAct, setStoreEnabled },
     terminalProfiles: () => ({ profiles: [{ id: 'pwsh', name: 'PowerShell', path: 'C:\\pwsh.exe', args: [], source: 'detected', icon: 'powershell', customIcon: null, color: null, isDefault: true }], hidden: ['Command Prompt'], problems: [{ name: 'Evil', reason: 'pathNotAllowed', detail: '\\\\server\\x.exe' }] }) as const,
     log: (line) => lines.push(line),
     languageAtLaunch: 'el',
@@ -122,13 +130,50 @@ async function setup() {
     allowYolo: async () => false,
     signIn: async () => undefined,
     hostAway: () => ({ state: 'reconnecting' }),
+    closed,
   });
   harness.routed.length = 0;
   return {
-    harness, fake, settings, first, second, settingsPlatform, relaunch, resetLayout, lines, attached, hooks,
+    harness, fake, settings, first, second, settingsPlatform, relaunch, resetLayout, lines, attached, hooks, themeAct, setStoreEnabled, closed,
     select: (panelId: string) => { target = panelId; },
   };
 }
+
+describe('OverlaySettings pushes for the open modal', () => {
+  it('holds a push until the page showed the modal, then sends at once, and says when the modal closed', async () => {
+    const { settings, fake, closed } = await setup();
+    expect(settings.sendWhenShown(OVERLAY_CHANNELS.themesInstallChanged, { installId: 'early' })).toBe(false);
+    const open = settings.show({ section: 'appearance' });
+    expect(settings.sendWhenShown(OVERLAY_CHANNELS.themesInstallChanged, { installId: 'a' })).toBe(true);
+    await vi.waitFor(() => expect(fake.requests).toHaveLength(1));
+    const pushes = (): unknown[] => fake.sent.filter((entry) => entry.channel === OVERLAY_CHANNELS.themesInstallChanged).map((entry) => entry.payload);
+    expect(pushes()).toEqual([]);
+    fake.shown();
+    expect(pushes()).toEqual([{ installId: 'a' }]);
+    expect(settings.sendWhenShown(OVERLAY_CHANNELS.themesInstallChanged, { installId: 'b' })).toBe(true);
+    expect(pushes()).toEqual([{ installId: 'a' }, { installId: 'b' }]);
+    expect(closed).not.toHaveBeenCalled();
+    fake.close();
+    await open;
+    expect(closed).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops a held push when the modal closes before it showed', async () => {
+    const { settings, fake, closed } = await setup();
+    const open = settings.show({ section: 'appearance' });
+    settings.sendWhenShown(OVERLAY_CHANNELS.themesInstallChanged, { installId: 'a' });
+    await vi.waitFor(() => expect(fake.requests).toHaveLength(1));
+    fake.close();
+    await open;
+    expect(closed).toHaveBeenCalledTimes(1);
+    const again = settings.show({ section: 'appearance' });
+    await vi.waitFor(() => expect(fake.requests).toHaveLength(2));
+    fake.shown();
+    expect(fake.sent.filter((entry) => entry.channel === OVERLAY_CHANNELS.themesInstallChanged)).toEqual([]);
+    fake.close();
+    await again;
+  });
+});
 
 describe('OverlaySettings', () => {
   it('opens the settings of a remote chat on the User tab for a sign-in, and counts as showing while it finds the chat of that tab', async () => {
@@ -145,6 +190,7 @@ describe('OverlaySettings', () => {
       focused: () => undefined,
       relaunch: vi.fn(),
       resetLayout: vi.fn(),
+      themes: { list: async () => ({ ok: true as const, themes: [], shown: { themeId: 'damocles', kind: 'dark', decidedBy: 'system' }, preferred: { dark: 'damocles', light: 'damocles' }, mode: 'system', schedule: { schedule: { enabled: false, rules: [] }, now: 0, zone: 'UTC', osKind: 'dark', systemLocale: 'en-GB' }, history: [] }), act: async () => ({ ok: true }), setStoreEnabled: async () => undefined },
       terminalProfiles: () => ({ profiles: [], hidden: [], problems: [] }),
       log: () => undefined,
       languageAtLaunch: 'en',
@@ -467,7 +513,7 @@ describe('OverlaySettings', () => {
   });
 
   it('writes only declared desktop settings, at user scope, with values their schema allows', async () => {
-    const { fake, settings, settingsPlatform } = await setup();
+    const { fake, settings, settingsPlatform, themeAct, setStoreEnabled } = await setup();
     void settings.show({});
     await tick();
     const set = async (key: unknown, value: unknown): Promise<OverlayPrefWrite> => {
@@ -502,6 +548,10 @@ describe('OverlaySettings', () => {
       ['damocles.desktop.terminal.profiles', {}],
       ['damocles.desktop.terminal.profiles', { Evil: { path: 'C:\\evil.exe' } }],
       ['damocles.desktop.terminal.profiles', { 'Command Prompt': null }],
+      // a pick writes the preferred looks through core, never the page
+      ['damocles.desktop.themes.dark', '0f8fad5b-d9cb-469f-a165-70867728950e'],
+      ['damocles.desktop.themes.light', 'damocles'],
+      ['damocles.desktop.themes.dark', ''],
       ['__proto__', true],
       ['constructor', 'x'],
       [7, true],
@@ -521,6 +571,20 @@ describe('OverlaySettings', () => {
     expect(await set('damocles.desktop.files.exclude', { '**/.git': false, '**/dist': true })).toEqual({ ok: true, file: USER_FILE });
     expect(await set('damocles.desktop.git.branchProtection', ['main', 'release/*'])).toEqual({ ok: true, file: USER_FILE });
     expect(await set('damocles.desktop.git.branchProtection', ['main', 7])).toMatchObject({ ok: false });
+    // the mode goes through core, whose System turns a theme schedule off in the same change
+    expect(await set('damocles.desktop.theme', 'system')).toEqual({ ok: true, file: USER_FILE });
+    expect(themeAct).toHaveBeenCalledWith({ action: 'mode', mode: 'system' });
+    expect(settingsPlatform.settings.inspect('damocles.desktop.theme')).toStrictEqual({});
+    themeAct.mockResolvedValueOnce({ ok: false, error: 'engine down' } as never);
+    expect(await set('damocles.desktop.theme', 'dark')).toEqual({ ok: false, error: 'engine down' });
+    // the store switch goes through core, so core's store reads it before Browse lists again
+    expect(await set('damocles.desktop.themes.store', false)).toEqual({ ok: true, file: USER_FILE });
+    expect(setStoreEnabled).toHaveBeenCalledWith(false);
+    expect(settingsPlatform.settings.inspect('damocles.desktop.themes.store')).toStrictEqual({});
+    expect(await set('damocles.desktop.themes.store', 'off')).toMatchObject({ ok: false });
+    expect(setStoreEnabled).toHaveBeenCalledTimes(1);
+    setStoreEnabled.mockRejectedValueOnce(new Error('engine down'));
+    expect(await set('damocles.desktop.themes.store', true)).toEqual({ ok: false, error: 'engine down' });
     expect(settingsPlatform.settings.inspect('damocles.desktop.language')).toStrictEqual({ userValue: 'el' });
     const prefs = (await fake.invoke(OVERLAY_CHANNELS.prefsGet)) as OverlayPrefs;
     expect(prefs.languageAtLaunch).toBe('el');
@@ -624,6 +688,7 @@ describe('OverlaySettings scope tabs', () => {
       focused: () => undefined,
       relaunch: vi.fn(),
       resetLayout: vi.fn(),
+      themes: { list: async () => ({ ok: true as const, themes: [], shown: { themeId: 'damocles', kind: 'dark', decidedBy: 'system' }, preferred: { dark: 'damocles', light: 'damocles' }, mode: 'system', schedule: { schedule: { enabled: false, rules: [] }, now: 0, zone: 'UTC', osKind: 'dark', systemLocale: 'en-GB' }, history: [] }), act: async () => ({ ok: true }), setStoreEnabled: async () => undefined },
       terminalProfiles: () => ({ profiles: [], hidden: [], problems: [] }),
       log: () => undefined,
       languageAtLaunch: 'en',
@@ -913,6 +978,21 @@ describe('OverlaySettings scope tabs', () => {
     await tick();
     expect(fake.requests.at(-1)).toMatchObject({ section: 'remoteHosts', scopes: { active: 'user' } });
     await expect(settings.show({ section: 'remoteHosts', host: 'nope' })).rejects.toThrow('Unknown host');
+  });
+
+  it("opens Appearance on the User tab, and moves a remote chat's open modal there, since the themes and their install card show only on it", async () => {
+    const { fake, settings, attachedEvents } = await scoped();
+    void settings.show({});
+    await tick();
+    expect(fake.requests.at(-1)).toMatchObject({ scopes: { active: 'machine' } });
+    await settings.show({ section: 'appearance' });
+    expect(fake.sent).toContainEqual({ channel: OVERLAY_CHANNELS.settingsTarget, payload: { section: 'appearance' } });
+    expect(attachedEvents().at(-1)).toMatchObject({ scopes: { active: 'user' } });
+    fake.close();
+    await tick();
+    void settings.show({ section: 'appearance' });
+    await tick();
+    expect(fake.requests.at(-1)).toMatchObject({ section: 'appearance', scopes: { active: 'user' } });
   });
 
   it('tells the open modal\'s host tab its new name and color once that host changed, and no other host\'s change', async () => {
@@ -1287,5 +1367,55 @@ describe('lookupOnUpCore', () => {
     })).resolves.toBeUndefined();
     expect(started).toHaveLength(1);
     await host.dispose();
+  });
+});
+describe('parseThemeAction', () => {
+  const id = '0f8fad5b-d9cb-469f-a165-70867728950e';
+  const entryId = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
+
+  it('takes each Settings theme action exactly as the overlay sends it', () => {
+    expect(parseThemeAction({ action: 'pick', themeId: id, kind: 'dark' })).toEqual({ action: 'pick', themeId: id, kind: 'dark' });
+    expect(parseThemeAction({ action: 'duplicate', themeId: 'damocles', name: 'Mine' })).toEqual({ action: 'duplicate', themeId: 'damocles', name: 'Mine' });
+    expect(parseThemeAction({ action: 'delete', themeId: id })).toEqual({ action: 'delete', themeId: id });
+    expect(parseThemeAction({ action: 'edit', themeId: id })).toEqual({ action: 'edit', themeId: id });
+    expect(parseThemeAction({ action: 'showFile', themeId: id })).toEqual({ action: 'showFile', themeId: id });
+    expect(parseThemeAction({ action: 'undo' })).toEqual({ action: 'undo' });
+    // the entry an offered Undo names
+    expect(parseThemeAction({ action: 'undo', entryId })).toEqual({ action: 'undo', entryId });
+    expect(parseThemeAction({ action: 'reset' })).toEqual({ action: 'reset' });
+    expect(parseThemeAction({ action: 'restore', entryId })).toEqual({ action: 'restore', entryId });
+    expect(parseThemeAction({ action: 'resume' })).toEqual({ action: 'resume' });
+    expect(parseThemeAction({ action: 'scheduleMode', choice: 'schedule' })).toEqual({ action: 'scheduleMode', choice: 'schedule' });
+    const rules = [{ days: ['mon'], minute: 420, theme: id, look: 'auto' }];
+    expect(parseThemeAction({ action: 'schedule', rules })).toEqual({ action: 'schedule', rules });
+    expect(parseThemeAction({ action: 'schedule', rules: [] })).toEqual({ action: 'schedule', rules: [] });
+  });
+
+  it('takes the schedule screen\'s rules alone: whether the schedule is on is not the page\'s to send', () => {
+    const rules = [{ days: ['mon'], minute: 420, theme: id, look: 'auto' }];
+    expect(parseThemeAction({ action: 'schedule', schedule: { enabled: true, rules } })).toBeUndefined();
+    expect(parseThemeAction({ action: 'schedule', rules, enabled: true })).toBeUndefined();
+    expect(parseThemeAction({ action: 'schedule' })).toBeUndefined();
+  });
+
+  it('refuses rules that do not hold up, more rules than a schedule holds, and a mode the overlay sets through its setting', () => {
+    expect(parseThemeAction({ action: 'schedule', rules: [{ days: ['mon'], minute: 1440, theme: id, look: 'auto' }] })).toBeUndefined();
+    expect(parseThemeAction({ action: 'schedule', rules: Array.from({ length: 49 }, () => ({ days: ['mon'], minute: 420, theme: id, look: 'auto' })) })).toBeUndefined();
+    expect(parseThemeAction({ action: 'schedule', rules: { 0: {} } })).toBeUndefined();
+    expect(parseThemeAction({ action: 'scheduleMode', choice: 'sometimes' })).toBeUndefined();
+    expect(parseThemeAction({ action: 'mode', mode: 'dark' })).toBeUndefined();
+  });
+
+  it('refuses anything else: a path in the id, an extra key, an unknown kind or action, an empty or long name', () => {
+    expect(parseThemeAction({ action: 'delete', themeId: '../settings' })).toBeUndefined();
+    expect(parseThemeAction({ action: 'pick', themeId: id, kind: 'dark', extra: 1 })).toBeUndefined();
+    expect(parseThemeAction({ action: 'pick', themeId: id, kind: 'sepia' })).toBeUndefined();
+    expect(parseThemeAction({ action: 'save', themeId: id, colors: {} })).toBeUndefined();
+    expect(parseThemeAction({ action: 'undo', themeId: id })).toBeUndefined();
+    expect(parseThemeAction({ action: 'restore', entryId: '../index' })).toBeUndefined();
+    expect(parseThemeAction({ action: 'undo', entryId: '../index' })).toBeUndefined();
+    expect(parseThemeAction({ action: 'undo', entryId: 7 })).toBeUndefined();
+    expect(parseThemeAction({ action: 'rename', themeId: id, name: '   ' })).toBeUndefined();
+    expect(parseThemeAction({ action: 'rename', themeId: id, name: 'x'.repeat(65) })).toBeUndefined();
   });
 });

@@ -49,6 +49,9 @@ function deps(overrides: Partial<ToolStatusDeps>): ToolStatusDeps {
     forgeAvailable: false,
     forgeEnabled: true,
     forgeUnavailable: 'noForgeAccount',
+    themeAvailable: false,
+    themeEnabled: true,
+    themeUnavailable: undefined,
     mcpEnabled: false,
     mcpToolNames: [],
     mcpDeferrableToolNames: [],
@@ -322,9 +325,9 @@ describe('buildToolStatus: switches the host\'s own settings file holds', () => 
   });
 
   it.each(Object.keys(TOOL_GROUP_SETTINGS) as SwitchableToolGroup[])('marks %s setOnHost exactly when its key reports a machineValue', (name) => {
-    const held = buildToolStatus(deps({ designEnabled: true, forgeAvailable: true, hostSettings: hostFile({ [TOOL_GROUP_SETTINGS[name]]: true }) }));
+    const held = buildToolStatus(deps({ designEnabled: true, forgeAvailable: true, themeAvailable: true, hostSettings: hostFile({ [TOOL_GROUP_SETTINGS[name]]: true }) }));
     expect(group(held, name).setOnHost).toBe(true);
-    expect(group(buildToolStatus(deps({ designEnabled: true, forgeAvailable: true, hostSettings: hostFile({}) })), name)).not.toHaveProperty('setOnHost');
+    expect(group(buildToolStatus(deps({ designEnabled: true, forgeAvailable: true, themeAvailable: true, hostSettings: hostFile({}) })), name)).not.toHaveProperty('setOnHost');
   });
 
   it('shows the GitHub and GitLab group only for a desktop chat, unavailable without an account, and makes its tools eligible only while switched on', () => {
@@ -337,6 +340,24 @@ describe('buildToolStatus: switches the host\'s own settings file holds', () => 
     expect(fullActiveToolNames(deps({ forgeAvailable: true }))).toEqual(expect.arrayContaining(['ForgePipelines', 'ForgeComment']));
     expect(fullActiveToolNames(deps({ forgeAvailable: true, forgeEnabled: false }))).not.toContain('ForgePipelines');
     expect(fullActiveToolNames(deps({ forgeAvailable: false }))).not.toContain('ForgePipelines');
+  });
+
+  it('shows the theme group only where the theme tools exist (never in VS Code), and makes them eligible only while switched on and outside a design chat', () => {
+    const vscode = buildToolStatus(deps({}));
+    expect(vscode.groups.map((entry) => entry.group)).not.toContain('theme');
+    expect(vscode.tools.some((tool) => tool.group === 'theme')).toBe(false);
+    expect(fullActiveToolNames(deps({}))).not.toContain('ThemeSet');
+    expect(group(buildToolStatus(deps({ themeAvailable: true })), 'theme')).toEqual({ group: 'theme', enabled: true, available: true });
+    // a chat on a remote host: the app the tools change is closed, or too old
+    for (const reason of ['themeAppClosed', 'themeAppOutdated'] as const) {
+      expect(group(buildToolStatus(deps({ themeAvailable: true, themeUnavailable: reason })), 'theme')).toEqual({ group: 'theme', enabled: true, available: false, unavailableReason: reason });
+    }
+    expect(buildToolStatus(deps({ themeAvailable: true })).tools.filter((tool) => tool.group === 'theme').map((tool) => tool.name)).toEqual(['ThemeRead', 'ThemeSet', 'ThemeSchedule']);
+    expect(fullActiveToolNames(deps({ themeAvailable: true }))).toEqual(expect.arrayContaining(['ThemeRead', 'ThemeSet', 'ThemeSchedule']));
+    expect(fullActiveToolNames(deps({ themeAvailable: true, themeEnabled: false }))).not.toContain('ThemeSet');
+    expect(fullActiveToolNames(deps({ themeAvailable: true, disabled: new Set(['ThemeSchedule']) }))).not.toContain('ThemeSchedule');
+    const design = fullActiveToolNames(deps({ themeAvailable: true, designEnabled: true, designRole: true }));
+    for (const name of ['ThemeRead', 'ThemeSet', 'ThemeSchedule']) expect(design).not.toContain(name);
   });
 
   it('marks a group setOnHost and the tool list toolsSetOnHost only for a key whose machineValue is set', () => {
@@ -447,9 +468,9 @@ describe('design tools in the active set (PD-15, PD-25)', () => {
     const browser = eligible.filter((n) => BROWSER_PI_TOOL_NAMES.includes(n));
     expect(new Set(browser)).toEqual(DESIGN_BROWSER_TOOL_NAMES);
     expect(eligible).not.toContain('BrowserClick');
-    const loadable = loadableToolNames(deferredToolNames(eligible, []), { browser: true, forge: true, relayedTool: () => true }, true);
+    const loadable = loadableToolNames(deferredToolNames(eligible, []), { browser: true, forge: true, theme: true, relayedTool: () => true }, true);
     expect(loadable.filter((n) => BROWSER_PI_TOOL_NAMES.includes(n)).sort()).toEqual([...DESIGN_BROWSER_TOOL_NAMES].sort());
-    const parent = loadableToolNames(deferredToolNames(fullActiveToolNames(deps({ browserAvailable: true, browserEnabled: true })), []), { browser: true, forge: true, relayedTool: () => true }, false);
+    const parent = loadableToolNames(deferredToolNames(fullActiveToolNames(deps({ browserAvailable: true, browserEnabled: true })), []), { browser: true, forge: true, theme: true, relayedTool: () => true }, false);
     expect(parent).toContain('BrowserClick');
   });
 });

@@ -6,7 +6,7 @@ import { expect, type ElectronApplication, type Page } from '@playwright/test';
 import type { ShellEditorTab } from '../../../src/desktop/preload/shell-channels';
 import { editorState } from './editor';
 import { setContentSize } from './settings';
-import { shellPage } from './shell';
+import { SHELL_URL, shellPage } from './shell';
 import { clickMenu, postFromWebview } from './ui';
 
 // System-wide installs only: the app runs on the hermetic home, so a per-user Chrome under the runner's profile is invisible to it.
@@ -101,14 +101,14 @@ export interface ViewInfo {
 
 /** Every native view of the window, bottom to top, with its bounds, visibility and keyboard focus. */
 export async function windowViews(app: ElectronApplication): Promise<ViewInfo[]> {
-  return app.evaluate(({ BrowserWindow, WebContentsView }) => {
-    const win = BrowserWindow.getAllWindows()[0]!;
+  return app.evaluate(({ BrowserWindow, WebContentsView }, shellUrl) => {
+    const win = BrowserWindow.getAllWindows().find((each) => each.webContents.getURL().startsWith(shellUrl))!;
     return win.contentView.children.flatMap((view) => {
       if (!(view instanceof WebContentsView)) return [];
       const contents = view.webContents;
       return [{ url: contents.getURL(), bounds: view.getBounds(), visible: view.getVisible(), focused: contents.isFocused() }];
     });
-  });
+  }, SHELL_URL);
 }
 
 export function viewOf(views: readonly ViewInfo[], urlPart: string): ViewInfo | undefined {
@@ -123,8 +123,8 @@ export async function pageViewOf(app: ElectronApplication, pageId: string): Prom
 
 /** Resolves once every visible page view shows a screencast frame and has painted twice since. */
 export async function pageFramesShown(app: ElectronApplication): Promise<void> {
-  await expect.poll(() => app.evaluate(async ({ BrowserWindow, WebContentsView }) => {
-    const win = BrowserWindow.getAllWindows()[0]!;
+  await expect.poll(() => app.evaluate(async ({ BrowserWindow, WebContentsView }, shellUrl) => {
+    const win = BrowserWindow.getAllWindows().find((each) => each.webContents.getURL().startsWith(shellUrl))!;
     const views = win.contentView.children.filter((view) => view instanceof WebContentsView && view.getVisible()) as Electron.WebContentsView[];
     // Only a page view has the screencast canvas, which stays hidden until the first frame is drawn on it.
     const shown = await Promise.all(views.map((view) => view.webContents.executeJavaScript(`(async () => {
@@ -135,7 +135,7 @@ export async function pageFramesShown(app: ElectronApplication): Promise<void> {
       return true;
     })()`) as Promise<boolean>));
     return shown.every(Boolean);
-  }), { timeout: PAGE_TIMEOUT }).toBe(true);
+  }, SHELL_URL), { timeout: PAGE_TIMEOUT }).toBe(true);
 }
 
 /** Resizes the window's content area, as the user dragging its frame would. */
@@ -160,8 +160,8 @@ export async function typeIntoFocused(app: ElectronApplication, text: string): P
  * bottom to top. Composited in the shell page's own canvas, because capturePage sees one webContents at a time.
  */
 export async function captureWindow(app: ElectronApplication, file: string): Promise<void> {
-  const png = await app.evaluate(async ({ BrowserWindow, WebContentsView }) => {
-    const win = BrowserWindow.getAllWindows()[0]!;
+  const png = await app.evaluate(async ({ BrowserWindow, WebContentsView }, shellUrl) => {
+    const win = BrowserWindow.getAllWindows().find((each) => each.webContents.getURL().startsWith(shellUrl))!;
     const [width, height] = win.getContentSize() as [number, number];
     const layers = [{ data: (await win.webContents.capturePage()).toDataURL(), x: 0, y: 0, width, height }];
     for (const view of win.contentView.children) {
@@ -185,7 +185,7 @@ export async function captureWindow(app: ElectronApplication, file: string): Pro
       return canvas.toDataURL('image/png');
     })(${JSON.stringify(layers)}, ${width}, ${height})`;
     return (await win.webContents.executeJavaScript(script)) as string;
-  });
+  }, SHELL_URL);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, Buffer.from(png.slice(png.indexOf(',') + 1), 'base64'));
 }

@@ -50,6 +50,7 @@ import {
   TOOL_DESIGN_CHECK,
   TOOL_DESIGN_SCREENSHOT,
   TOOL_PREVIEW_JOURNEY,
+  THEME_TOOLS,
 } from '../../../shared/tool-names';
 import { mapPiToolName, toolCategory } from '../tool-normalization';
 import { DESIGN_PI_TOOL_NAMES, type DesignRuleSet } from '../../design/rule-set';
@@ -158,6 +159,9 @@ export function resolveAgentToolset(config: AgentConfig, parentFullToolNames: re
   // Image generation is main-session only and no nested build carries its definition. Stripped before
   // `readOnly` is computed, so naming it cannot lift a read-only agent's shell restriction.
   names = names.filter((n) => n !== TOOL_GENERATE_IMAGE && (!DESIGN_PI_TOOL_NAMES.has(n) || granted(n)));
+
+  // The theme tools change the app's look for the main chat alone; no nested build carries their definitions.
+  names = names.filter((n) => !THEME_TOOLS.has(n));
 
   // Plan mode is a top-level panel concern owned by the primary session; a subagent must never enter
   // or exit plan mode, so strip these even when the parent inherits them (e.g. while the panel is in

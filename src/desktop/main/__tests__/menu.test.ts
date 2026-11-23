@@ -346,7 +346,7 @@ describe('application menu', () => {
   });
 
   // The skip list (VS Code's commandsToSkipShell): every other key a focused terminal leaves unhandled runs nothing.
-  const SKIP_LIST = [MENU_IDS.quickOpen, MENU_IDS.showCommands, MENU_IDS.toggleTerminal, MENU_IDS.toggleSidebar, MENU_IDS.openSettings, MENU_IDS.newChat, MENU_IDS.focusNextPart, MENU_IDS.focusPreviousPart];
+  const SKIP_LIST = [MENU_IDS.quickOpen, MENU_IDS.showCommands, MENU_IDS.toggleTerminal, MENU_IDS.toggleSidebar, MENU_IDS.openSettings, MENU_IDS.newChat, MENU_IDS.focusNextPart, MENU_IDS.focusPreviousPart, MENU_IDS.resetTheme, MENU_IDS.toggleWallpapers, MENU_IDS.nextWallpaper];
   const TERMINAL: MenuState = { ...CHAT, editor: true, page: true, focus: 'terminal', terminal: 'running', terminalInput: true };
   const YIELDING = [MENU_IDS.togglePromptNavigator, MENU_IDS.openChat, MENU_IDS.findInFiles, MENU_IDS.replaceInFiles, MENU_IDS.newTerminal, MENU_IDS.nextChat, MENU_IDS.previousChat, `${MENU_IDS.nextChat}.pageDown`, `${MENU_IDS.previousChat}.pageUp`, MENU_IDS.toggleBrowserDevTools];
   const pressIn = (items: MenuItemConstructorOptions[], id: string) => (byId(items, id).click as (...args: unknown[]) => void)(undefined, undefined, { triggeredByAccelerator: true });
@@ -372,10 +372,10 @@ describe('application menu', () => {
 
   it('publishes the skip list\'s accelerators for xterm to leave unhandled, without New Terminal', () => {
     build('win32', CHAT);
-    expect(installedTerminalPassKeys({ split: false, editor: false }).sort()).toEqual(['CmdOrCtrl+,', 'CmdOrCtrl+B', 'CmdOrCtrl+N', 'CmdOrCtrl+P', 'CmdOrCtrl+Shift+P', 'Ctrl+`', 'Ctrl+Shift+5', 'F6', 'Shift+Alt+N', 'Shift+F6'].sort());
-    expect(installedTerminalPassKeys({ split: true, editor: false }).sort()).toEqual(['Alt+Left', 'Alt+Right', 'CmdOrCtrl+,', 'CmdOrCtrl+B', 'CmdOrCtrl+N', 'CmdOrCtrl+P', 'CmdOrCtrl+Shift+P', 'Ctrl+`', 'Ctrl+Shift+5', 'F6', 'Shift+Alt+N', 'Shift+F6'].sort());
+    expect(installedTerminalPassKeys({ split: false, editor: false }).sort()).toEqual(['CmdOrCtrl+,', 'CmdOrCtrl+Alt+Shift+0', 'CmdOrCtrl+Alt+Shift+W', 'CmdOrCtrl+Alt+Shift+.', 'CmdOrCtrl+B', 'CmdOrCtrl+N', 'CmdOrCtrl+P', 'CmdOrCtrl+Shift+P', 'Ctrl+`', 'Ctrl+Shift+5', 'F6', 'Shift+Alt+N', 'Shift+F6'].sort());
+    expect(installedTerminalPassKeys({ split: true, editor: false }).sort()).toEqual(['Alt+Left', 'Alt+Right', 'CmdOrCtrl+,', 'CmdOrCtrl+Alt+Shift+0', 'CmdOrCtrl+Alt+Shift+W', 'CmdOrCtrl+Alt+Shift+.', 'CmdOrCtrl+B', 'CmdOrCtrl+N', 'CmdOrCtrl+P', 'CmdOrCtrl+Shift+P', 'Ctrl+`', 'Ctrl+Shift+5', 'F6', 'Shift+Alt+N', 'Shift+F6'].sort());
     // an editor terminal's target: Split Terminal cannot run, so its key reaches the pty
-    expect(installedTerminalPassKeys({ split: false, editor: true }).sort()).toEqual(['CmdOrCtrl+,', 'CmdOrCtrl+B', 'CmdOrCtrl+N', 'CmdOrCtrl+P', 'CmdOrCtrl+Shift+P', 'Ctrl+`', 'F6', 'Shift+Alt+N', 'Shift+F6'].sort());
+    expect(installedTerminalPassKeys({ split: false, editor: true }).sort()).toEqual(['CmdOrCtrl+,', 'CmdOrCtrl+Alt+Shift+0', 'CmdOrCtrl+Alt+Shift+W', 'CmdOrCtrl+Alt+Shift+.', 'CmdOrCtrl+B', 'CmdOrCtrl+N', 'CmdOrCtrl+P', 'CmdOrCtrl+Shift+P', 'Ctrl+`', 'F6', 'Shift+Alt+N', 'Shift+F6'].sort());
   });
 
   it('decides each key in the state focus moved to, and leaves the installed items enabled by their preconditions', () => {

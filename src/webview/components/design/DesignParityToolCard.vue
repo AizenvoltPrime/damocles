@@ -113,7 +113,7 @@ const arg = computed(() => {
     :duration-ms="toolCall.durationMs"
     status-note
     :abandon-reason="toolCall.abandonReason"
-    :data-tool="toolCall.name"
+    :tool="toolCall.name"
     data-testid="design-parity-card"
     @expand="uiStore.expandTool(toolCall.id, 'session')"
   >
@@ -122,7 +122,7 @@ const arg = computed(() => {
         v-if="weakest"
         variant="tone"
         class="h-4.5 flex-none rounded-full border-0 bg-(--tone)/14 px-1.75 py-0 font-mono text-10.5 font-semibold tabular-nums"
-        :class="[statusStyle(weakest.status).tone, live && 'animate-[d-badge-pop_.34s_var(--ease-spring)_both]']"
+        :class="[statusStyle(weakest.status).tone, live && 'd-badge-pop']"
         data-testid="design-parity-weakest"
       >
         <span aria-hidden="true">{{ weakest.passes }}/{{ DESIGN_PARITY_CHECK_COUNT }}</span>
@@ -196,7 +196,7 @@ const arg = computed(() => {
             >
               <CollapsibleTrigger
                 v-if="row.failed.length > 0"
-                class="group/trigger flex min-h-8 w-full min-w-0 items-center gap-1.5 ps-2 pe-2 text-start text-(--d-text) focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--d-accent)"
+                class="group/trigger flex min-h-8 w-full min-w-0 items-center gap-1.5 ps-2 pe-2 text-start text-(--d-text) focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--d-accent-fill)"
                 data-testid="design-parity-toggle"
               >
                 <ChevronRight
@@ -227,7 +227,7 @@ const arg = computed(() => {
                     v-for="segment in SEGMENTS"
                     :key="segment"
                     class="h-full min-w-0 flex-1 first:rounded-s-full last:rounded-e-full"
-                    :class="[segment < row.passes ? 'bg-(--tone)' : 'bg-(--d-border2)', live && segment < row.passes && 'animate-[d-scale-in_.24s_var(--ease-spring)_both]']"
+                    :class="[segment < row.passes ? 'bg-(--tone)' : 'bg-(--d-border2)', live && segment < row.passes && 'd-scale-in']"
                     :style="live && segment < row.passes ? { animationDelay: `${rowIndex * 60 + segment * 24}ms` } : undefined"
                   />
                 </span>
@@ -278,7 +278,7 @@ const arg = computed(() => {
                   :data-check="check.id"
                 >
                   <span
-                    class="mt-px flex size-3.75 flex-none items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--d-danger)_16%,transparent)] text-(--d-danger-text)"
+                    class="mt-px flex size-3.75 flex-none items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--d-danger-fill)_16%,transparent)] text-(--d-danger-text)"
                     aria-hidden="true"
                   >
                     <X
@@ -382,7 +382,7 @@ const arg = computed(() => {
     />
     <div
       v-if="awaiting"
-      class="d-sweep-bar h-0.5 bg-(--d-hover) text-(--d-design)"
+      class="d-sweep-bar h-0.5 bg-(--d-hover) [--tone:var(--d-design-fill)]"
       aria-hidden="true"
     />
   </ToolCardFrame>

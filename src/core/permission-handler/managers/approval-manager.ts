@@ -190,7 +190,8 @@ export class ApprovalManager {
       return Promise.resolve({ approved: false, customMessage: 'Cannot request permission: no tool use ID' });
     }
 
-    const filePath = typeof input['file_path'] === 'string' ? input['file_path'] : '';
+    // a theme image has no path: it goes into the theme and no file is written
+    const filePath = typeof input['file_path'] === 'string' && input['file_path'] !== '' ? input['file_path'] : undefined;
     const prompt = typeof input['prompt'] === 'string' ? input['prompt'] : '';
 
     return new Promise<ApprovalResult>((resolve) => {
@@ -214,7 +215,7 @@ export class ApprovalManager {
         toolUseId,
         toolName: TOOL_GENERATE_IMAGE,
         toolInput: input,
-        filePath,
+        ...(filePath !== undefined ? { filePath } : {}),
         prompt,
         imageModel,
         owner: this.state.promptOwner(context.parentToolUseId),
@@ -237,8 +238,8 @@ export class ApprovalManager {
           this.getNotifier()?.({
             toolName: TOOL_GENERATE_IMAGE,
             toolInput: input,
-            message: `Damocles is waiting for your approval to generate an image at ${filePath}`,
-            filePath,
+            message: filePath !== undefined ? `Damocles is waiting for your approval to generate an image at ${filePath}` : 'Damocles is waiting for your approval to generate an image for a theme',
+            ...(filePath !== undefined ? { filePath } : {}),
             ...(context.parentToolUseId != null ? { parentToolUseId: context.parentToolUseId } : {}),
           });
 

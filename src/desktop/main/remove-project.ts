@@ -44,6 +44,8 @@ export interface RemoveProjectDeps {
   readonly remove: (key: string) => Promise<void>;
   // this computer's core drops the project's Git hosting account bindings; settles once done or reported
   readonly forgetAccounts: (key: string) => Promise<void>;
+  // this computer's core drops the project's own look and character pins; settles once done or reported
+  readonly forgetLook: (key: string) => Promise<void>;
   readonly t: Translate;
 }
 
@@ -70,6 +72,7 @@ export async function removeProject(key: string, deps: RemoveProjectDeps): Promi
   if (waiting.length > 0) await deps.discard(waiting);
   await deps.remove(key);
   await deps.forgetAccounts(key);
+  await deps.forgetLook(key);
   return { ok: true, removed: true };
 }
 

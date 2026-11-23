@@ -232,7 +232,7 @@ const reasonClass = 'shrink-0 whitespace-nowrap text-11 text-(--d-faint) group-h
   <div
     ref="root"
     data-testid="overlay-menu"
-    class="fixed flex max-h-[calc(100vh-1rem)] w-max max-w-80 min-w-57.5 animate-[d-pop_.14s_ease-out] flex-col overflow-hidden rounded-11 border border-(--d-border2) bg-(--d-card) text-(--d-text) shadow-(--d-shadow)"
+    class="fixed flex max-h-[calc(100vh-1rem)] w-max max-w-80 min-w-57.5 d-pop-in flex-col overflow-hidden rounded-11 border border-(--d-border2) bg-(--d-card) text-(--d-text) shadow-(--d-shadow)"
     :style="{ left: `${position.left}px`, top: `${position.top}px` }"
   >
     <label
@@ -414,7 +414,7 @@ const reasonClass = 'shrink-0 whitespace-nowrap text-11 text-(--d-faint) group-h
     role="menu"
     data-testid="overlay-submenu"
     :aria-label="openSubmenu.entry.label"
-    class="fixed flex max-h-[calc(100vh-1rem)] w-max max-w-80 min-w-50 animate-[d-pop_.14s_ease-out] flex-col overflow-y-auto rounded-11 border border-(--d-border2) bg-(--d-card) p-1.25 text-(--d-text) shadow-(--d-shadow)"
+    class="fixed flex max-h-[calc(100vh-1rem)] w-max max-w-80 min-w-50 d-pop-in flex-col overflow-y-auto rounded-11 border border-(--d-border2) bg-(--d-card) p-1.25 text-(--d-text) shadow-(--d-shadow)"
     :class="openSubmenu.placed ? '' : 'invisible'"
     :style="{ left: `${openSubmenu.left}px`, top: `${openSubmenu.top}px` }"
     @mouseenter="cancelHoverIntent"

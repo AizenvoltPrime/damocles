@@ -6,7 +6,9 @@ import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { deferredToolNames, loadableToolNames } from '../tools/deferred-tools';
 import { FORGE_PI_TOOL_NAMES } from '../tools/forge-tool-specs';
-import { forgeUnreachableReason, userScopeReach } from '../../user-scope';
+import { THEME_PI_TOOL_NAMES } from '../tools/theme-tool-specs';
+import { THEMES_FEATURE } from '../../../shared/themes/relay';
+import { forgeUnreachableReason, themeClosedReason, themeOffReason, themeOutdatedReason, userScopeReach } from '../../user-scope';
 import { englishText } from '../../../shared/localized-text';
 
 afterEach(() => {
@@ -80,5 +82,24 @@ describe('ToolSearch for the forge group while the pinned device\'s GitHub and G
     fake.set('clientForges', 'client-a', { servers: [], pending: true });
     fake.set('clientAuth', 'client-a', undefined);
     expect(englishText(forgeUnreachableReason())).toBe('Your GitHub and GitLab accounts are on your computer, and Damocles is closed.');
+  });
+});
+
+describe('ToolSearch for the theme group of a chat on a remote host', () => {
+  const search = async (settings: Record<string, unknown>, arrange: (fake: ReturnType<typeof createFakeRemoteHost>) => void): Promise<string> => {
+    const fake = createFakeRemoteHost();
+    installPlatform({ ...createFakePlatform({ settings: { user: settings } }), remote: fake.remote });
+    arrange(fake);
+    const tool = createToolSearchTool({
+      deferrable: () => ({ names: loadableToolNames(deferredToolNames(THEME_PI_TOOL_NAMES, []), userScopeReach(), false), loaded: new Set(), mcpGroups: new Map() }),
+      activate: () => undefined,
+    });
+    return ((await tool.execute('tc-1', { tools: ['theme'] }, undefined, undefined, { sessionManager: { getSessionId: () => 'sess-1' } } as never)) as unknown as { content: Array<{ text: string }> }).content[0]!.text;
+  };
+
+  it('answers with why the app is out of reach: closed, too old, or its theme tools off', async () => {
+    expect(await search({}, (fake) => fake.set('clientAuth', 'client-a', undefined))).toContain(`Not available: theme. ${englishText(themeClosedReason())}`);
+    expect(await search({}, (fake) => fake.set('clientFeatures', 'client-a', []))).toContain(`Not available: theme. ${englishText(themeOutdatedReason())}`);
+    expect(await search({ 'damocles.desktop.themes.agentTools': false }, (fake) => fake.set('clientFeatures', 'client-a', [THEMES_FEATURE]))).toContain(`Not available: theme. ${englishText(themeOffReason())}`);
   });
 });

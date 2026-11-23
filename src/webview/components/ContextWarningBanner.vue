@@ -48,7 +48,7 @@ const title = computed(() => {
       <div
         v-if="autoCompactTriggered"
         class="d-sweep-bar h-1 w-28 shrink-0 overflow-hidden rounded-full bg-(--d-hover)"
-        :class="level === 'critical' ? 'text-(--d-danger)' : 'text-(--d-warning)'"
+        :class="level === 'critical' ? '[--tone:var(--d-danger-fill)]' : '[--tone:var(--d-warning-fill)]'"
         role="progressbar"
         :aria-label="t('context.autoCompacting')"
       />
@@ -63,7 +63,7 @@ const title = computed(() => {
       >
         <div
           class="size-full origin-left rounded-full transition-transform duration-500 ease-out rtl:origin-right"
-          :class="level === 'critical' ? 'bg-(--d-danger)' : 'bg-(--d-warning)'"
+          :class="level === 'critical' ? 'bg-(--d-danger-fill)' : 'bg-(--d-warning-fill)'"
           :style="{ transform: `scaleX(${Math.min(percentUsed, 100) / 100})` }"
         />
       </div>

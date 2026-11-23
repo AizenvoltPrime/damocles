@@ -10,7 +10,8 @@ import type { MemoryService } from '../memory';
 import type { CompassService } from '../compass';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import { FEEDBACK_MARKER, POLICY_BLOCK_MARKER } from '../../shared/types/constants';
-import { IGNORED_TOOLS, SUBAGENT_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_AGENT, TOOL_GENERATE_IMAGE, TOOL_GLOB, TOOL_GREP, TOOL_IMPORT_ASSET, TOOL_LS, TOOL_READ, TOOL_WEB_FETCH, LIVE_OUTPUT_TOOLS, SHELL_TOOLS, WRITE_TOOLS, FORGE_WRITE_TOOLS, isMcpResourceToolName } from '../../shared/tool-names';
+import { IGNORED_TOOLS, SUBAGENT_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_AGENT, TOOL_GENERATE_IMAGE, TOOL_GLOB, TOOL_GREP, TOOL_IMPORT_ASSET, TOOL_LS, TOOL_READ, TOOL_THEME_SET, TOOL_WEB_FETCH, LIVE_OUTPUT_TOOLS, SHELL_TOOLS, WRITE_TOOLS, FORGE_WRITE_TOOLS, THEME_TOOLS, isMcpResourceToolName } from '../../shared/tool-names';
+import { themeCallSource, themeImagePrompt, type ThemeAssetSource } from '../../shared/themes/asset-source';
 import { isPlanFilePath } from '../paths';
 import { networkReach } from '../local-links';
 import { loadedFileUrl, UNPARSED_FILE_URL } from '../browser/loaded-file-url';
@@ -29,7 +30,8 @@ import { DESIGN_PI_TOOL_NAMES, DESIGN_TOOLS_WITHOUT_FOLDER_WRITES } from '../des
 import { designFilesWriteBlock, designShellRefusal, designWriteBlock, type DesignScope } from '../design/design-write-rule';
 import { log } from '../logger';
 import { userScopeToolNames } from './tools/deferred-tools';
-import { browserClosedReason, forgeUnreachableReason, relayedMcpUnreachableReason, userScopeReach } from '../user-scope';
+import { browserClosedReason, forgeUnreachableReason, relayedMcpUnreachableReason, themeUnreachableReason, userScopeReach } from '../user-scope';
+import { DESIGN_CHAT_THEME_REFUSAL, NESTED_THEME_REFUSAL } from './tools/theme-tool-specs';
 import { isForgeTool, type ForgeToolsPort } from './tools/forge-tools';
 import type { ForgeApprovalAnswer } from '../../shared/forge/tools';
 import { DESIGN_CHAT_FORGE_REFUSAL } from './tools/forge-tool-specs';
@@ -171,6 +173,8 @@ export interface PanelGateContext {
    * them asks, and the call the gate lets run grants the page's folder. Absent: no outside page asks, and the tool refuses it.
    */
   browserFiles?: Pick<ChatServedFiles, 'folderAsk' | 'grantedFile' | 'grantRefusal' | 'grant'>;
+  /** Why a theme tool's asset source cannot be used now (web search or image generation off), read per call. Absent: none is refused here. */
+  themeSourceRefusal?: (source: ThemeAssetSource) => string | undefined;
 }
 
 /** What the gate needs of a panel's turn checkpoint. */
@@ -214,7 +218,7 @@ export function formatPolicyBlockReason(message: string | undefined): string {
 
 /** The slice of a panel's context the gate actually reads. `PanelGateContext` satisfies it; a nested
  *  subagent supplies the same parent handler + a parent-mode reader (inherit-parent-mode). */
-export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode' | 'isMcpReadOnly' | 'mcpToolIdentity' | 'checkpointBaseline' | 'shellCancel' | 'worktreeIsolation' | 'designScope' | 'machine' | 'forgeTools' | 'browserFiles'> & {
+export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode' | 'isMcpReadOnly' | 'mcpToolIdentity' | 'checkpointBaseline' | 'shellCancel' | 'worktreeIsolation' | 'designScope' | 'machine' | 'forgeTools' | 'browserFiles' | 'themeSourceRefusal'> & {
   /**
    * Apply plan mode's shell rule to this caller in every mode: a command `provenReadOnlyShell` proves
    * read-only auto-runs, any other goes through `canUseTool` (prompt, settings rules, YOLO), and write
@@ -253,7 +257,7 @@ export function waitsForCheckpointBaseline(piToolName: string, input: Record<str
   const category = toolCategory(damoclesName);
   if (category === 'read') return false;
   if (damoclesName.startsWith('mcp__')) return !(isMcpReadOnly?.(damoclesName) ?? false);
-  if (GATE_ALLOW_ALWAYS.has(damoclesName) || GATEABLE_MODULE_NAMES.has(damoclesName) || isForgeTool(damoclesName)) return false;
+  if (GATE_ALLOW_ALWAYS.has(damoclesName) || GATEABLE_MODULE_NAMES.has(damoclesName) || isForgeTool(damoclesName) || THEME_TOOLS.has(damoclesName)) return false;
   if (category === 'shell') return shellVerdict?.readOnly !== true;
   return true;
 }
@@ -320,6 +324,10 @@ function filePathsOf(name: string, input: Record<string, unknown>, cwd: () => st
   if (name === TOOL_GREP || name === TOOL_GLOB || name === TOOL_LS) return paths(false, tool, named(input['path']) ?? '.');
   // ImportAsset's `path` and `file` read as a Read of that path does; its `url` is no file.
   if (name === TOOL_IMPORT_ASSET) return paths(true, tool, input['path'], input['file']);
+  if (name === TOOL_THEME_SET) {
+    const source = themeCallSource(input);
+    return source !== undefined && 'kind' in source && source.kind === 'file' ? paths(true, tool, source.file) : undefined;
+  }
   if (WRITE_TOOLS.has(name)) return paths(false, tool, named(input['file_path']) ?? input['path']);
   // the tool refuses the whole call when any path is relative, so only absolute ones are opened
   if (name === 'BrowserUpload') return Array.isArray(input['paths']) ? paths(false, browserUploadPath, ...input['paths']) : undefined;
@@ -513,6 +521,7 @@ function networkPathTitle(name: string, place: LocalizedArg | undefined, several
   switch (name) {
     case TOOL_READ:
     case TOOL_IMPORT_ASSET:
+    case TOOL_THEME_SET:
       return place === undefined ? l('Read a file that may be on another computer?') : l('Read a file on {0}?', place);
     case TOOL_GREP:
     case TOOL_GLOB:
@@ -677,13 +686,14 @@ async function decideToolCall(
     return refused === undefined ? { root: real } : { refused };
   };
 
-  // D62, a design chat's posture and one writer per design file apply in every mode and before a hook's force-allow, to the
-  // input as a hook rewrote it.
+  // D62, a design chat's posture, one writer per design file and the theme tools' main-chat rule apply in every mode and before
+  // a hook's force-allow, to the input as a hook rewrote it.
   // A write whose target reaches a network host is in no design folder, designs folder or worktree, which all lie on the chat's own
   // drives or hosts, so only the design rule judges it, and without touching it.
   const isolationBlock = async (): Promise<ToolCallEventResult | undefined> => {
     const design = panel.designScope?.();
     const isolation = panel.worktreeIsolation?.();
+    if (!design && parentToolUseId !== null && THEME_TOOLS.has(damoclesName)) return { block: true, reason: formatPolicyBlockReason(NESTED_THEME_REFUSAL) };
     if (!design && !isolation && category !== 'write') return undefined;
     const input = normalizeToolInput(event.toolName, event.input as Record<string, unknown>);
     const facts = await callFacts();
@@ -697,7 +707,9 @@ async function decideToolCall(
   // a tool whose user-scope service this core cannot reach never runs, in any mode, before any hook
   if (userScopeToolNames(userScopeReach()).has(event.toolName)) {
     const relayedServer = relayedServerOfTool(event.toolName);
-    const reason = relayedServer !== undefined ? relayedMcpUnreachableReason(relayedServer) : isForgeTool(event.toolName) ? forgeUnreachableReason() : browserClosedReason();
+    const reason = relayedServer !== undefined ? relayedMcpUnreachableReason(relayedServer)
+      : isForgeTool(event.toolName) ? forgeUnreachableReason()
+      : THEME_TOOLS.has(event.toolName) ? themeUnreachableReason() : browserClosedReason();
     return { block: true, reason: formatPolicyBlockReason(englishText(reason)) };
   }
 
@@ -835,17 +847,28 @@ async function decideToolCall(
   let rule = onlyUserApproves
     ? await panel.permissionHandler.matchRule(damoclesName, input, mcpTool, { ignoreBypass: true })
     : await panel.permissionHandler.matchRule(decidedAs.name, decidedAs.input, mcpTool, ruleOptions);
-  // A call decided as another tool's keeps its own tool's rule too, and the stricter of the two decides (D101).
-  if (decidedAs.name !== damoclesName) rule = stricterRule(rule, await panel.permissionHandler.matchRule(damoclesName, input, mcpTool, ruleOptions));
+  // A call decided as another tool's keeps its own tool's rule too, and the stricter of the two decides (D101). A theme tool's
+  // allow rule approves its card's change only, never the read, fetch or generation of its source.
+  if (decidedAs.name !== damoclesName) {
+    const own = await panel.permissionHandler.matchRule(damoclesName, input, mcpTool, ruleOptions);
+    rule = stricterRule(rule, own === 'allow' && THEME_TOOLS.has(damoclesName) ? null : own);
+  }
   // A page outside the project is a file the browser reads, so a Read deny or ask rule on it decides too; a Read allow grants no folder.
   const pageFile = outsidePage?.file ?? grantedPage;
   if (pageFile !== undefined) {
     const readRule = await panel.permissionHandler.matchRule(TOOL_READ, { file_path: pageFile }, undefined, ruleOptions);
     if (readRule === 'deny' || readRule === 'ask') rule = stricterRule(rule, readRule);
   }
-  const call: GatedCall = { name: decidedAs.name, input: decidedAs.input, mcpReadOnly, rule, ...(shellVerdict ? { shellVerdict } : {}), ...(networkPath ? { reachesNetwork: true as const } : {}), ...(outsidePage ? { outsideFolder: true as const } : {}) };
+  const call: GatedCall = {
+    name: decidedAs.name, input: decidedAs.input, mcpReadOnly, rule, ...(shellVerdict ? { shellVerdict } : {}), ...(networkPath ? { reachesNetwork: true as const } : {}), ...(outsidePage ? { outsideFolder: true as const } : {}),
+    ...(parentToolUseId !== null ? { nested: true as const } : {}), ...(decidedAs.name !== damoclesName ? { tool: damoclesName } : {}),
+  };
   const verdict = gateVerdict(call, panel);
   if (verdict.kind === 'block') return { block: true, reason: formatPolicyBlockReason(verdict.reason) };
+  // a source that cannot be used now is refused before anything asks
+  const source = THEME_TOOLS.has(damoclesName) ? themeCallSource(input) : undefined;
+  const unusable = source !== undefined && 'kind' in source ? panel.themeSourceRefusal?.(source) : undefined;
+  if (unusable !== undefined) return { block: true, reason: formatPolicyBlockReason(unusable) };
   return verdict.kind === 'run' ? proceed() : askUser(call, verdict.requiresUser === true);
 }
 
@@ -867,10 +890,11 @@ const IMPORT_ASSET_SOURCES = ['path', 'file', 'url'] as const;
 
 /**
  * The call whose settings rules and defaults decide `name`'s permission (D101): an ImportAsset from `url` as the chat's WebFetch
- * of that URL, one from `file` or a project `path` as a Read of that path (`path` is cwd-relative, as Read resolves it), any other
- * call as itself; the gate adds the ImportAsset rule to a mapped call's. An ImportAsset that names no single source cannot be decided.
+ * of that URL, one from `file` or a project `path` as a Read of that path (`path` is cwd-relative, as Read resolves it), a
+ * ThemeSet as its source's call (`themeSourceCall`), any other call as itself; the gate adds the tool's own rule to a mapped call's. An ImportAsset that names no single source cannot be decided.
  */
 function permissionCallOf(name: string, input: Record<string, unknown>): { name: string; input: Record<string, unknown> } | { undecidable: string } {
+  if (name === TOOL_THEME_SET) return themeSourceCall(input);
   if (name !== TOOL_IMPORT_ASSET) return { name, input };
   const named = IMPORT_ASSET_SOURCES.filter((source) => input[source] !== undefined);
   const source = named.length === 1 ? named[0]! : undefined;
@@ -881,9 +905,25 @@ function permissionCallOf(name: string, input: Record<string, unknown>): { name:
   return source === 'url' ? { name: TOOL_WEB_FETCH, input: { url: value } } : { name: TOOL_READ, input: { file_path: value } };
 }
 
+/**
+ * The call a ThemeSet is decided as: with a `file` source a Read of that path, with a `url` source or `install` a WebFetch of
+ * that URL, with a `generate` the image generation of its prompt; with no source, an attachment or pixels, itself.
+ */
+function themeSourceCall(input: Record<string, unknown>): { name: string; input: Record<string, unknown> } | { undecidable: string } {
+  const source = themeCallSource(input);
+  if (source === undefined) return { name: TOOL_THEME_SET, input };
+  if ('refused' in source) return { undecidable: `${source.refused} This call could not be approved.` };
+  switch (source.kind) {
+    case 'file': return { name: TOOL_READ, input: { file_path: source.file } };
+    case 'url': return { name: TOOL_WEB_FETCH, input: { url: source.url } };
+    case 'generate': return { name: TOOL_GENERATE_IMAGE, input: { prompt: themeImagePrompt(source) } };
+    default: return { name: TOOL_THEME_SET, input };
+  }
+}
+
 /** A call the gate decides, as it reached the gate once its PreToolUse hooks ran. */
 export interface GatedCall {
-  /** The Damocles tool name, or for an ImportAsset the WebFetch or Read it is decided as (`permissionCallOf`). */
+  /** The Damocles tool name, or for an ImportAsset or a ThemeSet source the call it is decided as (`permissionCallOf`). */
   name: string;
   /** The normalized input the approval flow sees. */
   input: Record<string, unknown>;
@@ -897,6 +937,10 @@ export interface GatedCall {
   reachesNetwork?: true;
   /** It loads a file page outside the chat's folders, whose run grants the page's folder (`CallFacts.outsidePage`). */
   outsideFolder?: true;
+  /** A subagent or team member made it. */
+  nested?: true;
+  /** The Damocles tool a call decided as another tool's is (`permissionCallOf`); absent when `name` is it. */
+  tool?: string;
 }
 
 /** Whether a call asks when no settings rule decides it, in every mode: its path may reach a network host, or it grants a folder. */
@@ -933,6 +977,18 @@ export function gateVerdict(call: GatedCall, panel: GatePermissionContext): Gate
 
   // Design tools run by settings rule; they are not module tools, which never wait for the checkpoint baseline (PD-42).
   if (DESIGN_PI_TOOL_NAMES.has(name)) return byRule();
+
+  // The theme tools raise their own cards in every mode, plan mode and YOLO included, so they get no generic card unless an ask
+  // rule names them; only the main chat of a chat that is not a design chat runs them. A source is decided as the Read or
+  // WebFetch it is, in every mode, and a generation as GenerateImage is outside plan mode, which asks for it rather than block.
+  const themeTool = call.tool ?? name;
+  if (THEME_TOOLS.has(themeTool)) {
+    if (rule === 'deny') return { kind: 'block', reason: SETTINGS_RULE_DENY };
+    if (panel.designScope?.()) return { kind: 'block', reason: DESIGN_CHAT_THEME_REFUSAL };
+    if (call.nested) return { kind: 'block', reason: NESTED_THEME_REFUSAL };
+    if (name === themeTool) return rule === 'ask' ? APPROVAL : RUN;
+    return panel.permissionHandler.decide(name, input, rule, false, asksUnlessRuled(call)) === 'allow' ? RUN : APPROVAL;
+  }
 
   // A design chat (PD-4, PD-25); `designWriteBlock` already refused writes outside its folder and unproven shell commands.
   if (panel.designScope?.()) {

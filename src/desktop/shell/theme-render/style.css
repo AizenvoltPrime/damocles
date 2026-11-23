@@ -1,0 +1,11 @@
+@import "tailwindcss" source(none);
+/* The page draws only the miniature, so Tailwind emits only the utilities it uses. */
+@source "../../../webview/components/theme/ThemeMiniature.vue";
+@source "../../../webview/components/theme/theme-view.ts";
+
+html,
+body {
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}

@@ -20,4 +20,4 @@ export const PIN_POPOVER_GAP_REM = 0.5;
 export const pinPx = (): number => remPx(PIN_REM);
 export const pinInsetPx = (): number => remPx(PIN_INSET_REM);
 
-export const STROKE_CLASS = 'fill-none stroke-(--d-design) [stroke-linecap:round] [stroke-linejoin:round]';
+export const STROKE_CLASS = 'fill-none stroke-(--d-design-fill) [stroke-linecap:round] [stroke-linejoin:round]';

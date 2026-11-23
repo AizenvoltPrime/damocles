@@ -1,5 +1,5 @@
 import { expect, type ElectronApplication, type Locator, type Page } from '@playwright/test';
-import { OVERLAY_URL, overlayPage } from './shell';
+import { onMainWindow, OVERLAY_URL, overlayPage } from './shell';
 
 /** The overlay page once it has loaded: main holds a request made while the page loads and sends it then. */
 export async function readyOverlay(app: ElectronApplication): Promise<Page> {
@@ -20,8 +20,7 @@ export async function focusedMenuItem(overlay: Page): Promise<string | null> {
 
 /** Main's overlay view: its stacking position among the window's views, visibility, bounds and whether it has focus. */
 export async function overlayViewState(app: ElectronApplication): Promise<{ topmost: boolean; visible: boolean; bounds: Electron.Rectangle; content: Electron.Rectangle; focused: boolean }> {
-  return app.evaluate(({ BrowserWindow }, url) => {
-    const win = BrowserWindow.getAllWindows()[0]!;
+  return onMainWindow(app, (win, url) => {
     const children = win.contentView.children as Electron.WebContentsView[];
     const overlay = children.find((view) => view.webContents?.getURL() === url);
     if (!overlay) throw new Error('no overlay view');

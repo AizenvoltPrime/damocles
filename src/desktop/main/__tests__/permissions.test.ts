@@ -3,12 +3,18 @@ import type { Session, WebContents } from 'electron';
 
 vi.mock('electron', () => ({ protocol: {} }));
 
-import { isPermissionAllowed, registerPanelContents, restrictPermissions } from '../security';
+import { isPermissionAllowed, registerLocalFontsContents, registerPanelContents, restrictPermissions } from '../security';
 
 const panel = { id: 1 } as unknown as WebContents;
 const other = { id: 2 } as unknown as WebContents;
+const dock = { id: 3 } as unknown as WebContents;
+const overlay = { id: 4 } as unknown as WebContents;
 registerPanelContents(panel);
+registerLocalFontsContents(dock);
+registerLocalFontsContents(overlay);
 const page = 'app://damocles/panel/abc/index.html';
+const dockPage = 'app://damocles/theme-editor/index.html';
+const overlayPage = 'app://damocles/overlay/index.html';
 
 describe('permission handlers', () => {
   it('allow clipboard-sanitized-write for a panel view main frame on the app origin', () => {
@@ -26,6 +32,27 @@ describe('permission handlers', () => {
     ['media', { contents: panel, permission: 'media', requester: page, isMainFrame: true }],
     ['notifications', { contents: panel, permission: 'notifications', requester: page, isMainFrame: true }],
   ])('deny %s', (_name, query) => {
+    expect(isPermissionAllowed(query)).toBe(false);
+  });
+
+  it('allow local-fonts only for the theme editor dock\'s and the overlay\'s main frames on the app origin', () => {
+    expect(isPermissionAllowed({ contents: dock, permission: 'local-fonts', requester: dockPage, isMainFrame: true })).toBe(true);
+    expect(isPermissionAllowed({ contents: dock, permission: 'local-fonts', requester: 'app://damocles', isMainFrame: true })).toBe(true);
+    expect(isPermissionAllowed({ contents: overlay, permission: 'local-fonts', requester: overlayPage, isMainFrame: true })).toBe(true);
+  });
+
+  it.each([
+    ['a chat page', { contents: panel, permission: 'local-fonts', requester: page, isMainFrame: true }],
+    ['another webContents, the shell and the popup window page among them', { contents: other, permission: 'local-fonts', requester: 'app://damocles', isMainFrame: true }],
+    ['a subframe of the overlay', { contents: overlay, permission: 'local-fonts', requester: overlayPage, isMainFrame: false }],
+    ['another origin in the overlay', { contents: overlay, permission: 'local-fonts', requester: 'https://example.com/', isMainFrame: true }],
+    ['the clipboard in the overlay', { contents: overlay, permission: 'clipboard-sanitized-write', requester: overlayPage, isMainFrame: true }],
+    ['a subframe of the dock', { contents: dock, permission: 'local-fonts', requester: dockPage, isMainFrame: false }],
+    ['another origin in the dock', { contents: dock, permission: 'local-fonts', requester: 'https://example.com/', isMainFrame: true }],
+    ['a look-alike origin in the dock', { contents: dock, permission: 'local-fonts', requester: 'app://damocles.evil', isMainFrame: true }],
+    ['no webContents', { contents: null, permission: 'local-fonts', requester: dockPage, isMainFrame: true }],
+    ['the clipboard in the dock', { contents: dock, permission: 'clipboard-sanitized-write', requester: dockPage, isMainFrame: true }],
+  ])('deny local-fonts or the clipboard to %s', (_name, query) => {
     expect(isPermissionAllowed(query)).toBe(false);
   });
 
@@ -49,6 +76,12 @@ describe('permission handlers', () => {
     expect(check(panel, 'clipboard-sanitized-write', 'app://damocles', { isMainFrame: true })).toBe(true);
     expect(check(panel, 'clipboard-read', 'app://damocles', { isMainFrame: true })).toBe(false);
     expect(check(panel, 'clipboard-sanitized-write', 'app://damocles', { isMainFrame: false })).toBe(false);
+    expect(check(dock, 'local-fonts', 'app://damocles', { isMainFrame: true })).toBe(true);
+    expect(check(panel, 'local-fonts', 'app://damocles', { isMainFrame: true })).toBe(false);
+    const fonts = vi.fn();
+    request(dock, 'local-fonts', fonts, { requestingUrl: dockPage, isMainFrame: true });
+    request(other, 'local-fonts', fonts, { requestingUrl: 'app://damocles/shell/index.html', isMainFrame: true });
+    expect(fonts.mock.calls).toEqual([[true], [false]]);
     expect(device()).toBe(false);
   });
 });

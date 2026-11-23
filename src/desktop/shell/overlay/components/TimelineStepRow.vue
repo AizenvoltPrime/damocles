@@ -20,7 +20,7 @@ defineProps<{ step: string; state: FlowStepState; index: number; last: boolean }
       class="absolute inset-s-3 top-6 bottom-0 -ms-px w-0.5 bg-(--d-border)"
     >
       <span
-        class="timeline-line block size-full origin-top bg-(--d-success)"
+        class="timeline-line block size-full origin-top bg-(--d-success-fill)"
         :class="state === 'done' ? 'scale-y-100' : 'scale-y-0'"
       />
     </span>
@@ -29,9 +29,9 @@ defineProps<{ step: string; state: FlowStepState; index: number; last: boolean }
       class="relative z-1 grid size-6 place-items-center rounded-full border-[1.5px] bg-(--d-card) transition-colors duration-200 ease-out"
       :class="{
         'border-(--d-border2) text-(--d-faint)': state === 'pending',
-        'border-(--d-accent) text-(--d-accent)': state === 'active',
-        'border-(--d-success) bg-[color-mix(in_srgb,var(--d-success)_16%,var(--d-card))] text-(--d-success)': state === 'done',
-        'border-(--d-danger) bg-[color-mix(in_srgb,var(--d-danger)_16%,var(--d-card))] text-(--d-danger)': state === 'failed',
+        'border-(--d-accent-fill) text-(--d-accent)': state === 'active',
+        'border-(--d-success-fill) bg-[color-mix(in_srgb,var(--d-success-fill)_16%,var(--d-card))] text-(--d-success)': state === 'done',
+        'border-(--d-danger-fill) bg-[color-mix(in_srgb,var(--d-danger-fill)_16%,var(--d-card))] text-(--d-danger)': state === 'failed',
       }"
     >
       <Transition

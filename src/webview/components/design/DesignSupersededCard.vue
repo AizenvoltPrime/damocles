@@ -21,9 +21,9 @@ function openCurrent(): void {
     role="status"
     data-testid="design-superseded"
   >
-    <div class="flex items-center gap-3 rounded-2xl border border-[color-mix(in_srgb,var(--d-design)_35%,var(--d-border2))] bg-[color-mix(in_srgb,var(--d-design)_6%,var(--d-card))] py-2.5 ps-3 pe-2.5 @max-[30rem]:flex-wrap">
+    <div class="flex items-center gap-3 rounded-2xl border border-[color-mix(in_srgb,var(--d-design-fill)_35%,var(--d-border2))] bg-[color-mix(in_srgb,var(--d-design-fill)_6%,var(--d-card))] py-2.5 ps-3 pe-2.5 @max-[30rem]:flex-wrap">
       <span
-        class="d-tone-design flex size-8 flex-none animate-[d-icon-in_.36s_var(--ease-spring)_.08s_both] items-center justify-center rounded-10 bg-(--tone)/16"
+        class="d-tone-design flex size-8 flex-none d-icon-in [--enter-delay:.08s] items-center justify-center rounded-10 bg-(--tone)/16"
         aria-hidden="true"
       >
         <GitBranch class="size-4" />
@@ -34,7 +34,7 @@ function openCurrent(): void {
       </div>
       <Button
         type="button"
-        class="d-press h-7.5 shrink-0 gap-1.5 rounded-8 bg-(--d-design) px-3 text-xs font-semibold text-(--d-on-design) hover:bg-(--d-design) hover:brightness-110 focus-visible:ring-1 focus-visible:ring-(--d-design) focus-visible:ring-offset-1 focus-visible:ring-offset-(--d-card) @max-[30rem]:w-full [&_svg]:size-3.25"
+        class="d-press h-7.5 shrink-0 gap-1.5 rounded-8 bg-(--d-design-fill) px-3 text-xs font-semibold text-(--d-on-design) hover:bg-(--d-design-fill) hover:brightness-110 focus-visible:ring-1 focus-visible:ring-(--d-design-fill) focus-visible:ring-offset-1 focus-visible:ring-offset-(--d-card) @max-[30rem]:w-full [&_svg]:size-3.25"
         data-testid="design-superseded-open"
         @click="openCurrent"
       >

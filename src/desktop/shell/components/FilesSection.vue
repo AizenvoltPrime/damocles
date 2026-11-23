@@ -1093,8 +1093,8 @@ defineExpose({ reveal, startCreate, collapseAll });
                   :aria-label="t(`files.inputLabel.${row.edit.mode}`)"
                   :aria-invalid="editMessage !== null"
                   :aria-describedby="editMessage ? `${treeId}-edit-message` : undefined"
-                  class="h-5.5 rounded-5 border-(--d-accent) bg-(--d-input) px-1.5 py-0 text-12.5 focus-visible:ring-0 focus-visible:ring-offset-0"
-                  :class="editMessage ? 'border-(--d-danger)' : ''"
+                  class="h-5.5 rounded-5 border-(--d-accent-fill) bg-(--d-input) px-1.5 py-0 text-12.5 focus-visible:ring-0 focus-visible:ring-offset-0"
+                  :class="editMessage ? 'border-(--d-danger-fill)' : ''"
                   @input="editTouched = true"
                   @keydown="onEditKeydown"
                   @blur="onEditBlur"
@@ -1104,7 +1104,7 @@ defineExpose({ reveal, startCreate, collapseAll });
                   :id="`${treeId}-edit-message`"
                   role="alert"
                   data-testid="files-edit-message"
-                  class="absolute inset-x-0 top-full z-10 mt-0.5 rounded-5 border border-(--d-danger) bg-(--d-card) px-1.5 py-0.5 text-11 text-(--d-danger-text) shadow-(--d-shadow)"
+                  class="absolute inset-x-0 top-full z-10 mt-0.5 rounded-5 border border-(--d-danger-fill) bg-(--d-card) px-1.5 py-0.5 text-11 text-(--d-danger-text) shadow-(--d-shadow)"
                 >
                   {{ editMessage }}
                 </p>
@@ -1126,8 +1126,8 @@ defineExpose({ reveal, startCreate, collapseAll });
               :title="rowTitle(row)"
               draggable="true"
               :data-cut="isCut(row.path) || undefined"
-              class="files-row relative flex cursor-pointer items-center gap-1.25 bg-(--row-bg) pr-2.5 outline-none select-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
-              :class="row.path === selectedPath || dropTarget === row.path ? '[--row-bg:var(--d-accent-soft)]' : '[--row-bg:transparent] hover:[--row-bg:var(--d-hover)]'"
+              class="files-row relative flex cursor-pointer items-center gap-1.25 pr-2.5 outline-none select-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent-fill)]"
+              :class="row.path === selectedPath || dropTarget === row.path ? 'bg-(--d-accent-soft)' : 'hover:bg-(--d-hover)'"
               :style="{ height: `${remPx(ROW_REM)}px`, paddingLeft: `${INDENT_START_REM + row.depth * INDENT_REM}rem` }"
               @click="activate(row)"
               @focus="focusedPath = row.path"
@@ -1135,12 +1135,12 @@ defineExpose({ reveal, startCreate, collapseAll });
               @dragstart="onDragStart($event, row)"
               @dragend="onRowDragEnd"
             >
-              <!-- The drop highlight: the row's focus outline over the accent tint, which is the row's own (--row-bg) so a link badge matches it. -->
+              <!-- The drop highlight: the row's focus outline; the accent tint is the row's own background, under its icon and name. -->
               <span
                 v-if="dropTarget === row.path"
                 aria-hidden="true"
                 data-testid="files-drop-highlight"
-                class="d-fade-in pointer-events-none absolute inset-0 shadow-[inset_0_0_0_1px_var(--d-accent)]"
+                class="d-fade-in pointer-events-none absolute inset-0 shadow-[inset_0_0_0_1px_var(--d-accent-fill)]"
               />
               <span class="flex w-3.5 shrink-0 text-(--d-faint)">
                 <ChevronRight
@@ -1196,7 +1196,7 @@ defineExpose({ reveal, startCreate, collapseAll });
         v-if="dropTarget === ''"
         aria-hidden="true"
         data-testid="files-drop-root"
-        class="d-fade-in pointer-events-none absolute inset-0 bg-(--d-accent-soft) shadow-[inset_0_0_0_1px_var(--d-accent)]"
+        class="d-fade-in pointer-events-none absolute inset-0 bg-(--d-accent-soft) shadow-[inset_0_0_0_1px_var(--d-accent-fill)]"
       />
       <!-- Says where the drop lands and whether it copies or moves; the drag is a pointer gesture, so it stays out of the tree. -->
       <Transition name="t-pop">
@@ -1206,7 +1206,7 @@ defineExpose({ reveal, startCreate, collapseAll });
           data-testid="files-drop-hint"
           :data-action="dropRefused ? 'refused' : dropCopies ? 'copy' : 'move'"
           class="pointer-events-none absolute inset-x-1.5 bottom-1.5 flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-11 font-semibold shadow-(--d-shadow)"
-          :class="dropRefused ? 'border border-(--d-border2) bg-(--d-card) text-(--d-text)' : 'bg-(--d-accent) text-(--d-on-accent)'"
+          :class="dropRefused ? 'border border-(--d-border2) bg-(--d-card) text-(--d-text)' : 'bg-(--d-accent-fill) text-(--d-on-accent)'"
         >
           <component
             :is="dropRefused ? Ban : dropCopies ? Copy : FolderInput"
@@ -1231,16 +1231,19 @@ defineExpose({ reveal, startCreate, collapseAll });
         data-testid="files-transfers-unsupported"
       >{{ unsupportedText }}</span>
     </p>
-    <!-- The drag image: a chip naming the file, drawn off screen for setDragImage. -->
-    <div
-      ref="dragImage"
-      aria-hidden="true"
-      class="files-drag-image pointer-events-none fixed -top-40 left-0 flex items-center gap-1.5 rounded-7 border border-(--d-accent) bg-(--d-card) px-2 py-1 text-12 text-(--d-text) shadow-(--d-shadow)"
-    >
-      <span
-        v-if="dragMention"
-        class="text-(--d-accent-text)"
-      >@</span>{{ dragLabel }}
-    </div>
+    <!-- The drag image: a chip naming the file, drawn off screen for setDragImage. In body, since the section body is a scope
+         root whose paint containment would make this fixed box relative to it and clip it. -->
+    <Teleport to="body">
+      <div
+        ref="dragImage"
+        aria-hidden="true"
+        class="files-drag-image pointer-events-none fixed -top-40 left-0 flex items-center gap-1.5 rounded-7 border border-(--d-accent-fill) bg-(--d-card) px-2 py-1 text-12 text-(--d-text) shadow-(--d-shadow)"
+      >
+        <span
+          v-if="dragMention"
+          class="text-(--d-accent-text)"
+        >@</span>{{ dragLabel }}
+      </div>
+    </Teleport>
   </SidebarSection>
 </template>

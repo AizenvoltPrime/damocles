@@ -354,7 +354,7 @@ onBeforeUnmount(() => {
         :data-toast-id="toast.id"
         :data-kind="shown.kind"
         :data-severity="toast.body.kind === 'notice' ? toast.body.severity : undefined"
-        class="toast-card pointer-events-auto relative flex w-full gap-3 overflow-hidden rounded-[0.875rem] border border-(--d-border2) bg-(--d-card) p-3 pb-3.25 text-(--d-text) shadow-[0_1px_2px_rgb(0_0_0/0.12),0_4px_12px_-2px_rgb(0_0_0/0.24)]"
+        class="toast-card pointer-events-auto relative flex w-full gap-3 overflow-hidden rounded-14 border border-(--d-border2) bg-(--d-card) p-3 pb-3.25 text-(--d-text) shadow-[0_1px_2px_rgb(0_0_0/0.12),0_4px_12px_-2px_rgb(0_0_0/0.24)]"
         :class="shown.kind === 'notice' || shown.kind === 'link' ? '' : 'cursor-pointer'"
         @mouseenter="hold(toast.id, 'pointer', true)"
         @mouseleave="hold(toast.id, 'pointer', false)"

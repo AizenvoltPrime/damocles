@@ -23,6 +23,7 @@ import { BROWSER_TOOL_CATALOG, BROWSER_PI_TOOL_NAMES } from './browser-tools';
 import { TEAM_TOOL_CATALOG, TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES } from './team-tools';
 import { IMAGE_TOOL_CATALOG } from './image-tool-specs';
 import { FORGE_TOOL_CATALOG } from './forge-tool-specs';
+import { THEME_TOOL_CATALOG } from './theme-tool-specs';
 import { DESIGN_TOOL_CATALOG } from '../../design/tools/design-tool-specs';
 
 /**
@@ -56,7 +57,7 @@ const SUBAGENT_TOOL_CATALOG: readonly ToolCatalogEntry[] = [
   { name: TOOL_STEER_SUBAGENT, label: 'SteerSubagent', description: 'Steer a running background subagent.', group: 'subagents', toggleable: true },
 ];
 
-/** The full ordered catalog: Core, Design, then the three module subsystems, then Web, Image, GitHub and GitLab, Subagents, and Team. */
+/** The full ordered catalog: Core, Design, then the three module subsystems, then Web, Image, GitHub and GitLab, Theme, Subagents, and Team. */
 export const FULL_TOOL_CATALOG: readonly ToolCatalogEntry[] = [
   ...CORE_TOOL_CATALOG,
   ...DESIGN_TOOL_CATALOG,
@@ -66,6 +67,7 @@ export const FULL_TOOL_CATALOG: readonly ToolCatalogEntry[] = [
   ...WEB_TOOL_CATALOG,
   ...IMAGE_TOOL_CATALOG,
   ...FORGE_TOOL_CATALOG,
+  ...THEME_TOOL_CATALOG,
   ...SUBAGENT_TOOL_CATALOG,
   ...TEAM_TOOL_CATALOG,
 ];

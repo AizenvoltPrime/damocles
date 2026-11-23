@@ -10,19 +10,22 @@ import DesignPlanStrip from './design/DesignPlanStrip.vue';
 import { useSessionStore, useSettingsStore } from '@/stores';
 import { useContextPercentage } from '@/composables/useContextPercentage';
 import { contextWarningBands } from '@/utils/contextBands';
+import { useTrustedVisibility } from '@/composables/useTrustedVisibility';
+import TrustedCheckingNote from './TrustedCheckingNote.vue';
 
 const { t } = useI18n();
 const { sessionStats } = storeToRefs(useSessionStore());
-const { currentSettings } = storeToRefs(useSettingsStore());
+const settingsStore = useSettingsStore();
+const { currentSettings } = storeToRefs(settingsStore);
 
 const { contextPercentage } = useContextPercentage(sessionStats);
 
 const contextBadgeStyle = computed(() => {
   const { hard, soft, warning } = contextWarningBands(currentSettings.value.autoCompact.triggerPercent);
-  if (contextPercentage.value >= hard) return 'bg-[color-mix(in_srgb,var(--d-danger)_14%,transparent)] text-(--d-danger-text)';
-  if (contextPercentage.value >= soft) return 'bg-[color-mix(in_srgb,var(--d-warning)_15%,transparent)] text-(--d-warning-text)';
-  if (contextPercentage.value >= warning) return 'bg-[color-mix(in_srgb,var(--d-warning)_15%,transparent)] text-(--d-warning-text)';
-  return 'bg-[color-mix(in_srgb,var(--d-success)_15%,transparent)] text-(--d-success-text)';
+  if (contextPercentage.value >= hard) return 'bg-[color-mix(in_srgb,var(--d-danger-fill)_14%,transparent)] text-(--d-danger-text)';
+  if (contextPercentage.value >= soft) return 'bg-[color-mix(in_srgb,var(--d-warning-fill)_15%,transparent)] text-(--d-warning-text)';
+  if (contextPercentage.value >= warning) return 'bg-[color-mix(in_srgb,var(--d-warning-fill)_15%,transparent)] text-(--d-warning-text)';
+  return 'bg-[color-mix(in_srgb,var(--d-success-fill)_15%,transparent)] text-(--d-success-text)';
 });
 
 const contextTooltip = computed(() => {
@@ -35,6 +38,8 @@ const contextTooltip = computed(() => {
 });
 
 defineProps<{
+  /** The plan request this overlay answers; the footer is keyed by it. */
+  requestId?: string | undefined;
   planContent: string;
   designLink?: PlanApprovalDesignLink | undefined;
 }>();
@@ -44,6 +49,9 @@ const emit = defineEmits<{
   (e: 'feedback', text: string): void;
   (e: 'dismiss'): void;
 }>();
+
+const footerRef = ref<HTMLElement | null>(null);
+const { isVisible, explain } = useTrustedVisibility(footerRef, () => settingsStore.hostCapabilities.damoclesTheme);
 
 const feedbackText = ref('');
 const canSubmitFeedback = computed(() => feedbackText.value.trim().length > 0);
@@ -57,6 +65,7 @@ function handleSendFeedback() {
 
 <template>
   <OverlayShell
+    data-trusted
     :title="t('planApproval.readyToCode')"
     :subtitle="t('planApproval.reviewPlan')"
     :icon="ClipboardList"
@@ -87,7 +96,20 @@ function handleSendFeedback() {
     </div>
 
     <template #footer>
-      <footer class="flex flex-none flex-col gap-2.5 border-t border-(--d-border) bg-(--d-panel) px-3.5 py-3">
+      <!-- The footer holds every answer, and the panel's entrance moves it, so it is the gate's target. -->
+      <!-- Keyed by the request: a plan that replaces the one shown is a new element, which starts held. -->
+      <footer
+        ref="footerRef"
+        :key="requestId"
+        class="relative flex flex-none flex-col gap-2.5 border-t border-(--d-border) bg-(--d-panel) px-3.5 py-3"
+      >
+        <!-- Laid over the plan's last lines, above the footer, so it moves no answer and covers none. -->
+        <TrustedCheckingNote
+          overlay
+          class="bottom-full"
+          :shown="explain"
+          :text="t('trusted.checkingVisible')"
+        />
         <label
           class="sr-only"
           for="plan-feedback"
@@ -96,13 +118,18 @@ function handleSendFeedback() {
           id="plan-feedback"
           v-model="feedbackText"
           rows="2"
-          class="max-h-30 resize-none rounded-10 border border-(--d-border2) bg-(--d-input) px-3 py-2.25 text-12.5 text-(--d-text) outline-none placeholder:text-(--d-faint) focus:border-(--d-accent)"
+          class="max-h-30 resize-none rounded-10 border border-(--d-border2) bg-(--d-input) px-3 py-2.25 text-12.5 text-(--d-text) outline-none placeholder:text-(--d-faint) focus:border-(--d-accent-fill)"
           :placeholder="t('planApproval.feedbackPlaceholder')"
           data-testid="plan-feedback"
           @keydown.enter.ctrl.prevent="handleSendFeedback"
           @keydown.enter.meta.prevent="handleSendFeedback"
         />
-        <div class="flex flex-wrap justify-end gap-2">
+        <div
+          class="flex flex-wrap justify-end gap-2"
+          role="group"
+          :aria-label="t('planApproval.readyToCode')"
+          :aria-disabled="!isVisible || undefined"
+        >
           <button
             type="button"
             class="d-press flex h-8 items-center gap-1.75 rounded-9 border border-(--d-border2) px-3 text-12.5 whitespace-nowrap transition-colors hover:bg-(--d-hover) disabled:cursor-default disabled:opacity-40"
@@ -136,7 +163,7 @@ function handleSendFeedback() {
           </button>
           <button
             type="button"
-            class="d-press flex h-8 items-center gap-1.75 rounded-9 bg-(--d-accent) px-3 text-12.5 font-semibold whitespace-nowrap text-(--d-on-accent) transition-[filter] hover:brightness-110"
+            class="d-press flex h-8 items-center gap-1.75 rounded-9 bg-(--d-accent-fill) px-3 text-12.5 font-semibold whitespace-nowrap text-(--d-on-accent) transition-[filter] hover:brightness-110"
             @click="emit('approve', { approvalMode: 'acceptEdits', clearContext: true })"
           >
             <Zap

@@ -5,6 +5,7 @@ import { Folder, Laptop } from 'lucide-vue-next';
 import type { OverlaySettingsScope, OverlaySettingsScopes } from '../../../preload/overlay-channels';
 import { Tabs, TabsIndicator, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { hostColorLook } from '@shared/host-colors';
+import { SETTINGS_TAB, SETTINGS_TAB_INDICATOR } from './settings-tabs';
 
 // pending: the tab clicked while main attaches it, shown selected meanwhile
 const props = defineProps<{ scopes: OverlaySettingsScopes; pending?: OverlaySettingsScope | undefined }>();
@@ -16,9 +17,6 @@ const host = computed(() => props.scopes.host.name);
 function select(value: unknown): void {
   if (value === 'user' || value === 'machine' || value === 'project') emit('select', value);
 }
-
-// Muted text, the selected tab in full text; the indicator under it slides with the selection.
-const TAB = 'relative h-8 min-w-0 flex-none gap-1.5 rounded-none border-0 bg-transparent px-3 text-xs font-medium text-(--d-muted) shadow-none transition-colors duration-150 hover:text-(--d-text) data-[state=active]:bg-transparent data-[state=active]:text-(--d-text) data-[state=active]:shadow-none [&_svg]:size-3';
 </script>
 
 <template>
@@ -37,7 +35,7 @@ const TAB = 'relative h-8 min-w-0 flex-none gap-1.5 rounded-none border-0 bg-tra
     >
       <TabsTrigger
         value="user"
-        :class="TAB"
+        :class="SETTINGS_TAB"
         data-testid="settings-scope-user"
       >
         <Laptop aria-hidden="true" />
@@ -45,7 +43,7 @@ const TAB = 'relative h-8 min-w-0 flex-none gap-1.5 rounded-none border-0 bg-tra
       </TabsTrigger>
       <TabsTrigger
         value="machine"
-        :class="TAB"
+        :class="SETTINGS_TAB"
         :title="host"
         data-testid="settings-scope-host"
       >
@@ -58,13 +56,13 @@ const TAB = 'relative h-8 min-w-0 flex-none gap-1.5 rounded-none border-0 bg-tra
       </TabsTrigger>
       <TabsTrigger
         value="project"
-        :class="TAB"
+        :class="SETTINGS_TAB"
         data-testid="settings-scope-project"
       >
         <Folder aria-hidden="true" />
         {{ t('settingsScope.project') }}
       </TabsTrigger>
-      <TabsIndicator class="-bottom-px h-0.5 rounded-full bg-(--d-accent) transition-transform duration-200 ease-out" />
+      <TabsIndicator :class="SETTINGS_TAB_INDICATOR" />
     </TabsList>
   </Tabs>
 </template>

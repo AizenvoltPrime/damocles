@@ -650,3 +650,29 @@ describe('the Find widget', () => {
     expect(input.attributes('aria-invalid')).toBeUndefined();
   });
 });
+
+describe('the pane a terminal paints', () => {
+  // docs/invariants.md "Design tokens": a terminal takes the pane token of the panel it sits in, see-through under a wallpaper.
+  const root = document.documentElement;
+  afterEach(() => {
+    root.style.removeProperty('--d-pane-terminal');
+    root.style.removeProperty('--d-pane-editor');
+  });
+  const background = (xterm: FakeXterm | undefined): unknown => (xterm!.options.theme as { background: string }).background;
+
+  it('takes the terminal panel\'s token in the panel and the editor\'s in the editor area, and repaints when it moves', async () => {
+    root.style.setProperty('--d-pane-terminal', '#10101000');
+    root.style.setProperty('--d-pane-editor', '#202020');
+    const { xterm } = await mountView();
+    const view = wrapper!.get('.terminal-view');
+    expect(view.classes()).toContain('bg-(--d-pane-terminal)');
+    expect(view.classes()).not.toContain('terminal-view-editor');
+    expect(background(xterm)).toBe('#10101000');
+    expect(xterm!.options.allowTransparency).toBe(true);
+    await wrapper!.setProps({ terminal: { ...(wrapper!.props() as { terminal: TerminalInfo }).terminal, placement: 'editor' } });
+    await flushPromises();
+    expect(view.classes()).toEqual(expect.arrayContaining(['terminal-view-editor', 'bg-(--d-pane-editor)']));
+    expect(view.classes()).not.toContain('bg-(--d-pane-terminal)');
+    expect(background(xterm)).toBe('#202020');
+  });
+});

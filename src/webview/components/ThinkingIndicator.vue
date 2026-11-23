@@ -107,7 +107,7 @@ onUnmounted(() => {
       >
         <Brain
           class="size-3.25 text-(--d-info)"
-          :class="isStreaming && 'animate-[d-pulse_1.2s_infinite]'"
+          :class="isStreaming && 'd-pulsing'"
           aria-hidden="true"
         />
         <span

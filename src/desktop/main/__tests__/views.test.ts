@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const H = vi.hoisted(() => ({ webContentsOptions: [] as unknown[] }));
+const H = vi.hoisted(() => ({ webContentsOptions: [] as unknown[], seeThrough: false }));
 
 vi.mock('electron', async () => (await import('./fake-views-electron')).fakeViewsElectron(H.webContentsOptions));
+// the chat panel shows a wallpaper only in the see-through cases
+vi.mock('../theme', async (original) => ({ ...(await original<typeof import('../theme')>()), chatSeeThrough: () => H.seeThrough }));
 
 import type { PanelOptions } from '../../../platform/window-service';
 import { PANEL_CHANNELS } from '../../preload/panel-channels';
@@ -26,6 +28,7 @@ let window: ReturnType<typeof fakeWindow>;
 let restacks: number;
 let revealed: DesktopPanel[];
 let savedSessionChanges: DesktopPanel[];
+let modalChanges: string[];
 let pageEvents: string[];
 let popupOpen: boolean;
 // the chats main withholds, read at every layout
@@ -62,7 +65,7 @@ function views(width = 1200): PanelViews {
     },
     connection: (panel) => (panel.authority === 'local' ? undefined : { state: { phase: 'offline' }, queued: [] }),
     onQueueAction: (panel, action) => queueActions.push(`${panel.authority}:${action.action}:${action.id}`),
-    takeCoreMessage: (_panel, type) => type === 'promptReturned',
+    takeCoreMessage: (_panel, type, json) => (type === 'promptReturned' ? undefined : type === 'requestThemeChange' ? JSON.stringify({ type, rebuilt: true }) : json),
     openRemoteLink: (authority, url) => remoteLinks.push(`${authority} ${url}`),
     states,
     pages,
@@ -73,7 +76,9 @@ function views(width = 1200): PanelViews {
     },
     onReveal: (chat) => revealed.push(chat),
     onRendererGaveUp: (panel) => gaveUp.push(panel),
+    onRendererGone: () => undefined,
     onSavedSessionChange: (chat) => savedSessionChanges.push(chat),
+    onModalChange: (chat) => modalChanges.push(`${chat.panelId}:${chat.modalOpen}`),
     popupOpen: () => popupOpen,
     withholds: (chat) => withheld.has(chat),
   }, (p) => p);
@@ -97,10 +102,12 @@ beforeEach(() => {
   restacks = 0;
   revealed = [];
   savedSessionChanges = [];
+  modalChanges = [];
   pageEvents = [];
   popupOpen = false;
   withheld = new Set();
   H.webContentsOptions.length = 0;
+  H.seeThrough = false;
 });
 
 describe('PanelViews teardown', () => {
@@ -452,6 +459,180 @@ describe('PanelViews chats', () => {
   });
 });
 
+describe('a switch between chats over a chat wallpaper', () => {
+  const SLOT = { x: 264, y: 40, width: 936, height: 760 };
+  // the slot's size with only its top-left pixel inside the 1200 x 800 window
+  const PARKED = { x: 1199, y: 799, width: 936, height: 760 };
+  const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+  // The chat's page is loaded, and renders its first frames only when the test says so.
+  function painting(chat: DesktopPanel): () => void {
+    let paint: () => void = () => undefined;
+    contentsOf(chat).mainFrame.url = 'app://damocles/panel/loaded/index.html';
+    contentsOf(chat).executeJavaScriptInIsolatedWorld.mockImplementation(() => new Promise<void>((resolve) => { paint = resolve; }));
+    return () => paint();
+  }
+
+  function shownOverWallpaper(): { tabs: PanelViews; first: DesktopPanel } {
+    const tabs = views(1200);
+    const first = open(tabs);
+    tabs.setContentBounds(SLOT);
+    H.seeThrough = true;
+    return { tabs, first };
+  }
+
+  it('shows the new chat parked while the previous one keeps the slot, and swaps them once the new one has painted', async () => {
+    const { tabs, first } = shownOverWallpaper();
+    const second = tabs.create({ options: CHAT });
+    const paint = painting(second);
+    tabs.show(second.panelId, { focus: false });
+    expect(tabs.selected()).toBe(second);
+    expect(second.visible).toBe(true);
+    expect(viewOf(second).bounds).toEqual(PARKED);
+    expect(first.visible).toBe(true);
+    expect(viewOf(first).bounds).toEqual(SLOT);
+    expect(tabs.leaving(first)).toBe(true);
+    expect(tabs.leaving(second)).toBe(false);
+    expect(tabs.inSlot()).toBe(first);
+    // the slot stays the previous chat's while the new one is parked
+    tabs.setContentBounds(SLOT);
+    expect(viewOf(second).bounds).toEqual(PARKED);
+
+    paint();
+    await settle();
+    expect(first.visible).toBe(false);
+    expect(second.visible).toBe(true);
+    expect(viewOf(second).bounds).toEqual(SLOT);
+    expect(tabs.leaving(first)).toBe(false);
+    expect(tabs.inSlot()).toBe(second);
+  });
+
+  it('asks a page that is still loading for its frames only once it has loaded: two animation frames, in a world of main\'s own', async () => {
+    const { tabs, first } = shownOverWallpaper();
+    const second = tabs.create({ options: CHAT });
+    const paint = painting(second);
+    contentsOf(second).loading = true;
+    tabs.show(second.panelId, { focus: false });
+    await settle();
+    expect(contentsOf(second).executeJavaScriptInIsolatedWorld).not.toHaveBeenCalled();
+    expect(viewOf(second).bounds).toEqual(PARKED);
+    expect(viewOf(first).bounds).toEqual(SLOT);
+    expect(first.visible).toBe(true);
+
+    contentsOf(second).loading = false;
+    contentsOf(second).emit('did-finish-load');
+    await settle();
+    expect(contentsOf(second).executeJavaScriptInIsolatedWorld).toHaveBeenCalledTimes(1);
+    const [world, scripts] = contentsOf(second).executeJavaScriptInIsolatedWorld.mock.calls[0] as unknown as [number, { code: string }[]];
+    // 0 is the page's own world and 999 the preload's; main waits in neither
+    expect(world).toBeGreaterThanOrEqual(1000);
+    expect(scripts).toHaveLength(1);
+    expect(scripts[0]!.code.match(/requestAnimationFrame\(/g)).toHaveLength(2);
+    // asked for, not rendered yet: nothing has swapped
+    expect(viewOf(second).bounds).toEqual(PARKED);
+    expect(first.visible).toBe(true);
+
+    paint();
+    await settle();
+    expect(first.visible).toBe(false);
+    expect(viewOf(second).bounds).toEqual(SLOT);
+    expect(tabs.inSlot()).toBe(second);
+  });
+
+  it('leaves the slot to the first chat when a newer switch supersedes a parked one, whose own swap never runs', async () => {
+    const { tabs, first } = shownOverWallpaper();
+    const second = tabs.create({ options: CHAT });
+    const third = tabs.create({ options: CHAT });
+    const paintSecond = painting(second);
+    const paintThird = painting(third);
+    tabs.show(second.panelId, { focus: false });
+    tabs.show(third.panelId, { focus: false });
+    expect(tabs.inSlot()).toBe(first);
+    expect(viewOf(third).bounds).toEqual(PARKED);
+
+    paintSecond();
+    await settle();
+    expect(first.visible).toBe(true);
+    expect(viewOf(first).bounds).toEqual(SLOT);
+    expect(viewOf(second).bounds).toEqual(PARKED);
+
+    paintThird();
+    await settle();
+    expect(first.visible).toBe(false);
+    expect(second.visible).toBe(false);
+    expect(third.visible).toBe(true);
+    expect(viewOf(third).bounds).toEqual(SLOT);
+    expect(tabs.inSlot()).toBe(third);
+  });
+
+  it('ends the switch when the parked chat closes: the previous chat leaves the screen and the next selection is laid out', async () => {
+    const { tabs, first } = shownOverWallpaper();
+    const second = tabs.create({ options: CHAT });
+    const paint = painting(second);
+    tabs.show(second.panelId, { focus: false });
+    second.close();
+    expect(tabs.selected()).toBeUndefined();
+    expect(first.visible).toBe(false);
+    expect(tabs.leaving(first)).toBe(false);
+    expect(tabs.inSlot()).toBeUndefined();
+    paint();
+    await settle();
+    expect(first.visible).toBe(false);
+
+    tabs.show(first.panelId, { focus: false });
+    expect(first.visible).toBe(true);
+    expect(viewOf(first).bounds).toEqual(SLOT);
+    expect(tabs.inSlot()).toBe(first);
+  });
+
+  it('names no chat in the slot once the chat that kept it closes during the switch', async () => {
+    const { tabs, first } = shownOverWallpaper();
+    const second = tabs.create({ options: CHAT });
+    const paint = painting(second);
+    tabs.show(second.panelId, { focus: false });
+    first.close();
+    expect(tabs.inSlot()).toBeUndefined();
+    paint();
+    await settle();
+    expect(viewOf(second).bounds).toEqual(SLOT);
+    expect(tabs.inSlot()).toBe(second);
+  });
+
+  it('switches at once under the focus overlay and to a withheld chat, which show no view to wait for', () => {
+    const { tabs, first } = shownOverWallpaper();
+    const second = tabs.create({ options: CHAT });
+    tabs.setFocusOverlay(true);
+    tabs.setFocusOverlay(false);
+    withheld.add(second);
+    tabs.show(second.panelId, { focus: false });
+    expect(first.visible).toBe(false);
+    expect(second.visible).toBe(false);
+    expect(tabs.leaving(first)).toBe(false);
+    expect(contentsOf(second).executeJavaScriptInIsolatedWorld).not.toHaveBeenCalled();
+
+    withheld.delete(second);
+    tabs.withholdingChanged();
+    tabs.setFocusOverlay(true);
+    const third = tabs.create({ options: CHAT });
+    tabs.show(third.panelId, { focus: false });
+    expect(second.visible).toBe(false);
+    expect(third.visible).toBe(false);
+    expect(contentsOf(third).executeJavaScriptInIsolatedWorld).not.toHaveBeenCalled();
+  });
+
+  it('waits once for a chat that is still loading, however often it is switched to meanwhile', () => {
+    const { tabs, first } = shownOverWallpaper();
+    const second = tabs.create({ options: CHAT });
+    contentsOf(second).loading = true;
+    const before = contentsOf(second).listenerCount('did-finish-load');
+    for (let round = 0; round < 3; round++) {
+      tabs.show(second.panelId, { focus: false });
+      tabs.show(first.panelId, { focus: false });
+    }
+    expect(contentsOf(second).listenerCount('did-finish-load')).toBe(before + 1);
+  });
+});
+
 describe('panel IPC', () => {
   it('carries no panel id to the renderer and listens only on the view\'s own webContents.ipc', async () => {
     const tabs = views();
@@ -530,6 +711,29 @@ describe('panel IPC', () => {
     expect(lines.filter((line) => line.includes('dropped a malformed queue action'))).toHaveLength(4);
   });
 
+  it("follows a chat page's modal layer from its own reports, each change once, and drops it when the page navigates or goes away", () => {
+    const tabs = views();
+    const chat = tabs.create({ options: CHAT });
+    const page = tabs.create({ options: pageOptions(chat) });
+    const send = (panel: DesktopPanel, payload: unknown): void => {
+      const contents = contentsOf(panel);
+      contents.ipc.emit(PANEL_CHANNELS.modal, { sender: contents, senderFrame: { url: panel.pageUrl, parent: null } }, payload);
+    };
+    send(chat, true);
+    send(chat, true);
+    send(chat, 'yes');
+    send(page, true);
+    expect(chat.modalOpen).toBe(true);
+    expect(page.modalOpen).toBe(false);
+    expect(lines.filter((line) => line.includes('dropped a malformed modal report'))).toHaveLength(2);
+    send(chat, false);
+    send(chat, true);
+    contentsOf(chat).emit('did-navigate');
+    send(chat, true);
+    contentsOf(chat).emit('render-process-gone', {}, { reason: 'crashed', exitCode: 1 });
+    expect(modalChanges).toEqual([`${chat.panelId}:true`, `${chat.panelId}:false`, `${chat.panelId}:true`, `${chat.panelId}:false`, `${chat.panelId}:true`, `${chat.panelId}:false`]);
+  });
+
   it("gives this computer's chat pages the saved hosts' names at init and after each change, and a remote chat's page none", () => {
     const tabs = views();
     const local = tabs.create({ options: CHAT });
@@ -559,6 +763,13 @@ describe('panel IPC', () => {
     remote.postJson('userMessage', '{"type":"userMessage"}');
     expect(contents.send).toHaveBeenCalledWith(PANEL_CHANNELS.message, '{"type":"userMessage"}');
     expect(contents.send).not.toHaveBeenCalledWith(PANEL_CHANNELS.message, '{"type":"promptReturned"}');
+    // main's own text of a message reaches the page, never the core's
+    remote.postJson('requestThemeChange', '{"type":"requestThemeChange","themeName":"from the remote core"}');
+    expect(contents.send).toHaveBeenCalledWith(PANEL_CHANNELS.message, '{"type":"requestThemeChange","rebuilt":true}');
+    expect(contents.send).not.toHaveBeenCalledWith(PANEL_CHANNELS.message, expect.stringContaining('from the remote core'));
+    const local = tabs.create({ options: CHAT });
+    local.postJson('requestThemeChange', '{"type":"requestThemeChange","themeName":"own core"}');
+    expect(contentsOf(local).send).toHaveBeenCalledWith(PANEL_CHANNELS.message, '{"type":"requestThemeChange","themeName":"own core"}');
   });
 
   it("takes a host action only from a remote chat's own page, and only Reconnect, Sign in, Show log, Edit host or an update banner's switch", () => {

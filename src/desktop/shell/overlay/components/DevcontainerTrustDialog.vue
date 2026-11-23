@@ -45,7 +45,7 @@ function focusCancel(event: Event): void {
       data-testid="devcontainer-trust"
       :data-changed="request.changed"
       class="grid max-h-[86vh] w-[min(36rem,calc(100%-2rem))] max-w-none grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0"
-      :class="dangers.size > 0 && 'border-(--d-danger)/50'"
+      :class="dangers.size > 0 && 'border-(--d-danger-fill)/50'"
       @open-auto-focus="focusCancel"
     >
       <!-- ConfirmDialogLayout's header and footer, with a body that takes focus: the list may scroll with nothing focusable in it. -->
@@ -53,7 +53,7 @@ function focusCancel(event: Event): void {
         <span
           aria-hidden="true"
           class="flex size-8 flex-none items-center justify-center rounded-10"
-          :class="dangers.size > 0 ? 'bg-(--d-danger)/14 text-(--d-danger)' : 'bg-(--d-warning)/14 text-(--d-warning)'"
+          :class="dangers.size > 0 ? 'bg-(--d-danger-fill)/14 text-(--d-danger)' : 'bg-(--d-warning-fill)/14 text-(--d-warning)'"
         >
           <component
             :is="dangers.size > 0 ? ShieldAlert : ShieldQuestion"
@@ -74,7 +74,7 @@ function focusCancel(event: Event): void {
               :key="danger"
               data-testid="devcontainer-trust-danger-summary"
               :data-danger="danger"
-              class="mt-2 flex gap-2 rounded-8 bg-(--d-danger)/12 px-2.5 py-2 text-12 text-(--d-danger-text)"
+              class="mt-2 flex gap-2 rounded-8 bg-(--d-danger-fill)/12 px-2.5 py-2 text-12 text-(--d-danger-text)"
             >
               <ShieldAlert
                 aria-hidden="true"
@@ -91,7 +91,7 @@ function focusCancel(event: Event): void {
         role="region"
         data-testid="devcontainer-trust-body"
         :aria-label="t('remote.devcontainerTrust.listLabel')"
-        class="flex min-h-0 flex-col gap-3 overflow-y-auto px-4.5 pb-4 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--d-accent)"
+        class="flex min-h-0 flex-col gap-3 overflow-y-auto px-4.5 pb-4 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--d-accent-fill)"
       >
         <div class="flex flex-col gap-1.5 rounded-10 bg-(--d-panel) px-3 py-2.5 text-12">
           <span class="flex min-w-0 items-center gap-2">
@@ -167,12 +167,12 @@ function focusCancel(event: Event): void {
               data-testid="devcontainer-trust-value"
               :data-danger="value.danger"
               class="flex flex-col gap-1.5 rounded-8 border px-2.5 py-2"
-              :class="value.danger ? 'border-(--d-danger)/45 border-s-[0.1875rem] border-s-(--d-danger) bg-(--d-danger)/8' : 'border-(--d-border) bg-(--d-code)'"
+              :class="value.danger ? 'border-(--d-danger-fill)/45 border-s-[0.1875rem] border-s-(--d-danger-fill) bg-(--d-danger-fill)/8' : 'border-(--d-border) bg-(--d-code)'"
             >
               <span
                 v-if="value.danger"
                 data-testid="devcontainer-trust-danger"
-                class="inline-flex items-center gap-1.5 self-start rounded-5 bg-(--d-danger)/15 px-1.5 py-0.5 text-10.5 font-semibold text-(--d-danger-text)"
+                class="inline-flex items-center gap-1.5 self-start rounded-5 bg-(--d-danger-fill)/15 px-1.5 py-0.5 text-10.5 font-semibold text-(--d-danger-text)"
               >
                 <ShieldAlert
                   aria-hidden="true"

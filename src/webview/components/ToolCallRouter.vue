@@ -18,7 +18,12 @@ import DesignToolCard from './design/DesignToolCard.vue';
 import PreviewJourneyToolCard from './design/PreviewJourneyToolCard.vue';
 import DesignParityToolCard from './design/DesignParityToolCard.vue';
 import { useTeamStore } from '@/stores/useTeamStore';
-import { computed } from 'vue';
+import { computed, defineAsyncComponent } from 'vue';
+import { THEME_TOOLS } from '@shared/tool-names';
+
+// Loaded only when a theme tool call is shown. VS Code never builds the theme tools, but it can replay a conversation the
+// desktop app recorded, so the card draws no miniature without HostCapabilities.damoclesTheme.
+const ThemeToolCard = defineAsyncComponent(() => import('./theme/ThemeToolCard.vue'));
 
 const teamStore = useTeamStore();
 
@@ -57,17 +62,31 @@ const agentSubagent = computed(() =>
 </script>
 
 <template>
-  <TeamCard
+  <!-- Agent and team cards are built without ToolCardFrame, so they get its scope root (a wrapper: theme CSS reaches only a
+       root's descendants) and its hooks here; each sets its own data-tool-status from the state it draws. -->
+  <div
     v-if="team && run"
-    :team="team"
-    :run="run"
-    @expand="teamStore.openOverlay(team!.teamId)"
-  />
-  <SubagentCard
+    data-theme-scope="transcript"
+  >
+    <TeamCard
+      :team="team"
+      :run="run"
+      data-tool-card
+      :data-tool="toolName"
+      @expand="teamStore.openOverlay(team!.teamId)"
+    />
+  </div>
+  <div
     v-else-if="agentSubagent"
-    :subagent="agentSubagent"
-    @expand="emit('expandSubagent', toolUseId)"
-  />
+    data-theme-scope="transcript"
+  >
+    <SubagentCard
+      :subagent="agentSubagent"
+      data-tool-card
+      :data-tool="toolName"
+      @expand="emit('expandSubagent', toolUseId)"
+    />
+  </div>
   <QuestionToolCard
     v-else-if="toolName === TOOL_ASK_USER_QUESTION"
     :tool-call="toolCall"
@@ -106,6 +125,11 @@ const agentSubagent = computed(() =>
   />
   <DesignParityToolCard
     v-else-if="toolName === TOOL_DESIGN_PARITY"
+    :tool-call="toolCall"
+    @open-lightbox="emit('openLightbox', $event)"
+  />
+  <ThemeToolCard
+    v-else-if="THEME_TOOLS.has(toolName)"
     :tool-call="toolCall"
     @open-lightbox="emit('openLightbox', $event)"
   />

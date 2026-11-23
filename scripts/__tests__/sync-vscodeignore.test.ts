@@ -105,7 +105,7 @@ describe('vsixExclusionProblems', () => {
   it('names every desktop-only category', () => {
     expect(DESKTOP_EXCLUDE_RULES).toEqual(expect.arrayContaining([
       'dist/webview/assets/monaco-*', 'dist/desktop/**', 'dist/desktop-shell/**', 'dist/core-host.js', 'dist/daemon.js', 'dist/server-packages/**', 'dist/formatter-host.js', 'dist/pty-host.js', 'dist/quick-open-worker.js', 'dist/watch-worker.js', 'dist-desktop/**', 'dist/e2e*/**',
-      'e2e/**', 'playwright.*.config.ts', 'electron-builder.yml', 'build/**', '**/*.log',
+      'e2e/**', 'playwright.*.config.ts', 'electron-builder.yml', 'build/**', '**/*.log', 'resources/themes/**', 'schemas/**',
     ]));
   });
 
@@ -186,6 +186,8 @@ describe('forbiddenVsixEntries', () => {
       'extension/playwright.journey.config.ts',
       'extension/vite.shell.config.ts',
       'extension/resources/icon.ico',
+      'extension/resources/themes/damocles-paper/theme.json',
+      'extension/schemas/theme.schema.json',
       ...DESKTOP_ONLY_PACKAGES.map((name: string) => `extension/node_modules/${name}/package.json`),
       'extension/node_modules/@parcel/watcher-win32-x64/watcher.node',
       'extension/node_modules/@electron/asar/package.json',

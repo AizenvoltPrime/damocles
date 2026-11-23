@@ -22,7 +22,7 @@ const label = computed(() => mcpResourceAttachmentLabel(props.attachment, t));
 
 <template>
   <div
-    class="group/chip inline-flex h-7 max-w-full min-w-0 items-center rounded-full border border-(--d-border2) bg-(--d-card) text-xs text-(--d-text) transition-colors hover:border-(--d-accent)"
+    class="group/chip inline-flex h-7 max-w-full min-w-0 items-center rounded-full border border-(--d-border2) bg-(--d-card) text-xs text-(--d-text) transition-colors hover:border-(--d-accent-fill)"
     data-testid="mcp-resource-attachment-chip"
     :data-attachment-id="attachment.id"
     :data-uri="attachment.uri"
@@ -87,7 +87,7 @@ const label = computed(() => mcpResourceAttachmentLabel(props.attachment, t));
             </p>
             <p
               tabindex="0"
-              class="mt-1 font-mono text-11 break-all text-(--d-text) outline-none focus-visible:ring-1 focus-visible:ring-(--d-accent)"
+              class="mt-1 font-mono text-11 break-all text-(--d-text) outline-none focus-visible:ring-1 focus-visible:ring-(--d-accent-fill)"
               data-testid="mcp-resource-attachment-uri"
             >
               {{ visibleText(attachment.uri) }}

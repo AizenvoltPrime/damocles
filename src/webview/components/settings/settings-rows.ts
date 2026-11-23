@@ -11,6 +11,8 @@ export interface SettingsRowMeta {
   readonly section: SettingsSectionId;
   readonly label: string;
   readonly description?: string;
+  /** What fills the description's placeholders; search matches the filled text. */
+  readonly descriptionValues?: Readonly<Record<string, string>>;
   readonly keys?: readonly string[];
 }
 
@@ -156,8 +158,8 @@ export function normalizeQuery(query: string): string {
   return query.trim().toLocaleLowerCase();
 }
 
-export function rowMatches(meta: SettingsRowMeta, query: string, translate: (key: string) => string): boolean {
+export function rowMatches(meta: SettingsRowMeta, query: string, translate: (key: string, values: Record<string, unknown>) => string): boolean {
   if (query === '') return true;
-  const haystack = [translate(meta.label), meta.description ? translate(meta.description) : '', ...(meta.keys ?? [])];
+  const haystack = [translate(meta.label, {}), meta.description ? translate(meta.description, meta.descriptionValues ?? {}) : '', ...(meta.keys ?? [])];
   return haystack.some((text) => text.toLocaleLowerCase().includes(query));
 }

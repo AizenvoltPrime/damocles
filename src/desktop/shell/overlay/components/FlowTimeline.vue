@@ -51,7 +51,7 @@ const announcement = computed(() => {
     >
       <span
         class="timeline-bar block h-full rounded-full"
-        :class="failed ? 'bg-(--d-danger)' : 'bg-(--d-accent)'"
+        :class="failed ? 'bg-(--d-danger-fill)' : 'bg-(--d-accent-fill)'"
         :style="{ transform: `scaleX(${rows.length === 0 ? 0 : doneCount / rows.length})` }"
       />
     </div>
@@ -88,7 +88,7 @@ const announcement = computed(() => {
           v-if="row.state === 'failed' && row.failure"
           role="alert"
           data-testid="flow-failure"
-          class="timeline-grow mt-1.5 rounded-8 bg-(--d-danger)/12 px-2.5 py-2 font-mono text-11.5 wrap-break-word text-(--d-danger-text)"
+          class="timeline-grow mt-1.5 rounded-8 bg-(--d-danger-fill)/12 px-2.5 py-2 font-mono text-11.5 wrap-break-word text-(--d-danger-text)"
         >
           {{ row.failure }}
         </p>

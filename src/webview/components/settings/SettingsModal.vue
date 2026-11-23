@@ -140,11 +140,26 @@ function clearSearch(): void {
   typed.value = '';
 }
 
+// A section's sub-page is navigation like the section itself: it ends with its section, its scope tab and a search.
+const subPage = shallowRef<{ readonly section: SettingsSectionId; readonly id: string }>();
+const shownSubPage = computed(() => (query.value === '' && subPage.value?.section === activeMeta.value.id ? subPage.value.id : undefined));
+
 function goTo(section: SettingsSectionId): void {
   typed.value = '';
   active.value = section;
   narrowPage.value = 'section';
+  subPage.value = undefined;
 }
+
+function openSubPage(section: SettingsSectionId, id: string | undefined): void {
+  goTo(section);
+  if (id !== undefined) subPage.value = { section, id };
+}
+
+watch(query, (now) => {
+  if (now !== '') subPage.value = undefined;
+});
+watch(() => props.pageKey, () => (subPage.value = undefined));
 
 // The user's own choice drops the request, so returning to Accounts does not expand its row again.
 function select(section: SettingsSectionId): void {
@@ -487,7 +502,9 @@ defineExpose({ close, focusScopeTab });
               :host="host"
               :rows="rows"
               :scope-view="scopeView"
+              :sub-page="shownSubPage"
               @matches="(count) => (matches = count)"
+              @sub-page="openSubPage"
             />
           </div>
         </div>

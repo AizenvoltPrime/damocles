@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { activeChat, expect, test } from './support/fixtures';
 import { openProjectChat } from './support/screenshots';
-import { overlayPage, pressKeys, PRIMARY, shellPage, viewFocused } from './support/shell';
+import { onMainWindow, overlayPage, pressKeys, PRIMARY, shellPage, viewFocused } from './support/shell';
 import { chatInput, clickMenu } from './support/ui';
 import { quickPick } from './support/editor';
 import { readUserSettings } from './support/hermetic';
@@ -84,10 +84,10 @@ test('a terminal opening with its pane resizes its pty once, to the size the pan
   useTestProfile(home);
   const { app } = await launch();
   await openProjectChat(app, home.project);
-  await app.evaluate(({ BrowserWindow }, channel) => {
+  await onMainWindow(app, (win, channel) => {
     const resizes: Array<{ id: string; cols: number; rows: number }> = [];
     (globalThis as unknown as { __e2eResizes: typeof resizes }).__e2eResizes = resizes;
-    BrowserWindow.getAllWindows()[0]!.webContents.ipc.on(channel, (_event, resize: (typeof resizes)[number]) => resizes.push(resize));
+    win.webContents.ipc.on(channel, (_event, resize: (typeof resizes)[number]) => resizes.push(resize));
   }, TERMINAL_CHANNELS.resize);
   const resizes = (): Promise<Array<{ id: string; cols: number; rows: number }>> => app.evaluate(() => (globalThis as unknown as { __e2eResizes: Array<{ id: string; cols: number; rows: number }> }).__e2eResizes);
 

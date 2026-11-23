@@ -11,7 +11,7 @@ describe('ToggleSwitch', () => {
     const knob = track.get('span');
     expect(knob.classes()).toContain('bg-(--d-on-accent)');
     expect(track.classes()).toContain('bg-(--d-faint)');
-    expect(track.classes()).toContain('before:bg-(--d-accent)');
+    expect(track.classes()).toContain('before:bg-(--d-accent-fill)');
     expect(track.classes().some((name) => name.startsWith('transition-colors'))).toBe(false);
   });
 

@@ -161,7 +161,7 @@ describe('layout grid pane drag', () => {
     await drag(1);
     await grip.trigger('pointerup', { pointerId: 1 });
     await flushPromises();
-    expect(grip.classes()).not.toContain('bg-(--d-accent-soft)');
+    expect(grip.classes().filter((name) => name.includes('bg-(--d-'))).toEqual(['hover:bg-(--d-hover)']);
     await drag(1);
     expect(api.requestOverlay).toHaveBeenCalledTimes(2);
   });
@@ -179,6 +179,14 @@ describe('layout grid pane drag', () => {
     expect(api.requestOverlay).not.toHaveBeenCalled();
     await drag(3);
     expect(api.requestOverlay).toHaveBeenCalledOnce();
+  });
+
+  it('gives a grip one background class per state, so the pointer over a dragged grip never takes its tint', async () => {
+    const { grip, drag } = mountDraggable(() => new Promise(() => undefined));
+    const grounds = (): string[] => grip.classes().filter((name) => name.includes('bg-(--d-'));
+    expect(grounds()).toEqual(['hover:bg-(--d-hover)']);
+    await drag(1);
+    expect(grounds()).toEqual(['bg-(--d-accent-soft)']);
   });
 });
 

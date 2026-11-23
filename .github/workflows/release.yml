@@ -961,6 +961,9 @@ jobs:
         timeout-minutes: 55
         env:
           SHARD: ${{ matrix.shard }}/${{ matrix.shards }}
+          # linux-x64 composites through SwiftShader and fails if a wallpaper test cannot run (docs/release.md "Desktop end-to-end suite").
+          DAMOCLES_E2E_SOFTWARE_GL: ${{ matrix.target == 'linux-x64' && '1' || '' }}
+          DAMOCLES_E2E_REQUIRE_GPU: ${{ matrix.target == 'linux-x64' && '1' || '' }}
         # Test homes leave the Windows OS disk (docs/release.md "Desktop end-to-end suite").
         run: |
           if [ "$RUNNER_OS" = Windows ]; then export TEMP="$RUNNER_TEMP" TMP="$RUNNER_TEMP"; fi

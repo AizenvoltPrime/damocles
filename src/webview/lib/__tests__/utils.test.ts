@@ -4,10 +4,14 @@ import { join, relative } from 'node:path';
 import { cn } from '../utils';
 
 const RAMP = ['10', '10.5', '11', '11.5', '12', '12.5', '13', '13.5', '15'];
-const RADII = ['5', '6', '7', '8', '9', '10', '11'];
+const RADII = ['5', '6', '7', '8', '9', '10', '11', '14'];
+const LEADING = ['prose', 'draft'];
+// Tailwind's own line-height names, which tailwind-merge knows without being told.
+const TAILWIND_LEADING = ['none', 'tight', 'snug', 'normal', 'relaxed', 'loose'];
 
 const SRC = join(__dirname, '..', '..', '..');
-const style = readFileSync(join(SRC, 'webview', 'style.css'), 'utf8');
+// The @theme block alone: [data-trusted] declares the radii again for trusted UI's own corner scale.
+const style = /@theme \{[\s\S]*?\n\}/.exec(readFileSync(join(SRC, 'webview', 'style.css'), 'utf8'))![0];
 const themeNames = (prefix: string): string[] =>
   [...style.matchAll(new RegExp(`--${prefix}-([\\d\\\\.]+):`, 'g'))].map(([, name]) => name!.replaceAll('\\', ''));
 
@@ -25,9 +29,19 @@ describe('cn', () => {
     expect(cn('text-sm', 'text-12.5')).toBe('text-12.5');
   });
 
-  it('knows exactly the font sizes and radii style.css defines in @theme', () => {
+  it('knows exactly the font sizes, radii and line heights style.css defines in @theme', () => {
     expect(themeNames('text')).toEqual(RAMP);
     expect(themeNames('radius')).toEqual(RADII);
+    const leading = [...style.matchAll(/--leading-([a-z]+):/g)].map(([, name]) => name!).filter((name) => !TAILWIND_LEADING.includes(name));
+    expect(leading).toEqual(LEADING);
+  });
+
+  // Through cn() itself, so a name @theme has and cn() was not told about fails here.
+  it('lets every @theme radius and line height replace an earlier one', () => {
+    for (const radius of RADII) expect(cn('rounded-lg', `rounded-${radius}`)).toBe(`rounded-${radius}`);
+    for (const leading of LEADING) expect(cn('leading-normal', `leading-${leading}`)).toBe(`leading-${leading}`);
+    expect(cn('rounded-14', 'rounded-lg')).toBe('rounded-lg');
+    expect(cn('leading-prose', 'leading-normal')).toBe('leading-normal');
   });
 });
 

@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n';
 import { ListboxItem, ListboxRoot } from 'reka-ui';
 import { Globe, Monitor, Palette, SendHorizontal } from 'lucide-vue-next';
 import type { DesignApprovalChoice } from '@shared/types/design';
+import { MAX_PROMPT_ANSWER_CHARS } from '@shared/types/constants';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import DockPromptOptions from '../DockPromptOptions.vue';
@@ -16,6 +17,8 @@ import { useOpenDesignPreview } from '@/composables/useOpenDesignPreview';
 import { useOpenDesignInBrowser } from '@/composables/useOpenDesignInBrowser';
 import { useDockPromptDigits } from '@/composables/useDockPrompt';
 import { useAttentionCard } from '@/composables/useAttention';
+import { useDockCardVisibility } from '@/composables/useDockCardVisibility';
+import TrustedCheckingNote from '../TrustedCheckingNote.vue';
 
 // FinishDesign's approval: the gate passed, and only an answer here makes the version.
 const emit = defineEmits<{
@@ -32,6 +35,7 @@ const browser = useOpenDesignInBrowser();
 const current = computed(() => store.approvalPrompts[0]);
 const cardRef = ref<HTMLElement | null>(null);
 useAttentionCard('approval', cardRef);
+const { isVisible, explain, refuse } = useDockCardVisibility(cardRef);
 
 // One line per cause; a cause from a newer core than this page reads as the generic one.
 const uncheckedLines = computed(() => (current.value?.uncheckedDecisions ?? []).filter((group) => group.ids.length > 0).map((group) => {
@@ -109,216 +113,236 @@ useDockPromptDigits(cardRef, (digit) => {
   if (!choice) return false;
   select(choice.promptId, choice.value);
   return true;
-});
+}, refuse);
 </script>
 
 <template>
-  <Transition
-    name="t-up"
-    mode="out-in"
-  >
-    <section
+  <Transition name="t-up">
+    <div
       v-if="current"
-      :key="current.promptId"
-      ref="cardRef"
-      class="overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--d-design)_45%,var(--d-border))] bg-(--d-card) text-(--d-text) shadow-(--d-shadow) [--attention-ring:var(--d-design)]"
-      role="region"
-      :aria-label="title"
-      data-dock-prompt
-      data-testid="design-approval-card"
-      :data-design-id="current.designId"
-      :data-has-parent="current.hasParent"
+      class="d-dock-shadow rounded-14"
+      data-trusted
     >
-      <header class="flex items-center gap-2.5 border-b border-(--d-border) bg-linear-to-b from-[color-mix(in_srgb,var(--d-design)_12%,transparent)] to-transparent px-3 py-2">
-        <span
-          class="d-ring flex size-6.5 flex-none items-center justify-center rounded-lg bg-[color-mix(in_srgb,var(--d-design)_16%,transparent)] text-(--d-design)"
-          aria-hidden="true"
-        >
-          <Palette class="size-3.5" />
-        </span>
-        <div class="min-w-0 flex-1">
-          <div class="font-semibold text-pretty">
-            {{ title }}
-          </div>
-          <div
-            class="text-xs text-pretty text-(--d-muted)"
-            data-testid="design-approval-subtitle"
-          >
-            {{ subtitle }}
-          </div>
-        </div>
-      </header>
-
-      <!-- Scrolls when long; focusable so a keyboard user can scroll it too. -->
-      <div
-        class="flex max-h-64 flex-col gap-2.5 overflow-y-auto px-3.5 pt-2.5 pb-2 text-xs outline-none focus-visible:ring-1 focus-visible:ring-(--d-design) focus-visible:ring-inset"
+      <!-- One bounded element that scrolls inside itself under its answers, so the whole card always fits the page. -->
+      <!-- Keyed by the request: the next request is a new element, which starts held (useTrustedVisibility). -->
+      <section
+        ref="cardRef"
+        :key="current.promptId"
+        class="max-h-[70dvh] overflow-x-hidden overflow-y-auto rounded-14 border border-[color-mix(in_srgb,var(--d-design-fill)_45%,var(--d-border))] bg-(--d-card) text-(--d-text) [--attention-ring:var(--d-design-fill)]"
         role="region"
-        :aria-label="t('design.approval.details')"
-        tabindex="0"
-        data-testid="design-approval-details"
+        :aria-label="title"
+        data-dock-prompt
+        data-trusted
+        data-testid="design-approval-card"
+        :data-design-id="current.designId"
+        :data-has-parent="current.hasParent"
       >
-        <p
-          class="text-12.5 text-pretty wrap-anywhere whitespace-pre-line text-(--d-text)"
-          data-testid="design-approval-summary"
-          v-text="current.summary"
+        <header class="flex items-center gap-2.5 border-b border-(--d-border) bg-linear-to-b from-[color-mix(in_srgb,var(--d-design-fill)_12%,transparent)] to-transparent px-3 py-2">
+          <span
+            class="d-ring [--tone:var(--d-design-fill)] flex size-6.5 flex-none items-center justify-center rounded-lg bg-[color-mix(in_srgb,var(--d-design-fill)_16%,transparent)] text-(--d-design)"
+            aria-hidden="true"
+          >
+            <Palette class="size-3.5" />
+          </span>
+          <div class="min-w-0 flex-1">
+            <div class="font-semibold text-pretty">
+              {{ title }}
+            </div>
+            <div
+              class="text-xs text-pretty text-(--d-muted)"
+              data-testid="design-approval-subtitle"
+            >
+              {{ subtitle }}
+            </div>
+          </div>
+        </header>
+        <TrustedCheckingNote
+          overlay
+          class="bottom-0"
+          :shown="explain"
+          :text="t('trusted.checkingVisible')"
         />
 
-        <section data-testid="design-approval-changes">
-          <template v-if="current.previousVersion !== null">
-            <p class="mb-1 text-10.5 font-semibold tracking-[.06em] text-(--d-faint-text) uppercase">
-              {{ t('design.result.changedSince', { version: current.previousVersion }) }}
-            </p>
-            <DesignChangeList
-              v-if="current.changes.length > 0"
-              :changes="current.changes"
-            />
+        <!-- Scrolls when long; focusable so a keyboard user can scroll it too. -->
+        <div
+          class="flex max-h-64 flex-col gap-2.5 overflow-y-auto px-3.5 pt-2.5 pb-2 text-xs outline-none focus-visible:ring-1 focus-visible:ring-(--d-design-fill) focus-visible:ring-inset"
+          role="region"
+          :aria-label="t('design.approval.details')"
+          tabindex="0"
+          data-testid="design-approval-details"
+        >
+          <p
+            class="text-12.5 text-pretty wrap-anywhere whitespace-pre-line text-(--d-text)"
+            data-testid="design-approval-summary"
+            v-text="current.summary"
+          />
+
+          <section data-testid="design-approval-changes">
+            <template v-if="current.previousVersion !== null">
+              <p class="mb-1 text-10.5 font-semibold tracking-[.06em] text-(--d-faint-text) uppercase">
+                {{ t('design.result.changedSince', { version: current.previousVersion }) }}
+              </p>
+              <DesignChangeList
+                v-if="current.changes.length > 0"
+                :changes="current.changes"
+              />
+              <p
+                v-else
+                class="text-(--d-muted)"
+              >
+                {{ t('design.approval.noChanges') }}
+              </p>
+            </template>
             <p
               v-else
               class="text-(--d-muted)"
             >
-              {{ t('design.approval.noChanges') }}
+              {{ t('design.approval.firstVersion') }}
             </p>
-          </template>
+          </section>
+
+          <section
+            v-if="current.warnings.length > 0"
+            data-testid="design-approval-warnings"
+          >
+            <p class="mb-1 text-10.5 font-semibold tracking-[.06em] text-(--d-warning-text) uppercase">
+              {{ t('design.result.warningsLabel') }}
+            </p>
+            <DesignWarningList :warnings="current.warnings" />
+          </section>
+
           <p
-            v-else
-            class="text-(--d-muted)"
+            v-for="line in uncheckedLines"
+            :key="line"
+            class="text-pretty text-(--d-warning-text)"
+            data-testid="design-approval-unchecked"
           >
-            {{ t('design.approval.firstVersion') }}
+            {{ line }}
           </p>
-        </section>
 
-        <section
-          v-if="current.warnings.length > 0"
-          data-testid="design-approval-warnings"
-        >
-          <p class="mb-1 text-10.5 font-semibold tracking-[.06em] text-(--d-warning-text) uppercase">
-            {{ t('design.result.warningsLabel') }}
-          </p>
-          <DesignWarningList :warnings="current.warnings" />
-        </section>
-
-        <p
-          v-for="line in uncheckedLines"
-          :key="line"
-          class="text-pretty text-(--d-warning-text)"
-          data-testid="design-approval-unchecked"
-        >
-          {{ line }}
-        </p>
-
-        <section
-          v-if="current.decisions.length > 0"
-          data-testid="design-approval-decisions"
-        >
-          <p class="mb-1 text-10.5 font-semibold tracking-[.06em] text-(--d-faint-text) uppercase">
-            {{ t('design.result.decisionsLabel') }}
-          </p>
-          <DesignDecisionList :decisions="current.decisions" />
-        </section>
-      </div>
-
-      <div
-        v-if="screenOpener && current.screens.length > 0"
-        class="flex flex-wrap items-center gap-1.5 border-t border-(--d-border) px-3 py-2"
-        data-testid="design-approval-screens"
-      >
-        <span class="me-0.5 text-10.5 font-semibold tracking-[.06em] text-(--d-faint-text) uppercase">{{ t('design.browser.screens') }}</span>
-        <Button
-          v-for="screen in current.screens"
-          :key="screen.file"
-          type="button"
-          variant="ghost"
-          class="d-press h-6.5 gap-1.5 rounded-7 bg-[color-mix(in_srgb,var(--d-design)_10%,transparent)] px-2 font-mono text-11.5 text-(--d-design-text) hover:bg-[color-mix(in_srgb,var(--d-design)_18%,transparent)] hover:text-(--d-design-text) focus-visible:ring-1 focus-visible:ring-(--d-design) focus-visible:ring-offset-0 [&_svg]:size-3"
-          :aria-label="t(screenOpener.key, { file: screen.file })"
-          :title="screen.file"
-          data-testid="design-approval-screen"
-          :data-file="screen.file"
-          @click="screenOpener.open(current.designId, screen.file)"
-        >
-          <component
-            :is="screenOpener.icon"
-            aria-hidden="true"
-          />{{ screen.id }}
-        </Button>
-      </div>
-
-      <div
-        v-if="!writing"
-        class="border-t border-(--d-border) px-1.5 pt-1 pb-1.5"
-      >
-        <ListboxRoot
-          v-model="selected"
-          class="flex flex-col outline-none"
-          orientation="vertical"
-        >
-          <DockPromptOptions :aria-label="title">
-            <ListboxItem
-              v-for="(option, index) in choices"
-              :key="option.value"
-              :value="option.value"
-              class="group flex items-center gap-2.5 rounded-9 px-2.5 py-1.25 transition-colors outline-none data-highlighted:bg-[color-mix(in_srgb,var(--d-design)_14%,transparent)] data-highlighted:text-(--d-design-text)"
-              :data-testid="`design-approval-option-${option.value}`"
-              @select="select(option.promptId, option.value)"
-            >
-              <span
-                class="flex size-5 flex-none items-center justify-center rounded-md border font-mono text-11"
-                :class="option.value === 'approve'
-                  ? 'border-transparent bg-(--d-design) text-(--d-on-design)'
-                  : 'border-(--d-border2) group-data-highlighted:border-(--d-design)'"
-                aria-hidden="true"
-              >{{ index + 1 }}</span>
-              <span
-                class="min-w-0 flex-1 truncate"
-                :class="option.value === 'approve' ? 'font-semibold' : 'font-medium'"
-              >{{ option.label }}</span>
-            </ListboxItem>
-          </DockPromptOptions>
-        </ListboxRoot>
-      </div>
-
-      <form
-        v-else
-        class="flex flex-col gap-2 border-t border-(--d-border) px-3 pt-2.5 pb-3"
-        data-testid="design-approval-note-form"
-        @submit.prevent="sendNote"
-      >
-        <label
-          class="text-xs font-medium text-(--d-text)"
-          for="design-approval-note"
-        >{{ t('design.approval.noteLabel') }}</label>
-        <Textarea
-          id="design-approval-note"
-          ref="noteRef"
-          v-model="note"
-          class="max-h-32 min-h-20 resize-none rounded-10 border-(--d-border2) bg-(--d-input) text-12.5 focus:border-(--d-design)"
-          :placeholder="t('design.approval.notePlaceholder')"
-          data-testid="design-approval-note"
-          @keydown.enter.ctrl.prevent="sendNote"
-          @keydown.enter.meta.prevent="sendNote"
-          @keydown.esc.stop="back"
-        />
-        <div class="flex justify-end gap-2">
-          <button
-            type="button"
-            class="d-press flex h-7.5 items-center rounded-9 px-3 text-12.5 transition-colors hover:bg-(--d-hover) focus-visible:outline-2 focus-visible:outline-(--d-design)"
-            @click="back"
+          <section
+            v-if="current.decisions.length > 0"
+            data-testid="design-approval-decisions"
           >
-            {{ t('common.back') }}
-          </button>
-          <button
-            type="submit"
-            class="d-press flex h-7.5 items-center gap-1.5 rounded-9 bg-(--d-design) px-3.5 text-12.5 font-semibold text-(--d-on-design) transition-[filter] hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-design) disabled:cursor-default disabled:opacity-40 disabled:hover:brightness-100"
-            :disabled="!canSend"
-            data-testid="design-approval-send-note"
-          >
-            <SendHorizontal
-              class="size-3.25"
-              aria-hidden="true"
-            />
-            {{ t('design.approval.sendNote') }}
-          </button>
+            <p class="mb-1 text-10.5 font-semibold tracking-[.06em] text-(--d-faint-text) uppercase">
+              {{ t('design.result.decisionsLabel') }}
+            </p>
+            <DesignDecisionList :decisions="current.decisions" />
+          </section>
         </div>
-      </form>
-    </section>
+
+        <div
+          v-if="screenOpener && current.screens.length > 0"
+          class="flex flex-wrap items-center gap-1.5 border-t border-(--d-border) px-3 py-2"
+          data-testid="design-approval-screens"
+        >
+          <span class="me-0.5 text-10.5 font-semibold tracking-[.06em] text-(--d-faint-text) uppercase">{{ t('design.browser.screens') }}</span>
+          <Button
+            v-for="screen in current.screens"
+            :key="screen.file"
+            type="button"
+            variant="ghost"
+            class="d-press h-6.5 gap-1.5 rounded-7 bg-[color-mix(in_srgb,var(--d-design-fill)_10%,transparent)] px-2 font-mono text-11.5 text-(--d-design-text) hover:bg-[color-mix(in_srgb,var(--d-design-fill)_18%,transparent)] hover:text-(--d-design-text) focus-visible:ring-1 focus-visible:ring-(--d-design-fill) focus-visible:ring-offset-0 [&_svg]:size-3"
+            :aria-label="t(screenOpener.key, { file: screen.file })"
+            :title="screen.file"
+            data-view-only
+            data-testid="design-approval-screen"
+            :data-file="screen.file"
+            @click="screenOpener.open(current.designId, screen.file)"
+          >
+            <component
+              :is="screenOpener.icon"
+              aria-hidden="true"
+            />{{ screen.id }}
+          </Button>
+        </div>
+
+        <div
+          v-if="!writing"
+          class="sticky bottom-0 border-t border-(--d-border) bg-(--d-card) px-1.5 pt-1 pb-1.5"
+        >
+          <ListboxRoot
+            v-model="selected"
+            class="flex flex-col outline-none"
+            orientation="vertical"
+          >
+            <DockPromptOptions
+              :aria-label="title"
+              :aria-disabled="!isVisible || undefined"
+            >
+              <ListboxItem
+                v-for="(option, index) in choices"
+                :key="option.value"
+                :value="option.value"
+                class="group flex items-center gap-2.5 rounded-9 px-2.5 py-1.25 transition-colors outline-none data-highlighted:bg-[color-mix(in_srgb,var(--d-design-fill)_14%,transparent)] data-highlighted:text-(--d-design-text)"
+                :data-testid="`design-approval-option-${option.value}`"
+                @select="select(option.promptId, option.value)"
+              >
+                <span
+                  class="flex size-5 flex-none items-center justify-center rounded-md border font-mono text-11"
+                  :class="option.value === 'approve'
+                    ? 'border-transparent bg-(--d-design-fill) text-(--d-on-design)'
+                    : 'border-(--d-border2) group-data-highlighted:border-(--d-design-fill)'"
+                  aria-hidden="true"
+                >{{ index + 1 }}</span>
+                <span
+                  class="min-w-0 flex-1 truncate"
+                  :class="option.value === 'approve' ? 'font-semibold' : 'font-medium'"
+                >{{ option.label }}</span>
+              </ListboxItem>
+            </DockPromptOptions>
+          </ListboxRoot>
+        </div>
+
+        <form
+          v-else
+          class="flex flex-col gap-2 border-t border-(--d-border) px-3 pt-2.5 pb-3"
+          data-testid="design-approval-note-form"
+          @submit.prevent="sendNote"
+        >
+          <label
+            class="text-xs font-medium text-(--d-text)"
+            for="design-approval-note"
+          >{{ t('design.approval.noteLabel') }}</label>
+          <Textarea
+            id="design-approval-note"
+            ref="noteRef"
+            v-model="note"
+            class="max-h-32 min-h-20 resize-none rounded-10 border-(--d-border2) bg-(--d-input) text-12.5 focus:border-(--d-design-fill)"
+            :placeholder="t('design.approval.notePlaceholder')"
+            :maxlength="MAX_PROMPT_ANSWER_CHARS"
+            data-testid="design-approval-note"
+            @keydown.enter.ctrl.prevent="sendNote"
+            @keydown.enter.meta.prevent="sendNote"
+            @keydown.esc.stop="back"
+          />
+          <div
+            class="flex justify-end gap-2"
+            role="group"
+            :aria-disabled="!isVisible || undefined"
+          >
+            <button
+              type="button"
+              class="d-press flex h-7.5 items-center rounded-9 px-3 text-12.5 transition-colors hover:bg-(--d-hover) focus-visible:outline-2 focus-visible:outline-(--d-design-fill)"
+              @click="back"
+            >
+              {{ t('common.back') }}
+            </button>
+            <button
+              type="submit"
+              class="d-press flex h-7.5 items-center gap-1.5 rounded-9 bg-(--d-design-fill) px-3.5 text-12.5 font-semibold text-(--d-on-design) transition-[filter] hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-design-fill) disabled:cursor-default disabled:opacity-40 disabled:hover:brightness-100"
+              :disabled="!canSend"
+              data-testid="design-approval-send-note"
+            >
+              <SendHorizontal
+                class="size-3.25"
+                aria-hidden="true"
+              />
+              {{ t('design.approval.sendNote') }}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
   </Transition>
 </template>

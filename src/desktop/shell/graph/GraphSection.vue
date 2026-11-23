@@ -956,11 +956,11 @@ const raw = <T,>(value: T): T => toRaw(value);
           v-if="outdated"
           data-testid="graph-outdated"
           :title="t('graph.outdatedTitle')"
-          class="ml-1 flex h-4 shrink-0 items-center gap-1 rounded-full bg-[color-mix(in_srgb,var(--d-warning)_14%,transparent)] px-1.5 text-10 font-medium tracking-normal text-(--d-warning-text) normal-case"
+          class="ml-1 flex h-4 shrink-0 items-center gap-1 rounded-full bg-[color-mix(in_srgb,var(--d-warning-fill)_14%,transparent)] px-1.5 text-10 font-medium tracking-normal text-(--d-warning-text) normal-case"
         >
           <span
             aria-hidden="true"
-            class="size-1.5 rounded-full bg-(--d-warning)"
+            class="size-1.5 rounded-full bg-(--d-warning-fill)"
           />{{ t('graph.outdated') }}
         </span>
       </Transition>
@@ -976,7 +976,7 @@ const raw = <T,>(value: T): T => toRaw(value);
         :title="t('graph.refChip')"
         aria-haspopup="dialog"
         :aria-expanded="pickerOpen"
-        class="flex h-5 max-w-full min-w-0 items-center gap-1 rounded-5 px-1.5 font-mono text-10.5 text-(--d-faint) hover:bg-(--d-border2) hover:text-(--d-text) focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)] focus-visible:outline-none"
+        class="flex h-5 max-w-full min-w-0 items-center gap-1 rounded-5 px-1.5 font-mono text-10.5 text-(--d-faint) hover:bg-(--d-border2) hover:text-(--d-text) focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent-fill)] focus-visible:outline-none"
         :class="pickerOpen ? 'bg-(--d-border2) text-(--d-text)' : ''"
         @click.stop="openPicker"
       >
@@ -1123,7 +1123,7 @@ const raw = <T,>(value: T): T => toRaw(value);
         data-testid="graph-skeleton"
         role="status"
         :aria-label="t('graph.loading')"
-        class="flex animate-[o-fade_.2s_var(--ease-out)_.12s_both] flex-col px-1.5"
+        class="flex d-fade-in [--enter-delay:.12s] flex-col px-1.5"
       >
         <div
           v-for="index in SKELETON_ROWS"
@@ -1157,12 +1157,12 @@ const raw = <T,>(value: T): T => toRaw(value);
           </svg>
           <!-- The sweep runs down the rows as a wave, each row --row steps after the one above. -->
           <span
-            class="relative h-2 overflow-hidden rounded-5 bg-(--d-hover) after:absolute after:inset-y-0 after:left-0 after:w-2/5 after:-translate-x-full after:animate-[o-sweep_1.3s_ease-in-out_infinite] after:bg-linear-to-r after:from-transparent after:via-[color-mix(in_srgb,var(--d-text)_7%,transparent)] after:to-transparent after:[animation-delay:calc(var(--row)*90ms)]"
+            class="d-skeleton-bar relative h-2 rounded-5 bg-(--d-hover)"
             :style="{ width: `${[62, 48, 70, 40, 56, 44][index - 1]}%`, '--row': String(index - 1) }"
           />
           <span class="flex-1" />
           <span
-            class="relative h-2 w-8 overflow-hidden rounded-5 bg-(--d-hover) after:absolute after:inset-y-0 after:left-0 after:w-2/5 after:-translate-x-full after:animate-[o-sweep_1.3s_ease-in-out_infinite] after:bg-linear-to-r after:from-transparent after:via-[color-mix(in_srgb,var(--d-text)_7%,transparent)] after:to-transparent after:[animation-delay:calc(var(--row)*90ms)]"
+            class="d-skeleton-bar relative h-2 w-8 rounded-5 bg-(--d-hover)"
             :style="{ '--row': String(index - 1) }"
           />
         </div>
@@ -1277,7 +1277,7 @@ const raw = <T,>(value: T): T => toRaw(value);
                   data-state="failed"
                   :data-row-key="row.key"
                   :tabindex="index === focusedIndex ? 0 : -1"
-                  class="flex items-center gap-1.5 rounded-6 pr-1.5 pl-6 text-11 text-(--d-warning-text) outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
+                  class="flex items-center gap-1.5 rounded-6 pr-1.5 pl-6 text-11 text-(--d-warning-text) outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent-fill)]"
                   :style="{ height: `${heightOf(row)}px` }"
                   @focus="focusedKey = row.key"
                 >

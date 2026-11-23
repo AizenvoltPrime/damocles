@@ -503,7 +503,7 @@ describe('the header for a worktree chat', () => {
 
 describe('the Blocked card (rule 10)', () => {
   it('shows a Blocked badge in place of the status icon', async () => {
-    const wrapper = mount(ToolCardFrame, { props: { icon: Wrench, name: 'Edit', arg: 'C:/w/app/a.ts', status: 'running' }, global: { plugins: [i18n] }, attachTo: document.body });
+    const wrapper = mount(ToolCardFrame, { props: { tool: 'Edit', icon: Wrench, name: 'Edit', arg: 'C:/w/app/a.ts', status: 'running' }, global: { plugins: [i18n] }, attachTo: document.body });
     mounted.push(wrapper);
     expect(wrapper.find('[data-testid="tool-card-blocked"]').exists()).toBe(false);
     await wrapper.setProps({ status: 'blocked' });

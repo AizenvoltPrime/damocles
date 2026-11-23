@@ -55,6 +55,7 @@ function openDesignChat(): void {
 
 <template>
   <ToolCardFrame
+    :tool="toolCall.name"
     :icon="Palette"
     :name="name"
     :arg="arg"
@@ -73,7 +74,7 @@ function openDesignChat(): void {
         v-if="details"
         type="button"
         variant="ghost"
-        class="d-press d-tone-design -me-1 h-6.5 flex-none gap-1.5 rounded-7 bg-(--tone)/12 px-2.5 text-xs font-semibold hover:bg-(--tone)/20 hover:text-(--d-design-text) focus-visible:ring-1 focus-visible:ring-(--d-design) focus-visible:ring-offset-0 [&_svg]:size-3"
+        class="d-press d-tone-design -me-1 h-6.5 flex-none gap-1.5 rounded-7 bg-(--tone)/12 px-2.5 text-xs font-semibold hover:bg-(--tone)/20 hover:text-(--d-design-text) focus-visible:ring-1 focus-visible:ring-(--d-design-fill) focus-visible:ring-offset-0 [&_svg]:size-3"
         data-testid="start-design-open"
         @click.stop="openDesignChat"
       >
@@ -115,7 +116,7 @@ function openDesignChat(): void {
     />
     <div
       v-if="opening && toolCall.status !== 'awaiting_approval'"
-      class="d-sweep-bar h-0.5 bg-(--d-hover) text-(--d-design)"
+      class="d-sweep-bar h-0.5 bg-(--d-hover) [--tone:var(--d-design-fill)]"
       aria-hidden="true"
     />
   </ToolCardFrame>

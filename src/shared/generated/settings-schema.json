@@ -905,6 +905,79 @@
         "default": "system",
         "description": "Color theme of the desktop app."
       },
+      "damocles.desktop.themes.dark": {
+        "type": "string",
+        "default": "damocles",
+        "description": "The theme whose dark look shows when the desktop app is dark: damocles, or the id of a theme in ~/.damocles/themes/themes. A missing or broken theme shows the Damocles look."
+      },
+      "damocles.desktop.themes.light": {
+        "type": "string",
+        "default": "damocles",
+        "description": "The theme whose light look shows when the desktop app is light: damocles, or the id of a theme in ~/.damocles/themes/themes. A missing or broken theme shows the Damocles look."
+      },
+      "damocles.desktop.themes.agentTools": {
+        "type": "boolean",
+        "default": true,
+        "description": "The agent's theme tools: reading the desktop app's themes and proposing theme changes and schedules. The agent loads them when it needs them; a change reaches the window only through a card you answer or the keep-changes banner."
+      },
+      "damocles.desktop.themes.applyMode": {
+        "type": "string",
+        "enum": [
+          "preview",
+          "onTheFly"
+        ],
+        "enumDescriptions": [
+          "Preview first: the agent's theme change waits on a card with Apply, Discard and Change.",
+          "Apply on the fly: the change shows at once with a 15 second banner to keep or revert it. In plan mode the card shows instead."
+        ],
+        "default": "preview",
+        "description": "How the agent's theme changes reach the window. Yours alone: the agent cannot change it."
+      },
+      "damocles.desktop.themes.showWallpapers": {
+        "type": "boolean",
+        "default": true,
+        "description": "Show the wallpapers of the shown theme behind the window's panels. Ctrl+Alt+Shift+W (Cmd+Alt+Shift+W on macOS) turns them off or on from anywhere. The agent may turn them off, never on. Wallpapers stay off under Windows contrast themes, without GPU compositing and in safe start."
+      },
+      "damocles.desktop.themes.wallpaperContrast": {
+        "type": "string",
+        "enum": [
+          "raiseDim",
+          "warn"
+        ],
+        "enumDescriptions": [
+          "Raise dim: a wallpaper is dimmed further until muted text over it reads at 4.5:1.",
+          "Warn only: the wallpaper keeps its dim and the theme editor says where text reads below 4.5:1."
+        ],
+        "default": "raiseDim",
+        "description": "How text stays readable over wallpapers. Yours alone: the agent cannot change it."
+      },
+      "damocles.desktop.themes.characterMotion": {
+        "type": "string",
+        "enum": [
+          "always",
+          "hover",
+          "active"
+        ],
+        "enumDescriptions": [
+          "Always: every project character moves with its state.",
+          "On hover: a character moves while the pointer is over it or its row.",
+          "Selected project: only the selected project's character moves."
+        ],
+        "default": "always",
+        "description": "When a theme's project characters move. Reduce motion and Windows contrast themes hold every character on its first frame. Yours alone: the agent cannot change it."
+      },
+      "damocles.desktop.themes.store": {
+        "type": "boolean",
+        "default": true,
+        "description": "The community theme store: the Browse tab of Settings › Appearance lists its signed list from GitHub, and while a store theme is installed the list is checked beside the app's own update check: the automatic checks, under \"Check for updates automatically\", and Help › Check for Updates… and About's check. Off: Damocles never fetches the store list."
+      },
+      "damocles.desktop.textSize": {
+        "type": "integer",
+        "default": 13,
+        "minimum": 11,
+        "maximum": 20,
+        "description": "Text size of the desktop app, in pixels. Spacing and layout scale with it. Yours alone: a theme changes fonts, spacing and corners, never the size of text."
+      },
       "damocles.desktop.reduceMotion": {
         "type": "boolean",
         "default": false,
@@ -2570,6 +2643,60 @@
         "errorMessage": "damocles.desktop.theme applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
         "description": "damocles.desktop.theme applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nColor theme of the desktop app."
+      },
+      "damocles.desktop.themes.dark": {
+        "not": {},
+        "errorMessage": "damocles.desktop.themes.dark applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.themes.dark applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nThe theme whose dark look shows when the desktop app is dark: damocles, or the id of a theme in ~/.damocles/themes/themes. A missing or broken theme shows the Damocles look."
+      },
+      "damocles.desktop.themes.light": {
+        "not": {},
+        "errorMessage": "damocles.desktop.themes.light applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.themes.light applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nThe theme whose light look shows when the desktop app is light: damocles, or the id of a theme in ~/.damocles/themes/themes. A missing or broken theme shows the Damocles look."
+      },
+      "damocles.desktop.themes.agentTools": {
+        "not": {},
+        "errorMessage": "damocles.desktop.themes.agentTools applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.themes.agentTools applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nThe agent's theme tools: reading the desktop app's themes and proposing theme changes and schedules. The agent loads them when it needs them; a change reaches the window only through a card you answer or the keep-changes banner."
+      },
+      "damocles.desktop.themes.applyMode": {
+        "not": {},
+        "errorMessage": "damocles.desktop.themes.applyMode applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.themes.applyMode applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nHow the agent's theme changes reach the window. Yours alone: the agent cannot change it."
+      },
+      "damocles.desktop.themes.showWallpapers": {
+        "not": {},
+        "errorMessage": "damocles.desktop.themes.showWallpapers applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.themes.showWallpapers applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nShow the wallpapers of the shown theme behind the window's panels. Ctrl+Alt+Shift+W (Cmd+Alt+Shift+W on macOS) turns them off or on from anywhere. The agent may turn them off, never on. Wallpapers stay off under Windows contrast themes, without GPU compositing and in safe start."
+      },
+      "damocles.desktop.themes.wallpaperContrast": {
+        "not": {},
+        "errorMessage": "damocles.desktop.themes.wallpaperContrast applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.themes.wallpaperContrast applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nHow text stays readable over wallpapers. Yours alone: the agent cannot change it."
+      },
+      "damocles.desktop.themes.characterMotion": {
+        "not": {},
+        "errorMessage": "damocles.desktop.themes.characterMotion applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.themes.characterMotion applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWhen a theme's project characters move. Reduce motion and Windows contrast themes hold every character on its first frame. Yours alone: the agent cannot change it."
+      },
+      "damocles.desktop.themes.store": {
+        "not": {},
+        "errorMessage": "damocles.desktop.themes.store applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.themes.store applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nThe community theme store: the Browse tab of Settings › Appearance lists its signed list from GitHub, and while a store theme is installed the list is checked beside the app's own update check: the automatic checks, under \"Check for updates automatically\", and Help › Check for Updates… and About's check. Off: Damocles never fetches the store list."
+      },
+      "damocles.desktop.textSize": {
+        "not": {},
+        "errorMessage": "damocles.desktop.textSize applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.textSize applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nText size of the desktop app, in pixels. Spacing and layout scale with it. Yours alone: a theme changes fonts, spacing and corners, never the size of text."
       },
       "damocles.desktop.reduceMotion": {
         "not": {},

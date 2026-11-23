@@ -75,6 +75,7 @@ beforeEach(() => {
     },
     allowYolo: async () => false,
     queueAction: (action) => void queueActions.push(action),
+    setModalOpen: () => undefined,
   };
 });
 

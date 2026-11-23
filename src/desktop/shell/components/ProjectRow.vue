@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { FolderX, FolderTree, ShieldAlert } from 'lucide-vue-next';
+import { FolderX, FolderTree, Palette, ShieldAlert } from 'lucide-vue-next';
 import { Badge } from '@/components/ui/badge';
 import HostBadge from '@/components/HostBadge.vue';
 import { visibleText } from '@shared/visible-text';
+import { characterState } from '@shared/themes/characters';
 import type { ShellHost, ShellProject } from '../../preload/shell-channels';
 import { hostStateLabel } from '../host-label';
 import ProjectAvatar from './ProjectAvatar.vue';
@@ -58,17 +59,22 @@ function openDetails(event: MouseEvent): void {
     role="option"
     :aria-selected="selected"
     :data-project-key="project.key"
+    data-character-host
     :data-flip="flip ? `p:${project.key}` : undefined"
     :title="title"
-    class="group/row @container/row flex h-8.5 shrink-0 cursor-pointer items-center gap-2.5 rounded-lg px-2 transition-colors select-none hover:bg-(--d-hover) data-dragging:cursor-grabbing"
+    class="group/row @container/row flex h-8.5 shrink-0 cursor-pointer items-center gap-2.5 rounded-lg px-2 transition-colors select-none data-dragging:cursor-grabbing"
     :class="[
-      flip ? 'data-dragging:relative data-dragging:z-5 data-dragging:bg-(--d-card) data-dragging:shadow-(--d-shadow) data-dragging:ring-1 data-dragging:ring-(--d-accent)' : '',
-      selected ? 'bg-(--d-accent-soft) font-semibold' : '',
-      active ? 'group-focus-visible/list:outline group-focus-visible/list:-outline-offset-1 group-focus-visible/list:outline-(--d-accent)' : '',
+      flip ? 'data-dragging:relative data-dragging:z-5 data-dragging:bg-(--d-card) data-dragging:shadow-(--d-shadow) data-dragging:ring-1 data-dragging:ring-(--d-accent-fill)' : '',
+      selected ? 'bg-(--d-accent-soft) font-semibold' : 'hover:bg-(--d-hover)',
+      active ? 'group-focus-visible/list:outline group-focus-visible/list:-outline-offset-1 group-focus-visible/list:outline-(--d-accent-fill)' : '',
     ]"
   >
     <ProjectAvatar
       :name="project.name"
+      :project-key="project.key"
+      :state="characterState(project)"
+      :active="selected"
+      decorative
       class="size-5.5 rounded-md text-11"
       :class="selected ? 'project-avatar-ring' : ''"
     />
@@ -83,6 +89,15 @@ function openDetails(event: MouseEvent): void {
           class="size-2.75 shrink-0 text-(--d-accent-text)"
           :aria-label="t('projects.worktreeOf', { project: project.worktreeOf })"
           :title="t('projects.worktreeOf', { project: project.worktreeOf })"
+        />
+        <Palette
+          v-if="project.look"
+          role="img"
+          data-testid="project-look-mark"
+          :data-look="project.look"
+          class="size-2.75 shrink-0 text-(--d-accent-text)"
+          :aria-label="t(`projects.look.mark.${project.look}`)"
+          :title="t(`projects.look.mark.${project.look}`)"
         />
       </span>
       <span
@@ -110,6 +125,8 @@ function openDetails(event: MouseEvent): void {
       v-else-if="!project.trusted"
       variant="tone"
       data-testid="untrusted-badge"
+      data-trusted-mark
+      data-mark-action
       class="d-tone-warning flex shrink-0 rounded-5 border-0 bg-(--tone)/15 px-1.5 py-px text-10.5 font-normal"
       :title="t('projects.untrustedTitle')"
       @click.stop="emit('trust')"
@@ -119,7 +136,8 @@ function openDetails(event: MouseEvent): void {
         class="size-2.75"
       />
       <!-- Beside a host badge in a narrow row the badge keeps only its shield, so the project's name keeps room. -->
-      <span :class="remote && !grouped ? '@max-[14.5rem]/row:sr-only' : ''">{{ t('projects.untrusted') }}</span>
+      <!-- An ancestor's text decoration reaches a flex item's text but never an inline-block inside a block box, so the word sits in one. -->
+      <span :class="['block', remote && !grouped ? '@max-[14.5rem]/row:sr-only' : '']"><span class="inline-block align-top">{{ t('projects.untrusted') }}</span></span>
     </Badge>
     <Badge
       v-if="badge"
@@ -130,7 +148,7 @@ function openDetails(event: MouseEvent): void {
     >
       <span
         aria-hidden="true"
-        class="size-1.25 animate-[d-pulse_1.4s_infinite] rounded-full bg-current"
+        class="d-pulsing size-1.25 rounded-full bg-(--tone)"
       />
       {{ badge.text }}
     </Badge>

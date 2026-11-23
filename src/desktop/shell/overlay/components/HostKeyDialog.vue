@@ -80,7 +80,7 @@ function focusClose(event: Event): void {
   >
     <AlertDialogContent
       data-testid="host-key-changed"
-      class="max-w-lg gap-0 overflow-hidden border-(--d-danger)/50 p-0"
+      class="max-w-lg gap-0 overflow-hidden border-(--d-danger-fill)/50 p-0"
       @open-auto-focus="focusClose"
     >
       <ConfirmDialogLayout

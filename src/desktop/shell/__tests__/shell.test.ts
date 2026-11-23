@@ -497,6 +497,47 @@ describe("a design chat's header edge", () => {
   });
 });
 
+// The chat view covers its slot but for the gutter beside it, so a modal layer of the page dims and holds the gutter too.
+describe("the chat gutter under the page's modal layer", () => {
+  const TAB: ShellEditorTab = { id: 't1', kind: 'code', documentId: 'd1', title: 'a.ts', projectKey: 'p1', relativePath: 'a.ts', displayPath: '/w/alpha/a.ts', dirty: false, readOnly: false, conflict: false };
+  const gutter = (wrapper: VueWrapper) => wrapper.get('[data-testid="grid-pane-chat"] [data-testid="chat-gutter"]');
+  const scrim = (wrapper: VueWrapper) => wrapper.find('[data-testid="chat-gutter-scrim"]');
+
+  function mountWith(state: ShellState) {
+    const api = fakeShellApi([], { getState: vi.fn(async () => state), getEditorState: vi.fn(async () => ({ ...EDITOR_STATE, tabs: [TAB], activeTabId: TAB.id })) });
+    const wrapper = track(mount(App, { props: { api }, global: { plugins: [shellI18n], stubs: { CodeEditor: true, Breadcrumbs: true } }, attachTo: document.body }));
+    return { api, wrapper };
+  }
+
+  it('scrims the gutter and takes its grip out of reach only while the page holds a modal layer', async () => {
+    const { api, wrapper } = mountWith(STATE);
+    await flushPromises();
+    expect(scrim(wrapper).exists()).toBe(false);
+    expect(gutter(wrapper).attributes('inert')).toBeUndefined();
+
+    api.push({ ...STATE, chatModal: true });
+    await flushPromises();
+    expect(scrim(wrapper).attributes('aria-hidden')).toBe('true');
+    expect(scrim(wrapper).classes()).toEqual(expect.arrayContaining(['absolute', 'inset-0', 'bg-(--d-scrim)']));
+    expect(gutter(wrapper).attributes('inert')).toBeDefined();
+    expect(gutter(wrapper).find('[data-testid="pane-grip-chat"]').exists()).toBe(true);
+
+    api.push({ ...STATE, chatModal: false });
+    await flushPromises();
+    expect(scrim(wrapper).exists()).toBe(false);
+    expect(gutter(wrapper).attributes('inert')).toBeUndefined();
+  });
+
+  it('shows no scrim while the focus overlay hides the chat view', async () => {
+    const { wrapper } = mountWith({ ...STATE, chatModal: true });
+    await flushPromises();
+    expect(scrim(wrapper).exists()).toBe(true);
+    await wrapper.get('[data-testid="editor-focus-toggle"]').trigger('click');
+    expect(scrim(wrapper).exists()).toBe(false);
+    expect(gutter(wrapper).attributes('inert')).toBeUndefined();
+  });
+});
+
 describe('App and title bar', () => {
   it("lets go of a design tab's markup on every screen and its tweaks once main closes the tab for good, and of no other tab's", async () => {
     const api = fakeShellApi();
@@ -722,6 +763,10 @@ describe('projects section', () => {
     const options = wrapper.findAll('[role="option"]');
     expect(options.map((o) => o.attributes('data-project-key'))).toEqual(['p1', 'p2']);
     expect(options[0]!.attributes('aria-selected')).toBe('true');
+    // one background class per state, so the pointer never takes the selected row's tint
+    const grounds = (option: (typeof options)[number]): string[] => option.classes().filter((name) => name.startsWith('bg-(') || name.startsWith('hover:bg-('));
+    expect(grounds(options[0]!)).toEqual(['bg-(--d-accent-soft)']);
+    expect(grounds(options[1]!)).toEqual(['hover:bg-(--d-hover)']);
     expect(options[0]!.find('[data-testid="untrusted-badge"]').exists()).toBe(false);
     expect(options[0]!.get('[data-testid="activity-badge"]').text()).toBe('1 running');
     expect(options[1]!.text()).toContain('main');
@@ -764,9 +809,54 @@ describe('projects section', () => {
 
     const request = api.overlayRequests[0];
     expect(request).toMatchObject({ kind: 'menu', label: 'Actions for beta', anchor: { x: 30, y: 40, width: 0, height: 0 } });
-    expect(request?.kind === 'menu' && request.items.map((item) => (item.kind === 'item' ? item.label : '-'))).toEqual(['Trust project', '-', 'Move up', 'Move down', '-', 'Remove project']);
+    expect(request?.kind === 'menu' && request.items.map((item) => (item.kind === 'item' ? item.label : '-'))).toEqual(['Trust project', '-', 'Move up', 'Move down', '-', 'Project look…', '-', 'Remove project']);
     expect(api.removeProject).toHaveBeenCalledWith('p2');
     expect(wrapper.get('[role="alert"]').text()).toBe('Could not remove project beta: a chat is running');
+  });
+
+  it("opens Project look… from the row's menu, says what was saved under the list, and marks a project with its own look", async () => {
+    const api = fakeShellApi([], { projectLook: vi.fn(async () => ({ kind: 'saved' as const, look: 'touches' as const })) });
+    api.answerNext({ kind: 'menu', itemId: 'look' });
+    const projects = [{ ...STATE.projects[0]!, look: 'full' as const }, { ...STATE.projects[1]!, look: 'touches' as const }];
+    const wrapper = track(mount(ProjectsSection, {
+      props: { api, projects, selectedKey: 'p1', hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
+      global: { plugins: [shellI18n] },
+      attachTo: document.body,
+    }));
+    const [alpha, beta] = wrapper.findAll('[role="option"]');
+    expect(alpha!.get('[data-testid="project-look-mark"]').attributes('aria-label')).toBe('Has its own theme');
+    expect(beta!.get('[data-testid="project-look-mark"]').attributes('aria-label')).toBe('Has touches on its theme');
+
+    await beta!.trigger('contextmenu', { clientX: 30, clientY: 40 });
+    await flushPromises();
+    expect(api.projectLook).toHaveBeenCalledWith('p2');
+    expect(wrapper.get('[data-testid="projects-look-saved"]').text()).toBe('Saved the touches for beta. It shows whenever beta is open.');
+    // the next menu clears it
+    api.answerNext({ kind: 'dismissed' });
+    await alpha!.trigger('contextmenu', { clientX: 30, clientY: 40 });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="projects-look-saved"]').text()).toBe('');
+  });
+
+  it('says a saved theme of its own is missing, with its name only while one is known, and never leaves a blank in the sentence', async () => {
+    const api = fakeShellApi();
+    const wrapper = track(mount(ProjectsSection, {
+      props: { api, projects: STATE.projects, selectedKey: 'p1', hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
+      global: { plugins: [shellI18n] },
+      attachTo: document.body,
+    }));
+    const beta = wrapper.findAll('[role="option"]')[1]!;
+    const saved = async (result: Awaited<ReturnType<typeof api.projectLook>>): Promise<string> => {
+      vi.mocked(api.projectLook).mockResolvedValueOnce(result);
+      api.answerNext({ kind: 'menu', itemId: 'look' });
+      await beta.trigger('contextmenu', { clientX: 30, clientY: 40 });
+      await flushPromises();
+      return wrapper.get('[data-testid="projects-look-saved"]').text();
+    };
+    expect(await saved({ kind: 'saved', look: 'full', themeName: 'Night' })).toBe('beta now has its own theme: Night. It shows whenever beta is open.');
+    expect(await saved({ kind: 'saved', look: 'full', themeName: 'Dusk', missingTheme: true })).toBe("beta now has its own theme, Dusk, which is missing or can't be used, so Damocles' own look shows for it.");
+    expect(await saved({ kind: 'saved', look: 'full', missingTheme: true })).toBe("beta now has its own theme, which is missing, so Damocles' own look shows for it.");
+    expect(await saved({ kind: 'saved', look: 'none' })).toBe('beta now uses the current theme.');
   });
 
   it('marks a project whose folder is not there on its row, and offers only Locate, its order and Remove project', async () => {
@@ -789,7 +879,7 @@ describe('projects section', () => {
     await beta!.trigger('contextmenu', { clientX: 30, clientY: 40 });
     await flushPromises();
     const request = api.overlayRequests[0];
-    expect(request?.kind === 'menu' && request.items.map((item) => (item.kind === 'item' ? item.label : '-'))).toEqual(['Locate…', '-', 'Move up', 'Move down', '-', 'Remove project']);
+    expect(request?.kind === 'menu' && request.items.map((item) => (item.kind === 'item' ? item.label : '-'))).toEqual(['Locate…', '-', 'Move up', 'Move down', '-', 'Project look…', '-', 'Remove project']);
     expect(api.removeProject).toHaveBeenCalledWith('p2');
   });
 
@@ -879,7 +969,7 @@ describe('projects section', () => {
     await alpha!.trigger('contextmenu', { clientX: 30, clientY: 40 });
     await flushPromises();
     const menu = api.overlayRequests.at(-1);
-    expect(menu?.kind === 'menu' && menu.items.map((item) => (item.kind === 'item' ? item.label : '-'))).toEqual(['Retry', '-', 'Move up', 'Move down', '-', 'Remove project']);
+    expect(menu?.kind === 'menu' && menu.items.map((item) => (item.kind === 'item' ? item.label : '-'))).toEqual(['Retry', '-', 'Move up', 'Move down', '-', 'Project look…', '-', 'Remove project']);
     expect(api.retryRelocation).toHaveBeenCalledWith('p1');
 
     api.answerNext({ kind: 'menu', itemId: 'locate' });
@@ -946,7 +1036,7 @@ describe('projects section', () => {
     await wrapper.get('[role="option"]').trigger('contextmenu', { clientX: 30, clientY: 40 });
     await flushPromises();
     const menu = api.overlayRequests.find((request) => request.kind === 'menu');
-    expect(menu?.kind === 'menu' && menu.items.map((item) => (item.kind === 'item' ? item.label : '-'))).toEqual(['Retry', 'Stop moving…', '-', 'Move up', 'Move down', '-', 'Remove project']);
+    expect(menu?.kind === 'menu' && menu.items.map((item) => (item.kind === 'item' ? item.label : '-'))).toEqual(['Retry', 'Stop moving…', '-', 'Move up', 'Move down', '-', 'Project look…', '-', 'Remove project']);
     expect(api.overlayRequests.at(-1)).toMatchObject({ kind: 'confirm', danger: true });
     expect(api.abandonRelocation).toHaveBeenCalledTimes(2);
   });
@@ -1183,6 +1273,9 @@ describe('chats section', () => {
     expect(api.selectChat).toHaveBeenCalledWith('c2');
     expect(wrapper.get('[data-chat-id="c1"]').attributes('aria-selected')).toBe('true');
     expect(wrapper.get('[data-chat-id="c2"]').attributes('aria-selected')).toBe('false');
+    // one background class per state, so the pointer never takes the selected row's tint
+    expect(wrapper.get('[data-chat-id="c1"]').classes().filter((name) => name.includes('bg-(--d-'))).toEqual(['bg-(--d-accent-soft)']);
+    expect(wrapper.get('[data-chat-id="c2"]').classes().filter((name) => name.includes('bg-(--d-'))).toEqual(['hover:bg-(--d-hover)']);
   });
 
   it('builds the context menu from the chat and runs the chosen action', async () => {

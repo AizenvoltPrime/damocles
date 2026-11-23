@@ -15,6 +15,11 @@ import { ElicitationManager } from './managers/elicitation-manager';
 import { DesignVersionManager, type DesignVersionAsk } from './managers/design-version-manager';
 import { DesignApprovalManager, type DesignApprovalAsk } from './managers/design-approval-manager';
 import type { DesignApprovalChoice, DesignVersionChoice } from '../../shared/types/design';
+import { ThemeChangeManager, type ThemeChangeAsk, type ThemeChangePrompt } from './managers/theme-change-manager';
+import { ThemeScreenshotManager, type ThemeScreenshotAsk } from './managers/theme-screenshot-manager';
+import { ThemeInstallManager, type ThemeInstallAsk, type ThemeInstallPrompt } from './managers/theme-install-manager';
+import type { ThemeInstallAnswer } from '../../shared/themes/install';
+import type { ThemeChangeChoice, ThemeScreenshotChoice } from '../../shared/themes/agent';
 import type { ElicitationRequest, ElicitationResult } from '../../shared/types/elicitation';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { LocalizedText } from '../../shared/localized-text';
@@ -22,13 +27,14 @@ import type { PermissionMode } from '../../shared/types/settings';
 import type { PermissionUpdate, PromptApprover, PromptOwner, Question } from '../../shared/types/permissions';
 import { log } from '../logger';
 import { bypassAllowed, hostDefaultMode } from '../client-snapshots';
-import type { PermissionResult, CanUseToolContext, SettledApproval, McpToolIdentity, ChatPermissions, MatchRuleOptions, DesignApprovalAnswer, SkillDescriber } from './types';
+import type { PermissionResult, CanUseToolContext, SettledApproval, McpToolIdentity, ChatPermissions, MatchRuleOptions, DesignApprovalAnswer, SkillDescriber, DevicePostFn } from './types';
 import { buildUnaskedDenyResult } from './utils';
 import type { McpResourceRuleFilter } from './mcp-resource-rule';
 import { IMAGE_MODEL_SETTING } from '../pi-session/tools/image-tool-specs';
 import type { FormValues } from '../../shared/types/forms';
 import type { RaisedPrompt } from '../pi-session/session-state';
-import { TOOL_EXIT_PLAN_MODE, TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EDIT, TOOL_WRITE, TOOL_GENERATE_IMAGE, TOOL_SKILL, isShellTool } from '../../shared/tool-names';
+import { TOOL_EXIT_PLAN_MODE, TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EDIT, TOOL_WRITE, TOOL_GENERATE_IMAGE, TOOL_SKILL, THEME_TOOLS, isShellTool } from '../../shared/tool-names';
+import { themeAssetSource, themeImagePrompt } from '../../shared/themes/asset-source';
 
 export type { PermissionResult, CanUseToolContext, ChatPermissions };
 
@@ -44,6 +50,9 @@ export class PermissionHandler {
   private elicitationManager: ElicitationManager;
   private designVersionManager: DesignVersionManager;
   private designApprovalManager: DesignApprovalManager;
+  private themeChangeManager: ThemeChangeManager;
+  private themeScreenshotManager: ThemeScreenshotManager;
+  private themeInstallManager: ThemeInstallManager;
   private readonly platform: Platform;
   private onPlanModeActivated: (() => Promise<void>) | null = null;
   private fixedMode: () => boolean = () => false;
@@ -86,6 +95,11 @@ export class PermissionHandler {
     this.elicitationManager = new ElicitationManager(this.state, getPostMessage);
     this.designVersionManager = new DesignVersionManager(this.state, getPostMessage);
     this.designApprovalManager = new DesignApprovalManager(this.state, getPostMessage);
+    // the client a view's answer came from, which a remote chat's theme cards check against the device they change
+    const actor = (): string | undefined => platform.remote?.clients.actor();
+    this.themeChangeManager = new ThemeChangeManager(this.state, getPostMessage, actor);
+    this.themeScreenshotManager = new ThemeScreenshotManager(this.state, getPostMessage, actor);
+    this.themeInstallManager = new ThemeInstallManager(this.state, getPostMessage, actor);
 
     // a daemon's core starts a new chat in the mode the acting client configured for this host, else the settings' default
     this.state.permissionMode = hostDefaultMode(platform) ?? platform.settings.get<PermissionMode>('damocles.permissionMode', 'default', settingsFolder);
@@ -244,16 +258,20 @@ export class PermissionHandler {
    * Post every live prompt again, for a webview that restarted and came back with an empty dialog
    * store while the awaiters behind those dialogs are still blocked.
    *
-   * Each entry carries the exact message it was first posted with, so nothing is rebuilt and a
+   * Each entry carries the request its prompt holds now (`PermissionState.pendingPromptRequests`), so a
    * re-posted prompt cannot drift from what its awaiter is waiting on. The dialogs go back in the
    * order they were raised.
    */
   repostPendingPrompts(): void {
-    const postMessage = this.state.postMessageToWebview;
-    if (!postMessage) return;
-    for (const request of this.state.pendingPromptRequests.values()) {
-      postMessage(request);
+    if (!this.state.postMessageToWebview) return;
+    for (const [id, request] of this.state.pendingPromptRequests) {
+      this.state.postPrompt(id, request);
     }
+  }
+
+  /** Posts each device its own message, for prompts a chat on a remote host shows each device its own way. */
+  setDevicePost(fn: DevicePostFn): void {
+    this.state.postToDevices = fn;
   }
 
   /** Wire the canonical plan reader (the session's on-disk plan); used to source plan approval/handoff
@@ -406,6 +424,13 @@ export class PermissionHandler {
       return this.approvalManager.handleImagePermission(input, context, this.platform.settings.get<string>(IMAGE_MODEL_SETTING, ''));
     }
 
+    // A theme image is asked for as GenerateImage is, on the image card, which names no file since none is written.
+    const source = THEME_TOOLS.has(toolName) ? themeAssetSource(input) : undefined;
+    if (source !== undefined && 'kind' in source && source.kind === 'generate') {
+      const asked = await this.approvalManager.handleImagePermission({ prompt: themeImagePrompt(source) }, context, this.platform.settings.get<string>(IMAGE_MODEL_SETTING, ''));
+      return asked.behavior === 'allow' ? { ...asked, updatedInput: input } : asked;
+    }
+
     if (isShellTool(toolName)) {
       return this.approvalManager.handleShellPermission(toolName, input, context);
     }
@@ -480,6 +505,42 @@ export class PermissionHandler {
 
   resolveDesignApproval(promptId: string, choice: DesignApprovalChoice, feedback: string | undefined): void {
     this.designApprovalManager.resolveDesignApproval(promptId, choice, feedback);
+  }
+
+  /** Raises a theme card, in every mode, YOLO included, until its tool closes it or `signal` aborts. */
+  openThemeChange(ask: ThemeChangeAsk, signal: AbortSignal, showInWindow: (on: boolean) => void): ThemeChangePrompt {
+    return this.themeChangeManager.open(ask, signal, showInWindow);
+  }
+
+  resolveThemeChange(promptId: string, choice: ThemeChangeChoice, note: string | undefined): void {
+    this.themeChangeManager.resolveThemeChange(promptId, choice, note);
+  }
+
+  setThemeShowInWindow(promptId: string, on: boolean): void {
+    this.themeChangeManager.setShowInWindow(promptId, on);
+  }
+
+  /** Raises the screenshot card, in every mode, YOLO included, until the user answers or `signal` aborts (undefined). */
+  requestThemeScreenshot(ask: ThemeScreenshotAsk, signal: AbortSignal): Promise<ThemeScreenshotChoice | undefined> {
+    return this.themeScreenshotManager.requestThemeScreenshot(ask, signal);
+  }
+
+  resolveThemeScreenshot(promptId: string, choice: ThemeScreenshotChoice): void {
+    this.themeScreenshotManager.resolveThemeScreenshot(promptId, choice);
+  }
+
+  /** Raises the install card, in every mode, YOLO included, until its tool closes it or `signal` aborts. */
+  openThemeInstall(ask: ThemeInstallAsk, signal: AbortSignal, allowFlash: ((sha256: string) => void) | undefined): ThemeInstallPrompt {
+    return this.themeInstallManager.open(ask, signal, allowFlash);
+  }
+
+  resolveThemeInstall(promptId: string, answer: ThemeInstallAnswer): void {
+    this.themeInstallManager.resolveThemeInstall(promptId, answer);
+  }
+
+  /** A local chat's install card's Allow flashing for this file, which only the user's press sends. */
+  allowThemeInstallFlash(promptId: string, sha256: string): void {
+    this.themeInstallManager.allowFlash(promptId, sha256);
   }
 
   async dispose(): Promise<void> {

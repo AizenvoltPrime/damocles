@@ -102,12 +102,12 @@ function statusLine(subagent: SubagentState): string | undefined {
           v-if="subagent"
           type="button"
           class="flex min-w-0 flex-1 items-center gap-2.5 rounded-11 border bg-(--d-card) px-2.5 py-2 text-left transition-colors hover:border-(--d-border2)"
-          :class="status === 'running' ? 'border-[color-mix(in_srgb,var(--d-accent)_35%,var(--d-border))]' : 'border-(--d-border)'"
+          :class="status === 'running' ? 'border-[color-mix(in_srgb,var(--d-accent-fill)_35%,var(--d-border))]' : 'border-(--d-border)'"
           :title="t('overlays.bgTasks.openSubagent')"
           data-testid="bg-subagent-row"
           @click="subagentStore.expandSubagent(subagent.id)"
         >
-          <span class="flex size-6.5 flex-none items-center justify-center rounded-lg bg-[color-mix(in_srgb,var(--d-info)_14%,transparent)] text-(--d-info)">
+          <span class="flex size-6.5 flex-none items-center justify-center rounded-lg bg-[color-mix(in_srgb,var(--d-info-fill)_14%,transparent)] text-(--d-info)">
             <component
               :is="(subagent.agentType !== undefined ? ownEntry(AGENT_ICONS, subagent.agentType) : undefined) ?? Bot"
               class="size-3.25"
@@ -177,7 +177,7 @@ function statusLine(subagent: SubagentState): string | undefined {
         <button
           v-if="task.status === 'running'"
           type="button"
-          class="flex size-7.5 flex-none items-center justify-center rounded-lg text-(--d-muted) transition-colors enabled:hover:bg-[color-mix(in_srgb,var(--d-danger)_12%,transparent)] enabled:hover:text-(--d-danger)"
+          class="flex size-7.5 flex-none items-center justify-center rounded-lg text-(--d-muted) transition-colors enabled:hover:bg-[color-mix(in_srgb,var(--d-danger-fill)_12%,transparent)] enabled:hover:text-(--d-danger)"
           data-action="stop"
           :title="subagentStop.isTaskStopping(task) ? t('toolCall.stopping') : t('backgroundTask.stopTask')"
           :aria-label="subagentStop.isTaskStopping(task) ? t('toolCall.stopping') : t('backgroundTask.stopTask')"

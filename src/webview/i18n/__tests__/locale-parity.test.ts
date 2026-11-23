@@ -86,8 +86,8 @@ describe('shell locale parity', () => {
   it('keeps every placeholder and translates every string that has words', () => {
     const placeholders = (value: string): string[] => (value.match(/{[a-zA-Z]+}/g) ?? []).sort();
     const mismatched = [...SHELL_EN].filter(([key, value]) => String(placeholders(value)) !== String(placeholders(SHELL_EL.get(key) ?? '')));
-    // Only a pure placeholder pattern such as "{title}, {project}", or Greek's loanword «agent», may read the same in both.
-    const untranslated = [...SHELL_EN].filter(([key, value]) => SHELL_EL.get(key) === value && /[a-zA-Z]{2,}/.test(value.replace(/{[a-zA-Z]+}|\b(sub)?agents?\b/gi, '')));
+    // Only a pure placeholder pattern such as "{title}, {project}", or Greek's loanwords «agent» and «token», may read the same in both.
+    const untranslated = [...SHELL_EN].filter(([key, value]) => SHELL_EL.get(key) === value && /[a-zA-Z]{2,}/.test(value.replace(/{[a-zA-Z]+}|\b(sub)?agents?\b|\btokens?\b/gi, '')));
 
     expect({ mismatched, untranslated }).toEqual({ mismatched: [], untranslated: [] });
   });
@@ -125,6 +125,18 @@ describe.each([
     const offenders = [...english, ...greek].filter(([, value]) => value.includes('\u2014')).map(([key]) => key);
 
     expect(offenders).toEqual([]);
+  });
+});
+
+describe('key order', () => {
+  it.each([
+    ['webview', EN, EL],
+    ['shell', SHELL_EN, SHELL_EL],
+    ['l10n bundle', L10N_EN, L10N_EL],
+  ] as const)('lists the %s keys in the same order in both locales, so the two files pair up line by line', (_name, english, greek) => {
+    const firstApart = [...english.keys()].findIndex((key, index) => [...greek.keys()][index] !== key);
+
+    expect(firstApart === -1 ? undefined : [...english.keys()][firstApart]).toBeUndefined();
   });
 });
 

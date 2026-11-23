@@ -39,12 +39,12 @@ const label = computed(() => {
     />
     <span
       v-if="failed"
-      class="pointer-events-none absolute right-1.25 top-1 size-1.5 rounded-full bg-(--d-danger)"
+      class="pointer-events-none absolute right-1.25 top-1 size-1.5 rounded-full bg-(--d-danger-fill)"
       aria-hidden="true"
     />
     <span
       v-else-if="pendingCount > 0"
-      class="pointer-events-none absolute right-1.5 top-1.25 size-1.25 rounded-full bg-(--d-accent)"
+      class="pointer-events-none absolute right-1.5 top-1.25 size-1.25 rounded-full bg-(--d-accent-fill)"
       aria-hidden="true"
     />
   </button>

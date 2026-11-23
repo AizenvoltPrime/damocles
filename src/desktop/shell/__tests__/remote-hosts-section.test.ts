@@ -661,7 +661,7 @@ describe('Settings, Remote hosts', () => {
     api.pushHostOperations({ hostId: 'h2', passwordless: { steps: { generate: 'failed', install: 'pending', verify: 'pending' } } });
     await flushPromises();
     expect(stepStates()).toEqual(['done', 'done', 'done']);
-    expect(document.querySelectorAll('[data-testid="passwordless-step"] svg.animate-\\[d-icon-in_\\.3s_var\\(--ease-spring\\)\\]')).toHaveLength(3);
+    expect(document.querySelectorAll('[data-testid="passwordless-step"] svg.d-icon-in')).toHaveLength(3);
     expect(document.querySelector('[data-testid="passwordless-step"][data-step="install"]')!.textContent).toContain('Add it to ~/.ssh/authorized_keys on prod-1');
     // main records the key and pushes the host before it answers; the finished steps stay
     api.hostEntries([{ ...PROD, facts: { ...PROD.facts, passwordless: true } }, WIN]);

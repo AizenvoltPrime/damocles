@@ -7,7 +7,7 @@ import { approveDesign, DESIGN_APP, grounding, startDesignChat } from './support
 import { seedStubModel, REPO_ROOT, type HermeticHome } from './support/hermetic';
 import { call, lastToolResult, startOpenAIStub, type OpenAIStub, type StubReply } from './support/openai-stub';
 import { openProjectChat, setPageSize } from './support/screenshots';
-import { shellPage } from './support/shell';
+import { SHELL_URL, shellPage } from './support/shell';
 import { awaitTurnEnd } from './support/ui';
 import type { JourneyFile, PreviewJourneyArgs } from '../../src/shared/types/design';
 import type { DesignReplayProgress } from '../../src/desktop/preload/shell-channels';
@@ -48,11 +48,11 @@ async function recordReplay(shell: Page): Promise<void> {
 
 /** The zoom factor of the design preview view showing in the window. */
 async function previewZoom(app: ElectronApplication): Promise<number | undefined> {
-  return app.evaluate(({ BrowserWindow, WebContentsView }) => {
-    const win = BrowserWindow.getAllWindows()[0]!;
+  return app.evaluate(({ BrowserWindow, WebContentsView }, shellUrl) => {
+    const win = BrowserWindow.getAllWindows().find((each) => each.webContents.getURL().startsWith(shellUrl))!;
     const view = win.contentView.children.find((child) => child instanceof WebContentsView && child.getVisible() && child.webContents.getURL().startsWith('damocles-design://')) as Electron.WebContentsView | undefined;
     return view?.webContents.getZoomFactor();
-  });
+  }, SHELL_URL);
 }
 
 async function replayLog(shell: Page): Promise<Array<DesignReplayProgress & { at: number }>> {

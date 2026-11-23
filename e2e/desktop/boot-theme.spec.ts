@@ -4,7 +4,7 @@ import { seedStubModel, writeUserSettings } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { hermeticEnv } from './support/hermetic';
 import { SecondProcess } from './support/second-process';
-import { shellPage } from './support/shell';
+import { onMainWindow, shellPage } from './support/shell';
 import { chatInput, listedSessionIds, setThemeSource } from './support/ui';
 
 // Rendered --d-bg of each palette in src/desktop/theme-palettes.ts.
@@ -92,7 +92,7 @@ test('damocles.desktop.theme switches every renderer live, system follows the OS
 
   writeUserSettings(home, { 'damocles.desktop.theme': 'dark' });
   await expectBackground([tab, shell], DARK_BG);
-  expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.getBackgroundColor().toLowerCase())).toBe('#0b0f14');
+  expect(await onMainWindow(app, (win) => win.getBackgroundColor().toLowerCase())).toBe('#0b0f14');
 
   writeUserSettings(home, { 'damocles.desktop.theme': 'system' });
   await expect.poll(() => themeSource(app)).toBe('system');

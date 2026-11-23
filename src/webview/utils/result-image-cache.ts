@@ -1,7 +1,8 @@
 import type { ImageBlock } from '@shared/types/content';
 
-// Decoded tool-result images and design question thumbnails of this page as object URLs, least recently used first. Module
-// state, never a store, so a card or question grid that mounts again reuses its images instead of asking core for them again.
+// Decoded tool-result images, design question thumbnails and install card thumbnails of this page as object URLs, least
+// recently used first. Module state, never a store, so a card or question grid that mounts again reuses its images instead of
+// asking core for them again.
 const MAX_IMAGES = 36;
 
 interface Entry {
@@ -54,6 +55,16 @@ export function releaseResultImages(key: string): void {
   const entry = entries.get(key);
   if (entry && entry.holds > 0) entry.holds -= 1;
   evict();
+}
+
+/** Releases `key` and forgets it at once when nothing else holds it: for images no later view asks for again. */
+export function dropResultImages(key: string): void {
+  const entry = entries.get(key);
+  if (!entry) return;
+  if (entry.holds > 0) entry.holds -= 1;
+  if (entry.holds > 0) return;
+  entries.delete(key);
+  for (const url of entry.urls) URL.revokeObjectURL(url);
 }
 
 /** Holds the entry that owns `url` (an open lightbox), until the returned release; a URL no entry owns needs no hold. */

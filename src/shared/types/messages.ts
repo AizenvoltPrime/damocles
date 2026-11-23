@@ -60,6 +60,11 @@ import type { SettingsAccountId, SettingsSectionId } from '../settings-sections'
 import type { LocalizedText } from '../localized-text';
 import type { DesignApprovalChoice, DesignApprovalScreen, DesignBriefView, DesignChange, DesignChatStateView, DesignCheckIssue, DesignFileInfo, DesignLinkStateView, DesignPreviewImage, DesignReferenceNote, DesignResultDecision, DesignResultView, DesignVersionChoice, PlanApprovalDesignLink, UncheckedDecisionGroup } from './design';
 import type { DesignMarkupNote } from '../design-markup';
+import type { ThemeChangeAction, ThemeChangeChoice, ThemeChangeItem, ThemeChangeState, ThemeContrastIssue, ThemeScreenshotChoice, ThemeShowNote } from '../themes/agent';
+import type { ThemeInstallClashChoice, ThemeInstallPreview } from '../themes/install';
+import type { ThemeFile } from '../themes/schema';
+import type { CssDroppedPart } from '../themes/css-types';
+import type { LookKind } from '../themes/tokens';
 import type { UserMemoryViewRequest } from '../remote-user';
 import type { ForgeAccountsState, ForgeConfirmGitHostRequest, ForgeDismissGitHostRequest, ForgeKind, ForgeServerFormField, ForgeSignInRoute, ForgeSignInState } from '../forge/accounts';
 
@@ -249,8 +254,32 @@ export type WebviewToExtensionMessage =
   | { type: "answerForm"; toolUseId: string; values: FormValues | null }
   /** The answer to a `requestDesignVersionDecision` (PD-29); one for a prompt no longer open is ignored. */
   | { type: "resolveDesignVersionDecision"; promptId: string; choice: DesignVersionChoice }
-  /** The answer to a `requestDesignApproval`; `feedback` is required non-blank for `changes`. One for a prompt no longer open is ignored. */
+  /** The answer to a `requestDesignApproval`; `feedback` is required non-blank for `changes`, at most `MAX_PROMPT_ANSWER_CHARS`. One for a prompt no longer open is ignored. */
   | { type: "resolveDesignApproval"; promptId: string; choice: DesignApprovalChoice; feedback?: string }
+  /**
+   * The answer to a `requestThemeChange`; `note` is required non-blank for `change`, at most `MAX_PROMPT_ANSWER_CHARS`, and an
+   * outdated card takes only `discard`. Core answers every one: `themeChangeUpdated` with `applying` for an Apply it took,
+   * `themeChangeClosed` once the card ends (a Discard or Change it took, a card no longer open), and `requestThemeChange` again,
+   * the card as it stands, for one it did not take.
+   */
+  | { type: "resolveThemeChange"; promptId: string; choice: ThemeChangeChoice; note?: string }
+  /** The card's Show in window toggle: paint the proposal on the window, or stop. Core answers with `themeChangeUpdated`. */
+  | { type: "setThemeShowInWindow"; promptId: string; on: boolean }
+  /** The answer to a `requestThemeScreenshot`; core answers with `themeScreenshotClosed`, for a prompt no longer open too. */
+  | { type: "resolveThemeScreenshot"; promptId: string; choice: ThemeScreenshotChoice }
+  /**
+   * The answer to a `requestThemeInstall`; `onClash` is required for install when the preview has a clash. Core answers every
+   * one: `themeInstallClosed` for one it took and for a prompt no longer open, and `requestThemeInstall` again, with the preview
+   * it judged the answer by, for one it did not take.
+   */
+  | { type: "resolveThemeInstall"; promptId: string; choice: 'cancel' }
+  | { type: "resolveThemeInstall"; promptId: string; choice: 'install'; onClash?: ThemeInstallClashChoice; useArrangement: boolean }
+  /**
+   * The install card's Allow flashing for this file, pressed by the user for a wallpaper the card lists as flagged; ignored for a
+   * card no longer open. A remote chat's goes from main to this computer's core by installId, never to the chat's core, and is
+   * ignored there unless that core staged the install for the chat's host.
+   */
+  | { type: "allowThemeInstallFlash"; promptId: string; installId: string; sha256: string }
   | {
       type: "approvePlan";
       toolUseId: string;
@@ -1094,6 +1123,71 @@ export type ExtensionToWebviewMessage =
     }
   /** The approval prompt closed: answered from any view, or ended with the run, the panel, a reset or a resume switch. */
   | { type: "designApprovalClosed"; promptId: string }
+  /**
+   * A prompt of kind `themeChange` (desktop only): ThemeSet or ThemeSchedule waits for Apply, Discard or Change with a note.
+   * `theme` is the validated proposal (absent for a schedule, and for an undo that restores no theme file); `planMode`: an
+   * on-the-fly apply shown as a preview because the chat is in plan mode; `canShowInWindow`: the proposal has a look the
+   * window can paint.
+   */
+  | {
+      type: "requestThemeChange";
+      promptId: string;
+      toolUseId: string;
+      action: ThemeChangeAction;
+      theme?: ThemeFile;
+      themeName?: string;
+      looks: LookKind[];
+      isNew: boolean;
+      changes: ThemeChangeItem[];
+      contrast: ThemeContrastIssue[];
+      /** The parts of the proposal's custom CSS the sanitizer removed (feature `themes`). */
+      droppedCss?: CssDroppedPart[];
+      /** How many more parts it removed than `droppedCss` lists (feature `themes`). */
+      droppedCssMore?: number;
+      state: ThemeChangeState;
+      planMode: boolean;
+      canShowInWindow: boolean;
+      showInWindow: boolean;
+      showNote?: ThemeShowNote;
+      owner: PromptOwner;
+      /** A chat on a remote host shown on a device the change does not land on: the computer it lands on; no theme, Discard only. */
+      otherDevice?: { computer?: string };
+      /**
+       * A chat on a remote host, on the device the change lands on (feature `themes`): the stage that device's own core made.
+       * Its main shows the card from its own record of that stage and counts Apply only for it; a card without it there is Discard only.
+       */
+      stageId?: string;
+    }
+  /**
+   * An open theme card changed: its state (`applying` from an Apply core took until that Apply ends), or Show in window (turned
+   * off, with `showNote`, when another preview took over). A device the change does not land on is sent the state alone.
+   */
+  | { type: "themeChangeUpdated"; promptId: string; state?: ThemeChangeState; showInWindow?: boolean; showNote?: ThemeShowNote }
+  /** The theme card closed: answered from any view, or ended with the run, the panel, a reset or a resume switch. */
+  | { type: "themeChangeClosed"; promptId: string }
+  /**
+   * A prompt of kind `themeScreenshot` (desktop only): ThemeRead asks before it sends a screenshot of the window to the model.
+   * `url` is `app://damocles/theme-shot/<id>`, served from main's memory until the card closes or 10 minutes pass.
+   */
+  | { type: "requestThemeScreenshot"; promptId: string; toolUseId: string; url: string; width: number; height: number; owner: PromptOwner }
+  | { type: "themeScreenshotClosed"; promptId: string }
+  /**
+   * A prompt of kind `themeInstall` (desktop only): ThemeSet install waits for Install or Cancel on the card listing what the
+   * file holds; `themeInstallUpdated` carries the whole preview again as each wallpaper's flash check ends.
+   */
+  | {
+      type: "requestThemeInstall";
+      promptId: string;
+      toolUseId: string;
+      preview: ThemeInstallPreview;
+      owner: PromptOwner;
+      /** A chat on a remote host shown on a device the install does not land on: the computer it lands on; no images, Cancel only. */
+      otherDevice?: { computer?: string };
+    }
+  | { type: "themeInstallUpdated"; promptId: string; preview: ThemeInstallPreview }
+  /** How far the flash check of a wallpaper an open install card lists is, 0 to 1, while it runs. */
+  | { type: "themeInstallProgress"; promptId: string; sha256: string; fraction: number }
+  | { type: "themeInstallClosed"; promptId: string }
   | { type: "compassStatusUpdate"; status: CompassIndexStatus }
   | { type: "compassBuildProgress"; current: number; total: number; phase: 'build' | 'postprocess' | 'serialize' }
   | { type: "compassSearchResults"; results: CompassSearchResult[] }

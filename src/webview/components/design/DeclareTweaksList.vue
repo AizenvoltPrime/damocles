@@ -54,7 +54,7 @@ function stopName(control: TweakControl, token: string): string {
           :data-token="stop.token"
           :data-locked-value="control.locked?.value === stop.token ? 'true' : undefined"
           class="inline-flex h-5 items-center gap-1 rounded-full border px-1.5 font-mono text-10.5"
-          :class="control.locked?.value === stop.token ? 'border-(--d-design) text-(--d-text)' : 'border-(--d-border) text-(--d-muted)'"
+          :class="control.locked?.value === stop.token ? 'border-(--d-design-fill) text-(--d-text)' : 'border-(--d-border) text-(--d-muted)'"
         >
           <!-- A value core classed as a color still binds only when it reads as one, so no other CSS value reaches the style. -->
           <span

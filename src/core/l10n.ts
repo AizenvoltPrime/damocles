@@ -1,12 +1,6 @@
-import { fillMessage, LocalizedError, type LocalizedArg, type LocalizedText } from '../shared/localized-text';
+import { fillMessage, l, LocalizedError, type LocalizedArg, type LocalizedText } from '../shared/localized-text';
 
-/**
- * View-facing text: `message` is the English source text, the key of l10n/bundle.l10n*.json, which each view or host renders
- * in its own language. Core never renders user-facing text itself.
- */
-export function l(message: string, ...args: LocalizedArg[]): LocalizedText {
-  return args.length === 0 ? { message } : { message, args };
-}
+export { l };
 
 /** Text that is not Damocles' own (a git or provider error, a file's own words), shown as written in every language. */
 export function verbatim(text: string): LocalizedText {

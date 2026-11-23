@@ -4,7 +4,8 @@ import { canonicalHexColor } from "@shared/hex-color"
 import { Input } from "@/components/ui/input"
 
 // escaped: the picker is cancelling, so a blur as it closes commits nothing
-const props = defineProps<{ label: string; escaped: () => boolean }>()
+// opaque: only #rrggbb commits
+const props = defineProps<{ label: string; escaped: () => boolean; opaque?: boolean }>()
 
 const field = injectColorFieldRootContext()
 
@@ -13,7 +14,8 @@ const field = injectColorFieldRootContext()
 function commit(): void {
   if (props.escaped()) return
   const text = field.inputValue.value.trim()
-  const value = canonicalHexColor(text.startsWith("#") ? text : `#${text}`)
+  const typed = text.startsWith("#") ? text : `#${text}`
+  const value = props.opaque && typed.length !== 7 ? undefined : canonicalHexColor(typed)
   const current = colorToString(field.color.value, "hex")
   if (!value || value === canonicalHexColor(current)) {
     field.updateValue(current)
@@ -31,6 +33,7 @@ function commit(): void {
     dir="ltr"
     spellcheck="false"
     autocomplete="off"
+    :maxlength="opaque ? 7 : 9"
     class="h-7 min-w-0 flex-1 px-2 py-0 font-mono text-12"
     @update:model-value="(value: string | number) => field.updateValue(String(value))"
     @blur="commit"

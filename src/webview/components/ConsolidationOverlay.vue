@@ -209,11 +209,11 @@ const rollup = computed<string[]>(() => {
 });
 
 const OUTCOME_TONE: Record<ConsolidationPersistOutcome, string> = {
-  inserted: 'bg-[color-mix(in_srgb,var(--d-success)_14%,transparent)] text-(--d-success-text)',
-  merged: 'bg-[color-mix(in_srgb,var(--d-info)_14%,transparent)] text-(--d-info-text)',
-  superseded: 'bg-[color-mix(in_srgb,var(--d-info)_14%,transparent)] text-(--d-info-text)',
+  inserted: 'bg-[color-mix(in_srgb,var(--d-success-fill)_14%,transparent)] text-(--d-success-text)',
+  merged: 'bg-[color-mix(in_srgb,var(--d-info-fill)_14%,transparent)] text-(--d-info-text)',
+  superseded: 'bg-[color-mix(in_srgb,var(--d-info-fill)_14%,transparent)] text-(--d-info-text)',
   deduped: 'bg-(--d-hover) text-(--d-muted)',
-  invalid: 'bg-[color-mix(in_srgb,var(--d-danger)_14%,transparent)] text-(--d-danger-text)',
+  invalid: 'bg-[color-mix(in_srgb,var(--d-danger-fill)_14%,transparent)] text-(--d-danger-text)',
 };
 
 // The queue starts collapsed once a run exists, unless the user has toggled it.
@@ -260,7 +260,7 @@ function toggleQueue(): void {
 
       <div
         class="flex flex-wrap items-center gap-2 rounded-10 border px-3 py-2.25 text-xs"
-        :class="isFailed ? 'border-[color-mix(in_srgb,var(--d-danger)_35%,var(--d-border))] bg-[color-mix(in_srgb,var(--d-danger)_6%,var(--d-card))] text-(--d-text)' : 'border-(--d-border) bg-(--d-card) text-(--d-muted)'"
+        :class="isFailed ? 'border-[color-mix(in_srgb,var(--d-danger-fill)_35%,var(--d-border))] bg-[color-mix(in_srgb,var(--d-danger-fill)_6%,var(--d-card))] text-(--d-text)' : 'border-(--d-border) bg-(--d-card) text-(--d-muted)'"
         role="status"
         data-testid="consolidation-strip"
       >
@@ -310,7 +310,7 @@ function toggleQueue(): void {
 
       <div
         v-if="setAsideCount > 0"
-        class="flex flex-wrap items-center gap-2 rounded-10 border border-[color-mix(in_srgb,var(--d-warning)_35%,var(--d-border))] bg-(--d-card) px-3 py-2 text-xs text-(--d-muted)"
+        class="flex flex-wrap items-center gap-2 rounded-10 border border-[color-mix(in_srgb,var(--d-warning-fill)_35%,var(--d-border))] bg-(--d-card) px-3 py-2 text-xs text-(--d-muted)"
         data-testid="consolidation-set-aside"
       >
         <CircleAlert

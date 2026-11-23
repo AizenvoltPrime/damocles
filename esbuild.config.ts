@@ -1,5 +1,6 @@
 import * as esbuild from 'esbuild';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { EXTENSION_EXTERNALS } from './scripts/extension-externals.ts';
 import { EXTENSION_BUNDLE_FILES } from './scripts/extension-bundles.ts';
 import { DESKTOP_EXTERNALS } from './scripts/desktop-externals.ts';
@@ -10,6 +11,8 @@ import { forgeOAuthBuild } from './scripts/forge-oauth-build.ts';
 const isWatch = process.argv.includes('--watch');
 // --desktop builds the Electron main and preload plus the workers they spawn, and never the extension bundle.
 const isDesktop = process.argv.includes('--desktop');
+// --theme-validator builds only dist/theme-validate.js and dist/theme-validate/, for the community theme store's CI; never packaged.
+const isThemeValidator = process.argv.includes('--theme-validator');
 
 /**
  * Fail the build when an entry point produced no file. A missing dist/sentinel.js still packages
@@ -19,8 +22,10 @@ const assertOutfileWritten: esbuild.Plugin = {
   name: 'assert-outfile-written',
   setup(build) {
     build.onEnd((result) => {
-      const outfile = build.initialOptions.outfile;
-      if (result.errors.length > 0 || outfile === undefined || existsSync(outfile)) return null;
+      const { outfile, write, absWorkingDir } = build.initialOptions;
+      // an in-memory build (write: false) writes nothing by design
+      if (result.errors.length > 0 || outfile === undefined || write === false) return null;
+      if (existsSync(resolve(absWorkingDir ?? process.cwd(), outfile))) return null;
       return { errors: [{ text: `${outfile} was not written by the build` }] };
     });
   },
@@ -285,6 +290,24 @@ const cliRemoteOptions: BundleOptions = {
   outfile: 'dist/cli-remote.js',
 };
 
+// The store CI runs dist/theme-validate.js with Node from a checkout after `npm ci`; it starts dist/theme-validate/host.js
+// under that checkout's Electron, so electron and core's externals resolve from its node_modules.
+export const themeValidatorOptions: BundleOptions[] = [
+  { entryPoints: ['src/desktop/theme-validate/cli.ts'], outfile: 'dist/theme-validate.js' },
+  { entryPoints: ['src/desktop/theme-validate/host.ts'], outfile: 'dist/theme-validate/host.js' },
+].map((entry): BundleOptions => ({
+  ...entry,
+  bundle: true,
+  external: DESKTOP_EXTERNALS,
+  format: 'cjs',
+  platform: 'node',
+  target: 'node24',
+  sourcemap: false,
+  minify: false,
+  logLevel: 'info',
+  plugins: nodePlugins,
+}));
+
 // The repo's package.json says "type": "module" and every bundle is CommonJS, so a dist/ that Node loads .js bundles from
 // declares its own scope: the checkout's, a server package's (scripts/build-server.ts), the VSIX's and the packaged app's
 // app.asar.unpacked/dist, which extraMetadata.type does not cover.
@@ -448,6 +471,11 @@ async function buildDesktop() {
 async function build() {
   if (isDesktop) {
     await buildDesktop();
+    return;
+  }
+  if (isThemeValidator) {
+    await Promise.all(themeValidatorOptions.map((options) => esbuild.build(options)));
+    writeDistScope();
     return;
   }
   writeDistScope();

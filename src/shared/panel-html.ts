@@ -1,6 +1,6 @@
 // The chat and error pages' HTML. Desktop main builds every page with them (showPage); core builds the VS Code host's page
 // with them through setHtml, its error page in the host's words (PanelHost.errorPageStrings).
-import { HOST_THEME_STYLE_ID } from './host-theme';
+import { HOST_THEME_STYLE_ID, HOST_TRUSTED_STYLE_ID } from './host-theme';
 
 /** The page a panel shows; main builds it, so no HTML a core produced is ever loaded. */
 export type PageSpec = { readonly kind: 'chat' } | { readonly kind: 'error' } | { readonly kind: 'browser'; readonly toolbar: boolean };
@@ -17,6 +17,8 @@ export interface ChatPageParts {
   readonly logoUri: string;
   // CSS that fills the --d-* design tokens; '' where tokens.css maps the host's own theme variables
   readonly themeCss: string;
+  // desktop: the trusted palette scoped to [data-trusted]; VS Code has none
+  readonly trustedCss?: string;
 }
 
 export interface ErrorPageStrings {
@@ -52,7 +54,8 @@ export function chatPageHtml(parts: ChatPageParts): string {
   const cspSource = escapeHtml(parts.cspSource);
   const nonce = escapeHtml(parts.nonce);
   // style-src allows 'unsafe-inline', so the element needs no nonce.
-  const themeStyle = parts.themeCss === '' ? '' : `\n  <style id="${HOST_THEME_STYLE_ID}">${parts.themeCss}</style>`;
+  const themeStyle = (parts.themeCss === '' ? '' : `\n  <style id="${HOST_THEME_STYLE_ID}">${parts.themeCss}</style>`)
+    + (parts.trustedCss === undefined ? '' : `\n  <style id="${HOST_TRUSTED_STYLE_ID}">${parts.trustedCss}</style>`);
   const workerSrc = parts.workerSrc === undefined ? '' : ` worker-src ${escapeHtml(parts.workerSrc)};`;
 
   // CSP: `script-src` stays nonce-locked (no inline/remote script — no RCE). `img-src ... https:` is

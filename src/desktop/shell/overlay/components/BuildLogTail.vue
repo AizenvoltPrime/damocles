@@ -135,7 +135,7 @@ function onFullOpen(event: Event): void {
           tabindex="0"
           data-testid="build-log-full-text"
           :aria-label="t('remote.buildLog.fullLabel', { name: hostName })"
-          class="m-0 min-h-0 flex-1 overflow-auto rounded-8 border border-(--d-border) bg-(--d-code) px-2.5 py-2 font-mono text-11/relaxed whitespace-pre-wrap break-all text-(--d-text) focus-visible:outline-1 focus-visible:outline-(--d-accent)"
+          class="m-0 min-h-0 flex-1 overflow-auto rounded-8 border border-(--d-border) bg-(--d-code) px-2.5 py-2 font-mono text-11/relaxed whitespace-pre-wrap break-all text-(--d-text) focus-visible:outline-1 focus-visible:outline-(--d-accent-fill)"
         ><span
           v-for="(line, index) in lines"
           :key="first + index"

@@ -20,6 +20,18 @@ import { MAX_HELD_MEMORY_QUEUES, type HeldMemoryQueue } from '../../shared/remot
 import type { ContainerEngine } from '../daemon/container-values';
 import type { ChooseAccountRows, CiAction, CiChanged, CiStatusView, CiTarget, CloneAccountsView, ClonePasteAnswer, CloneSearchAnswer, CloneSource, CloneStartAnswer, ForgeChanged, ForgeChooseAccountDialog } from './forge-channels';
 import type { HostDefaultsView } from '../../shared/forge/bindings';
+import type { Arrangement, CssRegion, Panel, ThemeFile } from '../../shared/themes/schema';
+import type { ThemeShowRefusal } from '../../shared/themes/agent';
+import type { StoreEntryView, StoreState } from '../../shared/themes/store';
+import type { CssDroppedPart } from '../../shared/themes/css-types';
+import type { FontImport } from '../../shared/themes/fonts';
+import type { FlashRecord, ImageStats, WallpaperImport, WallpaperPalette } from '../../shared/themes/wallpapers';
+import type { LookKind } from '../../shared/themes/tokens';
+import type { ThemeHistoryChange, ThemeHistoryEntry } from '../../shared/themes/changes';
+import type { ScheduleOverride, ScheduleRule, ThemeSchedule } from '../../shared/themes/schedule';
+import type { CharacterState, PinEdit, ProjectsFile, ShownCharacters, SpriteImport } from '../../shared/themes/characters';
+import type { ProjectLook } from '../../shared/themes/project-looks';
+import type { ThemeExportFontBytes, ThemeExportPlan, ThemeInstallClashChoice, ThemeInstalled, ThemeInstallPreview, ThemeInstallProgress } from '../../shared/themes/install';
 import type { FlowStart, ForkDialog, ForkState, PublishDialog, PublishOwnersAnswer, PublishState, PublishVisibility } from '../../shared/forge/publish';
 import type { BranchNameCheck, ProtectedBranchDialog, ProtectedPushState } from '../../shared/forge/protected-push';
 
@@ -57,6 +69,35 @@ export const OVERLAY_CHANNELS = {
   prefsSet: 'damocles:overlay:prefs:set',
   relaunch: 'damocles:overlay:app:relaunch',
   layoutReset: 'damocles:overlay:layout:reset',
+  // {} → OverlayThemesResult, the installed themes as main validated them; answers closed unless the settings modal is open
+  themesList: 'damocles:overlay:themes:list',
+  // OverlayThemeAction → OverlayThemeResult, carried out by this computer's core; answers closed unless the settings modal is open
+  themesAct: 'damocles:overlay:themes:act',
+  // {} → ProjectLookImageResult: the project look dialog's Choose image…, picked in main's file dialog; answers closed unless that dialog is open
+  projectLookImage: 'damocles:overlay:project-look:image',
+  // Settings › Appearance's sharing; each answers closed unless the settings modal is open, and one install card shows at a time
+  // {} → ThemeInstallStart: Import, picked in main's file dialog, then core's prepare
+  themesImport: 'damocles:overlay:themes:import',
+  // { url } → ThemeInstallStart: Install from link, an https URL or a whole damocles:// theme link
+  themesInstallUrl: 'damocles:overlay:themes:install-url',
+  // { installId, useArrangement, onClash? } → ThemeInstallCommitResult, only for the open card's install
+  themesInstallCommit: 'damocles:overlay:themes:install-commit',
+  // { installId }: the open card closed without Install
+  themesInstallCancel: 'damocles:overlay:themes:install-cancel',
+  // {} → OverlayInstallCurrent: the open install card as main holds it, which the page reads when it mounts and on themesInstallChanged
+  themesInstallCurrent: 'damocles:overlay:themes:install-current',
+  // { installId, sha256 } → boolean: the open card's Allow flashing for this file, for a wallpaper it lists as flagged
+  themesInstallAllowFlash: 'damocles:overlay:themes:install-allow-flash',
+  // { themeId, installedFonts? } → ThemeExportPlanResult
+  themesExportPlan: 'damocles:overlay:themes:export-plan',
+  // { themeId, installedFonts } → ThemeExportSaveResult: main's save dialog, then core writes the file
+  themesExportSave: 'damocles:overlay:themes:export-save',
+  // { refresh } → OverlayStoreResult: Browse's community store list; refresh true is Check for updates
+  themesStoreList: 'damocles:overlay:themes:store-list',
+  // { entryId } → ThemeInstallStart: Browse's Install or Update, the entry's pin-checked file staged for the install card
+  themesStoreInstall: 'damocles:overlay:themes:store-install',
+  // {} → void: ends the Import, Install from link or Browse download main is preparing, which then answers cancelled
+  themesPrepareCancel: 'damocles:overlay:themes:prepare-cancel',
   // the notification center; each answers closed unless the center is open
   notificationsGet: 'damocles:overlay:notifications:get',
   notificationsClear: 'damocles:overlay:notifications:clear',
@@ -201,6 +242,15 @@ export const OVERLAY_CHANNELS = {
   settingsTarget: 'damocles:overlay:settings:target',
   // main → renderer, OverlayPrefs after a damocles.desktop.* setting changed while the modal shows
   prefsChanged: 'damocles:overlay:prefs:changed',
+  // main → renderer, {} after the theme files changed while the modal shows, which reads themesList again
+  themesChanged: 'damocles:overlay:themes:changed',
+  // main → renderer, {}: main opened an install card (a damocles:// link's), the open card's install changed (a wallpaper's
+  // flash check ended) or it expired; the page reads themesInstallCurrent, so a push it missed or got out of order loses nothing
+  themesInstallChanged: 'damocles:overlay:themes:install-changed',
+  // main → renderer, ThemeInstallProgress: how far a flash check of the open card's install is
+  themesInstallProgress: 'damocles:overlay:themes:install-progress',
+  // main → renderer, OverlayStoreView: the community store view after a list was read or an installed theme changed
+  themesStoreUpdated: 'damocles:overlay:themes:store-updated',
   // main → renderer, TerminalProfileReport after the profiles were validated again while the modal shows
   terminalProfilesChanged: 'damocles:overlay:terminal:profiles-changed',
   // main → renderer, NotificationCenterState after a change while the center is open
@@ -259,6 +309,10 @@ export const OVERLAY_REQUEST_PUSHES: ReadonlyMap<string, OverlayRequestPush> = n
   [OVERLAY_CHANNELS.settingsTarget, { kinds: ['settings'], latest: true }],
   [OVERLAY_CHANNELS.prefsChanged, { kinds: ['settings'], latest: true }],
   [OVERLAY_CHANNELS.terminalProfilesChanged, { kinds: ['settings'], latest: true }],
+  [OVERLAY_CHANNELS.themesChanged, { kinds: ['settings'], latest: true }],
+  [OVERLAY_CHANNELS.themesInstallChanged, { kinds: ['settings'], latest: true }],
+  [OVERLAY_CHANNELS.themesInstallProgress, { kinds: ['settings'], latest: false }],
+  [OVERLAY_CHANNELS.themesStoreUpdated, { kinds: ['settings'], latest: true }],
   [OVERLAY_CHANNELS.updateState, { kinds: ['settings'], latest: true }],
   [OVERLAY_CHANNELS.notificationsState, { kinds: ['notifications'], latest: true }],
   [OVERLAY_CHANNELS.dropZonesPointer, { kinds: ['dropZones'], latest: true }],
@@ -1210,7 +1264,63 @@ export type OverlayRequest =
   // A push refused on a branch the server protects for the account: main opens it once the server's rules said so; the name
   // step checks through FORGE_CHANNELS.protectedCheckName, Push to a New Branch goes through FORGE_CHANNELS.protectedPush and
   // follows forgeProtectedState. It stacks as a message does.
-  | { readonly kind: 'forgeProtectedBranch'; readonly dialog: ProtectedBranchDialog };
+  | { readonly kind: 'forgeProtectedBranch'; readonly dialog: ProtectedBranchDialog }
+  // Project look… from the project's menu; Choose image… goes through OVERLAY_CHANNELS.projectLookImage while it is open
+  | ({ readonly kind: 'projectLook' } & ProjectLookDialog);
+
+// What the project look dialog edits and shows: the project, its own look, the installed themes main validated (built-ins
+// first) and the looks the window shows without the project, which the accent and the preview are derived for.
+export interface ProjectLookDialog {
+  readonly projectKey: string;
+  readonly projectName: string;
+  readonly look?: ProjectLook;
+  readonly themes: readonly { readonly id: string; readonly name: string; readonly theme: ThemeFile }[];
+  // the listed themes that cannot show (broken, or of a newer Damocles) and still give a name, which the dialog says is missing
+  readonly unusable?: readonly { readonly id: string; readonly name: string }[];
+  // damocles.desktop.themes.dark and .light, the looks the touches sit on
+  readonly preferred: Readonly<Record<LookKind, string>>;
+  // the kind the window shows now
+  readonly shownKind: LookKind;
+}
+
+// What the overlay's Choose image… gives the project look dialog.
+export type ProjectLookImageResult = { readonly ok: true; readonly image: WallpaperImport; readonly name: string } | { readonly ok: false; readonly error: string } | { readonly ok: false; readonly cancelled: true };
+
+// Import's or Install from link's answer: the card's preview, or why none shows (error in the UI's language)
+// The install card main holds open, with its newest preview; expired: the install of that id waited too long and core dropped it.
+export interface OverlayInstallCurrent {
+  readonly preview?: ThemeInstallPreview;
+  readonly expired?: string;
+}
+
+export type ThemeInstallStart = { readonly ok: true; readonly preview: ThemeInstallPreview } | { readonly ok: false; readonly cancelled: true } | { readonly ok: false; readonly error: string };
+export interface ThemeInstallCommitRequest {
+  readonly installId: string;
+  readonly useArrangement: boolean;
+  readonly onClash?: ThemeInstallClashChoice;
+}
+export type ThemeInstallCommitResult = { readonly ok: true; readonly installed: ThemeInstalled } | { readonly ok: false; readonly error: string };
+export type ThemeExportPlanResult = { readonly ok: true; readonly plan: ThemeExportPlan } | { readonly ok: false; readonly error: string };
+// path: where the file was written; bytes: its size
+export type ThemeExportSaveResult = { readonly ok: true; readonly path: string; readonly bytes: number } | { readonly ok: false; readonly cancelled: true } | { readonly ok: false; readonly error: string };
+
+// One Browse entry: core's StoreEntryView with each verified thumbnail as its app:// URL; its texts are outside text, cleaned.
+export type OverlayStoreEntry = Omit<StoreEntryView, 'thumbnails'> & {
+  readonly thumbnails: { readonly dark?: readonly OverlayStoreThumb[]; readonly light?: readonly OverlayStoreThumb[] };
+};
+export interface OverlayStoreThumb {
+  readonly panel: Panel;
+  readonly url: string;
+}
+// Browse's view; refusedReason (refused and unreachable) in the UI's language
+export interface OverlayStoreView {
+  readonly state: StoreState;
+  readonly fetchedAt?: number;
+  readonly refusedReason?: string;
+  readonly entries: readonly OverlayStoreEntry[];
+}
+// error: main could not ask core (it is not running), in the UI's language
+export type OverlayStoreResult = { readonly ok: true; readonly view: OverlayStoreView } | { readonly ok: false; readonly error: string };
 
 // What the picker shows of one certificate, and the opaque id main maps back to it; validity in seconds since the epoch.
 // distinct false: Chrome's auto-selection could not tell it from another one offered, so it cannot be chosen.
@@ -1529,7 +1639,9 @@ export type OverlayAnswer =
   // the fork dialog's Open Merge Request / Open Pull Request, in its done state only; main opens the create page
   | { readonly kind: 'forgeFork'; readonly openMergeRequest: true }
   // the protected-branch dialog's Open Merge Request / Open Pull Request, in its done state only; main opens the create page
-  | { readonly kind: 'forgeProtectedBranch'; readonly openMergeRequest: true };
+  | { readonly kind: 'forgeProtectedBranch'; readonly openMergeRequest: true }
+  // Save in the project look dialog: the project's own look, null for Use the current theme
+  | { readonly kind: 'projectLook'; readonly look: ProjectLook | null };
 
 // Each answers only the dialog of the same name.
 export type WorktreeDialogAnswer =
@@ -1725,6 +1837,15 @@ export const MAX_CONNECT_QUERY_LENGTH = 1024;
 export interface OverlayState {
   readonly locale: ShellLocale;
   readonly platform: ShellPlatform;
+  // the project characters the window shows, and each project's state, for Quick Open and the notifications; main's data only
+  readonly characters?: OverlayCharacters;
+}
+
+export interface OverlayCharacters {
+  readonly shown: ShownCharacters;
+  // by project key; a project absent here is idle
+  readonly states: Readonly<Record<string, CharacterState>>;
+  readonly selected?: string;
 }
 
 // CSS px of the measured toast stack with its margin, 0×0 when no toast shows; the area's bottom-right corner is the popup
@@ -1776,6 +1897,246 @@ export interface OverlayPrefs {
   readonly values: Readonly<Record<string, unknown>>;
   // damocles.desktop.language as this run read it at launch; another value takes a restart
   readonly languageAtLaunch: DesktopLanguageSetting;
+}
+
+// One installed theme for Settings › Appearance; `theme` is the file as main validated it; a broken one's reason is in the
+// UI's language. fromName: the name of the theme a copy was made from, while it is installed. storeUpdate: the community
+// store lists another version of this store theme; removedFromStore: the store's signed list removed it (reason is outside text).
+export type OverlayThemeEntry =
+  | {
+    readonly status: 'ok'; readonly id: string; readonly name: string; readonly builtin: boolean; readonly theme: ThemeFile; readonly fromName?: string;
+    readonly storeUpdate?: { readonly version: string }; readonly removedFromStore?: { readonly reason: string };
+  }
+  | { readonly status: 'broken'; readonly id: string; readonly name?: string; readonly reason: string }
+  | { readonly status: 'needsNewer'; readonly id: string; readonly name?: string; readonly version: number };
+
+// What the window shows without a transient preview, and what decided it (resolveShown in main/themes/appearance.ts).
+export interface OverlayShownTheme {
+  readonly themeId: string;
+  readonly kind: LookKind;
+  readonly decidedBy: 'forcedColors' | 'safeStart' | 'system' | 'mode' | 'schedule' | 'override' | 'project';
+  // the selected project's touches show on top of the look
+  readonly touched?: true;
+  // while the schedule decides: when what shows next changes, ms since the epoch
+  readonly until?: number;
+  // the preferred look of the shown kind did not show: its theme is missing, broken, needs a newer Damocles or lacks the look
+  readonly fallback?: { readonly themeId: string; readonly reason: 'missing' | 'broken' | 'needsNewer' | 'noLook' };
+}
+
+// What the schedule screen evaluates with: appearance.json's schedule and pick, main's clock and zone, and the OS kind as main
+// last read it.
+export interface OverlaySchedule {
+  readonly schedule: ThemeSchedule;
+  readonly override?: ScheduleOverride;
+  readonly now: number;
+  readonly zone: string;
+  readonly osKind: LookKind;
+  // the operating system's regional format (app.getSystemLocale()), which decides the hour cycle and the week's first day
+  readonly systemLocale: string;
+}
+
+export interface OverlayThemes {
+  // the built-in theme first
+  readonly themes: readonly OverlayThemeEntry[];
+  readonly shown: OverlayShownTheme;
+  // damocles.desktop.themes.dark and .light as main reads them
+  readonly preferred: Readonly<Record<LookKind, string>>;
+  // damocles.desktop.theme
+  readonly mode: 'system' | 'dark' | 'light';
+  readonly schedule: OverlaySchedule;
+  // the undo history, newest first
+  readonly history: readonly ThemeHistoryEntry[];
+}
+
+// Reset Theme to Default's accelerator. Fixed and never hidden or disabled: the way back from an unreadable theme.
+export const RESET_THEME_ACCELERATOR = 'CmdOrCtrl+Alt+Shift+0';
+// Fixed and never hidden or disabled, like the reset: the way out of a wallpaper that hides the text.
+export const TOGGLE_WALLPAPERS_ACCELERATOR = 'CmdOrCtrl+Alt+Shift+W';
+
+/** The list, or why main could not give it, in the UI's language. */
+export type OverlayThemesResult = ({ readonly ok: true } & OverlayThemes) | { readonly ok: false; readonly error: string };
+
+// What the page may send. The Mode row is not among them: the page sets damocles.desktop.theme, and main writes it through core.
+export type OverlayThemeAction =
+  | { readonly action: 'pick'; readonly themeId: string; readonly kind: LookKind }
+  | { readonly action: 'duplicate'; readonly themeId: string; readonly name: string }
+  | { readonly action: 'rename'; readonly themeId: string; readonly name: string }
+  | { readonly action: 'delete'; readonly themeId: string }
+  // opens the theme editor beside the window on the theme; Settings closes
+  | { readonly action: 'edit'; readonly themeId: string }
+  // reveals a theme's theme.json in the file manager
+  | { readonly action: 'showFile'; readonly themeId: string }
+  // entryId: the history entry the Undo was offered for; core refuses when another change was made since
+  | { readonly action: 'undo'; readonly entryId?: string }
+  | { readonly action: 'restore'; readonly entryId: string }
+  | { readonly action: 'reset' }
+  // the schedule screen's Follow the computer, Use a schedule and Off
+  | { readonly action: 'scheduleMode'; readonly choice: 'system' | 'schedule' | 'off' }
+  // the schedule screen's rules; whether the schedule is on is core's to keep, so a page's older read never changes it
+  | { readonly action: 'schedule'; readonly rules: readonly ScheduleRule[] }
+  // Resume schedule now: the pick that holds over the schedule ends
+  | { readonly action: 'resume' };
+
+// themeId: a duplicate's new theme; undone: what Undo reversed, absent when there was nothing to undo
+export type OverlayThemeResult = { readonly ok: true; readonly themeId?: string; readonly undone?: ThemeHistoryChange } | { readonly ok: false; readonly error: string };
+
+export const THEME_EDITOR_CHANNELS = {
+  // main → editor dock, ThemeEditorSession: the theme to edit, sent on load and when the dock opens on another theme
+  session: 'damocles:theme-editor:session',
+  // editor dock → main, invoke {} → ThemeEditorSession | null
+  getSession: 'damocles:theme-editor:get-session',
+  // editor dock → main, send ThemeEditorPreview: paints the draft's look on the window, or ends the preview
+  preview: 'damocles:theme-editor:preview',
+  // main → editor dock, no payload: a theme card's Show in window took the window from the dock's preview
+  previewTakenOver: 'damocles:theme-editor:preview-taken-over',
+  // editor dock → main, invoke ThemeEditorSave → ThemeEditorResult
+  save: 'damocles:theme-editor:save',
+  // editor dock → main, invoke { sessionId } → ThemeEditorResult: a built-in theme's editable copy, which the dock opens
+  duplicate: 'damocles:theme-editor:duplicate',
+  // main → editor dock, ThemeShowRefusal | null: the window cannot paint the draft (a contrast theme, safe start), or can again
+  previewRefused: 'damocles:theme-editor:preview-refused',
+  // editor dock → main, send { sessionId }: Cancel or Close; the preview ends and Settings › Appearance opens again
+  close: 'damocles:theme-editor:close',
+  // editor dock → main, send { sessionId, dirty }: whether the draft holds unsaved edits, which main asks about before it moves the dock
+  dirty: 'damocles:theme-editor:dirty',
+  // main → editor dock, no payload: another theme's editor was asked for while the draft holds unsaved edits
+  moveAsked: 'damocles:theme-editor:move-asked',
+  // editor dock → main, send { sessionId, discard }: the answer to moveAsked; discard opens the other theme
+  moveAnswer: 'damocles:theme-editor:move-answer',
+  // editor dock → main, invoke { sessionId } → ThemeEditorArrangementResult: the window's arrangement at this moment
+  captureArrangement: 'damocles:theme-editor:capture-arrangement',
+  // main → editor dock, ThemeEditorOutside: the theme's file changed, or went, while the dock holds its draft
+  outside: 'damocles:theme-editor:outside',
+  // editor dock → main, send { sessionId }: Reload; the dock opens on the theme's file as it is now and the draft goes
+  reload: 'damocles:theme-editor:reload',
+  // editor dock → main, send boolean: Peek at the window hides the dock that covers it, until the shell's button or Escape
+  peek: 'damocles:theme-editor:peek',
+  // editor dock → main, send {}: opens Settings › Appearance with the editor still open
+  openSettings: 'damocles:theme-editor:open-settings',
+  // editor dock → main, invoke { sessionId } → ThemeEditorFontResult: Add a font file…, picked in main's file dialog
+  importFontFile: 'damocles:theme-editor:import-font-file',
+  // editor dock → main, invoke { sessionId, bytes } → ThemeEditorFontResult: an installed font's file, from queryLocalFonts()
+  importFontBytes: 'damocles:theme-editor:import-font-bytes',
+  // editor dock → main, invoke { sessionId } → ThemeEditorImageResult: Choose image…, picked in main's file dialog
+  importImageFile: 'damocles:theme-editor:import-image-file',
+  // main → editor dock, number 0 to 1: how far a moving wallpaper's flash check is while Choose image… waits on it
+  importProgress: 'damocles:theme-editor:import-progress',
+  // editor dock → main, invoke { sessionId, sha256 } → ThemeEditorFlashResult: Allow flashing for this file, on this computer
+  allowFlash: 'damocles:theme-editor:allow-flash',
+  // editor dock → main, invoke { sessionId, strip? } → ThemeEditorSpriteResult: a character's Choose image…, picked in main's
+  // file dialog; strip { frames, fps } cuts it into frames side by side
+  importSpriteFile: 'damocles:theme-editor:import-sprite-file',
+} as const;
+
+// The dock closed or moved to another theme before the call ran, so the page that asked is gone or replaced and shows nothing.
+export interface ThemeEditorClosed {
+  readonly ok: false;
+  readonly closed: true;
+}
+
+// A character sprite core stored and checked for the draft to name; cancelled: the file dialog closed without a file. `error`
+// is text in the UI's language, which the page shows as it is.
+export type ThemeEditorSpriteResult = { readonly ok: true; readonly sprite: SpriteImport; readonly name: string } | { readonly ok: false; readonly error: string } | { readonly ok: false; readonly cancelled: true } | ThemeEditorClosed;
+
+// Another installed theme's character set, which the Characters section can take.
+export interface ThemeEditorCharacterSet {
+  readonly themeId: string;
+  readonly name: string;
+  readonly characters: NonNullable<ThemeFile['characters']>;
+  readonly assets: NonNullable<ThemeFile['assets']>;
+}
+
+// The file's flash check with this computer's allowance after Allow flashing for this file.
+export type ThemeEditorFlashResult = { readonly ok: true; readonly flash: FlashRecord } | { readonly ok: false; readonly error: string } | ThemeEditorClosed;
+
+// A font core stored for the draft to bundle; cancelled: the file dialog closed without a file.
+export type ThemeEditorFontResult = { readonly ok: true; readonly font: FontImport } | { readonly ok: false; readonly error: string } | { readonly ok: false; readonly cancelled: true } | ThemeEditorClosed;
+// A wallpaper core stored and analyzed for the draft to name; cancelled: the file dialog closed without a file.
+export type ThemeEditorImageResult = { readonly ok: true; readonly image: WallpaperImport; readonly name: string } | { readonly ok: false; readonly error: string } | { readonly ok: false; readonly cancelled: true } | ThemeEditorClosed;
+
+// The window's arrangement as main read it when the dock asked.
+export type ThemeEditorArrangementResult = { readonly ok: true; readonly arrangement: Arrangement } | ThemeEditorClosed;
+
+// What happened to the theme's file outside the editor: another writer changed it, or it is gone or no longer a theme.
+export type ThemeEditorOutside = 'changed' | 'gone';
+
+// The theme the dock edits; sessionId changes whenever the dock opens on a theme, so a stale page's calls are refused.
+export interface ThemeEditorSession {
+  readonly sessionId: number;
+  readonly themeId: string;
+  readonly builtin: boolean;
+  readonly theme: ThemeFile;
+  // the look the editor starts on: the shown kind when the theme has that look
+  readonly kind: LookKind;
+  // Next Wallpaper's shortcut as this platform writes it
+  readonly nextWallpaperShortcut: string;
+  // the name of the theme it was copied from, while that is installed
+  readonly fromName?: string;
+  // what the theme renderer derived from each wallpaper the theme names, once analyzed; a moving one's flash check too
+  readonly wallpapers?: Readonly<Record<string, { readonly stats: ImageStats; readonly palette?: WallpaperPalette; readonly flash?: FlashRecord }>>;
+  // damocles.desktop.themes.wallpaperContrast, which the Wallpapers section words its readability note by
+  readonly wallpaperContrast?: 'raiseDim' | 'warn';
+  // the flash check of each character sprite the theme and the other sets name, once checked
+  readonly sprites?: Readonly<Record<string, FlashRecord>>;
+  // every listed project and its state, the pins its Characters section edits, and the other themes' character sets
+  readonly projects?: ReadonlyArray<{ readonly key: string; readonly name: string; readonly state: CharacterState }>;
+  readonly pins?: ProjectsFile;
+  readonly characterSets?: readonly ThemeEditorCharacterSet[];
+}
+
+// theme: the draft as the editor holds it; null shows the theme saved before editing ("Show my current theme")
+export interface ThemeEditorPreview {
+  readonly sessionId: number;
+  readonly kind: LookKind;
+  readonly theme: ThemeFile | null;
+  // the wallpaper set the editor edits, which the window shows while the preview paints
+  readonly setIndex?: number;
+}
+
+// theme: the draft whole, its window arrangement (`layout`) included when one is saved with it
+export interface ThemeEditorSave {
+  readonly sessionId: number;
+  readonly theme: ThemeFile;
+  // the Characters section's pin changes, saved with the theme
+  readonly pins?: readonly PinEdit[];
+}
+
+// A save's `css`: what core stored of the theme's CSS and what it removed (sanitizeThemeCss: the first parts, and how many
+// more), which the editor shows as authoritative. `error` is text in the UI's language. `reason`, which the page words:
+// invalid, the draft is no valid theme; changed, the file changed since the session read it and nothing was written; busy,
+// the same call is still running.
+export type ThemeEditorResult =
+  | { readonly ok: true; readonly css?: { readonly kept: Partial<Record<CssRegion, string>>; readonly dropped: readonly CssDroppedPart[]; readonly droppedMore: number } }
+  | { readonly ok: false; readonly error: string }
+  | { readonly ok: false; readonly reason: 'invalid' | 'changed' | 'busy' }
+  | ThemeEditorClosed;
+
+export interface ThemeEditorApi {
+  getSession(): Promise<ThemeEditorSession | null>;
+  onSession(listener: (session: ThemeEditorSession) => void): () => void;
+  // a newer transient preview (a theme card's Show in window) took the window: the dock's preview is off until its next edit
+  onPreviewTakenOver(listener: () => void): () => void;
+  // why the window does not paint the draft, or null once it can again
+  onPreviewRefused(listener: (reason: ThemeShowRefusal | null) => void): () => void;
+  preview(preview: ThemeEditorPreview): void;
+  save(save: ThemeEditorSave): Promise<ThemeEditorResult>;
+  duplicate(sessionId: number): Promise<ThemeEditorResult>;
+  close(sessionId: number): void;
+  setDirty(sessionId: number, dirty: boolean): void;
+  onMoveAsked(listener: () => void): () => void;
+  answerMove(sessionId: number, discard: boolean): void;
+  captureArrangement(sessionId: number): Promise<ThemeEditorArrangementResult>;
+  onOutside(listener: (what: ThemeEditorOutside) => void): () => void;
+  reload(sessionId: number): void;
+  peek(on: boolean): void;
+  openSettings(): void;
+  importFontFile(sessionId: number): Promise<ThemeEditorFontResult>;
+  importFontBytes(sessionId: number, bytes: Uint8Array): Promise<ThemeEditorFontResult>;
+  importImageFile(sessionId: number): Promise<ThemeEditorImageResult>;
+  // how far a moving wallpaper's flash check is, 0 to 1, while importImageFile waits on it
+  onImportProgress(listener: (fraction: number) => void): () => void;
+  allowFlash(sessionId: number, sha256: string): Promise<ThemeEditorFlashResult>;
+  importSpriteFile(sessionId: number, strip?: { readonly frames: number; readonly fps: number }): Promise<ThemeEditorSpriteResult>;
 }
 
 export type OverlayPrefWrite = { readonly ok: true; readonly file: string } | { readonly ok: false; readonly error: string };
@@ -1846,6 +2207,38 @@ export interface DamoclesOverlayApi {
   relaunch(): Promise<PopupAnswer<void>>;
   // window-layout.json back to the default layout, applied now
   resetLayout(): Promise<PopupAnswer<void>>;
+  getThemes(): Promise<PopupAnswer<OverlayThemesResult>>;
+  themeAction(action: OverlayThemeAction): Promise<PopupAnswer<OverlayThemeResult>>;
+  // the project look dialog's Choose image…: main's file dialog, then core stores and analyzes the image
+  projectLookImage(): Promise<PopupAnswer<ProjectLookImageResult>>;
+  // the theme files changed while the settings modal shows; returns the unsubscribe
+  onThemesChanged(listener: () => void): () => void;
+  // Settings › Appearance's sharing; each answers closed unless the settings modal is open
+  importTheme(): Promise<PopupAnswer<ThemeInstallStart>>;
+  installFromUrl(url: string): Promise<PopupAnswer<ThemeInstallStart>>;
+  // the card closes after either; the queue of theme links waits for it
+  installCommit(request: ThemeInstallCommitRequest): Promise<PopupAnswer<ThemeInstallCommitResult>>;
+  installCancel(installId: string): Promise<PopupAnswer<void>>;
+  // the open card's Allow flashing for this file; whether the file may flash now
+  installAllowFlash(installId: string, sha256: string): Promise<PopupAnswer<boolean>>;
+  // installedFonts: the theme's installed fonts read with queryLocalFonts(), at most MAX_FONT_BYTES each
+  exportPlan(themeId: string, installedFonts?: readonly ThemeExportFontBytes[]): Promise<PopupAnswer<ThemeExportPlanResult>>;
+  exportSave(themeId: string, installedFonts: readonly ThemeExportFontBytes[]): Promise<PopupAnswer<ThemeExportSaveResult>>;
+  // the install card main holds open; read on mount and whenever onInstallChanged fires
+  installCurrent(): Promise<PopupAnswer<OverlayInstallCurrent>>;
+  // main opened, changed or closed the install card; returns the unsubscribe
+  onInstallChanged(listener: () => void): () => void;
+  onInstallProgress(listener: (progress: ThemeInstallProgress) => void): () => void;
+  // Browse; each answers closed unless the settings modal is open. storeInstall answers as installFromUrl does, and the card
+  // commits and cancels through installCommit and installCancel
+  storeList(refresh: boolean): Promise<PopupAnswer<OverlayStoreResult>>;
+  storeInstall(entryId: string): Promise<PopupAnswer<ThemeInstallStart>>;
+  // ends the download storeInstall or installFromUrl waits on, which then answers cancelled
+  cancelPrepare(): Promise<PopupAnswer<void>>;
+  // returns the unsubscribe
+  onStoreUpdated(listener: (view: OverlayStoreView) => void): () => void;
+  // the theme editor dock's page; main answers it only from the dock's own view
+  readonly themeEditor: ThemeEditorApi;
   // Settings › About, from here on; each answers closed unless the settings modal is open
   getUpdate(): Promise<PopupAnswer<UpdateSnapshot>>;
   // pushed only while the settings modal is open; returns the unsubscribe

@@ -1,11 +1,13 @@
-import { readFileSync } from 'fs';
+import { readdirSync, readFileSync } from 'fs';
 import { defineConfig, type Plugin } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import tailwindcss from '@tailwindcss/vite';
 import { resolve } from 'path';
 import { DESKTOP_FONT_FILES, DESKTOP_FONT_LICENSES } from './src/desktop/main/desktop-fonts';
 import { shellWorkerTest } from './scripts/shell-workers.ts';
+import { protectedLayerOrder } from './scripts/protected-layer.ts';
 import { MATERIAL_ICON_DIR, materialIconNames } from './src/desktop/shell/material-icons';
+import { BUILTIN_EXAMPLE_IDS } from './src/shared/themes/builtin';
 
 // Copies the desktop fonts and their licences to dist/desktop-shell/fonts/ under the names theme.ts's @font-face rules load.
 function desktopFonts(): Plugin {
@@ -37,10 +39,25 @@ function materialFileIcons(): Plugin {
   };
 }
 
+// The built-in example themes, each resources/themes/<id>/ copied whole to themes/<id>/, where core and main read them.
+function builtinThemes(): Plugin {
+  const themesDir = resolve(import.meta.dirname, 'resources', 'themes');
+  return {
+    name: 'damocles-builtin-themes',
+    generateBundle() {
+      for (const id of BUILTIN_EXAMPLE_IDS) {
+        for (const file of readdirSync(resolve(themesDir, id))) {
+          this.emitFile({ type: 'asset', fileName: `themes/${id}/${file}`, source: readFileSync(resolve(themesDir, id, file)) });
+        }
+      }
+    },
+  };
+}
+
 // Main's generated pages load these by fixed name; Rollup emits one file for identical stylesheets, so a page whose
 // stylesheet matches another's would silently get none.
 function requiredPageAssets(): Plugin {
-  const required = ['index', 'overlay'].flatMap((page) => [`assets/${page}.js`, `assets/${page}.css`]);
+  const required = ['index', 'overlay', 'theme-render'].flatMap((page) => [`assets/${page}.js`, `assets/${page}.css`]);
   return {
     name: 'damocles-required-page-assets',
     generateBundle(_options, bundle) {
@@ -64,9 +81,11 @@ function shellWorkersOnly(): Plugin {
   };
 }
 
-// The desktop shell and overlay pages; main generates their HTML (nonce CSP) and loads assets/index.{js,css} and assets/overlay.{js,css} by these fixed names.
+// The desktop shell, overlay and theme render pages; main generates their HTML (nonce CSP) and loads assets/index.{js,css},
+// assets/overlay.{js,css} and assets/theme-render.{js,css} by these fixed names.
 export default defineConfig({
-  plugins: [vue(), tailwindcss(), desktopFonts(), materialFileIcons(), requiredPageAssets()],
+  // the theme render page takes no theme CSS, so its layers are Tailwind's alone
+  plugins: [vue(), tailwindcss(), desktopFonts(), materialFileIcons(), builtinThemes(), requiredPageAssets(), protectedLayerOrder(['index', 'overlay'])],
   root: 'src/desktop/shell',
   // Relative asset URLs: the shell is served under app://damocles/desktop-shell/, where a root-absolute /assets/ URL misses.
   base: './',
@@ -81,6 +100,7 @@ export default defineConfig({
       input: {
         index: resolve(import.meta.dirname, 'src/desktop/shell/index.html'),
         overlay: resolve(import.meta.dirname, 'src/desktop/shell/overlay/main.ts'),
+        'theme-render': resolve(import.meta.dirname, 'src/desktop/shell/theme-render/main.ts'),
       },
       output: {
         entryFileNames: 'assets/[name].js',

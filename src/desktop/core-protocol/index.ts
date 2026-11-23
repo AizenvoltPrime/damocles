@@ -37,6 +37,7 @@ export {
   type ScmMirrorPatch,
   type ScmRepositoryEntry,
   type SettingsViewScope,
+  type ThemeListing,
   type StateScope,
 } from './messages';
 export { REPOSITORY_CALLS, SCM_CALLS, WORKTREE_CALLS, type FinishCall, type RepositoryCall, type ScmCall, type WorktreeCall, type WorktreeCalls } from './scm-calls';

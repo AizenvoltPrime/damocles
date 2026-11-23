@@ -307,7 +307,7 @@ onBeforeUnmount(() => {
               </span>
               <span
                 class="mt-1.5 size-1.75 shrink-0 rounded-full transition-opacity duration-300"
-                :class="entry.read ? 'opacity-0' : 'bg-(--d-accent)'"
+                :class="entry.read ? 'opacity-0' : 'bg-(--d-accent-fill)'"
               >
                 <span
                   v-if="!entry.read"

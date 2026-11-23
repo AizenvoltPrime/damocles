@@ -5,11 +5,11 @@ import type { SubagentState } from '@shared/types/subagents';
 
 // `avatar` colours an initial on a tint of its own colour (style.css `.d-tone-*`).
 const AGENT_COLORS = [
-  { border: 'border-(--d-accent)', dot: 'bg-(--d-accent)', text: 'text-(--d-accent)', avatar: 'd-tone-accent', stripe: 'bg-(--d-accent)' },
-  { border: 'border-(--d-info)', dot: 'bg-(--d-info)', text: 'text-(--d-info)', avatar: 'd-tone-info', stripe: 'bg-(--d-info)' },
-  { border: 'border-(--d-warning)', dot: 'bg-(--d-warning)', text: 'text-(--d-warning)', avatar: 'd-tone-warning', stripe: 'bg-(--d-warning)' },
-  { border: 'border-(--d-success)', dot: 'bg-(--d-success)', text: 'text-(--d-success)', avatar: 'd-tone-success', stripe: 'bg-(--d-success)' },
-  { border: 'border-(--d-danger)', dot: 'bg-(--d-danger)', text: 'text-(--d-danger)', avatar: 'd-tone-danger', stripe: 'bg-(--d-danger)' },
+  { border: 'border-(--d-accent-fill)', dot: 'bg-(--d-accent-fill)', text: 'text-(--d-accent)', avatar: 'd-tone-accent', stripe: 'bg-(--d-accent-fill)' },
+  { border: 'border-(--d-info-fill)', dot: 'bg-(--d-info-fill)', text: 'text-(--d-info)', avatar: 'd-tone-info', stripe: 'bg-(--d-info-fill)' },
+  { border: 'border-(--d-warning-fill)', dot: 'bg-(--d-warning-fill)', text: 'text-(--d-warning)', avatar: 'd-tone-warning', stripe: 'bg-(--d-warning-fill)' },
+  { border: 'border-(--d-success-fill)', dot: 'bg-(--d-success-fill)', text: 'text-(--d-success)', avatar: 'd-tone-success', stripe: 'bg-(--d-success-fill)' },
+  { border: 'border-(--d-danger-fill)', dot: 'bg-(--d-danger-fill)', text: 'text-(--d-danger)', avatar: 'd-tone-danger', stripe: 'bg-(--d-danger-fill)' },
 ];
 
 const UNKNOWN_COLOR = { border: 'border-(--d-border2)', dot: 'bg-(--d-faint)', text: 'text-(--d-faint)', avatar: 'd-tone-faint', stripe: 'bg-(--d-border2)' };

@@ -144,7 +144,7 @@ function truncateContent(content: string, maxLength: number = 60): string {
     @close="emit('close')"
   >
     <div class="flex flex-col gap-2 px-4 pt-3 pb-4.5">
-      <label class="flex h-8.5 items-center gap-2 rounded-10 border border-(--d-border2) bg-(--d-input) px-2.75 transition-[border-color,box-shadow] focus-within:border-(--d-accent) focus-within:shadow-[0_0_0_4px_var(--d-accent-soft)]">
+      <label class="flex h-8.5 items-center gap-2 rounded-10 border border-(--d-border2) bg-(--d-input) px-2.75 transition-[border-color,box-shadow] focus-within:border-(--d-accent-fill) focus-within:shadow-[0_0_0_4px_var(--d-accent-soft)]">
         <Search
           class="size-3.25 flex-none text-(--d-faint)"
           aria-hidden="true"
@@ -193,7 +193,7 @@ function truncateContent(content: string, maxLength: number = 60): string {
           :box="box"
           :radius="11"
           :animate="animate"
-          class="z-1 text-(--d-accent)"
+          class="z-1 [--tone:var(--d-accent-fill)]"
         />
         <div
           v-for="(prompt, index) in filteredPrompts"
@@ -248,7 +248,7 @@ function truncateContent(content: string, maxLength: number = 60): string {
           <span
             v-if="showNotRewindableBadge(prompt)"
             data-testid="rewind-row-not-rewindable"
-            class="relative z-2 flex-none self-center rounded-full bg-[color-mix(in_srgb,var(--d-warning)_20%,transparent)] px-1.75 text-10.5 whitespace-nowrap text-(--d-warning-text)"
+            class="relative z-2 flex-none self-center rounded-full bg-[color-mix(in_srgb,var(--d-warning-fill)_20%,transparent)] px-1.75 text-10.5 whitespace-nowrap text-(--d-warning-text)"
           >{{ t('rewind.notRewindable.badge') }}</span>
         </div>
       </div>
@@ -289,7 +289,7 @@ function truncateContent(content: string, maxLength: number = 60): string {
               <button
                 type="button"
                 data-testid="rewind-undo"
-                class="d-press flex-none rounded-7 border border-(--d-border2) px-2.5 py-1 text-11.5 font-medium whitespace-nowrap transition-colors hover:border-(--d-accent) hover:text-(--d-accent) focus-visible:outline-2 focus-visible:outline-(--d-accent)"
+                class="d-press flex-none rounded-7 border border-(--d-border2) px-2.5 py-1 text-11.5 font-medium whitespace-nowrap transition-colors hover:border-(--d-accent-fill) hover:text-(--d-accent) focus-visible:outline-2 focus-visible:outline-(--d-accent-fill)"
                 @click="emit('undo', point)"
               >
                 {{ t('rewindBrowser.undoRewind') }}

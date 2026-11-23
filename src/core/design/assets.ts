@@ -3,6 +3,7 @@
 import { constants, promises as fs, type BigIntStats } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import * as path from 'node:path';
+import { namesAvifBrand } from '../../shared/themes/image-header';
 import type { ImportAssetDetails } from '../../shared/types/design';
 import { FetchRefusedError, readBodyCapped, RedirectRefusedError, safeFetch } from '../pi-session/web-access/safe-fetch';
 import { resolveReadPathAsync, resolveToCwd } from '../pi-session/tools/search-tools';
@@ -27,17 +28,6 @@ const KIND_EXTENSIONS: Readonly<Record<AssetKind, readonly string[]>> = {
 
 const ascii = (bytes: Uint8Array, start: number, end: number): string => Buffer.from(bytes.subarray(start, end)).toString('latin1');
 
-/** Whether an ISO BMFF `ftyp` box at the start of `bytes` names an AVIF brand, as its major or a compatible brand. */
-function isAvif(bytes: Uint8Array): boolean {
-  if (bytes.length < 16 || ascii(bytes, 4, 8) !== 'ftyp') return false;
-  const size = Buffer.from(bytes.subarray(0, 4)).readUInt32BE(0);
-  const end = Math.min(size, bytes.length);
-  // the major brand at 8, the minor version at 12, then the compatible brands
-  const brands = [ascii(bytes, 8, 12)];
-  for (let at = 16; at + 4 <= end; at += 4) brands.push(ascii(bytes, at, at + 4));
-  return brands.some((brand) => brand === 'avif' || brand === 'avis');
-}
-
 const SVG_PROLOG_PART = /^(?:\s+|<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE\s[^>]*>)/i;
 
 /** Whether `bytes` are UTF-8 XML whose root element is `<svg>`: declarations, comments and a doctype may come first. */
@@ -61,7 +51,7 @@ export function sniffAsset(bytes: Uint8Array): AssetKind | undefined {
   if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'jpeg';
   if (head.startsWith('GIF87a') || head.startsWith('GIF89a')) return 'gif';
   if (head.startsWith('RIFF') && head.slice(8, 12) === 'WEBP') return 'webp';
-  if (isAvif(bytes)) return 'avif';
+  if (namesAvifBrand(bytes) === true) return 'avif';
   // an icon directory with at least one image
   if (bytes.length >= 6 && bytes[0] === 0 && bytes[1] === 0 && bytes[2] === 1 && bytes[3] === 0 && (bytes[4]! | bytes[5]!) !== 0) return 'ico';
   if (head.startsWith('wOFF')) return 'woff';
@@ -91,10 +81,11 @@ function sniffedName(bytes: Uint8Array, name: string, shown: string): string {
 }
 
 /**
- * The bytes of source `source` (named `file` to the model), read through one handle whose identity matches the walked entry:
- * a regular file, not a link, with one hard link and at most MAX_ASSET_BYTES bytes.
+ * The bytes of source `source` (named `file` in the refusal), read through one handle whose identity matches the walked entry:
+ * a regular file, not a link, with one hard link and at most `maxBytes` bytes.
  */
-async function readAssetSource(source: string, file: string): Promise<Buffer> {
+export async function readAssetSource(source: string, file: string, maxBytes: number = MAX_ASSET_BYTES): Promise<Buffer> {
+  const tooLarge = (): AssetRefusedError => new AssetRefusedError(`${file} is larger than ${maxBytes / 1024 / 1024} MiB`);
   let linked: BigIntStats;
   try {
     linked = await fs.lstat(source, { bigint: true });
@@ -116,17 +107,18 @@ async function readAssetSource(source: string, file: string): Promise<Buffer> {
     if (!opened.isFile() || opened.dev !== linked.dev || opened.ino !== linked.ino) throw new AssetRefusedError(`${file} is not a regular file`);
     // A hard link shares its bytes with a name outside the project, which no path check sees.
     if (opened.nlink !== 1n) throw new AssetRefusedError(`${file} has more than one hard link`);
-    if (opened.size > BigInt(MAX_ASSET_BYTES)) throw new AssetRefusedError(`${file} is larger than 5 MiB`);
-    // At most one byte past the cap, so a file that grew after the stat is refused, never read whole.
-    const buffer = Buffer.allocUnsafe(MAX_ASSET_BYTES + 1);
+    if (opened.size > BigInt(maxBytes)) throw tooLarge();
+    // One byte past the size the handle gave, so a file that grew after the stat is refused, never read whole.
+    const size = Number(opened.size);
+    const buffer = Buffer.allocUnsafe(size + 1);
     let total = 0;
     for (;;) {
       const { bytesRead } = await handle.read(buffer, total, buffer.length - total, total);
       if (bytesRead === 0) break;
       total += bytesRead;
-      if (total > MAX_ASSET_BYTES) throw new AssetRefusedError(`${file} is larger than 5 MiB`);
+      if (total > size) throw new AssetRefusedError(`${file} changed while it was read`);
     }
-    return Buffer.from(buffer.subarray(0, total));
+    return buffer.subarray(0, total);
   } finally {
     await handle.close();
   }

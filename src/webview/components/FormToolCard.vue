@@ -99,6 +99,7 @@ const headerText = computed(() => {
 
 <template>
   <ToolCardFrame
+    :tool="toolCall.name"
     :icon="SquarePen"
     :name="headerText"
     :status="toolCall.status"

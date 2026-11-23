@@ -21,10 +21,7 @@ defineProps<{
     :aria-label="label"
     class="relative inline-flex size-2.5 shrink-0 transition-colors duration-200 ease-out"
     :class="{
-      'text-(--d-success)': state === 'running',
-      'text-(--d-warning)': state === 'paused' || state === 'restarting',
       'text-(--d-faint)': state === 'stopped',
-      'text-(--d-danger)': state === 'missing',
       'text-(--d-faint-text)': state === 'unknown' || state === 'other',
     }"
   >
@@ -40,12 +37,12 @@ defineProps<{
           cx="5"
           cy="5"
           r="4"
-          fill="currentColor"
+          class="fill-(--d-success-fill)"
         />
         <path
           v-else-if="state === 'paused'"
           d="M3.4 1.6v6.8M6.6 1.6v6.8"
-          stroke="currentColor"
+          class="stroke-(--d-warning-fill)"
           stroke-width="2"
           stroke-linecap="round"
         />
@@ -55,12 +52,12 @@ defineProps<{
             cy="5"
             r="3.7"
             fill="none"
-            stroke="currentColor"
+            class="stroke-(--d-warning-fill)"
             stroke-width="1.5"
           />
           <path
             d="M5 1.3a3.7 3.7 0 0 1 0 7.4z"
-            fill="currentColor"
+            class="fill-(--d-warning-fill)"
           />
         </template>
         <template v-else-if="state === 'missing'">
@@ -69,12 +66,12 @@ defineProps<{
             cy="5"
             r="3.6"
             fill="none"
-            stroke="currentColor"
+            class="stroke-(--d-danger-fill)"
             stroke-width="1.5"
           />
           <path
             d="M3.4 3.4l3.2 3.2M6.6 3.4 3.4 6.6"
-            stroke="currentColor"
+            class="stroke-(--d-danger-fill)"
             stroke-width="1.3"
             stroke-linecap="round"
           />

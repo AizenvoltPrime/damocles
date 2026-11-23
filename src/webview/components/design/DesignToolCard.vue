@@ -166,7 +166,7 @@ const arg = computed(() => {
     :duration-ms="toolCall.durationMs"
     status-note
     :abandon-reason="toolCall.abandonReason"
-    :data-tool="toolCall.name"
+    :tool="toolCall.name"
     data-testid="design-tool-card"
     @expand="uiStore.expandTool(toolCall.id, 'session')"
   >
@@ -184,7 +184,7 @@ const arg = computed(() => {
         <Collapsible v-slot="{ open }">
           <CollapsibleTrigger
             :disabled="category.refs.length === 0"
-            class="group/row flex h-7 w-full items-center gap-2 px-3 text-start text-xs transition-colors enabled:hover:bg-(--d-hover) focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--d-accent) disabled:cursor-default"
+            class="group/row flex h-7 w-full items-center gap-2 px-3 text-start text-xs transition-colors enabled:hover:bg-(--d-hover) focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--d-accent-fill) disabled:cursor-default"
             :data-category="category.key"
           >
             <ChevronRight
@@ -198,7 +198,7 @@ const arg = computed(() => {
           <CollapsibleContent>
             <!-- Scrolls when long; focusable so a keyboard user can scroll it too. -->
             <ul
-              class="flex max-h-48 flex-col gap-0.5 overflow-y-auto pt-0.5 pe-3 pb-1.5 ps-8 outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--d-accent)"
+              class="flex max-h-48 flex-col gap-0.5 overflow-y-auto pt-0.5 pe-3 pb-1.5 ps-8 outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--d-accent-fill)"
               tabindex="0"
               :aria-label="tKnown('design.tools.category', category.key, category.key)"
               data-testid="design-inventory-refs"
@@ -370,7 +370,7 @@ const arg = computed(() => {
     />
     <div
       v-if="toolCall.status === 'running'"
-      class="d-sweep-bar h-0.5 bg-(--d-hover) text-(--d-design)"
+      class="d-sweep-bar h-0.5 bg-(--d-hover) [--tone:var(--d-design-fill)]"
       aria-hidden="true"
     />
   </ToolCardFrame>

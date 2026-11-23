@@ -5,11 +5,12 @@ import type { Memento } from '../../../platform/key-value-state';
 import type { Platform } from '../../../platform/platform';
 import type { PanelHost } from '../../../platform/window-service';
 import type { GitCredentialAnswer } from '../../../shared/git-credential';
+import type { UserThemeCalls, UserThemeMethod } from '../../../shared/themes/relay';
 import type { PageSpec } from '../../../shared/panel-html';
 import { LOCAL_CLIENT_ID, type BrokerAnswer, type BrowserToolAnswer } from '../../../shared/remote-user';
 import { desktopHostCapabilities } from '../../local-services/capabilities';
 import type { DesktopEditorService, HostDiffView } from '../platform/editor-service';
-import { DIFF_TITLE_NAME, type CoreInit, type CoreRequests, type Params, type CredentialKind, type MainEndpoint, type MirrorTopics, type PanelCreate, type StateScope } from '../../core-protocol';
+import { DIFF_TITLE_NAME, type CoreInit, type CoreRequests, type Params, type Result, type CredentialKind, type MainEndpoint, type MirrorTopics, type PanelCreate, type StateScope } from '../../core-protocol';
 import type { LocalizedText } from '../../../shared/localized-text';
 import type { DesignCapture, DesignJourneyRun, DesignProbeResult, DesignRender } from '../../../shared/types/design';
 import type { MessageQuestion } from '../message-dialog';
@@ -92,6 +93,8 @@ export interface HostUser {
   // a remote chat's GitHub or GitLab tool, run by this computer's core with its accounts (remote/forge-relay.ts)
   forgeTool(request: CoreRequests['user.forge.tool']['params'], signal: AbortSignal): Promise<CoreRequests['user.forge.tool']['result']>;
   forgeDescribe(request: CoreRequests['user.forge.describe']['params'], signal: AbortSignal): Promise<CoreRequests['user.forge.describe']['result']>;
+  // a remote chat's theme tool on this computer's store and window (remote/theme-relay.ts)
+  theme<M extends UserThemeMethod>(method: M, params: UserThemeCalls[M]['params'], signal: AbortSignal): Promise<UserThemeCalls[M]['result']>;
 }
 
 /** What the local core's host services answer: it asks this computer's PiRuntime and voice service itself. */
@@ -111,6 +114,7 @@ export const NO_USER_RELAYS: HostUser = {
   mcpReadResource: () => Promise.reject(new Error('Personal MCP servers are relayed only to a remote core')),
   forgeTool: () => Promise.reject(new Error('GitHub and GitLab tools are relayed only from a remote core')),
   forgeDescribe: () => Promise.reject(new Error('GitHub and GitLab tools are relayed only from a remote core')),
+  theme: () => Promise.reject(new Error('Theme tools are relayed only from a remote core')),
 };
 
 /** Main's own UI core's engine reaches: log tabs, the trash, questions, credential prompts and the worktree dialogs. */
@@ -141,6 +145,9 @@ export interface HostServicesDeps {
   readonly e2eHooks: boolean;
   // this computer's core only
   readonly e2eForgeServers?: CoreInit['e2eForgeServers'];
+  readonly e2eThemeDownloads?: CoreInit['e2eThemeDownloads'];
+  readonly e2eThemeStore?: CoreInit['e2eThemeStore'];
+  readonly themesOwner?: CoreInit['themesOwner'];
   readonly paths: CoreInit['paths'];
   readonly logs: CoreInit['logs'];
   // the cores that crashed earlier in this app run
@@ -165,6 +172,8 @@ export interface HostServicesDeps {
   readonly divert: (view: RelayView, message: unknown) => boolean;
   // the post types this core may not send its views: a remote core's voice view state, which only this computer's core feeds
   readonly refusedPosts: ReadonlySet<string>;
+  // the post types this core sends only as JSON text, the path on which main checks a remote core's theme cards
+  readonly textOnlyPosts: ReadonlySet<string>;
   // chats.showSession: shows the chat holding the stored session, joining the core's panel when no view here shows it; settles
   // once it shows, rejects when it did not open
   readonly showSession: (sessionId: string) => Promise<void>;
@@ -179,8 +188,17 @@ export interface HostServicesDeps {
     // design.replayJourney: the live preview tab of the screen in design chat panelId, this core's own (PD-33)
     replay(params: Params<CoreRequests, 'design.replayJourney'>, signal: AbortSignal): Promise<void>;
   };
+  // this computer's core only: the agent's theme tools (themes.render, themes.screenshot*, themes.applied, Show in window)
+  readonly themes?: ThemeHostServices;
   readonly log: (line: string) => void;
 }
+
+/** What main does for this computer's core's theme tools; every request names its own params, as the protocol table parses them. */
+export type ThemeHostServices = {
+  readonly [M in 'themes.render' | 'themes.screenshotTake' | 'themes.screenshotRead' | 'themes.screenshotDrop' | 'themes.applied' | 'themes.pendingSettled' | 'themes.pendingElsewhere' | 'themes.pendingExtended'
+    | 'themes.currentArrangement' | 'themes.applyArrangement' | 'themes.showInWindow' | 'themes.stopShowing' | 'themes.state' | 'themes.analyze' | 'themes.analyzeSprite']:
+    (params: Params<CoreRequests, M>, signal: AbortSignal) => Promise<Result<CoreRequests, M>> | Result<CoreRequests, M>;
+};
 
 export interface HostServices extends Disposable {
   // every mirror at version 0, read when the services were created; core's platform starts from it
@@ -216,6 +234,9 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     chatBrowserPane: platform.window.chatBrowserPane,
     e2eHooks: deps.e2eHooks,
     ...(deps.e2eForgeServers ? { e2eForgeServers: deps.e2eForgeServers } : {}),
+    ...(deps.e2eThemeDownloads ? { e2eThemeDownloads: deps.e2eThemeDownloads } : {}),
+    ...(deps.e2eThemeStore ? { e2eThemeStore: deps.e2eThemeStore } : {}),
+    ...(deps.themesOwner !== undefined ? { themesOwner: deps.themesOwner } : {}),
     git: deps.git,
     paths: deps.paths,
     logs: deps.logs,
@@ -318,6 +339,12 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     log(`[core-services] dropped a post whose own type is not a string${declared === undefined ? '' : ` equal to its declared ${declared.slice(0, 64)}`}`);
     return true;
   };
+  const textOnly = (message: unknown): boolean => {
+    const type = typeof message === 'object' && message !== null ? (message as { readonly type?: unknown }).type : undefined;
+    if (typeof type !== 'string' || !deps.textOnlyPosts.has(type)) return false;
+    log(`[core-services] dropped a binary ${type} post: this core sends it only as text`);
+    return true;
+  };
   const droppedJson = (declared: string, json: string): boolean => {
     if (deps.refusedPosts.size === 0) return false;
     let message: unknown;
@@ -406,6 +433,19 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     endpoint.serve('user.mcp.readResource', (params, signal) => deps.user.mcpReadResource(params, signal));
     endpoint.serve('user.forge.tool', (params, signal) => deps.user.forgeTool(params, signal));
     endpoint.serve('user.forge.describe', (params, signal) => deps.user.forgeDescribe(params, signal));
+    endpoint.serve('user.theme.read', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('read', params, signal));
+    endpoint.serve('user.theme.uploadStart', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('uploadStart', params, signal));
+    endpoint.serve('user.theme.uploadChunk', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('uploadChunk', params, signal));
+    endpoint.serve('user.theme.stage', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('stage', params, signal));
+    endpoint.serve('user.theme.commit', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('commit', params, signal));
+    endpoint.serve('user.theme.discard', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('discard', params, signal));
+    endpoint.serve('user.theme.preview', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('preview', params, signal));
+    endpoint.serve('user.theme.screenshotTake', (_params, signal) => deps.user.theme('screenshotTake', {}, signal));
+    endpoint.serve('user.theme.screenshot', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('screenshot', params, signal));
+    endpoint.serve('user.theme.screenshotDrop', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('screenshotDrop', params, signal));
+    endpoint.serve('user.theme.installPrepare', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('installPrepare', params, signal));
+    endpoint.serve('user.theme.installCommit', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('installCommit', params, signal));
+    endpoint.serve('user.theme.installCancel', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('installCancel', params, signal));
     endpoint.serve('askpass.credential', (request, signal) => deps.user.gitCredential(request, signal));
     endpoint.serve('worktrees.showApplyConflicts', ({ worktreeId, files }) => ui.worktrees.showApplyConflicts(worktreeId, files));
     // main posts to a page in this process, which queues nothing toward it
@@ -418,6 +458,24 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     endpoint.serve('design.probe', (params, signal) => deps.designRender.probe(params, signal));
     endpoint.serve('design.journey', (params, signal) => deps.designRender.journey(params, signal));
     endpoint.serve('design.replayJourney', (params, signal) => deps.designRender.replay(params, signal));
+    const { themes } = deps;
+    if (themes) {
+      endpoint.serve('themes.render', (params, signal) => themes['themes.render'](params, signal));
+      endpoint.serve('themes.screenshotTake', (params, signal) => themes['themes.screenshotTake'](params, signal));
+      endpoint.serve('themes.screenshotRead', (params, signal) => themes['themes.screenshotRead'](params, signal));
+      endpoint.serve('themes.screenshotDrop', (params, signal) => themes['themes.screenshotDrop'](params, signal));
+      endpoint.serve('themes.applied', (params, signal) => themes['themes.applied'](params, signal));
+      endpoint.serve('themes.pendingSettled', (params, signal) => themes['themes.pendingSettled'](params, signal));
+      endpoint.serve('themes.pendingElsewhere', (params, signal) => themes['themes.pendingElsewhere'](params, signal));
+      endpoint.serve('themes.pendingExtended', (params, signal) => themes['themes.pendingExtended'](params, signal));
+      endpoint.serve('themes.currentArrangement', (params, signal) => themes['themes.currentArrangement'](params, signal));
+      endpoint.serve('themes.applyArrangement', (params, signal) => themes['themes.applyArrangement'](params, signal));
+      endpoint.serve('themes.showInWindow', (params, signal) => themes['themes.showInWindow'](params, signal));
+      endpoint.serve('themes.stopShowing', (params, signal) => themes['themes.stopShowing'](params, signal));
+      endpoint.serve('themes.state', (params, signal) => themes['themes.state'](params, signal));
+      endpoint.serve('themes.analyze', (params, signal) => themes['themes.analyze'](params, signal));
+      endpoint.serve('themes.analyzeSprite', (params, signal) => themes['themes.analyzeSprite'](params, signal));
+    }
   };
 
   serve();
@@ -452,6 +510,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
           return;
         case 'postBinary':
           if (deps.refusedPosts.size > 0 && dropped(envelope.payload.message)) return;
+          if (textOnly(envelope.payload.message)) return;
           void view.postMessage(envelope.payload.message);
           return;
         case 'setIcon':

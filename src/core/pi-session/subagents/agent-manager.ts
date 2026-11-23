@@ -29,7 +29,7 @@ import type { DesignScope } from '../../design/design-write-rule';
 import type { ChatMachine } from '../proven-shell';
 import type { ShellCancelRegistry } from '../tools/shell-cancel-registry';
 import type { DispatchDeps } from '../hooks';
-import { deferredToolNames, loadableToolNames, nestedAgentToolNames } from '../tools/deferred-tools';
+import { deferredToolNames, loadableToolNames, nestedAgentToolNames, nestedLoadableToolNames } from '../tools/deferred-tools';
 import { userScopeReach } from '../../user-scope';
 import type { NestedMcpToolset } from '../tools/mcp-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
@@ -846,7 +846,7 @@ export class AgentManager {
     // `deferrable ⊆ tools:` true by construction rather than by two call sites agreeing; `tools:` then
     // leaves out the built-in deferred tools the agent can never load.
     const allToolNames = [...toolset.names, ...mcp.names];
-    const deferrableToolNames = loadableToolNames(deferredToolNames(allToolNames, mcp.deferrable), userScopeReach(), this.engine.designScope?.() !== undefined);
+    const deferrableToolNames = nestedLoadableToolNames(loadableToolNames(deferredToolNames(allToolNames, mcp.deferrable), userScopeReach(), this.engine.designScope?.() !== undefined));
     const eligibleToolNames = nestedAgentToolNames(allToolNames, deferrableToolNames);
     const hooksDispatch = this.engine.getHooksDispatch?.();
     const extensionFactory = createSubagentExtensionFactory({

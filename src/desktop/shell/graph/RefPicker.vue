@@ -150,12 +150,12 @@ onMounted(() => {
     aria-modal="true"
     data-testid="graph-ref-picker"
     :aria-label="t('graph.picker.label')"
-    class="fixed flex w-80 animate-[d-pop_.14s_var(--ease-out)] flex-col gap-1 rounded-11 border border-(--d-border2) bg-(--d-card) p-1.5 text-(--d-text) shadow-(--d-shadow) in-[.overlay-pop-leave-active]:animate-[d-pop-out_.12s_ease-in_both]"
+    class="fixed flex w-80 d-pop-in flex-col gap-1 rounded-11 border border-(--d-border2) bg-(--d-card) p-1.5 text-(--d-text) shadow-(--d-shadow)"
     :style="{ left: `${position.left}px`, top: `${position.top}px` }"
     @keydown="onKeydown"
     @mousedown="keepFocus"
   >
-    <label class="flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-(--d-accent) bg-(--d-input) px-2 shadow-[0_0_0_3px_var(--d-accent-soft)]">
+    <label class="flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-(--d-accent-fill) bg-(--d-input) px-2 shadow-[0_0_0_3px_var(--d-accent-soft)]">
       <Search
         aria-hidden="true"
         class="size-3 shrink-0 text-(--d-faint)"
@@ -194,7 +194,7 @@ onMounted(() => {
         class="relative"
       >
         <SlidingIndicator
-          class="text-(--d-accent-soft)"
+          class="[--tone:var(--d-accent-soft)]"
           :box="box"
           :radius="7"
           :animate="animate"
@@ -233,7 +233,7 @@ onMounted(() => {
             <span
               aria-hidden="true"
               class="flex size-3.5 shrink-0 items-center justify-center rounded-5 border transition-colors duration-150"
-              :class="isPicked(selection, itemOf(row)) ? 'border-(--d-accent) bg-(--d-accent) text-(--d-on-accent)' : 'border-(--d-border2) bg-(--d-input)'"
+              :class="isPicked(selection, itemOf(row)) ? 'border-(--d-accent-fill) bg-(--d-accent-fill) text-(--d-on-accent)' : 'border-(--d-border2) bg-(--d-input)'"
             >
               <Transition name="t-icon">
                 <Check

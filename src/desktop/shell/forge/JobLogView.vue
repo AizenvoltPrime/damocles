@@ -6,6 +6,7 @@ import { ArrowDown, ChevronRight } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import { remPx } from '@/composables/useRemPx';
 import type { CiLogLevel, CiLogRow, CiLogSection } from '@shared/forge/ci-log';
+import type { DamoclesShellApi } from '../../preload/shell-channels';
 import TerminalFind from '../terminal/TerminalFind.vue';
 import { createLogSearch, MAX_LOG_MATCHES, type LogMatch } from './log-find';
 import { ciDuration } from './ci-view';
@@ -17,6 +18,7 @@ import { hiddenLines, rowPieces, sectionsAround, spanClass, spanStyle, stampText
  * markup: no shadcn part is a virtualized log. The parent remounts it on a new log (reset) and when 1rem changes, since the list's row height is fixed px.
  */
 const props = defineProps<{
+  api: Pick<DamoclesShellApi, 'requestOverlay'>;
   // the parser's arrays, appended in place; revision changes after every push
   rows: readonly CiLogRow[];
   // the parser's held lines (peekHeld), shown after rows until they become rows
@@ -79,6 +81,18 @@ function setFolded(id: number, fold: boolean): void {
   if (fold) folded.value.add(id);
   else folded.value.delete(id);
   triggerRef(folded);
+}
+
+// The fold button is below the hit-size floor (d-hit-free), so the row's menu offers the same command.
+async function openSectionMenu(event: MouseEvent, section: { id: number; folded: boolean; title: string }): Promise<void> {
+  event.preventDefault();
+  const answer = await props.api.requestOverlay({
+    kind: 'menu',
+    label: t('forge.log.sectionMenu', { title: section.title }),
+    anchor: { x: event.clientX, y: event.clientY, width: 0, height: 0 },
+    items: [{ kind: 'item', id: 'fold', label: t(section.folded ? 'forge.log.unfoldSection' : 'forge.log.foldSection') }],
+  });
+  if (answer.kind === 'menu' && answer.itemId === 'fold') setFolded(section.id, !section.folded);
 }
 
 function foldAll(): void {
@@ -183,7 +197,7 @@ defineExpose({ foldAll, openFind, focus: () => containerProps.ref.value?.focus()
 // The window's rows as they render: a section header carries its section, whether it is folded and what it hides.
 function pieceClass(piece: RowPiece): string[] {
   // a marked piece drops its log colours (no inline style), so the mark reads the same on any colour
-  const mark = piece.mark === 'current' ? 'rounded-xs bg-(--d-accent) text-(--d-on-accent)' : piece.mark === 'match' ? 'rounded-xs bg-(--d-accent-soft) text-(--d-text)' : '';
+  const mark = piece.mark === 'current' ? 'rounded-xs bg-(--d-accent-fill) text-(--d-on-accent)' : piece.mark === 'match' ? 'rounded-xs bg-(--d-accent-soft) text-(--d-text)' : '';
   if (!piece.control) return [spanClass(piece.span), mark];
   return ['mx-px rounded-xs border border-(--d-border2) px-0.5 text-10', piece.mark === 'current' ? mark : `${mark} text-(--d-faint-text)`];
 }
@@ -203,6 +217,7 @@ const shown = computed(() => list.value.map(({ data: index }) => {
     stamp: row.timestamp === undefined ? '' : stampText(row.timestamp, stampFormat.value),
     section: section && {
       id: section.id,
+      title: section.title,
       folded: isFolded,
       label: t(isFolded ? 'forge.log.unfold' : 'forge.log.fold', { title: section.title }),
       duration: section.durationSeconds === undefined ? undefined : ciDuration(section.durationSeconds, translate),
@@ -225,7 +240,7 @@ const shown = computed(() => list.value.map(({ data: index }) => {
       data-testid="job-log"
       :aria-label="t('forge.log.label', { job: name })"
       :data-follow="follow"
-      class="min-h-0 flex-1 overflow-auto bg-(--d-bg) pt-2 pb-6 font-mono text-12 outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
+      class="min-h-0 flex-1 overflow-auto bg-(--d-bg) pt-2 pb-6 font-mono text-12 outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent-fill)]"
       @scroll.passive="onScroll"
     >
       <div v-bind="wrapperProps">
@@ -239,6 +254,7 @@ const shown = computed(() => list.value.map(({ data: index }) => {
           class="flex min-w-max items-center pe-4 hover:bg-[color-mix(in_srgb,var(--d-hover)_60%,transparent)]"
           :class="arrivedFrom !== null && item.index >= arrivedFrom ? 'd-row-arrive' : ''"
           :style="{ height: `${rowPx}px` }"
+          @contextmenu="item.section && openSectionMenu($event, item.section)"
         >
           <span
             aria-hidden="true"
@@ -251,7 +267,7 @@ const shown = computed(() => list.value.map(({ data: index }) => {
               variant="ghost"
               size="icon"
               data-testid="job-log-fold"
-              class="d-press size-5 rounded-5 text-(--d-faint) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)] focus-visible:ring-0 focus-visible:ring-offset-0 [&_svg]:size-3"
+              class="d-press d-hit-free size-[1.25rem] rounded-5 text-(--d-faint) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent-fill)] focus-visible:ring-0 focus-visible:ring-offset-0 [&_svg]:size-3"
               :aria-expanded="!item.section.folded"
               :aria-label="item.section.label"
               @click="setFolded(item.section.id, !item.section.folded)"
@@ -303,7 +319,7 @@ const shown = computed(() => list.value.map(({ data: index }) => {
       >
         <span
           aria-hidden="true"
-          class="d-pulsing size-1.75 shrink-0 rounded-full bg-(--d-accent)"
+          class="d-pulsing size-1.75 shrink-0 rounded-full bg-(--d-accent-fill)"
         />{{ t('forge.log.running') }}
       </p>
       <p
@@ -328,7 +344,7 @@ const shown = computed(() => list.value.map(({ data: index }) => {
         v-if="newOutput"
         type="button"
         data-testid="job-log-new-output"
-        class="d-press absolute inset-e-5 bottom-4 h-7 gap-1.5 rounded-full bg-(--d-accent) ps-2.5 pe-3 py-0 text-12 font-medium text-(--d-on-accent) shadow-[0_6px_20px_color-mix(in_srgb,var(--d-accent)_35%,transparent)] hover:bg-(--d-accent) hover:brightness-110 focus-visible:ring-1 focus-visible:ring-(--d-on-accent) focus-visible:ring-offset-0 [&_svg]:size-3.5"
+        class="d-press absolute inset-e-5 bottom-4 h-7 gap-1.5 rounded-full bg-(--d-accent-fill) ps-2.5 pe-3 py-0 text-12 font-medium text-(--d-on-accent) shadow-[0_6px_20px_color-mix(in_srgb,var(--d-accent-fill)_35%,transparent)] hover:bg-(--d-accent-fill) hover:brightness-110 focus-visible:ring-1 focus-visible:ring-(--d-on-accent) focus-visible:ring-offset-0 [&_svg]:size-3.5"
         @click="jumpToLatest"
       >
         <ArrowDown aria-hidden="true" />{{ t('forge.log.newOutput') }}

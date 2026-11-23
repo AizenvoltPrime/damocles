@@ -42,7 +42,7 @@ const label = computed(() => memoryLabel(props.memory.title, props.memory.snippe
     <Badge
       v-if="forgotten"
       variant="outline"
-      class="shrink-0 border-[color-mix(in_srgb,var(--d-danger)_40%,transparent)] px-1 py-0 text-10 text-(--d-danger)"
+      class="shrink-0 border-[color-mix(in_srgb,var(--d-danger-fill)_40%,transparent)] px-1 py-0 text-10 text-(--d-danger)"
       data-badge="forgotten"
     >
       {{ t('contextInjection.badge.forgotten') }}

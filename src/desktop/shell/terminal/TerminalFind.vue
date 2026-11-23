@@ -105,7 +105,7 @@ const OPTIONS = [
     <!-- A box around a bare input that also holds the option toggles, as the editor's and Search's find fields are. -->
     <div
       class="flex h-6.5 w-52 items-center gap-0.5 rounded-md border bg-(--d-input) pr-0.75 pl-2"
-      :class="invalid ? 'border-(--d-danger)' : 'border-(--d-border2) focus-within:border-(--d-accent)'"
+      :class="invalid ? 'border-(--d-danger-fill)' : 'border-(--d-border2) focus-within:border-(--d-accent-fill)'"
     >
       <input
         ref="input"
@@ -126,7 +126,7 @@ const OPTIONS = [
         :model-value="options[option.key]"
         size="sm"
         :data-testid="`terminal-find-${option.key}`"
-        class="h-5 min-w-5 rounded-5 border border-transparent px-0 text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 data-[state=on]:border-(--d-accent) data-[state=on]:bg-(--d-accent-soft) data-[state=on]:text-(--d-accent-text) [&_svg]:size-3.5"
+        class="h-5 min-w-5 rounded-5 border border-transparent px-0 text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 data-[state=on]:border-(--d-accent-fill) data-[state=on]:bg-(--d-accent-soft) data-[state=on]:text-(--d-accent-text) [&_svg]:size-3.5"
         :aria-label="t(option.label)"
         :title="t(option.label)"
         @update:model-value="setOption(option.key, $event)"

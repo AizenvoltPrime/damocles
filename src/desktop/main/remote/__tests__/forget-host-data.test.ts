@@ -36,6 +36,7 @@ function steps(overrides: Partial<ForgetHostDataSteps> = {}) {
     forgetChats: vi.fn(() => void ran.push('chats')),
     forgetRemoteState: record('state'),
     forgetForgeBindings: record('forge'),
+    forgetThemeLooks: record('themes'),
     log: () => undefined,
     ...overrides,
   };
@@ -46,10 +47,12 @@ describe('forgetHostData', () => {
   it('finishes without asking a halted engine, which holds no browser context and prunes the host\'s bindings when it starts', async () => {
     const releaseBrowser = vi.fn(() => Promise.reject(new Error('The Damocles engine is not running')));
     const forgetForgeBindings = vi.fn(() => Promise.reject(new Error('The Damocles engine is not running')));
-    const { all, ran, mirrorFolder, profileFolder } = steps({ engineHalted: () => true, releaseBrowser, forgetForgeBindings });
+    const forgetThemeLooks = vi.fn(() => Promise.reject(new Error('The Damocles engine is not running')));
+    const { all, ran, mirrorFolder, profileFolder } = steps({ engineHalted: () => true, releaseBrowser, forgetForgeBindings, forgetThemeLooks });
     await forgetHostData(all);
     expect(releaseBrowser).not.toHaveBeenCalled();
     expect(forgetForgeBindings).not.toHaveBeenCalled();
+    expect(forgetThemeLooks).not.toHaveBeenCalled();
     expect(fs.existsSync(mirrorFolder)).toBe(false);
     expect(fs.existsSync(profileFolder)).toBe(false);
     expect(ran).toEqual(['engine', 'master', 'mirror', 'ports', 'chats', 'state']);
@@ -73,7 +76,7 @@ describe('forgetHostData', () => {
       log,
     });
     await expect(forgetHostData(all)).rejects.toThrow('master gone');
-    expect(ran).toEqual(['engine', 'mirror', 'browser', 'chats', 'state', 'forge']);
+    expect(ran).toEqual(['engine', 'mirror', 'browser', 'chats', 'state', 'forge', 'themes']);
     expect(fs.existsSync(mirrorFolder)).toBe(false);
     expect(fs.existsSync(profileFolder)).toBe(false);
     expect(log.mock.calls.map(([line]) => String(line))).toEqual([expect.stringContaining('master gone'), expect.stringContaining('ports')]);
@@ -87,6 +90,6 @@ describe('forgetHostData', () => {
     await expect(forgetHostData(all)).rejects.toThrow('sync');
     expect(fs.existsSync(mirrorFolder)).toBe(true);
     expect(fs.existsSync(profileFolder)).toBe(true);
-    expect(ran).toEqual(['engine', 'master', 'ports', 'chats', 'state', 'forge']);
+    expect(ran).toEqual(['engine', 'master', 'ports', 'chats', 'state', 'forge', 'themes']);
   });
 });

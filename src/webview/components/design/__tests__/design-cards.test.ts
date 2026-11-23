@@ -273,7 +273,7 @@ describe('the design chat header', () => {
 
     await wrapper.setProps({ design: { ...DESIGN, decisions: [...DESIGN.decisions, { id: 'D2', title: 'Layout', chosen: 'Table', rejected: ['Cards'], source: { kind: 'chat', ref: 'u3' } }] } });
 
-    expect(wrapper.get('[data-decision-id="D2"]').element.parentElement!.className).toContain('animate-[d-pop');
+    expect(wrapper.get('[data-decision-id="D2"]').element.parentElement!.className).toContain('d-pop-spring');
     expect(wrapper.get('[data-decision-id="D2"]').text()).toContain('D2');
   });
 
@@ -764,7 +764,7 @@ describe('the FinishDesign card', () => {
     });
     await nextTick();
 
-    expect(card.attributes('data-approval')).toBe('awaiting');
+    expect(card.get('[data-tool-card]').attributes('data-approval')).toBe('awaiting');
     expect(card.text()).toContain('Needs approval');
     expect(card.find('.d-sweep-bar').exists()).toBe(false);
   });
@@ -776,7 +776,7 @@ describe('the FinishDesign card', () => {
       errorMessage: 'The user asked for changes before this version is made: ...',
     });
 
-    expect(card.attributes('data-approval')).toBe('changesRequested');
+    expect(card.get('[data-tool-card]').attributes('data-approval')).toBe('changesRequested');
     expect(card.text()).toContain('Changes requested');
     expect(card.get('[data-testid="finish-design-note"]').element.textContent).toBe('Make the table denser.\nKeep the search.');
     expect(card.get('[data-testid="finish-design-unapproved"]').text()).toContain('No version was made. The designer keeps working on your note.');
@@ -796,7 +796,7 @@ describe('the FinishDesign card', () => {
   ] as const)('says a %s approval made no version (status %s), live and on a replay', (approval, status, title, note) => {
     const card = finishCard({ status, metadata: { designId: RESULT.designId, approval } });
 
-    expect(card.attributes('data-approval')).toBe(approval);
+    expect(card.get('[data-tool-card]').attributes('data-approval')).toBe(approval);
     expect(card.text()).toContain(title);
     expect(card.get('[data-testid="finish-design-unapproved"]').text()).toBe(note);
     expect(card.find('[data-testid="finish-design-delivery"]').exists()).toBe(false);

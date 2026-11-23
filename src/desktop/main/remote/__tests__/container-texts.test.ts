@@ -15,10 +15,10 @@ describe('container refusal texts', () => {
 
   it('name the host holding the name, and never put a refusal code in the sentence', () => {
     expect(containerNameRefusedText({ ok: false, reason: 'taken', clashWith: 'app' }, english.t)).toBe('Another host is already named app.');
-    expect(containerNameRefusedText({ ok: false, reason: 'taken', clashWith: 'app' }, greek.t)).toBe('Ένας άλλος κεντρικός υπολογιστής ονομάζεται ήδη app.');
+    expect(containerNameRefusedText({ ok: false, reason: 'taken', clashWith: 'app' }, greek.t)).toBe('Ένας άλλος απομακρυσμένος υπολογιστής ονομάζεται ήδη app.');
     for (const reason of ['empty', 'controlChars', 'bidiChars', 'tooLong'] as const) {
       const text = containerNameRefusedText({ ok: false, reason }, greek.t);
-      expect(text).toBe('Το όνομα του φακέλου δεν μπορεί να γίνει όνομα κεντρικού υπολογιστή.');
+      expect(text).toBe('Το όνομα του φακέλου δεν μπορεί να γίνει όνομα απομακρυσμένου υπολογιστή.');
       expect(text).not.toContain(reason);
     }
   });

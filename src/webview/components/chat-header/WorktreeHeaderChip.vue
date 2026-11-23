@@ -27,7 +27,7 @@ const title = computed(() => (props.narrow && props.note ? `${branchTitle.value}
   <span class="flex min-w-0 shrink-0">
     <DropdownMenu>
       <DropdownMenuTrigger
-        class="flex h-4.5 max-w-44 shrink-0 cursor-pointer items-center gap-1 rounded-full bg-(--d-accent-soft) px-1.5 font-mono text-10.5 text-(--d-accent-text) transition-colors outline-none hover:bg-[color-mix(in_srgb,var(--d-accent)_22%,transparent)] focus-visible:ring-1 focus-visible:ring-(--d-accent) data-[state=open]:bg-[color-mix(in_srgb,var(--d-accent)_22%,transparent)]"
+        class="flex h-4.5 max-w-44 shrink-0 cursor-pointer items-center gap-1 rounded-full bg-(--d-accent-soft) px-1.5 font-mono text-10.5 text-(--d-accent-text) transition-colors outline-none hover:bg-[color-mix(in_srgb,var(--d-accent-fill)_22%,transparent)] focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) data-[state=open]:bg-[color-mix(in_srgb,var(--d-accent-fill)_22%,transparent)]"
         dir="ltr"
         :title="title"
         data-testid="chat-header-worktree"

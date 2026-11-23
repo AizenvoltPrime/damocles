@@ -77,7 +77,7 @@ defineExpose({
     data-testid="project-group"
     :data-group="groupKey"
     :data-collapsed="collapsed || undefined"
-    class="flex shrink-0 flex-col gap-px rounded-lg transition-[background-color,box-shadow] duration-150 data-dragging:relative data-dragging:z-5 data-dragging:bg-(--d-card) data-dragging:shadow-(--d-shadow) data-dragging:ring-1 data-dragging:ring-(--d-accent) data-refuse:bg-(--d-danger)/7 data-refuse:ring-1 data-refuse:ring-(--d-danger) data-refuse:ring-inset"
+    class="flex shrink-0 flex-col gap-px rounded-lg transition-[background-color,box-shadow] duration-150 data-dragging:relative data-dragging:z-5 data-dragging:bg-(--d-card) data-dragging:shadow-(--d-shadow) data-dragging:ring-1 data-dragging:ring-(--d-accent-fill) data-refuse:bg-(--d-danger-fill)/7 data-refuse:ring-1 data-refuse:ring-(--d-danger-fill) data-refuse:ring-inset"
   >
     <div
       :id="headerId"
@@ -86,8 +86,8 @@ defineExpose({
       data-testid="project-group-header"
       :data-group="groupKey"
       :data-flip="`g:${groupKey}`"
-      class="group/header mt-1 flex min-h-7 animate-[d-fade_.2s_var(--ease-out)] cursor-pointer items-center gap-1.5 rounded-7 pr-1 pl-1.5 text-11 font-semibold text-(--d-muted) select-none hover:bg-(--d-hover) hover:text-(--d-text)"
-      :class="active ? 'group-focus-visible/list:outline group-focus-visible/list:-outline-offset-1 group-focus-visible/list:outline-(--d-accent)' : ''"
+      class="group/header mt-1 flex min-h-7 d-fade-in cursor-pointer items-center gap-1.5 rounded-7 pr-1 pl-1.5 text-11 font-semibold text-(--d-muted) select-none hover:bg-(--d-hover) hover:text-(--d-text)"
+      :class="active ? 'group-focus-visible/list:outline group-focus-visible/list:-outline-offset-1 group-focus-visible/list:outline-(--d-accent-fill)' : ''"
       @click="renaming || emit('toggle')"
     >
       <ChevronDown
@@ -96,7 +96,11 @@ defineExpose({
         class="size-3 shrink-0 text-(--d-faint) transition-transform duration-200 ease-out"
         :class="collapsed ? '-rotate-90' : ''"
       />
-      <span class="relative flex shrink-0">
+      <!-- The host's icon and color dot are a safety mark: theme CSS stops at data-trusted-mark. -->
+      <span
+        class="relative flex shrink-0"
+        data-trusted-mark
+      >
         <component
           :is="connection ? Server : Laptop"
           aria-hidden="true"
@@ -173,7 +177,7 @@ defineExpose({
         >
           <span
             aria-hidden="true"
-            class="size-1.25 animate-[d-pulse_1.4s_infinite] rounded-full bg-current"
+            class="d-pulsing size-1.25 rounded-full bg-(--tone)"
           />
           {{ busy.count }}
         </Badge>

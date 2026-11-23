@@ -134,7 +134,7 @@ const busy = (action: Action): true | undefined => (pending.value.has(action) ? 
           <div
             v-if="preview.status === 'loading'"
             data-testid="html-preview-progress"
-            class="d-sweep-bar size-full text-(--d-accent)"
+            class="d-sweep-bar size-full [--tone:var(--d-accent-fill)]"
           />
         </Transition>
       </div>
@@ -156,7 +156,7 @@ const busy = (action: Action): true | undefined => (pending.value.has(action) ? 
           variant="outline"
           size="sm"
           data-testid="html-preview-trust"
-          class="d-press h-6 shrink-0 rounded-7 border-(--d-warning)/40 bg-transparent px-2.5 text-12 font-semibold text-current hover:border-(--d-warning)/70 hover:bg-(--d-warning)/12 hover:text-current focus-visible:ring-1 focus-visible:ring-(--d-warning) focus-visible:ring-offset-0 aria-disabled:cursor-default aria-disabled:opacity-(--d-opacity-disabled)"
+          class="d-press h-6 shrink-0 rounded-7 border-(--d-warning-fill)/40 bg-transparent px-2.5 text-12 font-semibold text-current hover:border-(--d-warning-fill)/70 hover:bg-(--d-warning-fill)/12 hover:text-current focus-visible:ring-1 focus-visible:ring-(--d-warning-fill) focus-visible:ring-offset-0 aria-disabled:cursor-default aria-disabled:opacity-(--d-opacity-disabled)"
           :aria-disabled="busy('trustFolder')"
           :aria-busy="busy('trustFolder')"
           @click="run('trustFolder')"

@@ -24,17 +24,24 @@ const props = defineProps<{
   rows: ReadonlyMap<string, SettingsRowMeta>;
   // a desktop scope tab; absent lists every row
   scopeView?: SettingsScopeView | undefined;
+  // the sub-page the one section shows in place of its rows
+  subPage?: string | undefined;
 }>();
 
 const emit = defineEmits<{
   (e: 'matches', count: number): void;
+  (e: 'subPage', section: SettingsSectionId, subPage: string | undefined): void;
 }>();
 
 const { t } = useI18n();
-const page = provideSettingsPage(() => props.query, () => props.rows, () => props.scopeView?.listed);
+const page = provideSettingsPage(() => props.query, () => props.rows, {
+  subPage: () => props.subPage,
+  openSubPage: (section, subPage) => emit('subPage', section, subPage),
+}, () => props.scopeView?.listed);
 provideHostGroupRows((group) => props.host.rows.filter((entry) => entry.group === group).map((entry) => entry.component));
 
-const scopeEmpty = computed(() => (props.scopeView && !props.query && page.shown.value.size === 0
+// A sub-page shows no row of its own, which says nothing about what the scope holds.
+const scopeEmpty = computed(() => (props.scopeView && !props.query && props.subPage === undefined && page.shown.value.size === 0
   ? props.scopeView.empty?.(props.sections[0]!.id) ?? t('settingsModal.emptyScope')
   : undefined));
 

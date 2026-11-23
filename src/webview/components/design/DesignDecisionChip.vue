@@ -51,7 +51,7 @@ const explained = computed(() => truncated.value || notes.value.length > 0);
   <Tooltip :disabled="!explained">
     <TooltipTrigger as-child>
       <span
-        class="d-tone-design inline-flex h-5.5 max-w-72 min-w-0 flex-none items-center gap-1 rounded-full border px-2 text-11 whitespace-nowrap outline-none focus-visible:ring-1 focus-visible:ring-(--d-design)"
+        class="d-tone-design inline-flex h-5.5 max-w-72 min-w-0 flex-none items-center gap-1 rounded-full border px-2 text-11 whitespace-nowrap outline-none focus-visible:ring-1 focus-visible:ring-(--d-design-fill)"
         :class="[
           leaving ? 'border-dashed border-(--tone)/55 bg-transparent' : replacedBy ? 'border-(--d-border) bg-transparent' : 'border-(--tone)/30 bg-(--tone)/12',
           replacedBy ? 'opacity-60' : '',
@@ -81,7 +81,7 @@ const explained = computed(() => truncated.value || notes.value.length > 0);
         <span
           ref="title"
           class="min-w-0 truncate font-medium"
-          :class="leaving ? 'text-(--d-muted) line-through decoration-(--d-design)' : 'text-(--d-text)'"
+          :class="leaving ? 'text-(--d-muted) line-through decoration-(--d-design-fill)' : 'text-(--d-text)'"
         >{{ decision.title }}</span>
         <span
           aria-hidden="true"
@@ -90,7 +90,7 @@ const explained = computed(() => truncated.value || notes.value.length > 0);
         <span
           ref="chosen"
           class="min-w-0 truncate text-(--d-muted)"
-          :class="leaving ? 'line-through decoration-(--d-design)' : ''"
+          :class="leaving ? 'line-through decoration-(--d-design-fill)' : ''"
         >{{ decision.chosen }}</span>
         <span
           v-if="replacedBy"

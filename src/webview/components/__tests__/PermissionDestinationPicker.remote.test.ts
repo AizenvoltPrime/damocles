@@ -1,11 +1,13 @@
 // @vitest-environment happy-dom
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { nextTick } from 'vue';
 import { enableAutoUnmount, mount } from '@vue/test-utils';
+import { createPinia, setActivePinia } from 'pinia';
 import PermissionDestinationPicker from '../PermissionDestinationPicker.vue';
 import { i18n } from '@/i18n';
 
 enableAutoUnmount(afterEach);
+beforeEach(() => setActivePinia(createPinia()));
 
 // A remote chat's page: main's panel init names its host, as this computer's host store does.
 window.damoclesBridge = {
@@ -23,6 +25,7 @@ window.damoclesBridge = {
   onConnection: () => () => undefined,
   allowYolo: async () => false,
   queueAction: () => undefined,
+  setModalOpen: () => undefined,
 };
 
 describe('the rule destination picker on a remote chat', () => {

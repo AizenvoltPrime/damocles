@@ -195,7 +195,7 @@ function close(): void {
           :box="underline"
           :radius="1"
           :animate="tabAnimate"
-          class="text-(--d-accent)"
+          class="[--tone:var(--d-accent-fill)]"
         />
         <button
           v-for="tab in TABS"

@@ -205,7 +205,7 @@ describe('the design preview tab', () => {
     await flushPromises();
     expect(button.attributes('aria-disabled')).toBeUndefined();
     const flash = wrapper.get('[data-testid="design-preview-flash"]');
-    expect(flash.classes().join(' ')).toContain('animate-[d-flash');
+    expect(flash.classes()).toContain('d-flash');
     // It rings exactly the frame.
     expect(flash.attributes('style')).toBe(wrapper.get('[data-testid="design-preview-frame"]').attributes('style'));
     expect(wrapper.get('[data-testid="design-preview-screenshot-status"]').text()).toBe('Screenshot added to the design chat.');

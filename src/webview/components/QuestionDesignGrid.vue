@@ -178,7 +178,7 @@ const COLUMNS: Readonly<Record<number, string>> = {
   4: '@min-[18rem]/designs:grid-cols-2 @min-[36rem]/designs:grid-cols-4',
 };
 const CARD = 'group/card relative flex min-w-0 flex-col overflow-hidden rounded-10 border bg-(--d-bg) transition-[border-color,box-shadow] duration-150 ease-out';
-const ACTION = 'd-press h-6.5 gap-1.5 rounded-7 px-2 text-12 text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 [&_svg]:size-3.5';
+const ACTION = 'd-press h-6.5 gap-1.5 rounded-7 px-2 text-12 text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 [&_svg]:size-3.5';
 </script>
 
 <template>
@@ -200,7 +200,7 @@ const ACTION = 'd-press h-6.5 gap-1.5 rounded-7 px-2 text-12 text-(--d-muted) ho
         v-for="card in cards"
         :key="card.label"
         :class="cn(CARD, selected.has(card.label)
-          ? 'border-(--d-accent) shadow-[0_0_0_3px_var(--d-accent-soft)]'
+          ? 'border-(--d-accent-fill) shadow-[0_0_0_3px_var(--d-accent-soft)]'
           : 'border-(--d-border) hover:border-(--d-border2)')"
         data-testid="question-design-option"
         :data-option-label="card.label"
@@ -217,7 +217,7 @@ const ACTION = 'd-press h-6.5 gap-1.5 rounded-7 px-2 text-12 text-(--d-muted) ho
               v-if="card.thumbnail?.state === 'loaded'"
               :src="card.thumbnail.url"
               :alt="t('question.design.thumbnailAlt', { label: card.label })"
-              class="size-full animate-[d-fade_.2s_var(--ease-out)] object-cover object-top"
+              class="size-full d-fade-in object-cover object-top"
               data-testid="question-design-image"
             >
             <div
@@ -252,7 +252,7 @@ const ACTION = 'd-press h-6.5 gap-1.5 rounded-7 px-2 text-12 text-(--d-muted) ho
             data-testid="question-design-tile"
           >
             <span
-              class="d-tone-design flex size-9 items-center justify-center rounded-lg bg-(--tone)/12 text-(--tone)"
+              class="d-tone-design flex size-9 items-center justify-center rounded-lg bg-(--tone)/12 text-(--d-design)"
               aria-hidden="true"
             >
               <FileCode2 class="size-4.5" />
@@ -271,7 +271,7 @@ const ACTION = 'd-press h-6.5 gap-1.5 rounded-7 px-2 text-12 text-(--d-muted) ho
             :checked="selected.has(card.label)"
             :aria-labelledby="card.labelId"
             :aria-describedby="`${card.descriptionId} ${card.fileId}`"
-            class="mt-0.5 rounded-[0.25rem] border-(--d-border2) data-[state=checked]:border-(--d-accent) data-[state=checked]:bg-(--d-accent) data-[state=checked]:text-(--d-on-accent)"
+            class="mt-0.5 rounded-md border-(--d-border2) data-[state=checked]:border-(--d-accent-fill) data-[state=checked]:bg-(--d-accent-fill) data-[state=checked]:text-(--d-on-accent)"
             data-testid="question-design-control"
             @update:checked="emit('toggle', card.label)"
           />

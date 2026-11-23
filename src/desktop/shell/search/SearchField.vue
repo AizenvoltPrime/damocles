@@ -70,8 +70,8 @@ defineExpose({
 
 <template>
   <div
-    class="flex min-h-7 items-start gap-0.5 rounded-7 border bg-(--d-input) pr-0.75 pl-2.25 focus-within:border-(--d-accent)"
-    :class="invalid ? 'border-(--d-danger)' : 'border-(--d-border2)'"
+    class="flex min-h-7 items-start gap-0.5 rounded-7 border bg-(--d-input) pr-0.75 pl-2.25"
+    :class="invalid ? 'border-(--d-danger-fill)' : 'border-(--d-border2) focus-within:border-(--d-accent-fill)'"
   >
     <textarea
       v-if="multiline"

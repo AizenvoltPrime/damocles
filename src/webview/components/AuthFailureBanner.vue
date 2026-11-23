@@ -43,7 +43,7 @@ const { isAnthropic, title, message } = useAuthFailureText(() => props.failure);
     <template #actions>
       <button
         type="button"
-        class="d-press flex h-7.5 shrink-0 items-center rounded-9 bg-(--d-accent) px-3.25 text-12.5 font-semibold text-(--d-on-accent)"
+        class="d-press flex h-7.5 shrink-0 items-center rounded-9 bg-(--d-accent-fill) px-3.25 text-12.5 font-semibold text-(--d-on-accent)"
         data-testid="auth-banner-action"
         @click="emit('open-account', failure.account)"
       >

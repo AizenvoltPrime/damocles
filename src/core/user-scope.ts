@@ -1,7 +1,9 @@
 // On a daemon's core the user-scope services live on the client: the browser (user.browser.*), global memory (user.memory.*),
-// personal MCP servers (user.mcp.*) and the GitHub and GitLab tools (user.forge.*) are relayed to an attached client; with none
-// attached each answers its reason here.
+// personal MCP servers (user.mcp.*), the GitHub and GitLab tools (user.forge.*) and the theme tools (user.theme.*) are relayed
+// to an attached client; with none attached each answers its reason here.
 import { USER_SCOPE_UNAVAILABLE, type RelayedMcpServer } from '../shared/remote-user';
+import { THEMES_FEATURE } from '../shared/themes/relay';
+import { TOOL_GROUP_SETTINGS } from '../shared/types/tools';
 import type { LocalizedText } from '../shared/localized-text';
 import type { RemoteHost } from '../platform/remote-host';
 import { currentPin } from './client-snapshots';
@@ -43,17 +45,29 @@ function pinnedForges(remote: RemoteHost): 'away' | 'unread' | 'none' | 'account
 }
 
 /**
+ * A daemon's core: whether the theme tools reach the app of the device the running turn is pinned to (else the acting one):
+ * attached, listing themes, with the group on in its user settings.
+ */
+function pinnedThemes(remote: RemoteHost): 'away' | 'outdated' | 'off' | 'reachable' {
+  const clientId = currentPin(remote).clientId;
+  if (clientId === undefined || !remote.clients.attached(clientId)) return 'away';
+  if (remote.clients.features(clientId)?.includes(THEMES_FEATURE) !== true) return 'outdated';
+  return installedPlatform()?.settings.get<unknown>(TOOL_GROUP_SETTINGS.theme, true) === false ? 'off' : 'reachable';
+}
+
+/**
  * What this core reaches of its client's user scope now: the browser through any attached client, the GitHub and GitLab
  * tools while the pinned device has an account (this computer's core: its own accounts), a relayed MCP tool only through the
  * pinned device that relays it.
  */
 export function userScopeReach(): UserScopeReach {
   const remote = installedPlatform()?.remote;
-  if (remote === undefined) return { browser: true, forge: localForgeAccounts(), relayedTool: () => true };
+  if (remote === undefined) return { browser: true, forge: localForgeAccounts(), theme: true, relayedTool: () => true };
   const servers = pinnedRelayedServers(remote);
   return {
     browser: remote.clients.anyAttached(),
     forge: pinnedForges(remote) === 'account',
+    theme: pinnedThemes(remote) === 'reachable',
     relayedTool: ({ server, tool }) => servers?.some((candidate) => candidate.name === server && candidate.tools.some((own) => own.name === tool)) === true,
   };
 }
@@ -73,6 +87,23 @@ export function forgeGroupUnavailable(): 'noForgeAccount' | 'forgeServersUnread'
 }
 
 /**
+ * Why the Tools panel's Theme group is unavailable on a daemon's core: the pinned device is away, or its Damocles predates the
+ * relay. Undefined when the app is reached, and when the tools are switched off there, which the group's own switch shows.
+ */
+export function themeGroupUnavailable(): 'themeAppClosed' | 'themeAppOutdated' | undefined {
+  const remote = installedPlatform()?.remote;
+  if (remote === undefined) return undefined;
+  switch (pinnedThemes(remote)) {
+    case 'away':
+      return 'themeAppClosed';
+    case 'outdated':
+      return 'themeAppOutdated';
+    default:
+      return undefined;
+  }
+}
+
+/**
  * Why the GitHub and GitLab tools are out of reach: the pinned device is away, its servers are not read yet, or no account
  * exists where they would run.
  */
@@ -87,6 +118,34 @@ export function forgeUnreachableReason(): LocalizedText {
     default:
       return forgeNoAccountReason();
   }
+}
+
+/** Why the theme tools of a chat on a remote host cannot reach the app of the device its turn is pinned to. */
+export function themeUnreachableReason(): LocalizedText {
+  const remote = installedPlatform()?.remote;
+  switch (remote === undefined ? 'away' : pinnedThemes(remote)) {
+    case 'outdated':
+      return themeOutdatedReason();
+    case 'off':
+      return themeOffReason();
+    default:
+      return themeClosedReason();
+  }
+}
+
+/** A theme tool of a chat on a remote host while the device it changes is not attached. */
+export function themeClosedReason(): LocalizedText {
+  return l('The theme tools change the Damocles app on your computer, and Damocles is closed.');
+}
+
+/** A theme tool of a chat on a remote host whose device's Damocles predates the relay (user.theme). */
+export function themeOutdatedReason(): LocalizedText {
+  return l('The Damocles on your computer is too old to change its look for a chat on a remote host. Update Damocles there.');
+}
+
+/** A theme tool of a chat on a remote host while the theme tools are off on the device it changes. */
+export function themeOffReason(): LocalizedText {
+  return l('The theme tools are off on your computer. Turn them on in Settings › Appearance there.');
 }
 
 /** A GitHub or GitLab tool of a chat on a remote host while the device it runs on is not attached. */

@@ -217,6 +217,7 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
         clientLanguage: Object.fromEntries(mirrors.clientLanguage),
         clientMcp: Object.fromEntries(mirrors.clientMcp),
         clientForges: Object.fromEntries(mirrors.clientForges),
+        clientFeatures: Object.fromEntries(mirrors.clientFeatures),
       },
     };
   };

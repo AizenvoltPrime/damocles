@@ -1,4 +1,4 @@
-import { onMounted, toValue, watch, type MaybeRefOrGetter } from 'vue';
+import { onMounted, ref, toValue, watch, type MaybeRefOrGetter } from 'vue';
 import { useEventListener } from '@vueuse/core';
 import { injectListboxRootContext } from 'reka-ui';
 import { isEditableTarget } from '@/utils/editable-target';
@@ -13,9 +13,10 @@ const OTHER_WIDGET = '[data-dismissable-layer], [role="menu"], [role="listbox"],
 /**
  * Digits 1-9 answer the dock prompt that holds focus. With focus outside every dock prompt they answer only while
  * one dock prompt is mounted, so a digit never decides a card beside the one the user is answering.
- * `card` is the element carrying `data-dock-prompt`; `answer` returns false when the digit picks nothing.
+ * `card` is the element carrying `data-dock-prompt`; `answer` returns false when the digit picks nothing. This listener is
+ * outside the card, past its hold, so `refuse` (the card's `useTrustedVisibility`) is asked before any answer.
  */
-export function useDockPromptDigits(card: MaybeRefOrGetter<HTMLElement | null | undefined>, answer: (digit: number) => boolean): void {
+export function useDockPromptDigits(card: MaybeRefOrGetter<HTMLElement | null | undefined>, answer: (digit: number) => boolean, refuse: () => boolean): void {
   useEventListener(document, 'keydown', (e: KeyboardEvent) => {
     const element = toValue(card);
     if (!element || e.defaultPrevented || e.repeat || !/^[1-9]$/.test(e.key)) return;
@@ -27,8 +28,19 @@ export function useDockPromptDigits(card: MaybeRefOrGetter<HTMLElement | null | 
     } else if (target?.closest(OTHER_WIDGET) || document.querySelectorAll(DOCK_PROMPT_SELECTOR).length !== 1) {
       return;
     }
+    if (refuse()) return;
     if (answer(Number(e.key))) e.preventDefault();
   });
+}
+
+/**
+ * Whether the card still shows the request the store holds. The store moves to a queued request at once and the page a
+ * flush later, so a second press in the same tick is on the answered request's card and is not for the next one.
+ */
+export function useShownRequest(current: () => string | undefined): () => boolean {
+  const shown = ref(current());
+  watch(current, (id) => { shown.value = id; }, { flush: 'post' });
+  return () => shown.value !== undefined && shown.value === current();
 }
 
 // Dispatched on a dock prompt's options list by `focusDockPrompt`.
@@ -38,11 +50,16 @@ const FORM_FIELD = 'input:not([disabled]), textarea:not([disabled]), select:not(
 const FOCUSABLE = 'button:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /**
- * Focus a dock prompt for a user action that names it (a notification's Review), whatever holds focus: its
- * options list, else its first form field, else its first control. The mount-time hold in
- * `useDockPromptOptionsFocus` does not apply.
+ * Focus a dock prompt for a user action that names it (a notification's Review), whatever holds focus: the control
+ * it marks `data-dock-focus`, else its options list, else its first form field, else its first control. The mount-time
+ * hold in `useDockPromptOptionsFocus` does not apply.
  */
 export function focusDockPrompt(card: HTMLElement): void {
+  const marked = card.querySelector<HTMLElement>('[data-dock-focus]');
+  if (marked) {
+    marked.focus();
+    return;
+  }
   const options = card.querySelector<HTMLElement>('[role="listbox"]');
   // A listbox that is not a `DockPromptOptions` leaves the event unanswered, and the card's fields take focus.
   const answered = options ? !options.dispatchEvent(new CustomEvent(FOCUS_OPTIONS_EVENT, { cancelable: true })) : false;

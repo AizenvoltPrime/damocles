@@ -28,13 +28,15 @@ const props = defineProps({
   areaLabel: { type: String, required: true },
   areaThumbLabel: { type: String, required: true },
   hueLabel: { type: String, required: true },
-  opacityLabel: { type: String, required: true },
+  opacityLabel: { type: String, default: undefined },
   hexLabel: { type: String, required: true },
   previewLabel: { type: String, required: true },
   // full localized value texts, so a translation may reorder or reformat the numbers
   areaValueText: { type: Function as PropType<(saturation: number, brightness: number) => string>, required: true },
   hueValueText: { type: Function as PropType<(degrees: number) => string>, required: true },
-  opacityValueText: { type: Function as PropType<(percent: number) => string>, required: true },
+  opacityValueText: { type: Function as PropType<(percent: number) => string>, default: undefined },
+  // a color with no transparency: no opacity slider or percent, and the hex field takes six digits only
+  opaque: { type: Boolean, default: false },
 })
 
 const emits = defineEmits<{
@@ -50,14 +52,15 @@ function canonical(color: Color): HexColor {
 }
 
 // The picker's own hsb is the state every part shows; reka's parts keep copies that lose the hue on a gray.
-const color = ref<HSBColor>(convertToHsb(normalizeColor(props.modelValue)))
+const solid = (next: HSBColor): HSBColor => (props.opaque ? { ...next, alpha: 1 } : next)
+const color = ref<HSBColor>(solid(convertToHsb(normalizeColor(props.modelValue))))
 const draft = computed(() => canonical(color.value))
 let committed = props.modelValue
 
 // A gray has no hue and black no saturation, so a color given without them keeps the picker's.
 function adopt(next: Color): HSBColor {
   const hsb = convertToHsb(next)
-  return { ...hsb, h: hsb.s === 0 || hsb.b === 0 ? color.value.h : hsb.h, s: hsb.b === 0 ? color.value.s : hsb.s }
+  return solid({ ...hsb, h: hsb.s === 0 || hsb.b === 0 ? color.value.h : hsb.h, s: hsb.b === 0 ? color.value.s : hsb.s })
 }
 
 watch(() => props.modelValue, (value) => {
@@ -139,7 +142,7 @@ const opaqueRgb = computed(() => {
 const HUE_TRACK = getSliderBackgroundStyle({ space: "hsb", h: 0, s: 100, b: 100, alpha: 1 }, "hue", "hsb")
 // The thumb sits on any picked color, so its ring is white in both themes, not a theme token. The ring paints over the
 // shadow, so the dark edge spreads 3px to show 1px outside the 2px ring.
-const THUMB = "block size-4 rounded-full ring-2 ring-white shadow-[0_0_0_3px_var(--d-scrim),0_1px_3px_var(--d-scrim)] outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent)"
+const THUMB = "block size-4 rounded-full ring-2 ring-white shadow-[0_0_0_3px_var(--d-scrim),0_1px_3px_var(--d-scrim)] outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent-fill)"
 const SLIDER = "relative flex h-4 w-full touch-none items-center select-none"
 const CHECKERBOARD = "bg-[repeating-conic-gradient(var(--d-border2)_0_25%,var(--d-panel)_0_50%)] bg-size-[0.5rem_0.5rem]"
 </script>
@@ -199,6 +202,7 @@ const CHECKERBOARD = "bg-[repeating-conic-gradient(var(--d-border2)_0_25%,var(--
       />
     </SliderRoot>
     <SliderRoot
+      v-if="!opaque"
       :model-value="[color.alpha * 100]"
       :min="0"
       :max="100"
@@ -215,7 +219,7 @@ const CHECKERBOARD = "bg-[repeating-conic-gradient(var(--d-border2)_0_25%,var(--
       <SliderThumb
         :class="THUMB"
         :aria-label="opacityLabel"
-        :aria-valuetext="opacityValueText(opacity)"
+        :aria-valuetext="opacityValueText?.(opacity)"
       />
     </SliderRoot>
     <div class="flex items-center gap-2">
@@ -235,9 +239,11 @@ const CHECKERBOARD = "bg-[repeating-conic-gradient(var(--d-border2)_0_25%,var(--
         <ColorPickerHexInput
           :label="hexLabel"
           :escaped="() => escaped"
+          :opaque="opaque"
         />
       </ColorFieldRoot>
       <span
+        v-if="!opaque"
         aria-hidden="true"
         class="w-9 shrink-0 text-right text-12 text-(--d-muted) tabular-nums"
       >{{ opacity }}%</span>

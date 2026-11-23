@@ -111,7 +111,7 @@ function setup(width = 1200) {
     onAllowYolo: async () => false,
     connection: () => undefined,
     onQueueAction: () => undefined,
-    takeCoreMessage: () => false,
+    takeCoreMessage: (_panel, _type, json) => json,
     openRemoteLink: () => undefined,
     states,
     pages: tabs,
@@ -120,7 +120,9 @@ function setup(width = 1200) {
     onRestack: () => undefined,
     onReveal: () => undefined,
     onRendererGaveUp: () => undefined,
+    onRendererGone: () => undefined,
     onSavedSessionChange: () => undefined,
+    onModalChange: () => undefined,
     popupOpen: () => false,
     withholds: () => false,
   }, (p) => p);

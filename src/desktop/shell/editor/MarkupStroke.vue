@@ -26,7 +26,7 @@ const d = computed(() => (props.mark.type === 'pen'
     pathLength="1"
     data-testid="design-markup-stroke"
     data-type="box"
-    :class="[STROKE_CLASS, 'fill-[color-mix(in_srgb,var(--d-design)_8%,transparent)]', animates && 'd-draw']"
+    :class="[STROKE_CLASS, 'fill-[color-mix(in_srgb,var(--d-design-fill)_8%,transparent)]', animates && 'd-draw']"
     :style="drawIn"
     :stroke-width="STROKE_PX / scale"
   />

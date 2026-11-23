@@ -29,7 +29,7 @@ const designStore = useDesignStore();
 const { available: canOpenInBrowser } = useOpenDesignInBrowser();
 const { available: canOpenPreview } = useOpenDesignPreview();
 
-const CHIP = 'd-press h-6 min-w-0 gap-1.5 rounded-full border border-(--d-border2) bg-(--d-card) px-2 text-11.5 font-normal text-(--d-muted) hover:border-[color-mix(in_srgb,var(--d-design)_45%,var(--d-border2))] hover:bg-(--d-card) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-design) focus-visible:ring-offset-0 disabled:opacity-(--d-opacity-disabled) [&_svg]:size-3';
+const CHIP = 'd-press h-6 min-w-0 gap-1.5 rounded-full border border-(--d-border2) bg-(--d-card) px-2 text-11.5 font-normal text-(--d-muted) hover:border-[color-mix(in_srgb,var(--d-design-fill)_45%,var(--d-border2))] hover:bg-(--d-card) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-design-fill) focus-visible:ring-offset-0 disabled:opacity-(--d-opacity-disabled) [&_svg]:size-3';
 
 const parentTitle = computed(() => props.design.parentTitle ?? t('design.header.parentChat'));
 const fileList = computed(() => designStore.fileLists[props.design.designId]);
@@ -256,7 +256,7 @@ watch(() => props.design.decisions.length, async (count, previous) => {
         <!-- The edge fade masks the strip's own outline, so its focus ring is drawn on this wrapper. -->
         <div
           v-else
-          class="relative h-full min-w-0 flex-1 rounded-full has-focus-visible:outline-2 has-focus-visible:outline-(--d-design)"
+          class="relative h-full min-w-0 flex-1 rounded-full has-focus-visible:outline-2 has-focus-visible:outline-(--d-design-fill)"
           @pointerenter="onPointerEnter"
           @pointerleave="onPointerLeave"
         >
@@ -275,7 +275,7 @@ watch(() => props.design.decisions.length, async (count, previous) => {
             <TransitionGroup
               ref="stripRow"
               tag="ul"
-              enter-active-class="animate-[d-pop_.26s_var(--ease-spring)]"
+              enter-active-class="d-pop-spring"
               class="flex w-max flex-none items-center gap-1"
             >
               <li

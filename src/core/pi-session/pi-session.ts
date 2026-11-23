@@ -35,7 +35,7 @@ import {
   migrateLegacyEffortValue,
   parseEffortLevel,
 } from "../../shared/types/constants";
-import { PLAN_MODE_TOOLS, TEAM_CREATE_TOOL, WRITE_TOOLS } from "../../shared/tool-names";
+import { PLAN_MODE_TOOLS, TEAM_CREATE_TOOL, TOOL_GENERATE_IMAGE, WRITE_TOOLS } from "../../shared/tool-names";
 import { modelLabel } from "../../shared/model-vendor";
 import { ChatReview, type ChatChangeTotals, type ChatReviewSnapshot, type CommentPlace, type DraftComment, type ReviewSubmitOutcome } from "./chat-review";
 import { SessionWorktree } from "./session-worktree";
@@ -222,7 +222,8 @@ import {
 } from "./checkpoints";
 import { SUBAGENT_PI_TOOL_NAMES } from "./tools/tool-catalog";
 import { IMAGE_ENABLED_SETTING, IMAGE_MODEL_SETTING, IMAGE_PI_TOOL_NAMES } from "./tools/image-tool-specs";
-import { imageAvailability, type ImageRuntime } from "./tools/image-tools";
+import { generateImage, imageAvailability, type ImageRuntime } from "./tools/image-tools";
+import { themeSourceRefusal, type ThemeSourceReach } from "../themes/sources";
 import { assembleDamoclesSystemPrompt, renderSections, resolveSkillFileReadTool, type DamoclesPromptSections } from "./agent-start";
 import type { McpToolSource, McpUserResourcePort } from "./mcp/tool-source";
 import { isMcpToolName, isNestedMcpName } from "./mcp/naming";
@@ -272,8 +273,11 @@ import {
   mcpDeferrableNames,
   type ToolStatusDeps,
 } from "./tool-status";
-import { deferredToolNames, loadableToolNames, nestedAgentToolNames } from "./tools/deferred-tools";
-import { forgeGroupUnavailable, userScopeReach } from "../user-scope";
+import { deferredToolNames, loadableToolNames, nestedAgentToolNames, nestedLoadableToolNames } from "./tools/deferred-tools";
+import { THEME_PI_TOOL_NAMES } from "./tools/theme-tool-specs";
+import { attachedImagesOf, createLocalThemeBackend, type ThemeBackend, type ThemeToolsHost } from "./tools/theme-tools";
+import { relayedThemeBackend } from "./tools/theme-relay";
+import { forgeGroupUnavailable, themeGroupUnavailable, userScopeReach } from "../user-scope";
 import { resourceToolsExposure } from "./mcp/exposure";
 import { restoredDeferredTools } from "./tools/restored-tools";
 import { MCP_STARTUP_WAIT_MS, waitForPendingDirectServers } from "./mcp/startup-wait";
@@ -896,6 +900,7 @@ export class PiSession implements ChatSession {
   private readonly shellCancel = new ShellCancelStore();
   /** A desktop chat's GitHub and GitLab tools, for it and every agent it starts. */
   private readonly forgeTools: ForgeToolsPort | undefined;
+  private readonly themeDraftSessions = new Set<string>();
   // the credential registrations of shell calls that left a job running, ended with the session job that kills those jobs
   private readonly backgroundShellCredentials = new Set<CredentialRegistration>();
   // Panel-scoped, not conversation-scoped: reset() and clear() swap the pi session but keep this instance, so a
@@ -1154,6 +1159,21 @@ export class PiSession implements ChatSession {
         ...(this.options.platform.remote ? { browserRelay: this.options.platform.remote } : {}),
         browserServedFiles: this.browserServedFiles(),
         ...(this.forgeTools ? { forgeTools: this.forgeTools } : {}),
+        ...(this.options.themeTools ? {
+          themeTools: {
+            backend: this.themeBackend(this.options.themeTools),
+            cards: this.options.permissionHandler,
+            isPlanMode: () => this.isPlanMode(),
+            chat: () => this.themeChat(),
+            attachedImages: () => this.themeAttachedImages(),
+            cwd: () => this.cwd,
+            sourceReach: () => this.themeSourceReach(),
+            generateImage: async (prompt, toolCallId, signal) => {
+              const model = this.options.permissionHandler.takeApprovedImageModel(toolCallId) ?? this.imageModelId();
+              return { model, generation: await generateImage(this.imageRuntime(), model, prompt, signal) };
+            },
+          },
+        } : {}),
         getSessionId: () => this.memorySessionId,
         getPlanFilePath: () => this.getPlanFilePath(),
         ...(subagents ? { subagentManager: subagents, userInput: this.userInput } : {}),
@@ -1484,6 +1504,7 @@ export class PiSession implements ChatSession {
       ...(this.forgeTools ? { forgeTools: this.forgeTools } : {}),
       designPrompt: () => this.design.promptInputs(),
       ...(described && subagents ? { agentTypes: () => ({ described, live: subagents.getSpawnableAgents() }) } : {}),
+      themeSourceRefusal: (source) => themeSourceRefusal(source, this.themeSourceReach()),
     };
     folder.registerPanel(sessionId, gate);
     this.registeredGate = gate;
@@ -3878,6 +3899,55 @@ export class PiSession implements ChatSession {
     return this.resetPromise ?? Promise.resolve();
   }
 
+  // The images the user attached to this chat's messages, in order, for ThemeSet's asset.from.attachment.
+  private themeAttachedImages(): ReadonlyArray<{ readonly data: string; readonly mimeType: string }> {
+    return attachedImagesOf(this.runtime?.session.sessionManager.getBranch() ?? []);
+  }
+
+  /** Whether web search and image generation can serve a theme asset source now: the switches GenerateImage and WebFetch follow. */
+  private themeSourceReach(): ThemeSourceReach {
+    const imageOn = this.options.platform.settings.get<boolean>(IMAGE_ENABLED_SETTING, false) && !this.disabledToolSet().has(TOOL_GENERATE_IMAGE);
+    const availability = imageAvailability(this.imageModelId(), this.imageRuntime());
+    return { webSearch: isWebSearchEnabled(), imageGeneration: !imageOn ? "off" : availability.available ? "on" : availability.reason };
+  }
+
+  /** The chat's own project for a project look: a chat worktree's is its project's, keyed as the desktop lists it. */
+  private themeProject(): { readonly key: string; readonly name: string } {
+    const folder = this.themeFolder();
+    return { key: folderKey(folder), name: path.basename(folder) || folder };
+  }
+
+  private themeFolder(): string {
+    return worktreeProjectOf(this.cwd) ?? this.cwd;
+  }
+
+  /** This computer's store for its own chats; on a daemon's core the device the turn is pinned to, which maps the folder to its project. */
+  private themeBackend(host: ThemeToolsHost): ThemeBackend {
+    if ("relayed" in host) return relayedThemeBackend({ remote: host.relayed, folder: () => this.themeFolder() });
+    return createLocalThemeBackend(host, { project: () => this.themeProject() });
+  }
+
+  /** The theme tools' chat: the session they run in, remembered so its drafts go with the panel. */
+  private themeChat(): { readonly id: string; readonly title?: string } | undefined {
+    const session = this.runtime?.session;
+    if (!session) return undefined;
+    this.themeDraftSessions.add(session.sessionId);
+    const title = session.sessionManager.getSessionName();
+    return { id: session.sessionId, ...(title ? { title } : {}) };
+  }
+
+  /** Every draft the theme tools made in this panel's sessions goes with it. */
+  private disposeThemeDrafts(): void {
+    const host = this.options.themeTools;
+    // a relayed chat's drafts are the device's, which expires them
+    if (!host || "relayed" in host) return;
+    for (const sessionId of this.themeDraftSessions) {
+      host.themes.drafts.removeOwnedBy({ authority: host.authority, sessionId })
+        .catch((err: unknown) => log("[PiSession] the theme drafts of session %s could not be removed: %O", sessionId, err));
+    }
+    this.themeDraftSessions.clear();
+  }
+
   dispose(): Promise<void> {
     const disposal = this.runDispose();
     this.disposal = disposal;
@@ -3890,6 +3960,7 @@ export class PiSession implements ChatSession {
     this.design.dispose();
     this.designSettingSubscription.dispose();
     this.servedPagesBinding?.dispose();
+    this.disposeThemeDrafts();
     // Before `_disposed`, which silences `emit`: nothing queued or still on its way to pi was sent, so it goes back to the composer.
     this.returnQueue(this.runtime?.session, true);
     this.stopSends(true);
@@ -4549,8 +4620,8 @@ export class PiSession implements ChatSession {
    * dialog back on screen, which is what the user expects a reload to do.
    *
    * `retainContextWhenHidden` means this is not routine hide/show, so it costs nothing in normal use.
-   * Every re-post carries the exact message the prompt was first posted with, so nothing is rebuilt
-   * and nothing can drift from what the awaiter is waiting on.
+   * Every re-post carries the request the prompt holds now (a theme card's update replaces it, and a
+   * per-device prompt is built per device), so nothing can drift from what the awaiter is waiting on.
    */
   onWebviewReady(): void {
     // the reloaded webview shows no counter until it hears the totals again
@@ -5093,6 +5164,9 @@ export class PiSession implements ChatSession {
       forgeAvailable: this.forgeTools !== undefined,
       forgeEnabled: this.options.platform.settings.get<boolean>(TOOL_GROUP_SETTINGS.forge, true),
       forgeUnavailable: forgeGroupUnavailable(),
+      themeUnavailable: themeGroupUnavailable(),
+      themeAvailable: this.options.themeTools !== undefined,
+      themeEnabled: this.options.platform.settings.get<boolean>(TOOL_GROUP_SETTINGS.theme, true),
       mcpEnabled: this.isMcpEnabled(),
       mcpToolNames: this.mcpToolNames(),
       mcpDeferrableToolNames: this.mcpClientManager()?.deferrableToolNames() ?? [],
@@ -5100,7 +5174,7 @@ export class PiSession implements ChatSession {
       disabled: this.disabledToolSet(),
       ...(this.options.platform.remote ? { hostSettings: this.options.platform.settings } : {}),
       designEnabled: this.design.enabled(),
-      designRole: this.design.role() !== undefined,
+      designRole: this.design.isDesignChat(),
       ruleSet: this.design.ruleSet(),
     };
   }
@@ -6914,7 +6988,7 @@ export class PiSession implements ChatSession {
 
   /** What a team agent's ToolSearch may load, read at spawn: its toolset drops every other deferred built-in tool. */
   private teamAgentLoadableToolNames(mcp: NestedMcpToolset): string[] {
-    return loadableToolNames(deferredToolNames([...this.teamAgentBaseToolNames(), ...mcp.names], mcp.deferrable), userScopeReach(), this.design.role() !== undefined);
+    return nestedLoadableToolNames(loadableToolNames(deferredToolNames([...this.teamAgentBaseToolNames(), ...mcp.names], mcp.deferrable), userScopeReach(), this.design.role() !== undefined));
   }
 
   /**
@@ -6935,6 +7009,7 @@ export class PiSession implements ChatSession {
       ...PLAN_MODE_TOOLS,
       ...IMAGE_PI_TOOL_NAMES,
       ...DESIGN_PI_TOOL_NAMES,
+      ...THEME_PI_TOOL_NAMES,
     ]);
     return this.fullActiveToolNames().filter((name) => !exclude.has(name) && !isNestedMcpName(name));
   }

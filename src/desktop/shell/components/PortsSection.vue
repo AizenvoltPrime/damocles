@@ -227,7 +227,7 @@ function rowTitle(row: PortRow): string {
   return [forward, row.viaWsl ? t('ports.viaWsl') : undefined, row.processLabel].filter((part) => part !== undefined && part !== '').join(' · ');
 }
 
-const ROW_BUTTON = 'd-press size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) [&_svg]:size-3.5';
+const ROW_BUTTON = 'd-press size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) [&_svg]:size-3.5';
 </script>
 
 <template>
@@ -269,7 +269,7 @@ const ROW_BUTTON = 'd-press size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-b
         <p
           v-if="view.autoForwardMode === 'outputOnly'"
           data-testid="ports-output-only"
-          class="mb-1 flex items-center gap-1.5 rounded-lg bg-[color-mix(in_srgb,var(--d-warning)_10%,transparent)] px-2 py-1 text-11 text-(--d-warning-text)"
+          class="mb-1 flex items-center gap-1.5 rounded-lg bg-[color-mix(in_srgb,var(--d-warning-fill)_10%,transparent)] px-2 py-1 text-11 text-(--d-warning-text)"
         >
           <span class="min-w-0 flex-1">{{ t('ports.outputOnly') }}</span>
           <Button
@@ -341,7 +341,7 @@ const ROW_BUTTON = 'd-press size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-b
             :data-copied="copiedKey === row.key || undefined"
             :tabindex="index === activeIndex ? 0 : -1"
             :title="rowTitle(row)"
-            class="group/port relative flex h-8 shrink-0 items-center gap-2 rounded-lg pr-1 pl-2 outline-none focus-within:bg-(--d-hover) hover:bg-(--d-hover) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-inset data-copied:bg-(--d-hover) data-menu-open:bg-(--d-hover)"
+            class="group/port relative flex h-8 shrink-0 items-center gap-2 rounded-lg pr-1 pl-2 outline-none focus-within:bg-(--d-hover) hover:bg-(--d-hover) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-inset data-copied:bg-(--d-hover) data-menu-open:bg-(--d-hover)"
             :class="arrived.has(row.key) ? 'd-row-arrive' : ''"
             @animationend.self="settled(row.key)"
             @focusin="active = index"
@@ -380,7 +380,7 @@ const ROW_BUTTON = 'd-press size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-b
                   >localhost:{{ row.localPort }}</span></Transition><span
                     v-if="row.viaWsl"
                     data-testid="port-via-wsl"
-                    class="ms-1.5 inline-flex h-4 items-center rounded-5 bg-(--d-info)/15 px-1.25 align-[0.0625rem] font-sans text-10 font-semibold text-(--d-info-text)"
+                    class="ms-1.5 inline-flex h-4 items-center rounded-5 bg-(--d-info-fill)/15 px-1.25 align-[0.0625rem] font-sans text-10 font-semibold text-(--d-info-text)"
                     :title="t('ports.viaWslTitle')"
                   ><span class="sr-only">, </span>{{ t('ports.viaWsl') }}</span>
                 </template>
@@ -406,7 +406,7 @@ const ROW_BUTTON = 'd-press size-5.5 rounded-md text-(--d-muted) hover:bg-(--d-b
                 type="button"
                 variant="outline"
                 data-testid="port-forward"
-                class="d-press h-5.5 rounded-md border-(--d-border2) bg-transparent px-2 text-11 font-medium text-(--d-text) hover:border-(--d-accent) hover:bg-(--d-accent-soft) hover:text-(--d-accent-text) focus-visible:ring-1 focus-visible:ring-(--d-accent)"
+                class="d-press h-5.5 rounded-md border-(--d-border2) bg-transparent px-2 text-11 font-medium text-(--d-text) hover:border-(--d-accent-fill) hover:bg-(--d-accent-soft) hover:text-(--d-accent-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill)"
                 :tabindex="index === activeIndex ? 0 : -1"
                 :disabled="!connected"
                 :aria-label="t('ports.forwardRow', { port: remoteText(row) })"

@@ -88,7 +88,7 @@ const prompt = computed(() => (props.event.prompt?.kind === 'secret' ? props.eve
     >
       <span
         class="timeline-bar block h-full rounded-full"
-        :class="event.step === 'failed' ? 'bg-(--d-danger)' : 'bg-(--d-accent)'"
+        :class="event.step === 'failed' ? 'bg-(--d-danger-fill)' : 'bg-(--d-accent-fill)'"
         :style="{ transform: `scaleX(${rows.length === 0 ? 0 : (event.step === 'connected' ? rows.length : doneCount) / rows.length})` }"
       />
     </div>
@@ -116,7 +116,7 @@ const prompt = computed(() => (props.event.prompt?.kind === 'secret' ? props.eve
           >
             <span
               data-testid="install-progress"
-              class="timeline-bar block h-full rounded-full bg-(--d-accent)"
+              class="timeline-bar block h-full rounded-full bg-(--d-accent-fill)"
               :style="{ transform: `scaleX(${progress})` }"
             />
           </span>
@@ -141,7 +141,7 @@ const prompt = computed(() => (props.event.prompt?.kind === 'secret' ? props.eve
             role="alert"
             data-testid="connect-failure"
             :data-code="shownFailure?.code"
-            class="timeline-grow mt-1.5 rounded-8 bg-(--d-danger)/12 px-2.5 py-2 font-mono text-11.5 text-(--d-danger-text)"
+            class="timeline-grow mt-1.5 rounded-8 bg-(--d-danger-fill)/12 px-2.5 py-2 font-mono text-11.5 text-(--d-danger-text)"
           >
             {{ failure }}
           </p>

@@ -224,6 +224,8 @@ resources/icon.ico
 resources/shell-integration/**
 resources/askpass/**
 resources/git-credential/**
+resources/themes/**
+schemas/**
 
 # Python sidecar dev artefacts (the runtime ships in dist/, not from source tree)
 python/**/.venv/**

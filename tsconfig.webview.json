@@ -48,6 +48,7 @@
     "noUncheckedSideEffectImports": true,
 
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,

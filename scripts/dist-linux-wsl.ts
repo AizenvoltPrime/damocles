@@ -19,7 +19,7 @@ const ARCH_BY_UNAME: Record<string, 'x64' | 'arm64'> = { x86_64: 'x64', aarch64:
 const USAGE = `Usage: npm run dist:linux-wsl -- [--distro <name>]
 
   --distro   WSL distro to build in (default: the default distro). It needs Node 24 or later (on PATH, or through nvm),
-             rpm (rpmbuild) and a glibc userland; the artifacts are for its architecture.
+             rpm (rpmbuild and rpm2cpio), dpkg-deb and a glibc userland; the artifacts are for its architecture.
 
 The build tree stays at ~/${BUILD_DIR_NAME} in the distro for installing and testing; the next run replaces it.`;
 
@@ -115,7 +115,8 @@ wsl(
     `tar -C ${sh(wslRepoRoot)} --null --no-recursion -T ${sh(`${wslRepoRoot}/${MANIFEST_NAME}`)} -cf - | (cd "$BUILD_DIR" && tar -xf -)`,
     'cd "$BUILD_DIR"',
     ...WSL_NODE_SETUP,
-    'command -v rpmbuild >/dev/null || { echo "rpmbuild is required: sudo apt-get install rpm"; exit 1; }',
+    // rpmbuild builds the rpm; the package check reads the rpm through rpm2cpio and the deb through dpkg-deb
+    'for tool in rpmbuild rpm2cpio dpkg-deb; do command -v "$tool" >/dev/null || { echo "$tool is required (rpmbuild and rpm2cpio come with the rpm package, dpkg-deb with dpkg)"; exit 1; }; done',
     'npm ci',
     'npm run build',
     'npm run build:desktop',

@@ -198,7 +198,7 @@ const removedText = computed(() => {
     />
     <div
       v-if="removed && !removed.ok"
-      class="flex flex-wrap items-center gap-2 rounded-8 bg-(--d-danger)/12 px-2.5 py-2"
+      class="flex flex-wrap items-center gap-2 rounded-8 bg-(--d-danger-fill)/12 px-2.5 py-2"
     >
       <p
         role="alert"

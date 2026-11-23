@@ -9,31 +9,34 @@ const props = defineProps<{
   label: string;
   format?: (value: number) => string;
   disabled?: boolean;
+  /** Also emits while the thumb is dragged, for a value that previews and is written by a later Save. */
+  live?: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: number): void;
 }>();
 
-// The thumb follows the drag at once; the value is saved only on release, never per input event.
-const live = ref(props.modelValue);
+// The thumb follows the drag at once; without `live` the value is emitted only on release, never per input event.
+const shown = ref(props.modelValue);
 const dragging = ref(false);
 watch(() => props.modelValue, (value) => {
-  if (!dragging.value) live.value = value;
+  if (!dragging.value) shown.value = value;
 });
 
-const fill = computed(() => `${((live.value - props.min) / (props.max - props.min)) * 100}%`);
-const shown = computed(() => (props.format ? props.format(live.value) : String(live.value)));
+const fill = computed(() => `${((shown.value - props.min) / (props.max - props.min)) * 100}%`);
+const text = computed(() => (props.format ? props.format(shown.value) : String(shown.value)));
 
 function onInput(event: Event): void {
   dragging.value = true;
-  live.value = Number((event.target as HTMLInputElement).value);
+  shown.value = Number((event.target as HTMLInputElement).value);
+  if (props.live && shown.value !== props.modelValue) emit('update:modelValue', shown.value);
 }
 
 function onChange(event: Event): void {
   dragging.value = false;
   const value = Number((event.target as HTMLInputElement).value);
-  live.value = value;
+  shown.value = value;
   if (value !== props.modelValue) emit('update:modelValue', value);
 }
 </script>
@@ -45,9 +48,9 @@ function onChange(event: Event): void {
       :min="min"
       :max="max"
       :step="step ?? 1"
-      :value="live"
+      :value="shown"
       :aria-label="label"
-      :aria-valuetext="shown"
+      :aria-valuetext="text"
       :disabled="disabled"
       :data-dragging="dragging ? '' : undefined"
       :style="{ '--sm-fill': fill }"
@@ -57,6 +60,6 @@ function onChange(event: Event): void {
     <output
       class="sm-slider-value"
       aria-hidden="true"
-    >{{ shown }}</output>
+    >{{ text }}</output>
   </div>
 </template>

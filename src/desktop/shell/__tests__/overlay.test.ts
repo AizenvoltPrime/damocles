@@ -273,7 +273,7 @@ describe('overlay requests', () => {
     const cancel = wrapper.get('[data-testid="overlay-confirm-cancel"]');
     const accept = wrapper.get('[data-testid="overlay-confirm-accept"]');
     expect(document.activeElement).toBe(cancel.element);
-    expect(accept.classes()).toEqual(expect.arrayContaining(['bg-(--d-danger)', 'text-(--d-on-danger)']));
+    expect(accept.classes()).toEqual(expect.arrayContaining(['bg-(--d-danger-fill)', 'text-(--d-on-danger)']));
 
     press('Tab');
     expect(document.activeElement).toBe(cancel.element);
@@ -1386,7 +1386,7 @@ describe('command palette', () => {
       expect(field(wrapper).value).toBe('C:\\tmp\\src\\');
       expect(field(wrapper).selectionStart).toBe('C:\\tmp\\src\\'.length);
       expect(queries().at(-1)).toBe('C:\\tmp\\src\\');
-      const slides = (name: string): boolean => rowOf(wrapper, LISTING[1]!).classes().some((css) => css.startsWith(`animate-[${name}_`));
+      const slides = (name: string): boolean => rowOf(wrapper, LISTING[1]!).classes().includes(name);
       // the folder's rows slide in from the end going down, from the start going up
       expect(slides('d-pane-in')).toBe(true);
 
@@ -1399,7 +1399,7 @@ describe('command palette', () => {
       press('Enter', { shiftKey: true });
       await flushPromises();
       expect(field(wrapper).value).toBe('C:\\');
-      expect(slides('d-slide')).toBe(true);
+      expect(slides('d-slide-in')).toBe(true);
       expect(document.activeElement).toBe(field(wrapper));
       expect(api.answer).not.toHaveBeenCalled();
     });
@@ -1407,7 +1407,7 @@ describe('command palette', () => {
     it('slides in only the rows a folder\'s entry rendered before the list scrolled', async () => {
       const many = Array.from({ length: 200 }, (_, i) => file(`f${String(i).padStart(3, '0')}.txt`, { input: `C:\\tmp\\f${i}.txt` }));
       const wrapper = await typed((query) => (query.query === 'C:\\tmp\\src\\' ? { generation: query.generation, mention: false, results: many } : listing()(query)));
-      const slides = (result: QuickOpenResult): boolean => rowOf(wrapper, result).classes().some((css) => css.startsWith('animate-[d-pane-in_'));
+      const slides = (result: QuickOpenResult): boolean => rowOf(wrapper, result).classes().includes('d-pane-in');
       press('Enter');
       await flushPromises();
       expect(slides(many[0]!)).toBe(true);

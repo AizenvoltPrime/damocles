@@ -52,9 +52,31 @@
     "remove": "Remove project",
     "menuLabel": "Actions for {name}",
     "removeRefused": "Could not remove project {name}: {reason}",
+    "look": {
+      "action": "Project look…",
+      "mark": {
+        "touches": "Has touches on its theme",
+        "full": "Has its own theme"
+      },
+      "saved": {
+        "touches": "Saved the touches for {name}.",
+        "full": "{name} now has its own theme: {theme}.",
+        "fullMissing": "{name} now has its own theme, {theme}, which is missing or can't be used, so Damocles' own look shows for it.",
+        "fullMissingUnknown": "{name} now has its own theme, which is missing, so Damocles' own look shows for it."
+      },
+      "savedNone": "{name} now uses the current theme.",
+      "shows": "It shows whenever {name} is open.",
+      "failed": "Could not save the look of {name}: {reason}"
+    },
     "keyboardHelp": "Arrow keys move, Enter selects or opens a group, Alt+Up and Alt+Down reorder, Shift+F10 opens the menu.",
     "home": "Home folder",
     "worktreeOf": "A worktree of {project}, opened as its own project",
+    "character": "{project} character, {state}",
+    "characterState": {
+      "idle": "idle",
+      "running": "running",
+      "waiting": "waiting"
+    },
     "hostState": "{host}, {state}",
     "remoteTitle": "{host}: {path}",
     "presence": {
@@ -356,12 +378,528 @@
       "branches": "Branches and repositories",
       "fetchSync": "Fetch and sync",
       "clone": "Clone",
-      "gitEditor": "Editor"
+      "gitEditor": "Editor",
+      "themes": "Themes",
+      "iconsAndMotion": "Icons and motion"
     },
     "theme": {
       "dark": "Dark",
       "light": "Light",
       "system": "System"
+    },
+    "themes": {
+      "copyName": "{name} copy",
+      "newName": "New theme",
+      "installed": "Installed",
+      "newTheme": "New theme",
+      "undo": "Undo theme change",
+      "undoBlocked": "A newer Damocles made the last theme change, so this one cannot undo it.",
+      "reset": "Reset to default",
+      "builtIn": "Built-in",
+      "showing": "Showing",
+      "delete": "Delete",
+      "cancel": "Cancel",
+      "deleteNamed": "Delete {name}",
+      "showFileNamed": "Show file of {name}",
+      "more": "More actions for {name}",
+      "mode": {
+        "status": {
+          "system": {
+            "dark": "Showing {name}, dark look. The computer is in dark mode.",
+            "light": "Showing {name}, light look. The computer is in light mode."
+          },
+          "mode": {
+            "dark": "Showing {name}, dark look. The mode is Dark.",
+            "light": "Showing {name}, light look. The mode is Light."
+          },
+          "forcedColors": {
+            "dark": "Windows contrast themes are on, so Damocles' own dark look shows.",
+            "light": "Windows contrast themes are on, so Damocles' own light look shows."
+          },
+          "safeStart": {
+            "dark": "Showing Damocles, dark look: your theme is paused for this run.",
+            "light": "Showing Damocles, light look: your theme is paused for this run."
+          },
+          "schedule": {
+            "dark": "Showing {name}, dark look. The schedule shows it until {when}.",
+            "light": "Showing {name}, light look. The schedule shows it until {when}."
+          },
+          "scheduleAllWeek": {
+            "dark": "Showing {name}, dark look. The schedule shows it all week.",
+            "light": "Showing {name}, light look. The schedule shows it all week."
+          },
+          "override": {
+            "dark": "Showing your pick, {name}, dark look, until {when}; then the schedule resumes.",
+            "light": "Showing your pick, {name}, light look, until {when}; then the schedule resumes."
+          },
+          "overrideAllWeek": {
+            "dark": "Showing your pick, {name}, dark look, over the schedule.",
+            "light": "Showing your pick, {name}, light look, over the schedule."
+          },
+          "project": {
+            "dark": "Showing {name}, dark look: the selected project's own look.",
+            "light": "Showing {name}, light look: the selected project's own look."
+          }
+        },
+        "touched": "The selected project's own look adds touches on top.",
+        "other": {
+          "system": {
+            "dark": "Your dark look, {name}, shows while the computer is in dark mode.",
+            "light": "Your light look, {name}, shows while the computer is in light mode."
+          },
+          "mode": {
+            "dark": "Your dark look, {name}, shows when the mode is Dark.",
+            "light": "Your light look, {name}, shows when the mode is Light."
+          }
+        }
+      },
+      "missing": {
+        "dark": "The theme of your dark look is missing or can't be read, so Damocles, dark look shows instead.",
+        "light": "The theme of your light look is missing or can't be read, so Damocles, light look shows instead."
+      },
+      "groups": {
+        "dark": "Dark look",
+        "light": "Light look"
+      },
+      "lookName": {
+        "dark": "Dark",
+        "light": "Light"
+      },
+      "noLook": {
+        "dark": "No dark look",
+        "light": "No light look"
+      },
+      "pick": {
+        "dark": "{name}, dark",
+        "darkActive": "{name}, dark, active",
+        "darkSelected": "{name}, dark, selected",
+        "light": "{name}, light",
+        "lightActive": "{name}, light, active",
+        "lightSelected": "{name}, light, selected"
+      },
+      "miniature": {
+        "both": "{name}, dark and light looks",
+        "dark": "{name}, dark look",
+        "light": "{name}, light look"
+      },
+      "looks": {
+        "both": "Dark and light",
+        "dark": "Dark only",
+        "light": "Light only"
+      },
+      "origin": {
+        "builtin": "Built-in",
+        "created": "Created",
+        "copyOf": "Copy of {name}",
+        "copy": "Copy",
+        "import": "Imported file",
+        "vscode": "Imported from VS Code",
+        "link": "From a link",
+        "store": "From the store",
+        "storeVersion": "From the store · {version}"
+      },
+      "tabs": {
+        "label": "Themes",
+        "browse": "Browse"
+      },
+      "store": {
+        "update": "Update {version} is available. Your own edits are kept as a copy.",
+        "updateButton": "Update…",
+        "updateNamed": "Update {name} to {version}",
+        "removed": "Removed from the store: {reason}"
+      },
+      "browse": {
+        "search": "Search community themes",
+        "searchPlaceholder": "Search by name, author or color",
+        "filters": "Filters",
+        "filter": {
+          "dark": "Dark",
+          "light": "Light",
+          "characters": "Characters",
+          "moving": "Moving wallpaper"
+        },
+        "flag": {
+          "css": "Custom CSS",
+          "layout": "Window arrangement",
+          "characters": "Characters",
+          "moving": "Moving wallpaper"
+        },
+        "checked": "Signed community list, checked {time}.",
+        "checkUpdates": "Check for updates",
+        "tryAgain": "Try again",
+        "cached": {
+          "title": "Couldn't check for updates.",
+          "body": "Showing the list saved on {time}. You can still install from it."
+        },
+        "grid": "Community themes",
+        "loading": "Loading community themes",
+        "loadingStatus": "Loading the community list…",
+        "by": "by {author} · {looks}",
+        "looks": {
+          "both": "Dark and light",
+          "dark": "Dark",
+          "light": "Light"
+        },
+        "updateBadge": "Update {version}",
+        "install": "Install…",
+        "installNamed": "Install {name}",
+        "update": "Update…",
+        "updateNamed": "Update {name}",
+        "installed": "Installed",
+        "needsNewer": "Needs a newer Damocles",
+        "needsNewerHint": "Made for Damocles {version} or newer. Update Damocles to install it.",
+        "installBusy": "Another theme is downloading. Wait for it to finish, or cancel it.",
+        "cancelDownload": "Cancel",
+        "cancelDownloadNamed": "Cancel the download of {name}",
+        "none": {
+          "query": "No themes matched “{query}”",
+          "filters": "No themes match these filters",
+          "body": "Try a shorter word or an author's name, or clear the filters.",
+          "clear": "Clear search and filters"
+        },
+        "refused": {
+          "title": "The community list didn't pass its checks",
+          "body": "Damocles shows nothing from a list it can't verify. Your installed themes are not affected. This usually clears up on the next update of the list."
+        },
+        "unreachable": {
+          "title": "Damocles couldn't get the community list",
+          "body": "There is no saved list Damocles can show. Try again, and check your connection if it keeps failing."
+        },
+        "off": {
+          "title": "The community store is off",
+          "body": "With it on, Damocles fetches the signed theme list from GitHub when you open Browse or check for updates, and along with its own update check while a theme from the store is installed. You can still install themes from a file or a link.",
+          "turnOn": "Turn on the store"
+        },
+        "empty": {
+          "title": "No community themes yet",
+          "body": "The signed list holds no themes right now. Check again later, or install a theme from a file or a link."
+        }
+      },
+      "menu": {
+        "label": "{name} actions",
+        "view": "View",
+        "edit": "Edit",
+        "duplicate": "Duplicate",
+        "duplicateBuiltin": "Duplicate to edit",
+        "rename": "Rename…",
+        "export": "Export…",
+        "delete": "Delete…"
+      },
+      "broken": {
+        "title": "Can't read this theme",
+        "note": "Damocles never applies a theme it can't read.",
+        "showFile": "Show file",
+        "unusable": "Fix or delete this theme to use it"
+      },
+      "newer": {
+        "title": "Needs a newer Damocles",
+        "body": "Made for theme format {version}. Update Damocles to use it.",
+        "unusable": "Update Damocles to use this theme"
+      },
+      "rename": {
+        "title": "Rename theme",
+        "name": "Name",
+        "hint": "Up to {max} characters.",
+        "confirm": "Rename",
+        "empty": "Enter a name.",
+        "tooLong": "Use at most {max} characters."
+      },
+      "deleteDialog": {
+        "title": "Delete “{name}”?",
+        "body": "Undo theme change brings it back.",
+        "inUse": {
+          "dark": "It is your dark look now, so Damocles, dark look takes its place. Undo theme change brings it back.",
+          "light": "It is your light look now, so Damocles, light look takes its place. Undo theme change brings it back.",
+          "both": "It is your dark and light look now, so Damocles takes its place. Undo theme change brings it back."
+        }
+      },
+      "history": {
+        "open": "History",
+        "title": "Theme history",
+        "intro": "The last change, yours or the agent's. Restoring it is itself a change you can undo. | The last {n} changes, yours and the agent's. Restoring one is itself a change you can undo.",
+        "empty": {
+          "title": "No theme changes yet",
+          "body": "Your picks and edits, and the changes the agent makes, appear here so you can go back to any of them."
+        },
+        "restore": "Restore",
+        "restoreLabel": "Restore: before {change}",
+        "cannotRestore": "This Damocles cannot undo a change that a newer Damocles made, so it offers no Restore for that change or for the ones before it.",
+        "you": "You",
+        "agent": "Agent in “{title}”",
+        "agentUntitled": "Agent in an untitled chat",
+        "when": "{who} · {time}"
+      },
+      "change": {
+        "pick": {
+          "dark": "Dark look: {theme} (was {was})",
+          "light": "Light look: {theme} (was {was})"
+        },
+        "save": "Edited {theme}",
+        "create": "Created {theme}",
+        "rename": "Renamed {was} to {theme}",
+        "delete": "Deleted {theme}",
+        "reset": "Reset to Damocles, dark and light",
+        "scheduleOn": "Theme schedule on, rules: {n}",
+        "scheduleOff": "Theme schedule off",
+        "withMode": {
+          "system": "{change}; mode System",
+          "dark": "{change}; mode Dark",
+          "light": "{change}; mode Light"
+        },
+        "hold": {
+          "dark": "Showed {theme}, dark look, until the schedule's next change",
+          "light": "Showed {theme}, light look, until the schedule's next change"
+        },
+        "resume": "Resumed the theme schedule",
+        "projectLook": {
+          "none": "{project} uses the current theme again",
+          "touches": "Touches for {project}",
+          "full": "Own theme for {project}"
+        },
+        "savePicked": {
+          "dark": "Edited {theme}, now your dark look",
+          "light": "Edited {theme}, now your light look",
+          "both": "Edited {theme}, now your dark and light looks"
+        },
+        "createPicked": {
+          "dark": "Created {theme}, now your dark look",
+          "light": "Created {theme}, now your light look",
+          "both": "Created {theme}, now your dark and light looks"
+        },
+        "storeRemoved": "Removed from the store: {themes}",
+        "wallpapersOff": "Show wallpapers turned off",
+        "other": "A change made by a newer Damocles",
+        "restore": "Restored to before: {change}"
+      },
+      "failed": {
+        "load": "Damocles could not read the installed themes.",
+        "action": "Damocles could not do that. Try again.",
+        "install": "Damocles could not finish this theme install. Try again.",
+        "retry": "Try again"
+      },
+      "toast": {
+        "pick": {
+          "dark": "Dark look: {name}",
+          "light": "Light look: {name}"
+        },
+        "renamed": "Renamed to {name}.",
+        "deleted": "Deleted {name}.",
+        "undid": "Undid: {change}",
+        "nothingToUndo": "There is no theme change to undo.",
+        "reset": "Reset to Damocles, dark and light.",
+        "restored": "Restored to before: {change}",
+        "undo": "Undo",
+        "installed": "Installed {name}. Pick it as your dark or light look on Installed.",
+        "installedArrangement": "Its window arrangement applies when you pick it.",
+        "keptCopy": "Your edited version is kept as “{name}”.",
+        "updated": "Updated {name}. Pick it as your dark or light look on Installed.",
+        "installExpired": "This theme install waited for over an hour, so it was closed and nothing was installed. Start it again.",
+        "exported": "Exported {file}"
+      },
+      "import": {
+        "open": "Import…",
+        "title": "Import a theme",
+        "body": "Choose a Damocles theme file (.damocles-theme) or a VS Code color theme (.json or .vsix). A VS Code theme becomes a Damocles theme: its colors map onto Damocles' tokens and its syntax colors onto the six code colors; anything missing comes from Damocles' own look of that kind. Nothing installs until you confirm on the install card.",
+        "choose": "Choose file…"
+      },
+      "link": {
+        "open": "Install from link…",
+        "title": "Install a theme from a link",
+        "body": "Paste an https link to a .damocles-theme file or a damocles://theme/install link. Nothing installs until you confirm on the install card.",
+        "label": "Theme link",
+        "invalid": "Enter an https link, such as https://example.com/aurora.damocles-theme.",
+        "downloading": "Downloading… the install card shows what the theme holds before anything installs.",
+        "continue": "Continue"
+      },
+      "export": {
+        "title": "Export “{name}”",
+        "body": "One .damocles-theme file with its images and fonts. Your picks, schedule, project looks, history and flashing allowances stay on this computer.",
+        "fonts": "Fonts in the file",
+        "font": "{family}, {role} ({license})",
+        "noLicense": "no license found",
+        "role": {
+          "ui": "interface",
+          "mono": "code"
+        },
+        "verdict": {
+          "confirm": "A free license that allows sharing. It goes into the file.",
+          "warn": "Its license does not say it may be shared. It goes into the file; sharing it is your responsibility.",
+          "refused": "Its license forbids embedding it, so it can't be shared.",
+          "nameOnly": "Exported by name only. The other computer shows it only if that font is installed there."
+        },
+        "refused": "This theme can't be exported while it uses {fonts}. | This theme can't be exported while it uses {fonts}.",
+        "responsibility": "By exporting, you take responsibility for sharing the fonts marked above.",
+        "save": "Export…"
+      },
+      "seeds": {
+        "background": "Background",
+        "panel": "Panel",
+        "text": "Text",
+        "accent": "Accent",
+        "success": "Success",
+        "warning": "Warning",
+        "danger": "Danger",
+        "info": "Info"
+      }
+    },
+    "schedule": {
+      "title": "Theme schedule",
+      "back": "Appearance",
+      "backLabel": "Back to Appearance",
+      "now": "Now · {day} {time}",
+      "loading": "Reading the schedule…",
+      "showingNow": {
+        "dark": "Showing now: {name}, dark look",
+        "light": "Showing now: {name}, light look"
+      },
+      "resume": "Resume schedule now",
+      "when": {
+        "today": "{time}",
+        "tomorrow": "{time} tomorrow",
+        "weekday": "{day} {time}",
+        "nextWeek": "next {day} {time}"
+      },
+      "outcome": {
+        "dark": "{name} (dark)",
+        "light": "{name} (light)",
+        "auto": "{name} (auto)",
+        "autoNow": {
+          "dark": "{name} (auto, dark now)",
+          "light": "{name} (auto, light now)"
+        }
+      },
+      "status": {
+        "follow": {
+          "dark": "Following the computer: dark now.",
+          "light": "Following the computer: light now."
+        },
+        "followDetail": {
+          "dark": "{dark}, your dark look, shows now. When the computer turns light, {light}, your light look, shows.",
+          "light": "{light}, your light look, shows now. When the computer turns dark, {dark}, your dark look, shows."
+        },
+        "off": "Off: your own pick stays. {pick} shows until you change it.",
+        "offDetail": "Pick the mode and looks on Appearance.",
+        "noRules": "No rules yet, so your own pick shows: {pick}.",
+        "noneRun": "No rule can run, so your own pick shows: {pick}.",
+        "addRule": "Add a rule to switch themes at set times.",
+        "override": "Your pick, {pick}, holds until {when}, then the schedule resumes.",
+        "then": "Then {next} shows.",
+        "until": "{active} until {when}, then {next}.",
+        "allWeek": "{active} all week: every rule picks it."
+      },
+      "skipped": {
+        "missing": "Rule {n} ({time}) is skipped: {name} is missing.",
+        "missingUnknown": "Rule {n} ({time}) is skipped: its theme is missing.",
+        "noDays": "Rule {n} has no days, so it never runs.",
+        "shadowed": "Rule {n} ({time}) never shows: a later rule starts at the same time on each of its days."
+      },
+      "strip": {
+        "timeline": "Timeline",
+        "today": "Today",
+        "wholeWeek": "Whole week",
+        "todayTitle": "Today, {day}",
+        "week": "This week",
+        "now": "Now, {time}",
+        "span": "{from} to {to}",
+        "spanLabel": "{period}: {name}, {look}",
+        "spanLabelPick": "{period}: {name}, {look}, your pick",
+        "dark": "dark",
+        "light": "light",
+        "auto": "auto"
+      },
+      "mode": {
+        "head": "How the theme changes",
+        "system": {
+          "label": "Follow the computer's light and dark mode",
+          "desc": "Your dark look while the computer is in dark mode, your light look while it is in light mode."
+        },
+        "schedule": {
+          "label": "Use a schedule",
+          "desc": "Switch themes at the times you set, on the days you pick."
+        },
+        "off": {
+          "label": "Off (manual only)",
+          "desc": "The mode and looks you pick on Appearance stay until you change them."
+        }
+      },
+      "rules": "Rules",
+      "addRule": "Add rule",
+      "capReached": "A schedule holds at most {n} rules.",
+      "rule": {
+        "name": "Rule {n}",
+        "delete": "Delete rule {n}",
+        "deleteTitle": "Delete rule",
+        "days": "Days, rule {n}",
+        "day": "{day}, rule {n}",
+        "startsAt": "Starts at",
+        "startsAtRule": "Starts at, rule {n}",
+        "theme": "Theme",
+        "themeRule": "Theme, rule {n}",
+        "look": "Look",
+        "lookRule": "Look, rule {n}",
+        "only": {
+          "dark": "{name} · dark only",
+          "light": "{name} · light only"
+        },
+        "missingOption": "{name} (missing)",
+        "missingOptionUnknown": "Missing theme",
+        "autoTitle": "Follows the computer's light and dark mode",
+        "lacks": {
+          "dark": "{name} has no dark look",
+          "light": "{name} has no light look"
+        },
+        "thumb": {
+          "dark": "{name}, dark look",
+          "light": "{name}, light look",
+          "split": "{name}, dark and light looks"
+        },
+        "noPreview": "No preview: {name} is missing",
+        "noPreviewUnknown": "No preview: the theme is missing",
+        "missingWarn": "{name} is missing; this rule is skipped until you pick another theme.",
+        "missingWarnUnknown": "Its theme is missing; this rule is skipped until you pick another theme.",
+        "noDaysWarn": "Pick at least one day; until then this rule is skipped.",
+        "shadowedWarn": "A later rule starts at the same time on each of these days, so this rule never shows.",
+        "noDays": "No days picked",
+        "summary": "{days} from {time}"
+      },
+      "days": {
+        "every": "Every day",
+        "weekdays": "Weekdays",
+        "weekends": "Weekends"
+      },
+      "look": {
+        "dark": "Dark",
+        "light": "Light",
+        "auto": "Auto"
+      },
+      "missing": {
+        "text": "{name} is missing, so rule {n} is skipped. The rule before it stays on until you pick another theme for rule {n}.",
+        "textUnknown": "The theme of rule {n} is missing, so the rule is skipped. The rule before it stays on until you pick another theme for rule {n}.",
+        "pick": "Pick a theme for rule {n}"
+      },
+      "empty": {
+        "title": "Switch themes at the times you set",
+        "body": "Each rule names days, a start time, a theme and a look. The rule that started last stays on until the next one starts, so two rules are enough for day and night.",
+        "addFirst": "Add the first rule",
+        "template": "Start with Day {day} and Night {night}",
+        "note": "Day uses your light look ({light}) and Night your dark look ({dark}), every day. Change them after."
+      },
+      "looks": {
+        "head": "Looks that show",
+        "whileDark": "While the computer is in dark mode",
+        "whileLight": "While the computer is in light mode",
+        "fixed": {
+          "dark": "Your pick: Dark mode",
+          "light": "Your pick: Light mode"
+        },
+        "kept": "Your {n} schedule rule is kept for when you turn the schedule back on. | Your {n} schedule rules are kept for when you turn the schedule back on.",
+        "change": "Change looks on Appearance"
+      },
+      "notes": {
+        "arrangement": "A schedule never changes your window arrangement.",
+        "agent": "The agent can change this schedule too; you decide on its card or keep-changes banner.",
+        "time": "Times are this computer's local time. After sleep, a time zone change or a daylight saving shift, the right theme shows within {duration}."
+      }
     },
     "fileIconTheme": {
       "material": "Material",
@@ -372,8 +910,53 @@
     },
     "rows": {
       "theme": {
-        "label": "Theme",
-        "description": "System follows your OS setting."
+        "label": "Mode",
+        "description": "System shows your dark look while the computer is in dark mode and your light look while it is in light mode."
+      },
+      "themeGallery": {
+        "label": "Your looks",
+        "description": "Pick a dark look and a light look; the mode decides which one shows. Each card's menu edits, copies, renames or deletes its theme."
+      },
+      "themeSchedule": {
+        "label": "Schedule",
+        "description": "Switch themes at the times you set. A schedule never changes your window arrangement.",
+        "arrangement": "A schedule never changes your window arrangement.",
+        "edit": "Edit schedule…"
+      },
+      "textSize": {
+        "label": "Text size",
+        "description": "Yours alone: themes change fonts, spacing and corners, never the size of text."
+      },
+      "themesApplyMode": {
+        "label": "Theme changes from the agent",
+        "description": "Preview first: the agent's turn waits on a card in the chat. Apply on the fly: the change shows at once and reverts after {duration} unless you keep it.",
+        "preview": "Preview first",
+        "onTheFly": "Apply on the fly"
+      },
+      "themesAgentTools": {
+        "label": "Agent theme tools",
+        "description": "Lets main chats read and propose themes, schedules and project looks."
+      },
+      "showWallpapers": {
+        "label": "Show wallpapers",
+        "description": "{shortcut} turns them off or on from anywhere. They stay off under a Windows contrast theme, without GPU compositing and in safe start."
+      },
+      "wallpaperContrast": {
+        "label": "Text over wallpapers",
+        "description": "Raise dim darkens or lightens a wallpaper until text stays readable; Warn only keeps the wallpaper and tells you in the theme editor.",
+        "raiseDim": "Raise dim",
+        "warn": "Warn only"
+      },
+      "characterMotion": {
+        "label": "Character motion",
+        "description": "Reduce motion shows every character still.",
+        "always": "Always",
+        "hover": "On hover",
+        "active": "Selected project"
+      },
+      "themesStore": {
+        "label": "Community store",
+        "description": "The Browse tab. Damocles fetches the signed list from GitHub when you open Browse or check for updates there, and along with its own update check while a theme from the store is installed."
       },
       "fileIconTheme": {
         "label": "File icons",
@@ -3271,15 +3854,6 @@
       "opensPicker": "Opens a color picker"
     },
     "picker": {
-      "area": "Color area",
-      "areaThumb": "Saturation and brightness",
-      "areaValue": "Saturation {saturation}%, brightness {brightness}%",
-      "hue": "Hue",
-      "hueValue": "{n} degree | {n} degrees",
-      "opacity": "Opacity",
-      "opacityValue": "{percent}%",
-      "hex": "Hex color",
-      "preview": "Preview",
       "transparent": "At 0% opacity the host has no color."
     },
     "credentialsLabel": "Saved credentials {name} may always use",
@@ -3306,6 +3880,17 @@
       "openAccounts": "Open Accounts",
       "asDefault": "as {login}, the default"
     }
+  },
+  "colorPicker": {
+    "area": "Color area",
+    "areaThumb": "Saturation and brightness",
+    "areaValue": "Saturation {saturation}%, brightness {brightness}%",
+    "hue": "Hue",
+    "hueValue": "{n} degree | {n} degrees",
+    "opacity": "Opacity",
+    "opacityValue": "{percent}%",
+    "hex": "Hex color",
+    "preview": "Preview"
   },
   "gitConsent": {
     "title": "{host} wants to use your saved credentials for {credentialHost}",
@@ -3524,6 +4109,9 @@
       "toolbar": "Log",
       "fold": "Fold {title}",
       "unfold": "Unfold {title}",
+      "foldSection": "Fold section",
+      "unfoldSection": "Unfold section",
+      "sectionMenu": "Actions for {title}",
       "foldedLines": "{n} line | {n} lines",
       "running": "Running. New output appears every few seconds.",
       "newOutput": "New output",
@@ -3765,5 +4353,559 @@
     "done": "Pushed {name} to {remote}. {localBranch} is unchanged.",
     "openPullRequest": "Open Pull Request",
     "openMergeRequest": "Open Merge Request"
+  },
+  "themes": {
+    "safeStart": {
+      "title": "Started with the default theme.",
+      "crashTitle": "Damocles switched to the default theme because the window kept crashing.",
+      "resetTitle": "Showing the default theme for this run. The engine is not running, so the schedule and project looks were not reset.",
+      "body": "Your theme is paused for this run until you turn it back on.",
+      "useMine": "Use my theme",
+      "openSettings": "Open theme settings"
+    },
+    "checkingVisible": "This card must be fully visible before you can answer. Scroll it into view or move what covers it.",
+    "peek": {
+      "hint": "The theme editor stepped aside so you can see the window.",
+      "back": "Back to the theme editor"
+    },
+    "keep": {
+      "title": "Keep this theme?",
+      "who": "The agent in “{chat}”",
+      "whoUntitled": "The agent in a chat",
+      "applied": "{who} applied {theme}.",
+      "changed": "{who} changed the theme.",
+      "undid": "{who} undid its change to {theme}.",
+      "undidChange": "{who} undid its last theme change.",
+      "schedule": "{who} changed the theme schedule.",
+      "wallpapersOff": "{who} turned wallpapers off.",
+      "undidWallpapersOff": "{who} undid its change that turned wallpapers off.",
+      "many": "{who} made {n} theme changes.",
+      "several": "The theme changed {n} times, by more than one chat or by you and a chat.",
+      "reverts": "It reverts in {count} s unless you keep it.",
+      "keeping": "Keeping…",
+      "reverting": "Reverting…",
+      "engineDown": "The engine is not running, so you cannot keep or revert this yet. When the engine starts again, it reverts the change, or keeps it if it cannot revert it.",
+      "keep": "Keep",
+      "revert": "Revert now",
+      "timeLeft": "Time left before revert",
+      "secondsLeft": "{n} second left | {n} seconds left",
+      "announce": "Keep this theme? It reverts in {n} second. | Keep this theme? It reverts in {n} seconds.",
+      "kept": "Theme kept.",
+      "keptBack": "{theme} stays. Undo Theme Change brings back {previous}.",
+      "keptNoPrevious": "{theme} stays. Undo Theme Change brings back the previous look.",
+      "keptChange": "The change stays. Undo Theme Change brings back the previous look.",
+      "keptSeveral": "The changes stay. Undo Theme Change takes them back one at a time.",
+      "keptByEngine": "The engine restarted and could not revert the change, so it stays. Undo Theme Change brings back the previous look.",
+      "keptByEngineSeveral": "The engine restarted and could not revert the changes, so they stay. Undo Theme Change takes them back one at a time.",
+      "reverted": "Theme reverted.",
+      "revertedBack": "Back to {previous}.",
+      "revertedNoPrevious": "Back to the previous look.",
+      "revertedSeveral": "Back to the look from before the first change.",
+      "revertedByUser": "The agent's turn was told you reverted it.",
+      "revertedByUserSeveral": "Every chat whose turn waited was told you reverted it.",
+      "revertedByTimeout": "Nobody answered in time. The agent's turn was told the change was reverted.",
+      "revertedByTimeoutSeveral": "Nobody answered in time. Every chat whose turn waited was told the changes were reverted.",
+      "revertedByEngine": "The engine restarted during the countdown and reverted the change.",
+      "revertedByEngineSeveral": "The engine restarted during the countdown and reverted the changes."
+    },
+    "proposal": {
+      "title": "Showing the agent's proposal in the window.",
+      "body": "Nothing is saved. Answer the card in “{chat}” to keep or discard it.",
+      "bodyUntitled": "Nothing is saved. Answer the card in its chat to keep or discard it.",
+      "stop": "Stop showing"
+    }
+  },
+  "projectLook": {
+    "title": "Look for {name}",
+    "description": "How the window looks while {name} is the open project.",
+    "choice": {
+      "none": "Use the current theme",
+      "noneHint": "{name} looks like every other project.",
+      "touches": "Add touches on top of the current theme",
+      "touchesHint": "Keep the theme; change the accent, the wallpaper or the characters.",
+      "full": "Use its own theme",
+      "fullHint": "A whole theme for this project. It beats your schedule."
+    },
+    "preview": "Preview",
+    "previewLabel": "Preview: {caption}",
+    "caption": {
+      "full": "{theme}, {kind}.",
+      "fullAuto": "{theme}, auto: {kind} now.",
+      "fullMissing": "{name} is missing: Damocles, {kind} shows.",
+      "fullMissingUnknown": "The theme is missing: Damocles, {kind} shows.",
+      "fullNoLook": "{theme} has no {kind} look: Damocles, {kind} shows.",
+      "none": "Same as every project: {theme}, {kind}.",
+      "touches": "{theme}, {kind}, with {list}.",
+      "noTouches": "{theme}, {kind}, no touches yet."
+    },
+    "kind": {
+      "dark": "dark",
+      "light": "light"
+    },
+    "touch": {
+      "accent": "accent",
+      "wallpaper": "wallpaper",
+      "characters": "characters"
+    },
+    "noneHead": "Current theme",
+    "noneText": "{name} shows what the rest of Damocles shows: your schedule, your own pick or the computer's mode. Nothing is stored for it.",
+    "touchesHead": "Touches",
+    "accent": "Accent color",
+    "accentHint": "Kept readable: Damocles adjusts lightness to keep text at AA.",
+    "accentPlaceholder": "Theme's accent",
+    "pickAccent": "Pick the accent color",
+    "clearAccent": "Use the theme's accent",
+    "accentInvalid": "Enter a color as # and six hex digits.",
+    "accentTheme": "The theme's own accent shows.",
+    "accentMoved": "Shown as {hex} in the {kind} look, so text in this color stays at {need}.",
+    "accentFillMoved": "Shown as {hex} in fills in the {kind} look, so text on them stays at {need}.",
+    "accentKept": "Text in this color stays at {need} in the dark and light looks.",
+    "wallpaper": "Wallpaper",
+    "wallpaperHint": "Behind the panes, dimmed and blurred by your wallpaper readability settings.",
+    "wallNone": "None",
+    "wallImage": "Image",
+    "wallTheme": "From a theme",
+    "chooseImage": "Choose image or video…",
+    "importing": "Reading the file…",
+    "noImage": "No image or video chosen",
+    "currentImage": "Current wallpaper",
+    "imageFailed": "The image was not used: {reason}",
+    "fit": "Fit",
+    "fits": {
+      "fill": "Fill",
+      "fit": "Fit",
+      "center": "Center",
+      "tile": "Tile"
+    },
+    "wallFrom": "Wallpaper from",
+    "characters": "Character set",
+    "charactersHint": "Pixel characters in place of the letter avatars in the sidebar.",
+    "charactersNone": "None",
+    "charactersFrom": "{set} (from {theme})",
+    "charactersMissingOption": "Missing character set",
+    "charactersMissing": "The theme this character set came from is missing, so the letter avatars show until you pick another set.",
+    "fullHead": "Its own theme",
+    "theme": "Theme",
+    "missingOption": "{name} (missing)",
+    "missingOptionUnknown": "Missing theme",
+    "themeMissing": "{name} is missing or can't be used, so Damocles' own look shows for this project until you pick another theme.",
+    "themeMissingUnknown": "This project's theme is missing, so Damocles' own look shows for it until you pick another theme.",
+    "miniature": "{theme}, as this project shows it",
+    "miniatureMissing": "Damocles' own look, which shows while the theme is missing",
+    "look": "Look",
+    "lookHint": "Auto follows the computer's light and dark mode.",
+    "looks": {
+      "dark": "Dark",
+      "light": "Light",
+      "auto": "Auto"
+    },
+    "notes": {
+      "order": "Order: this project's own theme, then your schedule, then your own pick or the computer's mode. Touches sit on top of whatever theme shows.",
+      "stored": "Stored on this computer only; never written to the project's files.",
+      "arrangement": "Switching projects never changes your window arrangement."
+    },
+    "invalid": "This look can't be saved as it is. Change it, or choose Cancel.",
+    "cancel": "Cancel",
+    "save": "Save"
+  },
+  "themeEditor": {
+    "title": "Theme editor",
+    "untitled": "Untitled theme",
+    "subtitle": {
+      "builtin": "Built-in · read-only",
+      "unsaved": "{origin} · not saved yet",
+      "saved": "{origin} · saved just now"
+    },
+    "looks": "Look",
+    "look": {
+      "dark": "Dark",
+      "light": "Light"
+    },
+    "addLook": {
+      "dark": "Add dark look",
+      "light": "Add light look"
+    },
+    "lookOptions": "Look options",
+    "removeLook": {
+      "dark": "Remove the dark look",
+      "light": "Remove the light look"
+    },
+    "removeNote": {
+      "keepOne": "A theme keeps at least one look.",
+      "builtin": "Built-in themes are read-only."
+    },
+    "save": "Save",
+    "cancel": "Cancel",
+    "close": "Close",
+    "duplicate": "Duplicate to edit",
+    "fixErrors": "Fix {count} error: {error} | Fix {count} errors: {error}",
+    "errors": {
+      "nameEmpty": "Name is empty",
+      "nameLong": "Name is longer than {max} characters",
+      "nameHelp": "Give the theme a name of 1 to {max} characters.",
+      "nameOneLine": "Name must be one line, with no control characters",
+      "license": "License is not an SPDX id",
+      "detailLong": "{field} is longer than {max} characters",
+      "cssLong": "{region} CSS is too long to save",
+      "font": "{font} is not a font a theme can name",
+      "other": "Part of the theme is not valid ({path})",
+      "invalid": "The theme was not saved: part of it is not valid."
+    },
+    "sections": "Sections",
+    "section": {
+      "colors": "Colors",
+      "type": "Type",
+      "wallpapers": "Wallpapers",
+      "css": "CSS",
+      "characters": "Characters",
+      "arrangement": "Arrangement",
+      "details": "Details"
+    },
+    "characters": {
+      "set": "Character set",
+      "setDescription": "Characters replace the project letters in the sidebar, title bar, notifications and Quick Open.",
+      "none": "None (letters)",
+      "own": "{name}, {n} character | {name}, {n} characters",
+      "from": "From {name}",
+      "noneText": "No character set: projects show their letter.",
+      "caption": "{name} characters in each state",
+      "character": "Character",
+      "states": {
+        "idle": "Idle",
+        "running": "Running",
+        "waiting": "Waiting"
+      },
+      "actions": "Actions",
+      "cell": "{character}, {state}",
+      "asIdle": "As idle",
+      "choose": "Choose the {state} image of {character}",
+      "remove": "Remove {character}",
+      "addGroup": "Add a character",
+      "newName": "New character's name",
+      "frames": "Frames in the image",
+      "fps": "Frames a second",
+      "add": "Add character…",
+      "reading": "Reading the image…",
+      "stripNote": "An image of several frames side by side steps through them; 1 frame is a still image. PNG, GIF, WebP or SVG, at most {size} KB and {side} pixels a frame.",
+      "nameEmpty": "Name the character first.",
+      "nameTaken": "A character of this set is already named {name}.",
+      "motionNote": "Character motion is a setting of yours:",
+      "motionLink": "Settings › Appearance › Character motion",
+      "motionAfter": "With Reduce motion, characters hold their first frame.",
+      "pins": "Pins",
+      "pinsNote": "Each project gets a character of the set by itself. Pin one to keep it.",
+      "pinsNeedSet": "Pins choose among the theme's characters; give it a character set first.",
+      "noProjects": "No projects yet.",
+      "pinFor": "Character for {project}",
+      "automatic": "Automatic ({character})",
+      "every": "Keep in every theme",
+      "everyFor": "{project}",
+      "replacedStatus": "Character set change",
+      "replaced": "Replaced the {name} characters.",
+      "removed": "Removed the {name} characters.",
+      "restored": "The {name} characters are back.",
+      "undoReplace": "Undo"
+    },
+    "css": {
+      "note": "Theme CSS styles content areas only. Cards that ask for your answer, Settings and dialogs never take theme CSS.",
+      "regionsLabel": "CSS region",
+      "regions": {
+        "transcript": "Transcript",
+        "sidebar": "Sidebar",
+        "editorChrome": "Editor chrome",
+        "terminalChrome": "Terminal chrome",
+        "titlebar": "Title bar"
+      },
+      "regionCss": "{region} CSS",
+      "regionRemoved": "{region}, {n} part removed | {region}, {n} parts removed",
+      "meterRegion": "Size of {region} CSS",
+      "meterTotal": "Size of all theme CSS",
+      "regionSize": "{size} of {limit} KB",
+      "totalSize": "{size} of {limit} KB in all regions",
+      "removedHeading": "Removed when saved",
+      "parts": "{n} part | {n} parts",
+      "none": "None",
+      "nothingRemoved": "Nothing in {region} is removed.",
+      "moreRemoved": "{n} more part is removed and not listed. | {n} more parts are removed and not listed.",
+      "lineReason": "Line {n} · {reason}",
+      "reasons": {
+        "regionTooLarge": "This region is over {limit} KB, so all of its CSS is removed.",
+        "totalTooLarge": "The theme's CSS is over {limit} KB in all regions, so this region's CSS is removed.",
+        "tooManyRules": "Past the limit of {n} rule. | Past the limit of {n} rules.",
+        "selectorTooLong": "The selector is longer than {n} character. | The selector is longer than {n} characters.",
+        "nestedRule": "Nested rules are not supported.",
+        "parseError": "This could not be read as CSS.",
+        "atRule": "Only {'@'}media, {'@'}supports and {'@'}container are allowed.",
+        "mediaFeature": "Media queries may test only reduced motion, contrast, forced colors, hover and pointer.",
+        "selector": "The selector reaches outside the content area or into parts a theme may not style, or is not a valid selector.",
+        "pseudoElement": "Only ::selection, ::placeholder and ::marker are allowed.",
+        "property": "Theme CSS may not set this property.",
+        "valueOutOfRange": "The value is outside the range theme CSS allows.",
+        "function": "Theme CSS may not use this function.",
+        "url": "Only still data: images up to {limit} KB are allowed; nothing loads from the network.",
+        "colorAlpha": "A color needs at least {percent} opacity, or a --d- or --s- token.",
+        "fontFamily": "Only the theme's own fonts, var(--d-font), var(--d-mono) or a generic family are allowed."
+      }
+    },
+    "wallpapers": {
+      "label": "Wallpaper",
+      "mode": {
+        "none": "None",
+        "panels": "One image per panel",
+        "span": "One image across panels"
+      },
+      "panel": "Panel",
+      "panels": {
+        "titlebar": "Title bar",
+        "sidebar": "Sidebar",
+        "chat": "Chat",
+        "editor": "Editor",
+        "terminal": "Terminal"
+      },
+      "panelState": "{panel}, {state}",
+      "hasImage": "has an image",
+      "noImage": "no image",
+      "mapPanels": "Pick the panel to set its image.",
+      "mapSpan": "Choose the panels the image spans.",
+      "across": "Across {panels}",
+      "image": "Image",
+      "meta": "{width} × {height} · {megabytes} MB · still",
+      "metaAnimated": "{width} × {height} · {megabytes} MB · {frames} frames",
+      "metaVideo": "{width} × {height} · {megabytes} MB · {duration} video",
+      "moving": "Moving",
+      "movingNote": "Pauses in the background, when covered or minimized, on battery, under battery saver and with Reduce motion.",
+      "noImageTitle": "No image",
+      "noImageHint": "This panel shows its color.",
+      "choose": "Choose image or video…",
+      "reading": "Reading the image…",
+      "remove": "Remove image",
+      "fitLabel": "Fit",
+      "fit": {
+        "fill": "Fill",
+        "fit": "Fit",
+        "center": "Center",
+        "tile": "Tile"
+      },
+      "dim": "Dim",
+      "blur": "Blur",
+      "blurNote": "Up to {px} px on still images; {moving} px on moving ones, because blurring every frame costs battery.",
+      "flash": {
+        "blocked": "Blocked: flashes",
+        "at": "It flashes more than three times a second from {time}, so the window shows its still frame.",
+        "found": "It flashes more than three times a second, so the window shows its still frame.",
+        "warning": "Seizure warning: flashing images can trigger seizures in people with photosensitive epilepsy. Allow it only if no one who sees this screen is at risk.",
+        "allow": "Allow flashing for this file",
+        "allowed": "Flashing is allowed for this file on this computer. Reduce motion still pauses it.",
+        "unchecked": "Not checked for flashing yet, so it shows its still frame.",
+        "checking": "Checking every frame for flashing… {percent}",
+        "progressLabel": "Flash check progress"
+      },
+      "sets": {
+        "title": "Wallpaper sets",
+        "count": "{n} of {max} sets. The window shows the set you pick here.",
+        "defaultName": "Set {n}",
+        "edit": "Edit {name}",
+        "name": "Name of set {n}",
+        "up": "Move {name} up",
+        "down": "Move {name} down",
+        "remove": "Remove {name}",
+        "add": "Add set",
+        "across": "One image across {n} panel | One image across {n} panels",
+        "panels": "Own image on {n} panel | Own images on {n} panels",
+        "empty": "No wallpaper"
+      },
+      "cycle": {
+        "label": "Cycle",
+        "timer": "On a timer",
+        "shortcut": "Only with Next Wallpaper ({shortcut})",
+        "minutes": "Every {n} minute | Every {n} minutes",
+        "minutesLabel": "Minutes between wallpaper sets"
+      },
+      "readable": "Muted text reads at {ratio} over this image.",
+      "lowContrast": "Muted text reads at {ratio} over this image, below {need}. Raise the dim, or let Text over wallpapers raise it for you.",
+      "raised": "Muted text would read at {ratio}, so the window dims this image to {dim} to keep it at {need}.",
+      "surface": "Surface opacity",
+      "surfaceNote": "Bubbles, the composer, code blocks and cards let the wallpaper through. Not below {min}; cards that ask for your answer stay at {trusted} or more.",
+      "paletteTitle": "Palette from wallpaper",
+      "paletteNote": "Proposes the 8 colors from the image the window shows, kept readable.",
+      "paletteButton": "Palette from wallpaper",
+      "strip": {
+        "now": "Now",
+        "proposed": "Proposed"
+      },
+      "paletteApply": "Apply palette",
+      "paletteKeep": "Keep mine",
+      "stripColor": "{color} {value}",
+      "stripLabel": "{title}: {colors}"
+    },
+    "type": {
+      "font": {
+        "ui": "UI font",
+        "mono": "Mono font"
+      },
+      "search": {
+        "ui": "Search UI fonts",
+        "mono": "Search mono fonts"
+      },
+      "searchPlaceholder": "Search installed fonts",
+      "list": {
+        "ui": "UI fonts",
+        "mono": "Mono fonts"
+      },
+      "noMatch": "No installed font matches.",
+      "installedUnavailable": "Damocles cannot list the fonts installed on this computer.",
+      "addFile": "Add a font file…",
+      "tags": {
+        "builtin": "Built-in",
+        "bundled": "Bundled",
+        "installed": "Installed",
+        "licenseUnknown": "License unknown"
+      },
+      "notes": {
+        "builtin": {
+          "ui": "Damocles' own font.",
+          "mono": "Damocles' own mono font."
+        },
+        "installed": "Installed on this computer. Others see Damocles' font unless you bundle it with the theme.",
+        "bundled": "Bundled with the theme. Sharing it is your responsibility.",
+        "bundledShareable": "Bundled with the theme; its license lets you share it."
+      },
+      "bundle": "Bundle with the theme",
+      "bundling": "Bundling…",
+      "notInstalled": "{name} is not installed on this computer.",
+      "lineSpacing": "Line spacing",
+      "radius": "Corner radius",
+      "density": "Density",
+      "chatColumn": "Chat column",
+      "square": "Square",
+      "compact": "Compact 85%",
+      "roomy": "Roomy 115%",
+      "densityNote": "Spacing and icon sizes scale; text does not.",
+      "fullWidth": "Full width",
+      "chatColumnNote": "The widest the chat's messages and composer grow. Full width fills the chat pane.",
+      "textSizeNote": "Text size is yours, not the theme's:",
+      "textSizeLink": "Settings › Appearance › Text size",
+      "tooLarge": "{name} is larger than {max} MB, the most a theme bundles."
+    },
+    "builtinBanner": "{name} is built in and read-only. Duplicate it to edit.",
+    "preview": {
+      "status": "Preview status",
+      "editing": {
+        "dark": "Previewing your edits · {name}, dark look",
+        "light": "Previewing your edits · {name}, light look"
+      },
+      "comparing": "Showing your current theme",
+      "takenOver": "Not previewing: a chat card's Show in window took the window. Your next edit previews again.",
+      "compare": "Show my current theme",
+      "invalid": "Not previewing: fix the error first.",
+      "forcedColors": "Not previewing: Windows contrast themes are on, so the window shows Damocles' own look.",
+      "safeStart": "Not previewing: this run shows the default theme."
+    },
+    "colorsNote": "Edits paint the window as you make them. Save keeps them; Cancel puts your theme back.",
+    "warnings": "Contrast warnings",
+    "warning": "{color} on {surface} {ratio}, needs {need}",
+    "allPass": "All colors pass",
+    "fix": "Fix: lightness to {ratio}",
+    "fixLabel": "Fix: lightness to {ratio}, {color} on {surface}",
+    "fixStatus": "Color fix",
+    "fixed": "Fixed: {color} moved from {from} to {to}, {ratio} on {surface}.",
+    "undoFix": "Undo fix",
+    "fixUndone": "{color} is back to {value}.",
+    "mainColors": "Main colors",
+    "failsContrast": "fails contrast",
+    "shownInText": "Shown as {hex} in text, so text in this color stays at {need}.",
+    "shownInFills": "Shown as {hex} in fills, so text on them stays at {need}.",
+    "seedHints": {
+      "background": "Chat, editor and terminal",
+      "panel": "Sidebar, title bar and cards",
+      "text": "Muted and faint text follow it",
+      "accent": "Selection, links and primary buttons",
+      "success": "Passed, done, added lines",
+      "warning": "Waiting, needs a look",
+      "danger": "Errors, deleted lines",
+      "info": "Notes and hints"
+    },
+    "swatch": "{color} color {value}, open picker",
+    "hex": "{color} hex",
+    "hexError": "Use 6 hex digits, such as #1a2b3c.",
+    "advanced": "Advanced: every token",
+    "overrides": "{count} override | {count} overrides",
+    "advancedNote": "Every token derives from the 8 colors and is kept at AA. An override is used as you type it; a failing one is listed, never blocked.",
+    "tokens": {
+      "caption": "Every token of this look",
+      "token": "Token",
+      "value": "Value",
+      "override": "Override",
+      "reset": "Reset",
+      "overrideLabel": "Override {token}",
+      "resetLabel": "Reset {token}",
+      "derived": "derived {value}",
+      "warning": "Override kept. {token} on {surface} is {ratio}, needs {need}.",
+      "groups": {
+        "surfaces": "Surfaces",
+        "text": "Text",
+        "tones": "Accent and status",
+        "tints": "Tints and shadow",
+        "syntax": "Syntax",
+        "ansi": "Terminal ANSI"
+      },
+      "format": "Override kept. {token} must be a color with no transparency; while it has some, menus, dialogs and Settings keep the Damocles colors.",
+      "invalidColor": "Not changed: a color is written #rrggbb or #rrggbbaa.",
+      "invalidShadow": "Not changed: a shadow is two to four px lengths and a #rrggbb or #rrggbbaa color."
+    },
+    "arrangement": {
+      "include": "Save a window arrangement with this theme",
+      "rule": "Applies only when you pick this theme yourself; never on a schedule or a project switch. Undo restores your previous arrangement.",
+      "saved": "Saved with this theme",
+      "slots": "Slots",
+      "slotsValue": "{main} · {side} at the side · {bottom} at the bottom",
+      "sidebar": "Sidebar",
+      "sidebarValue": "{rem} rem wide",
+      "sectionOrder": "Sections",
+      "panes": {
+        "chat": "Chat",
+        "editor": "Editor",
+        "terminal": "Terminal"
+      },
+      "sections": {
+        "projects": "Projects",
+        "chats": "Chats",
+        "files": "Files",
+        "scm": "Source control",
+        "graph": "Graph",
+        "repos": "Repositories",
+        "search": "Search"
+      },
+      "captured": "Captured from the window, saved with your next Save",
+      "none": "No window arrangement is saved with this theme",
+      "capture": "Capture the current window arrangement"
+    },
+    "details": {
+      "name": "Name",
+      "author": "Author",
+      "version": "Version",
+      "description": "Description",
+      "license": "License (SPDX)",
+      "licenseHint": "An SPDX id such as MIT or CC-BY-4.0, or LicenseRef-… for your own terms."
+    },
+    "peek": "Peek at the window",
+    "ratio": "{n}:1",
+    "duration": "{minutes}:{seconds}",
+    "units": {
+      "value": "{n} {unit}",
+      "times": "×{n}"
+    },
+    "discard": {
+      "question": "Discard unsaved edits?",
+      "discard": "Discard",
+      "keep": "Keep editing"
+    },
+    "outside": {
+      "changed": "This theme was changed outside the editor, so Save writes nothing. Reload it to edit it as it is now.",
+      "gone": "This theme was deleted, or its file can no longer be read, so it cannot be saved.",
+      "reload": "Reload",
+      "reloadDiscard": "Discard my edits and reload"
+    },
+    "noFix": "No lightness passes on both surfaces. Change {background} or {panel}."
   }
 }

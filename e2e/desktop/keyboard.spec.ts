@@ -1,16 +1,15 @@
-import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication, Page } from '@playwright/test';
-import { MAIN_SCRIPT } from './support/app';
 import { activeChat, expect, nextChat, panelIdOf, test } from './support/fixtures';
-import { hermeticEnv, seedStubModel, type HermeticHome } from './support/hermetic';
+import { seedStubModel } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { killRenderer } from './support/renderer-kill';
 import { openProjectChat, saveScreenshot } from './support/screenshots';
 import { codeEditor, editorShows, openInEditor } from './support/editor';
 import {
   countPopupFocus,
+  onMainWindow,
   overlayPage,
   popupFocusRequests,
   popupPage,
@@ -37,7 +36,7 @@ async function menuItemEnabled(app: ElectronApplication, id: string): Promise<bo
 
 /** Whether the window's own page (the shell) holds keyboard focus rather than a chat view. */
 async function shellFocused(app: ElectronApplication): Promise<boolean> {
-  return app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.webContents.isFocused());
+  return onMainWindow(app, (win) => win.webContents.isFocused());
 }
 
 /** Waits for the selection to move to a chat other than `previous`, and returns its page once it is ready. */
@@ -214,16 +213,9 @@ async function mainWindowMinimized(app: ElectronApplication): Promise<boolean> {
   return app.evaluate(({ BrowserWindow }, url) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL() === url)!.isMinimized(), SHELL_URL);
 }
 
-/** Launches the app again on the same home; it hands its arguments to the running app, which shows its window, and exits. */
-async function secondLaunch(home: HermeticHome): Promise<void> {
-  const electronBinary = (await import('electron')).default as unknown as string;
-  const child = spawn(electronBinary, [MAIN_SCRIPT, '--user-data-dir', home.userData], { env: hermeticEnv(home), stdio: 'ignore' });
-  expect(await new Promise<number | null>((resolve) => child.once('exit', (code) => resolve(code)))).toBe(0);
-}
-
 // Each restore starts as soon as the window reports itself minimized, which on macOS can be before AppKit reports its
 // blur; X11 sends focus to a window it is minimizing.
-test('restoring the minimized window returns keyboard focus to the chat composer', async ({ foreground: _foreground, home, launch }) => {
+test('restoring the minimized window returns keyboard focus to the chat composer', async ({ foreground: _foreground, launch, secondLaunch }) => {
   const { app } = await launch();
   const chat = await activeChat(app);
   await expect(chatInput(chat)).toBeFocused();
@@ -234,7 +226,8 @@ test('restoring the minimized window returns keyboard focus to the chat composer
     ['BrowserWindow.restore()', async () => {
       await app.evaluate(({ BrowserWindow }, url) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL() === url)!.restore(), SHELL_URL);
     }],
-    ['a second launch', () => secondLaunch(home)],
+    // it hands its arguments to the running app, which shows its window, and exits
+    ['a second launch', async () => expect(await secondLaunch()).toBe(0)],
     ...(activate ? [['an activation from outside the app', () => activate(app)] as [string, () => Promise<void>]] : []),
     // Windows reports 'focus' before 'restore' here while isFocused() is still false.
     ...(restoreFromOutside ? [['ShowWindow(SW_RESTORE) and SetForegroundWindow from outside the app', () => restoreFromOutside(app)] as [string, () => Promise<void>]] : []),

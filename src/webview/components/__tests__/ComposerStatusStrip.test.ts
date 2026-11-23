@@ -82,6 +82,15 @@ describe('ComposerStatusStrip', () => {
     expect(mountStrip(stats()).get('[data-testid="composer-context"]').text()).toBe('3.1K / 200.0K · 2%');
   });
 
+  // The ring is a painted shape, so each band takes the tone's fill token, which a look may set apart from its text shade.
+  it.each([
+    [2, 'var(--d-success-fill)'],
+    [100, 'var(--d-danger-fill)'],
+  ])('draws the context ring at %s%% in the fill token of its band', (contextPercentage, stroke) => {
+    const ring = mountStrip(stats({ contextPercentage })).findAll('[data-testid="composer-context"] circle').at(-1)!;
+    expect(ring.attributes('stroke')).toBe(stroke);
+  });
+
   it('writes the context meter and token counts with the decimal separator of the UI locale', async () => {
     await applyLocale('el');
     const strip = mountStrip(stats());

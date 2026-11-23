@@ -85,6 +85,7 @@ const formattedDuration = computed(() => {
 
 <template>
   <ToolCardFrame
+    :tool="toolCall.name"
     :icon="Send"
     :name="t('steerTool.title')"
     :arg="resolvedDescription"
@@ -94,7 +95,7 @@ const formattedDuration = computed(() => {
     <template #meta>
       <span
         v-if="displayAgentType"
-        class="flex-none rounded-5 bg-[color-mix(in_srgb,var(--d-info)_14%,transparent)] px-1.5 py-px text-10.5 font-semibold text-(--d-info-text)"
+        class="flex-none rounded-5 bg-[color-mix(in_srgb,var(--d-info-fill)_14%,transparent)] px-1.5 py-px text-10.5 font-semibold text-(--d-info-text)"
       >{{ displayAgentType }}</span>
       <span class="flex-none font-mono text-10.5 text-(--d-faint)">{{ shortId }}</span>
       <span
@@ -103,7 +104,7 @@ const formattedDuration = computed(() => {
       >{{ formattedDuration }}</span>
     </template>
     <div class="flex justify-end border-t border-(--d-border) px-3 py-2">
-      <div class="max-w-[85%] rounded-[0.875rem_0.875rem_0.3125rem_0.875rem] border border-[color-mix(in_srgb,var(--d-warning)_35%,transparent)] bg-[color-mix(in_srgb,var(--d-warning)_7%,transparent)] px-3 pt-2 pb-2.25">
+      <div class="max-w-[85%] rounded-14 rounded-br-5 border border-[color-mix(in_srgb,var(--d-warning-fill)_35%,transparent)] bg-[color-mix(in_srgb,var(--d-warning-fill)_7%,transparent)] px-3 pt-2 pb-2.25">
         <div class="mb-0.5 flex items-center gap-1.5 text-11 font-semibold text-(--d-warning-text)">
           <Send
             class="size-2.75"

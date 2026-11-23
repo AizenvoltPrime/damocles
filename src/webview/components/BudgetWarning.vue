@@ -23,9 +23,9 @@ const percentUsed = computed(() => {
 });
 
 const meterColor = computed(() => {
-  if (props.exceeded || percentUsed.value >= 90) return 'bg-(--d-danger)';
-  if (percentUsed.value >= 80) return 'bg-(--d-warning)';
-  return 'bg-(--d-success)';
+  if (props.exceeded || percentUsed.value >= 90) return 'bg-(--d-danger-fill)';
+  if (percentUsed.value >= 80) return 'bg-(--d-warning-fill)';
+  return 'bg-(--d-success-fill)';
 });
 </script>
 

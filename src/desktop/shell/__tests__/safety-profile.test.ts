@@ -71,39 +71,34 @@ describe('title bar safety stripe', () => {
     }
   });
 
-  it('eases a recolor in place, and fades the old stripe and chip out as the new ones fade in when the selection changes', async () => {
+  // The stripe and the chip are trusted roots, whose opacity is pinned: a fade would hold the old one fully opaque, then swap.
+  it('eases a recolor in place, and shows, swaps and removes the stripe and the chip at once, never with a fade', async () => {
     const wrapper = track(mount(TitleBar, { props: { api: fakeShellApi(), state: onRemote(remote('prod-1', 'danger')) }, global: { plugins: [shellI18n], stubs: { transition: false } }, attachTo: document.body }));
     const stripes = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('[data-testid="title-bar-stripe"]')];
     const chips = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('[data-testid="title-bar-host"]')];
-    const phase = (element: HTMLElement): string => (element.className.includes('o-fade-out') ? 'out' : element.className.includes('d-fade') ? 'in' : 'rest');
+    const fades = (): boolean => [...stripes(), ...chips()].some((element) => /d-fade|o-fade-out/.test(element.className));
     const first = stripes()[0]!;
     const chip = chips()[0]!;
-    expect(first.className).toContain('animate-[d-fade_.3s_var(--ease-out)]');
+    expect(fades()).toBe(false);
     expect(first.className).toContain('transition-[background-color] duration-300 ease-out');
     expect(chip.querySelector('[data-testid="title-bar-host-name"]')!.className).toContain('transition-[background-color,color] duration-300 ease-out');
     await wrapper.setProps({ state: onRemote(remote('prod-1', canonicalHostColor('#00808099')!)) });
     expect(stripes()).toEqual([first]);
     expect(chips()).toEqual([chip]);
     expect([first.dataset.tone, chip.dataset.tone]).toEqual(['custom', 'custom']);
-    // another host's project fades the old stripe and chip out
+    // another host's project: one stripe and one chip, on the new host's tone at once
     const lab: ShellProject = { ...remote('lab', 'info'), key: 'ssh+h2|/srv/api', authority: { kind: 'ssh', key: 'ssh+h2', hostId: 'h2', name: 'lab', color: 'info' } };
     await wrapper.setProps({ state: onRemote(lab) });
-    expect(stripes().map((stripe) => [stripe.dataset.tone, phase(stripe)])).toEqual([['custom', 'out'], ['info', 'in']]);
-    await vi.waitFor(() => expect(stripes()).toHaveLength(1));
-    expect(stripes()[0]!.dataset.tone).toBe('info');
-    await vi.waitFor(() => expect(chips().map((element) => element.dataset.tone)).toEqual(['info']));
-    // a color added to an uncolored host changes the chip's size, so it fades
-    const filledChip = chips()[0]!;
+    expect(stripes().map((stripe) => stripe.dataset.tone)).toEqual(['info']);
+    expect(chips().map((element) => element.dataset.tone)).toEqual(['info']);
+    expect(fades()).toBe(false);
+    // a host that lost its color keeps its chip and has no stripe
     await wrapper.setProps({ state: onRemote({ ...lab, authority: { kind: 'ssh', key: 'ssh+h2', hostId: 'h2', name: 'lab' } }) });
-    expect(phase(filledChip)).toBe('out');
-    await vi.waitFor(() => expect(chips().map((element) => element.dataset.tone)).toEqual([undefined]));
-    // selecting a project with no colored host fades both out rather than dropping them
-    await wrapper.setProps({ state: onRemote(lab) });
-    await vi.waitFor(() => expect(stripes()).toHaveLength(1));
+    expect(stripes()).toEqual([]);
+    expect(chips().map((element) => element.dataset.tone)).toEqual([undefined]);
+    // a project with no host has neither
     await wrapper.setProps({ state: STATE });
-    expect(stripes()[0]!.className).toContain('animate-[o-fade-out_.3s_ease-in_both]');
-    expect(chips()[0]!.className).toContain('animate-[o-fade-out_.14s_ease-in_both]');
-    await vi.waitFor(() => expect([...stripes(), ...chips()]).toEqual([]));
+    expect([...stripes(), ...chips()]).toEqual([]);
   });
 
   it('shows no stripe for a local project or a host without a color; the uncolored host keeps its chip, untinted', async () => {

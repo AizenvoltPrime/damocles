@@ -37,6 +37,9 @@ export interface UpdaterDeps {
   readonly state: Memento;
   // damocles.desktop.update.checkAutomatically: off leaves only the Help and About checks
   readonly checkAutomatically: () => boolean;
+  // core's community store check, which fetches the list only while the store setting is on and a store theme is installed;
+  // fetched: a request was made
+  readonly storeCheck: () => Promise<{ readonly fetched: boolean }>;
   // powerMonitor resume
   readonly onResume: (listener: () => void) => Disposable;
   readonly t: (message: string, ...args: Array<string | number | boolean>) => string;
@@ -146,11 +149,20 @@ export class UpdateService {
       this.deps.log('[updater] off: the app is not packaged');
       return;
     }
-    if (this.deps.checkAutomatically()) this.pending = setImmediate(() => this.check('auto'));
+    if (this.deps.checkAutomatically()) this.pending = setImmediate(() => this.autoCheck());
     else this.deps.log('[updater] automatic checks are off');
     this.resume = this.deps.onResume(() => {
-      if (this.deps.checkAutomatically() && this.checkIsDue()) this.check('auto');
+      if (this.deps.checkAutomatically() && this.checkIsDue()) this.autoCheck();
     });
+  }
+
+  /**
+   * The community store check that rides on the automatic checks, under the same switch; ran false while it is off. The e2e
+   * hooks call it in the unpackaged app, where start runs no check.
+   */
+  async checkStore(): Promise<{ readonly ran: boolean; readonly fetched: boolean }> {
+    if (this.disposed || !this.deps.checkAutomatically()) return { ran: false, fetched: false };
+    return this.runStoreCheck();
   }
 
   /** damocles.desktop.update.checkAutomatically changed: on checks now when a check is due and resumes the schedule, off stops it. */
@@ -164,7 +176,7 @@ export class UpdateService {
     }
     // Scheduled first: a check refused while an update is under way schedules nothing itself.
     this.schedule();
-    if (this.checkIsDue()) this.check('auto');
+    if (this.checkIsDue()) this.autoCheck();
   }
 
   snapshot(): UpdateSnapshot {
@@ -177,6 +189,11 @@ export class UpdateService {
 
   check(origin: CheckOrigin): void {
     const kind = this.current.kind;
+    // The user asked, so the automatic switch does not apply; like autoCheck, it runs while an update is under way too, and
+    // not beside a check already running, which ran one.
+    if (origin !== 'auto' && this.started && !this.disposed && kind !== 'disabled' && kind !== 'checking') {
+      this.runStoreCheck().catch((err: unknown) => this.deps.log(`[updater] the community store check failed: ${errorText(err)}`));
+    }
     if (!this.started || this.disposed || !canCheck(this.current)) {
       this.deps.log(`[updater] ${origin} check skipped while ${kind}`);
       return;
@@ -246,8 +263,20 @@ export class UpdateService {
     clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       this.schedule();
-      this.check('auto');
+      this.autoCheck();
     }, CHECK_INTERVAL_MS);
+  }
+
+  // The store check runs even when the app's own check is skipped (an update downloading or waiting), so a removed theme is
+  // still switched away from while an update waits for days.
+  private autoCheck(): void {
+    this.checkStore().catch((err: unknown) => this.deps.log(`[updater] the community store check failed: ${errorText(err)}`));
+    this.check('auto');
+  }
+
+  private async runStoreCheck(): Promise<{ readonly ran: true; readonly fetched: boolean }> {
+    const { fetched } = await this.deps.storeCheck();
+    return { ran: true, fetched };
   }
 
   // Pushes only a changed state, so a repeated progress percent or error sends nothing.

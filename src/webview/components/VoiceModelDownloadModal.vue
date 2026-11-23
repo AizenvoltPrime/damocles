@@ -150,7 +150,7 @@ function handleOpenLicense(url: string): void {
         >
           <div
             class="h-full origin-left rounded-full transition-transform duration-300 ease-out rtl:origin-right"
-            :class="entry.status === 'error' ? 'bg-(--d-danger)' : entry.status === 'done' ? 'bg-(--d-success)' : 'bg-(--d-accent)'"
+            :class="entry.status === 'error' ? 'bg-(--d-danger-fill)' : entry.status === 'done' ? 'bg-(--d-success-fill)' : 'bg-(--d-accent-fill)'"
             :style="{ transform: `scaleX(${percentOf(entry) / 100})` }"
           />
         </div>

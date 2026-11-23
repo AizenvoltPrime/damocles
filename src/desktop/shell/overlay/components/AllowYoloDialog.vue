@@ -69,7 +69,7 @@ function focusCancel(event: Event): void {
       <div class="flex items-start gap-2.5">
         <span
           aria-hidden="true"
-          class="grid size-7 flex-none place-items-center rounded-8 bg-(--d-warning)/14 text-(--d-warning)"
+          class="grid size-7 flex-none place-items-center rounded-8 bg-(--d-warning-fill)/14 text-(--d-warning)"
         >
           <ShieldAlert class="size-3.5" />
         </span>

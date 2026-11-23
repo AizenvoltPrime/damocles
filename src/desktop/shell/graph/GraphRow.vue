@@ -79,11 +79,11 @@ interface Badge {
 // Tinted pills from the --d-* tokens: a local branch in the accent, HEAD's branch filled, a remote muted, a tag in the warning
 // colour and the base ref in the info colour, as the prototype colours them; a hovered row deepens each tint.
 const TONES = {
-  branch: 'bg-(--d-accent-soft) text-(--d-accent-text) group-hover/row:bg-[color-mix(in_srgb,var(--d-accent)_22%,transparent)]',
-  current: 'bg-(--d-accent) text-(--d-on-accent) font-semibold',
+  branch: 'bg-(--d-accent-soft) text-(--d-accent-text) group-hover/row:bg-[color-mix(in_srgb,var(--d-accent-fill)_22%,transparent)]',
+  current: 'bg-(--d-accent-fill) text-(--d-on-accent) font-semibold',
   remote: 'bg-(--d-hover) text-(--d-muted) group-hover/row:bg-(--d-border2)',
-  tag: 'bg-[color-mix(in_srgb,var(--d-warning)_14%,transparent)] text-(--d-warning-text) group-hover/row:bg-[color-mix(in_srgb,var(--d-warning)_22%,transparent)]',
-  base: 'bg-[color-mix(in_srgb,var(--d-info)_14%,transparent)] text-(--d-info-text) group-hover/row:bg-[color-mix(in_srgb,var(--d-info)_22%,transparent)]',
+  tag: 'bg-[color-mix(in_srgb,var(--d-warning-fill)_14%,transparent)] text-(--d-warning-text) group-hover/row:bg-[color-mix(in_srgb,var(--d-warning-fill)_22%,transparent)]',
+  base: 'bg-[color-mix(in_srgb,var(--d-info-fill)_14%,transparent)] text-(--d-info-text) group-hover/row:bg-[color-mix(in_srgb,var(--d-info-fill)_22%,transparent)]',
 } as const;
 
 const badges = computed<Badge[]>(() => props.row.row.refs.map(({ ref }) => {
@@ -150,11 +150,11 @@ function onClick(): void {
     :aria-label="ariaLabel"
     :tabindex="current ? 0 : -1"
     :title="title"
-    class="group/row @container/row relative isolate flex cursor-pointer items-center gap-1.5 rounded-6 pr-1.5 outline-none select-none before:absolute before:inset-0 before:-z-1 before:rounded-6 before:bg-(--d-hover) before:opacity-0 before:transition-opacity before:duration-200 hover:before:opacity-100 focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
+    class="group/row @container/row relative isolate flex cursor-pointer items-center gap-1.5 rounded-6 pr-1.5 outline-none select-none before:absolute before:inset-0 before:-z-1 before:rounded-6 before:bg-(--d-hover) before:opacity-0 before:transition-opacity before:duration-200 hover:before:opacity-100 focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent-fill)]"
     :class="[
       row.kind === 'commit' && row.expanded ? 'before:opacity-100' : '',
       arrival !== undefined ? 'd-arrive' : '',
-      flash ? 'after:pointer-events-none after:absolute after:inset-0 after:-z-1 after:rounded-6 after:bg-(--d-accent-soft) after:animate-[d-flash_.9s_var(--ease-out)_both]' : '',
+      flash ? 'after:pointer-events-none after:absolute after:inset-0 after:-z-1 after:rounded-6 after:bg-(--d-accent-soft) d-flash-under' : '',
     ]"
     :style="{ height: `${height}px`, ...(arrival !== undefined ? { animationDelay: `${Math.min(arrival, 8) * 30}ms` } : {}) }"
     @click="onClick"
@@ -167,7 +167,7 @@ function onClick(): void {
     <span
       v-if="row.kind === 'commit'"
       aria-hidden="true"
-      class="absolute inset-y-1 left-0 w-0.5 origin-top rounded-full bg-(--d-accent) transition-[transform,opacity] duration-200 ease-out"
+      class="absolute inset-y-1 left-0 w-0.5 origin-top rounded-full bg-(--d-accent-fill) transition-[transform,opacity] duration-200 ease-out"
       :class="row.expanded ? 'scale-y-100 opacity-100' : 'scale-y-0 opacity-0'"
     />
     <ChevronRight
@@ -215,7 +215,7 @@ function onClick(): void {
             :cy="node.y"
             :r="radius(5.5)"
             fill="currentColor"
-            class="pointer-events-none [--ring-scale:2.4] transform-fill origin-center animate-[d-ring_.9s_var(--ease-out)_1_both]"
+            class="pointer-events-none [--ring-scale:2.4] transform-fill origin-center d-ring-once"
           />
           <template v-if="node.kind === 'head'">
             <circle

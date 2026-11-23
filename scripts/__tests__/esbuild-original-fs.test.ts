@@ -149,12 +149,17 @@ describe('the original-fs redirect', () => {
     expect(importers).toEqual([
       'src/core/config/read-contributed-configuration.ts',
       'src/core/pi-session/session-store/meta-index/worker.ts',
+      // the built-in example themes, packed under dist/desktop-shell/themes
+      'src/core/themes/builtins.ts',
       // dist/cli.js reads the app's package.json and l10n bundle inside app.asar
       'src/desktop/cli/cli.ts',
       'src/desktop/local-services/localization-service.ts',
       'src/desktop/main/protocol.ts',
       'src/desktop/main/release-notes.ts',
       'src/desktop/main/remote/server-manifest.ts',
+      // a built-in example's packed wallpaper, which the theme-blob route serves
+      'src/desktop/main/themes/theme-blobs.ts',
+      'src/desktop/main/themes/theme-files.ts',
     ]);
   });
 });

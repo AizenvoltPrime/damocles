@@ -391,3 +391,34 @@ describe('the question card with design previews', () => {
     });
   });
 });
+
+describe('a question with another one queued behind it', () => {
+  const question = (toolUseId: string, text: string) => ({ toolUseId, questions: [{ question: text, header: 'Pick', multiSelect: false, options: [{ label: 'Yes', description: '' }] }] });
+  const button = (wrapper: VueWrapper, text: string): HTMLButtonElement => wrapper.findAll('button').find((candidate) => candidate.text() === text)!.element as HTMLButtonElement;
+
+  // the store shows the queued question at once and the page a flush later, so a second press in the tick is still on the first one's card
+  it('is answered once by two presses in one tick, and the next press answers the queued one', async () => {
+    const store = useQuestionStore();
+    store.setQuestion(question('q-1', 'Which layout?'));
+    store.setQuestion(question('q-2', 'Which color?'));
+    const answered: Array<string | undefined> = [];
+    const settle = (): void => {
+      answered.push(store.pendingQuestion?.toolUseId);
+      store.clearQuestion();
+    };
+    const wrapper = mount(QuestionPrompt, { props: { visible: true, onSubmit: settle, onCancel: settle }, global: { plugins: [i18n] }, attachTo: document.body });
+    mounted.push(wrapper);
+    store.goToTab(1);
+    await flushPromises();
+
+    const cancel = button(wrapper, 'Cancel');
+    cancel.click();
+    cancel.click();
+    expect(answered).toEqual(['q-1']);
+
+    store.goToTab(1);
+    await flushPromises();
+    button(wrapper, 'Cancel').click();
+    expect(answered).toEqual(['q-1', 'q-2']);
+  });
+});

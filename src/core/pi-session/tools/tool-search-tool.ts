@@ -6,8 +6,9 @@ import { log } from '../../logger';
 import { mcpServerNamespaceKey } from '../../../shared/types/mcp';
 import { stripControlChars } from '../untrusted-text';
 import { BUILTIN_DEFERRED_GROUPS, resolveToolSearchEntries, userScopeToolNames } from './deferred-tools';
-import { browserClosedReason, forgeUnreachableReason, relayedMcpUnreachableReason, userScopeReach } from '../../user-scope';
+import { browserClosedReason, forgeUnreachableReason, relayedMcpUnreachableReason, themeUnreachableReason, userScopeReach } from '../../user-scope';
 import { DESIGN_CHAT_FORGE_REFUSAL, FORGE_PI_TOOL_NAMES } from './forge-tool-specs';
+import { DESIGN_CHAT_THEME_REFUSAL, NESTED_THEME_REFUSAL, THEME_PI_TOOL_NAMES } from './theme-tool-specs';
 import { relayedServerNames, relayedServerOfTool } from '../mcp/relayed-tool-names';
 import { englishText } from '../../../shared/localized-text';
 
@@ -33,8 +34,10 @@ export interface DeferrableSnapshot {
   pendingMcpServers?: string[];
   /** MCP tool name → its menu facts, for the grouped name + blurb inventory lines. */
   mcpDescriptions?: ReadonlyMap<string, McpToolMenuEntry>;
-  /** A design chat or an agent it started, which never loads the GitHub and GitLab group. */
+  /** A design chat or an agent it started, which never loads the GitHub and GitLab group or the theme group. */
   design?: boolean;
+  /** A subagent or team member, which never loads the theme group. */
+  nested?: boolean;
 }
 
 /** What the description advertises: the caller's deferrable universe, plus MCP menu facts when it has any. */
@@ -293,12 +296,16 @@ export function createToolSearchTool(port: ToolActivationPort): ToolDefinition {
       };
       const unavailableServer = (entry: string): string | undefined => relayedServerOfTool(entry) ?? relayedGroup(entry);
       const forgeEntry = (entry: string): boolean => entry === 'forge' || FORGE_PI_TOOL_NAMES.includes(entry);
+      const themeEntry = (entry: string): boolean => entry === 'theme' || THEME_PI_TOOL_NAMES.includes(entry);
       // the design rule decides there, account or not
       const designForge = snapshot.design === true ? [...new Set(entries.filter(forgeEntry))] : [];
-      const unavailable = entries.filter((entry) => !designForge.includes(entry) && (
+      // a design chat's and a nested agent's own rules decide the theme tools, wherever this core runs
+      const blockedTheme = snapshot.design === true || snapshot.nested === true ? [...new Set(entries.filter(themeEntry))] : [];
+      const ruled = (entry: string): boolean => designForge.includes(entry) || blockedTheme.includes(entry);
+      const unavailable = entries.filter((entry) => !ruled(entry) && (
         userScope.has(entry) || relayedGroup(entry) !== undefined || BUILTIN_DEFERRED_GROUPS.some((g) => g.group === entry && g.names.some((name) => userScope.has(name)))));
-      const unknown = resolution.unknown.filter((entry) => !unavailable.includes(entry) && !designForge.includes(entry));
-      const inertGroups = resolution.inertGroups.filter((entry) => !unavailable.includes(entry) && !designForge.includes(entry));
+      const unknown = resolution.unknown.filter((entry) => !unavailable.includes(entry) && !ruled(entry));
+      const inertGroups = resolution.inertGroups.filter((entry) => !unavailable.includes(entry) && !ruled(entry));
       const requested = matches.filter((name) => !snapshot.loaded.has(name));
       if (matches.length > 0) port.activate(sessionId, matches);
 
@@ -350,9 +357,12 @@ export function createToolSearchTool(port: ToolActivationPort): ToolDefinition {
       // the static catalog (one process-wide extension, no session identity), so it lists groups whose
       // subsystem may be off in THIS session. Naming the cause stops the model retrying the same call.
       if (designForge.length > 0) lines.push(`Not available: ${names(designForge)}. ${DESIGN_CHAT_FORGE_REFUSAL}`);
+      if (blockedTheme.length > 0) lines.push(`Not available: ${names(blockedTheme)}. ${snapshot.design === true ? DESIGN_CHAT_THEME_REFUSAL : NESTED_THEME_REFUSAL}`);
       const unavailableForge = [...new Set(unavailable)].filter((entry) => unavailableServer(entry) === undefined && forgeEntry(entry));
-      const unavailableBrowser = [...new Set(unavailable)].filter((entry) => unavailableServer(entry) === undefined && !forgeEntry(entry));
+      const unavailableTheme = [...new Set(unavailable)].filter((entry) => unavailableServer(entry) === undefined && themeEntry(entry));
+      const unavailableBrowser = [...new Set(unavailable)].filter((entry) => unavailableServer(entry) === undefined && !forgeEntry(entry) && !themeEntry(entry));
       if (unavailableForge.length > 0) lines.push(`Not available: ${names(unavailableForge)}. ${englishText(forgeUnreachableReason())}`);
+      if (unavailableTheme.length > 0) lines.push(`Not available: ${names(unavailableTheme)}. ${englishText(themeUnreachableReason())}`);
       const unavailableMcp = [...new Set(unavailable)].filter((entry) => unavailableServer(entry) !== undefined);
       if (unavailableBrowser.length > 0) lines.push(`Not available: ${names(unavailableBrowser)}. ${englishText(browserClosedReason())}`);
       for (const server of new Set(unavailableMcp.map((entry) => unavailableServer(entry)!))) {

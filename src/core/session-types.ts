@@ -1,4 +1,5 @@
 import type { ForgeToolsPort } from './pi-session/tools/forge-tools';
+import type { ThemeToolsHost } from './pi-session/tools/theme-tools';
 import type { SecretsStore } from '../platform/secrets-store';
 import type { PlatformWithWorktrees } from './worktrees/host';
 import type { SettingsFolder } from '../platform/settings-store';
@@ -61,6 +62,8 @@ export interface SessionOptions {
   browser?: SessionBrowser;
   /** A desktop chat's GitHub and GitLab tools, for the working folder `folder` reads at each call. */
   forgeTools?: (folder: () => string) => ForgeToolsPort;
+  /** The desktop theme tools, a main chat's alone: this computer's desktop core, or a daemon's relay to the turn's device. */
+  themeTools?: ThemeToolsHost;
   panelId?: string;
   teamService?: TeamService;
   compassService?: CompassService;

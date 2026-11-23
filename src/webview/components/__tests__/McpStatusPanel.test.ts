@@ -1247,7 +1247,7 @@ describe('McpStatusPanel: available on remote hosts, on this computer', () => {
   it('says it in Greek', () => {
     applyLocale('el');
     const wrapper = mountPanel([server('github', { source: 'damocles', remoteAvailable: false })]);
-    expect(wrapper.get('[data-testid="mcp-remote-available"]').text()).toBe('Διαθέσιμος σε απομακρυσμένους διακομιστές');
-    expect(wrapper.get('[data-testid="mcp-remote-available-toggle"]').attributes('aria-label')).toBe('github διαθέσιμος σε απομακρυσμένους διακομιστές');
+    expect(wrapper.get('[data-testid="mcp-remote-available"]').text()).toBe('Διαθέσιμος σε απομακρυσμένους υπολογιστές');
+    expect(wrapper.get('[data-testid="mcp-remote-available-toggle"]').attributes('aria-label')).toBe('github διαθέσιμος σε απομακρυσμένους υπολογιστές');
   });
 });

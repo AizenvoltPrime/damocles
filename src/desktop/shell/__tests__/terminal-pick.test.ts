@@ -5,6 +5,7 @@ import { createPinia } from 'pinia';
 import type { OverlayRequest } from '../../preload/overlay-channels';
 import type { TerminalProfileOption, TerminalProjectOption } from '../../preload/terminal-channels';
 import OverlayApp from '../overlay/OverlayApp.vue';
+import ProjectAvatar from '../components/ProjectAvatar.vue';
 import { TERMINAL_HOME_ROW } from '../overlay/quick-pick';
 import { loadShellLocale, shellI18n } from '../i18n';
 import { canonicalHostColor } from '../../../shared/host-colors';
@@ -95,6 +96,7 @@ describe('the New Terminal pick', () => {
     expect(api.terminalPickProfiles).toHaveBeenCalledWith({ projectKey: API.key });
     expect(wrapper.get('[data-testid="quick-pick-empty"]').text()).toBe('Detecting shells…');
     expect(wrapper.get('[data-testid="quick-pick-scope"]').attributes('title')).toBe('api · prod');
+    expect(wrapper.get('[data-testid="quick-pick-scope"]').getComponent(ProjectAvatar).props('projectKey')).toBe(API.key);
     expect(input(wrapper).attributes('placeholder')).toBe('Select a shell on prod');
     resolve([shell('zsh', true), shell('bash')]);
     await flushPromises();
@@ -139,6 +141,7 @@ describe('the New Terminal pick', () => {
     await input(wrapper).trigger('keydown', { key: 'Enter' });
     await flushPromises();
     expect(api.terminalPickProfiles).toHaveBeenCalledWith({ projectKey: null });
+    expect(wrapper.get('[data-testid="quick-pick-scope"]').getComponent(ProjectAvatar).props('projectKey')).toBeUndefined();
     await input(wrapper).trigger('keydown', { key: 'Enter' });
     await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('t1', { kind: 'newTerminal', projectKey: null, profileId: 'pwsh' }));
   });

@@ -23,7 +23,7 @@ const props = defineProps<{
   initialQuery?: string;
   emptyText?: string | undefined;
   // the project folder main limited the list to, shown as a chip before the query
-  scope?: { readonly project: string; readonly label: string } | undefined;
+  scope?: { readonly project: string; readonly projectKey?: string; readonly label: string } | undefined;
   // characters the query may hold, where the answer carries it
   maxLength?: number | undefined;
   // checkbox rows, at most max checked, accepted together through acceptMany
@@ -357,7 +357,7 @@ onMounted(() => {
     <div class="flex shrink-0 items-center gap-1.5">
       <label
         class="quick-pick-input flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg border bg-(--d-input) px-2.5"
-        :class="focusedPart === 'input' ? 'border-(--d-accent) shadow-[0_0_0_3px_var(--d-accent-soft)]' : 'border-(--d-border2)'"
+        :class="focusedPart === 'input' ? 'border-(--d-accent-fill) shadow-[0_0_0_3px_var(--d-accent-soft)]' : 'border-(--d-border2)'"
       >
         <Search
           aria-hidden="true"
@@ -375,6 +375,8 @@ onMounted(() => {
           >
             <ProjectAvatar
               :name="scope.project"
+              :project-key="scope.projectKey"
+              decorative
               class="size-3.5 shrink-0 rounded text-[0.5rem]"
             />
             <span class="truncate">{{ scope.label }}</span>
@@ -461,7 +463,7 @@ onMounted(() => {
       >
         <!-- the ring marks the active row while the list itself has keyboard focus -->
         <SlidingIndicator
-          :class="listFocused ? 'text-(--d-accent)' : 'text-(--d-accent-soft)'"
+          :class="listFocused ? '[--tone:var(--d-accent-fill)]' : '[--tone:var(--d-accent-soft)]'"
           :box="box"
           :radius="7"
           :animate="animate"
@@ -496,8 +498,8 @@ onMounted(() => {
             class="relative flex items-center gap-2.25 rounded-7 px-2"
             :class="[
               row.item.disabled ? 'cursor-default opacity-50' : blocked(row.item) ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
-              entering === 'forward' && entrySteps.has(row.item.id) ? 'animate-[d-pane-in_.2s_var(--ease-out)_both] [animation-delay:calc(var(--enter-step)*14ms)]' : '',
-              entering === 'back' && entrySteps.has(row.item.id) ? 'animate-[d-slide_.2s_var(--ease-out)_both] [animation-delay:calc(var(--enter-step)*14ms)]' : '',
+              entering === 'forward' && entrySteps.has(row.item.id) ? 'd-pane-in [--enter-delay:calc(var(--enter-step)*14ms)]' : '',
+              entering === 'back' && entrySteps.has(row.item.id) ? 'd-slide-in [--enter-delay:calc(var(--enter-step)*14ms)]' : '',
             ]"
             :style="{ height: `${rowHeight(row)}px`, ...(entrySteps.has(row.item.id) ? { '--enter-step': entrySteps.get(row.item.id) } : {}) }"
             @pointermove="onPointerMove($event, index)"
@@ -589,6 +591,7 @@ onMounted(() => {
             <ProjectAvatar
               v-if="row.item.project"
               :name="row.item.project"
+              :project-key="row.item.projectKey"
               :title="row.item.project"
               class="size-4 rounded text-[0.5625rem]"
             />
@@ -624,7 +627,7 @@ onMounted(() => {
       <p
         v-if="loaded && rows.length === 0 && !model.failure"
         data-testid="quick-pick-empty"
-        class="animate-[d-fade_.16s_var(--ease-out)] px-2 py-3 text-center text-12 text-(--d-faint)"
+        class="d-fade-in px-2 py-3 text-center text-12 text-(--d-faint)"
       >
         {{ model.empty ?? emptyText ?? t('overlay.noMatches') }}
       </p>

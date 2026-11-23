@@ -63,7 +63,7 @@ describe('host colors', () => {
 
   it('gives a custom color only numbers in inline style', () => {
     expect(hostColorLook(canonicalHostColor('#00809a99')!)).toEqual({ class: 'd-tone-custom', style: { '--host-rgb': '0 128 154', '--host-alpha': '0.6' } });
-    expect(hostColorLook('danger')).toEqual({ class: 'd-tone-danger' });
+    expect(hostColorLook('danger')).toEqual({ class: 'd-tone-danger d-safety' });
     expect(hostColorLook(undefined, 'info')).toEqual({ class: 'd-tone-info' });
   });
 });

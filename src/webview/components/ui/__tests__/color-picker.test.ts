@@ -66,6 +66,46 @@ async function enterHex(text: string): Promise<void> {
   await press(hexInput(), 'Enter');
 }
 
+describe('an opaque ColorPicker', () => {
+  async function opaque(modelValue: string): Promise<VueWrapper> {
+    const wrapper = mount(ColorPicker, {
+      props: {
+        modelValue: hex(modelValue), opaque: true, areaLabel: 'Area name', areaThumbLabel: 'Sat and bri', hueLabel: 'Hue name', hexLabel: 'Hex name', previewLabel: 'Preview name',
+        areaValueText: (saturation: number, brightness: number) => `S ${saturation} B ${brightness}`,
+        hueValueText: (degrees: number) => `${degrees} deg`,
+      },
+      attachTo: document.body,
+    });
+    mounted.push(wrapper);
+    await flushPromises();
+    return wrapper;
+  }
+
+  it('has no opacity slider and no percent, and still has the area, the hue and the hex field', async () => {
+    await opaque('#3a86ffff');
+    expect([...document.querySelectorAll('[role="slider"]')].map((element) => element.getAttribute('aria-label'))).toEqual(['Sat and bri', 'Hue name']);
+    expect(document.body.textContent).not.toContain('%');
+    expect(hexInput().value).toBe('#3a86ff');
+    expect(hexInput().maxLength).toBe(7);
+  });
+
+  it('takes six hex digits only: eight digits commit nothing and the color stays', async () => {
+    const wrapper = await opaque('#3a86ffff');
+    await enterHex('#00ff0080');
+    expect(commits(wrapper)).toEqual([]);
+    expect(hexInput().value).toBe('#3a86ff');
+    await enterHex('#00ff00');
+    expect(commits(wrapper)).toEqual(['#00ff00ff']);
+  });
+
+  it('shows a color given with transparency as the solid color', async () => {
+    const wrapper = await opaque('#3a86ff80');
+    expect(drafts(wrapper).at(-1) ?? '#3a86ffff').toBe('#3a86ffff');
+    await press(slider('Hue name'), 'ArrowRight');
+    expect(String(commits(wrapper).at(-1))).toMatch(/^#[0-9a-f]{6}ff$/);
+  });
+});
+
 describe('ColorPicker', () => {
   it('names every control and its value from its props, with none of reka-ui\'s English role descriptions', async () => {
     await picker('#ff0000ff');

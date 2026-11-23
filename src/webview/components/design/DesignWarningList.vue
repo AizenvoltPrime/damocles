@@ -21,7 +21,7 @@ const ruleLabel = (rule: string): string => tKnown('design.check.rule', rule, ru
       class="flex min-w-0 items-start gap-2"
     >
       <span
-        class="mt-1.25 size-1.5 flex-none rotate-45 bg-(--d-warning)"
+        class="mt-1.25 size-1.5 flex-none rotate-45 bg-(--d-warning-fill)"
         aria-hidden="true"
       />
       <span class="min-w-0 text-pretty">

@@ -22,8 +22,9 @@ export interface QuickPickItem {
   readonly iconDot?: HostColorLook;
   // a Quick Open file's project-relative or absolute path, drawn as its file icon in place of `icon`
   readonly file?: string;
-  // the project chip at the row's end
+  // the project chip at the row's end, and the key its character is drawn for
   readonly project?: string;
+  readonly projectKey?: string;
   // a command's "Category: " prefix of label, drawn quieter
   readonly categoryLength?: number;
   // a command's shortcut in the platform's display form, drawn as keycaps
@@ -149,7 +150,7 @@ export function quickOpenModel(response: QuickOpenResponse, grouped: boolean, la
     }
     rows.push({
       kind: 'item',
-      item: { id: quickOpenRowKey(result), label: result.label, description: result.description, ...matches, file: result.relativePath, project: result.projectName, ...complete },
+      item: { id: quickOpenRowKey(result), label: result.label, description: result.description, ...matches, file: result.relativePath, project: result.projectName, projectKey: result.projectKey, ...complete },
     });
   }
   const { line, column } = response;
@@ -285,6 +286,12 @@ export function ariaKeyshortcuts(accelerator: string): string {
   return keycaps(accelerator).map((cap) => MAC_MODIFIERS[cap] ?? KEY_NAMES[cap] ?? cap).join('+');
 }
 
+/** An Electron accelerator in aria-keyshortcuts' form on `platform`: CmdOrCtrl is Meta on macOS and Control elsewhere. */
+export function acceleratorKeyshortcuts(accelerator: string, platform: string): string {
+  const primary = platform === 'darwin' ? 'Meta' : 'Control';
+  return accelerator.split('+').map((part) => (part === 'CmdOrCtrl' || part === 'CommandOrControl' ? primary : KEY_NAMES[part] ?? part)).join('+');
+}
+
 /** Items whose label matches the query (all of them for an empty one), best first; an empty query keeps their order. */
 function filterItems<T>(entries: readonly T[], rawQuery: string, label: (entry: T) => string, item: (entry: T, matches: readonly QuickOpenMatch[]) => QuickPickItem): QuickPickRow[] {
   const query = prepareQuery(rawQuery.trim());
@@ -331,7 +338,7 @@ export const TERMINAL_HOME_ROW = ':home';
 // floor, the muted icon with the colour as a dot.
 function hostIcon(color: HostColor | undefined): Pick<QuickPickItem, 'iconColor' | 'iconDot'> {
   if (color === undefined || !isHostColor(color)) return { iconColor: 'var(--d-muted)' };
-  return isHostTone(color) ? { iconColor: `var(--d-${color}-text)` } : { iconColor: 'var(--d-muted)', iconDot: hostColorLook(color) };
+  return isHostTone(color) ? { iconColor: `var(--d-safety-${color}-text)` } : { iconColor: 'var(--d-muted)', iconDot: hostColorLook(color) };
 }
 
 /**

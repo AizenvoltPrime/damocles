@@ -20,8 +20,8 @@ const PILL = 'title-bar-control d-press mr-1.5 flex h-6 shrink-0 gap-1.5 rounded
 // Danger while stopped, which needs the user's Restart; warning while restarting, which ends by itself. The restarting pill
 // offers no click, so hovering it changes nothing.
 const TONE = {
-  danger: 'border-(--d-danger)/45 text-(--d-danger-text) hover:border-(--d-danger) hover:text-(--d-danger-text)',
-  warning: 'border-(--d-warning)/45 text-(--d-warning-text) hover:border-(--d-warning)/45 hover:text-(--d-warning-text)',
+  danger: 'border-(--d-danger-fill)/45 text-(--d-danger-text) hover:border-(--d-danger-fill) hover:text-(--d-danger-text)',
+  warning: 'border-(--d-warning-fill)/45 text-(--d-warning-text) hover:border-(--d-warning-fill)/45 hover:text-(--d-warning-text)',
 } as const;
 </script>
 

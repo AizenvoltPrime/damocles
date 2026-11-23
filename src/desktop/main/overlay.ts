@@ -5,8 +5,9 @@ import { FORGE_GIT_OPERATIONS, type ChooseAccountAnswer, type ChooseAccountRows,
 import type { ForgeChooseAccountDialog } from '../preload/forge-channels';
 import type { ForkState, PublishState } from '../../shared/forge/publish';
 import type { ProtectedPushState } from '../../shared/forge/protected-push';
-import { HOST_THEME_STYLE_ID } from '../../shared/host-theme';
+import { HOST_THEME_STYLE_ID, HOST_TRUSTED_STYLE_ID } from '../../shared/host-theme';
 import { isHostColor } from '../../shared/host-colors';
+import { checkProjectLook } from '../../shared/themes/project-looks';
 import {
   MAX_OVERLAY_COORDINATE,
   MAX_COMMAND_ID_LENGTH,
@@ -118,7 +119,7 @@ import { PERMISSION_MODES, type PermissionMode } from '../../shared/types/settin
 import { PROVIDER_ID_PATTERN } from '../../shared/types/messages';
 import { validPng } from './notification-art';
 import { APP_ORIGIN, OVERLAY_PAGE_URL } from './protocol';
-import { loadAppPage, loggableUrl, mainFrameLoadFailed } from './security';
+import { loadAppPage, loggableUrl, mainFrameLoadFailed, registerLocalFontsContents } from './security';
 import { tickDeadline } from './tick-deadline';
 import { isPanelSender } from './views';
 import { parseGridLayout } from './window-layout-store';
@@ -1487,6 +1488,13 @@ export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): Overl
   if (request.kind === 'forgePublish') return undefined;
   if (request.kind === 'forgeFork') return field(raw, 'openMergeRequest') === true && Object.keys(raw).length === 2 ? { kind: 'forgeFork', openMergeRequest: true } : undefined;
   if (request.kind === 'forgeProtectedBranch') return field(raw, 'openMergeRequest') === true && Object.keys(raw).length === 2 ? { kind: 'forgeProtectedBranch', openMergeRequest: true } : undefined;
+  if (request.kind === 'projectLook') {
+    const look = field(raw, 'look');
+    if (Object.keys(raw).length !== 2) return undefined;
+    if (look === null) return { kind: 'projectLook', look: null };
+    const checked = checkProjectLook(look);
+    return checked ? { kind: 'projectLook', look: checked } : undefined;
+  }
   const tag = field(raw, 'tag');
   if (tag === null) return { kind: 'tagPicker', tag: null };
   return isTag(tag) ? { kind: 'tagPicker', tag: tag.trim() } : undefined;
@@ -1619,6 +1627,7 @@ export function overlayHtml(theme: PanelTheme, lang: ShellLocale): string {
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${APP_ORIGIN} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${APP_ORIGIN}; img-src ${APP_ORIGIN} data:; base-uri 'none'; form-action 'none';">
   <link href="${assets}/overlay.css" rel="stylesheet">
   <style id="${HOST_THEME_STYLE_ID}">${theme.css}</style>
+  <style id="${HOST_TRUSTED_STYLE_ID}">${theme.trustedCss}</style>
   <title>Damocles</title>
 </head>
 <body class="vscode-${theme.kind}" data-vscode-theme-kind="vscode-${theme.kind}">
@@ -1719,6 +1728,8 @@ export class OverlayHost {
         focusOnNavigation: false,
       },
     });
+    // a theme's export reads installed font files through queryLocalFonts()
+    registerLocalFontsContents(this.view.webContents);
     this.view.setBackgroundColor(TRANSPARENT);
     this.view.setVisible(false);
     deps.window.contentView.addChildView(this.view);

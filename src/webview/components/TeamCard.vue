@@ -12,6 +12,7 @@ import { useCostLabel } from '@/composables/useCostLabel';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
 import { useStopTeam } from '@/composables/useStopTeam';
 import { runStopwatch } from '@shared/team-stopwatch';
+import { agentHookStatus } from '@/composables/useToolCardStatus';
 
 const { t, locale } = useI18n();
 const { teamDollarBilled } = useCostLabel();
@@ -62,10 +63,10 @@ const cardClass = computed(() => {
   switch (props.run.status) {
     case 'running':
       return awaitingAgents.value.size > 0
-        ? 'border-[color-mix(in_srgb,var(--d-warning)_45%,var(--d-border))]'
-        : 'border-[color-mix(in_srgb,var(--d-accent)_35%,var(--d-border))]';
+        ? 'border-[color-mix(in_srgb,var(--d-warning-fill)_45%,var(--d-border))]'
+        : 'border-[color-mix(in_srgb,var(--d-accent-fill)_35%,var(--d-border))]';
     case 'failed':
-      return 'border-[color-mix(in_srgb,var(--d-danger)_45%,var(--d-border))]';
+      return 'border-[color-mix(in_srgb,var(--d-danger-fill)_45%,var(--d-border))]';
     default:
       return 'border-(--d-border)';
   }
@@ -89,15 +90,20 @@ function openMember(agentId: string): void {
 
 <template>
   <div
-    class="cursor-pointer overflow-hidden rounded-xl border bg-(--d-card) text-13 transition-colors duration-200 hover:border-(--d-border2)"
+    class="cursor-pointer overflow-hidden rounded-xl border bg-(--surface-card) text-13 transition-colors duration-200 hover:border-(--d-border2)"
     :class="cardClass"
+    :data-tool-status="agentHookStatus(run.status, awaitingAgents.size > 0)"
     data-testid="team-card"
     @click="$emit('expand')"
   >
-    <div class="flex items-center gap-2.5 px-3 pt-2.25 pb-2">
+    <div
+      class="flex items-center gap-2.5 px-3 pt-2.25 pb-2"
+      data-part="header"
+    >
       <span
         class="flex size-7 flex-none items-center justify-center rounded-lg bg-(--d-accent-soft) text-(--d-accent)"
         aria-hidden="true"
+        data-part="tile"
       >
         <Users class="size-3.5" />
       </span>
@@ -176,7 +182,7 @@ function openMember(agentId: string): void {
       <button
         v-if="isRunning && stopTeam.canStop.value"
         type="button"
-        class="flex rounded-5 p-0.75 text-(--d-danger) opacity-75 transition-[opacity,background-color] enabled:hover:bg-[color-mix(in_srgb,var(--d-danger)_12%,transparent)] enabled:hover:opacity-100 disabled:opacity-60"
+        class="flex rounded-5 p-0.75 text-(--d-danger) opacity-75 transition-[opacity,background-color] enabled:hover:bg-[color-mix(in_srgb,var(--d-danger-fill)_12%,transparent)] enabled:hover:opacity-100 disabled:opacity-60"
         :title="stopLabel"
         :aria-label="stopLabel"
         :aria-busy="stopTeam.stopping.value || undefined"
@@ -197,7 +203,7 @@ function openMember(agentId: string): void {
       </button>
       <button
         type="button"
-        class="flex items-center gap-0.75 rounded font-sans text-(--d-muted) hover:text-(--d-text) focus-visible:outline-2 focus-visible:outline-(--d-accent)"
+        class="flex items-center gap-0.75 rounded font-sans text-(--d-muted) hover:text-(--d-text) focus-visible:outline-2 focus-visible:outline-(--d-accent-fill)"
         :aria-label="t('cards.team.open', { name: team.title })"
         @click.stop="$emit('expand')"
       >

@@ -37,14 +37,14 @@ function open(file: string): void {
       :key="reference.id"
       data-testid="reference-note"
       :data-reference="reference.id"
-      class="flex max-w-full min-w-0 items-center gap-2.5 rounded-lg border border-[color-mix(in_srgb,var(--d-design)_30%,var(--d-border))] bg-[color-mix(in_srgb,var(--d-design)_5%,var(--d-card))] p-1.5 pe-2.5"
+      class="flex max-w-full min-w-0 items-center gap-2.5 rounded-lg border border-[color-mix(in_srgb,var(--d-design-fill)_30%,var(--d-border))] bg-[color-mix(in_srgb,var(--d-design-fill)_5%,var(--d-card))] p-1.5 pe-2.5"
     >
       <Button
         v-if="block && url"
         type="button"
         variant="ghost"
         data-testid="reference-note-image"
-        class="block size-11 flex-none cursor-zoom-in overflow-hidden rounded-6 border border-(--d-border) bg-(--d-bg) p-0 hover:bg-(--d-bg) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-1"
+        class="block size-11 flex-none cursor-zoom-in overflow-hidden rounded-6 border border-(--d-border) bg-(--d-bg) p-0 hover:bg-(--d-bg) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-1"
         :title="t('imageThumbnail.clickToPreview')"
         @click="emit('openLightbox', block)"
       >
@@ -57,7 +57,7 @@ function open(file: string): void {
       <span
         v-else
         aria-hidden="true"
-        class="flex size-11 flex-none items-center justify-center rounded-6 bg-[color-mix(in_srgb,var(--d-design)_15%,transparent)] text-(--d-design-text)"
+        class="flex size-11 flex-none items-center justify-center rounded-6 bg-[color-mix(in_srgb,var(--d-design-fill)_15%,transparent)] text-(--d-design-text)"
       >
         <Images class="size-4" />
       </span>
@@ -79,7 +79,7 @@ function open(file: string): void {
               :data-file="reference.image"
               :title="t('design.reference.open', { file: reference.image })"
               :disabled="!designId"
-              class="rounded-sm font-mono break-all text-(--d-text) underline decoration-(--d-border2) underline-offset-2 enabled:hover:decoration-(--d-text) focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--d-accent) disabled:no-underline"
+              class="rounded-sm font-mono break-all text-(--d-text) underline decoration-(--d-border2) underline-offset-2 enabled:hover:decoration-(--d-text) focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--d-accent-fill) disabled:no-underline"
               @click="open(reference.image)"
             >
               {{ reference.image }}

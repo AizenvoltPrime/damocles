@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, posix, relative, sep } from 'node:path';
@@ -7,9 +7,11 @@ import { FuseState, FuseV1Options, getCurrentFuseWire } from '@electron/fuses';
 import { CREDENTIAL_RELAY_SCRIPTS } from '../esbuild.config.ts';
 import { ASAR_UNPACK, asarUnpackFor } from '../src/desktop/main/platform/unpacked-assets.ts';
 import { parseServerManifest } from '../src/desktop/main/remote/server-manifest-format.ts';
-import { asarFiles, readAsarFile, readAsarHeader, type AsarFileEntry } from './asar-archive.ts';
+import { asarFiles, readAsarBytes, readAsarFile, readAsarHeader, type AsarFileEntry } from './asar-archive.ts';
+import { THEME_LINK_SCHEME } from '../src/shared/themes/theme-links.ts';
 import { serverManifest, type ManifestPackage, type ServerManifest } from './build-server.ts';
 import { isEntryPoint } from './entry-point.ts';
+import { desktopArtifacts } from './release-targets.ts';
 import { SERVER_TARGETS } from './server-targets.ts';
 
 // Checks one electron-builder output (the unpacked app directory, or the .app on macOS) for everything the
@@ -18,7 +20,8 @@ import { SERVER_TARGETS } from './server-targets.ts';
 const USAGE = `Usage: node scripts/verify-desktop-package.ts --platform <win32|darwin|linux> --arch <x64|arm64> --app <dir or .app> [--server-packages <dir>]
 
   --app              win32: dist-desktop/win-unpacked (or win-arm64-unpacked); linux: dist-desktop/linux-unpacked
-                     (or linux-arm64-unpacked); darwin: dist-desktop/mac-arm64/Damocles.app
+                     (or linux-arm64-unpacked), with the version's deb and rpm beside it (read through dpkg-deb and
+                     rpm2cpio); darwin: dist-desktop/mac-arm64/Damocles.app
   --server-packages  the release's eight server packages, which the app's server manifest must name exactly`;
 
 export type PackagePlatform = 'win32' | 'darwin' | 'linux';
@@ -90,6 +93,14 @@ const FORBIDDEN_ASAR_PREFIXES = [
   'node_modules/@esbuild/',
   'node_modules/typescript/',
   'node_modules/vite/',
+  // bundled into the theme code, so devDependencies; a copy here means one moved back to dependencies
+  'node_modules/css-tree/',
+  'node_modules/mdn-data/',
+  'node_modules/fflate/',
+  'node_modules/jsonc-parser/',
+  'node_modules/@material/material-color-utilities/',
+  // the built-in themes ship from the shell build (BUILTIN_THEMES_PACKED); a copy here is read by nothing
+  'resources/themes/',
 ];
 const PYTHON_JUNK = /(^|\/)(\.venv|__pycache__|\.pytest_cache|tests|[^/]+\.egg-info)(\/|$)|\.pyc$/;
 
@@ -297,6 +308,266 @@ export function checkNoDaemon(entries: PackedEntry[], unpackedFiles: string[]): 
   return [found.length === 0 ? pass('loopback daemon', `${DAEMON_BUNDLE} does not ship`) : fail('loopback daemon', `${DAEMON_BUNDLE} ships ${found.join(' and ')}`)];
 }
 
+// The community store's theme validator (npm run build:theme-validator) is built for the store's CI only: its launcher, and
+// the folder of its Electron host.
+export const THEME_VALIDATOR_BUNDLE = 'dist/theme-validate.js';
+export const THEME_VALIDATOR_FOLDER = 'dist/theme-validate/';
+
+/** The theme validator's launcher and host ship neither in app.asar nor beside it. */
+export function checkNoThemeValidator(entries: PackedEntry[], unpackedFiles: string[]): CheckResult[] {
+  const validator = (file: string): boolean => file === THEME_VALIDATOR_BUNDLE || file.startsWith(THEME_VALIDATOR_FOLDER);
+  const found = [...entries.filter(({ path }) => validator(path)).map(({ path }) => `${path} in app.asar`), ...unpackedFiles.filter(validator).map((file) => `${file} in app.asar.unpacked`)];
+  return [found.length === 0 ? pass('theme validator', `${THEME_VALIDATOR_BUNDLE} and ${THEME_VALIDATOR_FOLDER} do not ship`) : fail('theme validator', `must not ship: ${found.slice(0, 10).join(', ')}`)];
+}
+
+// vite.shell.config.ts copies each resources/themes/<id>/ whole to the shell build, where core and main read the built-in examples.
+export const BUILTIN_THEMES_PACKED = 'dist/desktop-shell/themes/';
+
+/**
+ * The package holds under BUILTIN_THEMES_PACKED exactly the files of resources/themes (`sourceFiles`, relative to it), each
+ * with the repo's bytes. `shipped` is every path in app.asar or beside it; `readSource` takes a path relative to
+ * resources/themes and `readShipped` a path of `shipped`.
+ */
+export function checkBuiltinThemes(shipped: readonly string[], sourceFiles: readonly string[], readSource: ReadFile, readShipped: ReadFile): CheckResult[] {
+  const check = 'built-in themes';
+  if (sourceFiles.length === 0) return [fail(check, 'resources/themes has no files')];
+  const digest = (bytes: Buffer | undefined): string | undefined => (bytes === undefined ? undefined : createHash('sha256').update(bytes).digest('hex'));
+  const packed = new Set(shipped.filter((file) => file.startsWith(BUILTIN_THEMES_PACKED)));
+  const missing = sourceFiles.filter((file) => !packed.has(`${BUILTIN_THEMES_PACKED}${file}`));
+  const differ = sourceFiles.filter((file) => !missing.includes(file) && digest(readSource(file)) !== digest(readShipped(`${BUILTIN_THEMES_PACKED}${file}`)));
+  const extra = [...packed].filter((file) => !sourceFiles.includes(file.slice(BUILTIN_THEMES_PACKED.length)));
+  const problems = [
+    ...(missing.length ? [`missing ${missing.slice(0, 10).map((file) => `${BUILTIN_THEMES_PACKED}${file}`).join(', ')}`] : []),
+    ...(differ.length ? [`differ from the repo: ${differ.slice(0, 10).join(', ')}`] : []),
+    ...(extra.length ? [`not in the repo: ${extra.slice(0, 10).join(', ')}`] : []),
+  ];
+  return [problems.length === 0 ? pass(check, `${sourceFiles.length} files identical to the repo`) : fail(check, problems.join('; '))];
+}
+
+/** The array element that follows `<key>name</key>` in an XML plist, with its nested arrays, or undefined. */
+function plistArray(plist: string, name: string): string | undefined {
+  const key = new RegExp(`<key>${name}</key>\\s*<array>`).exec(plist);
+  if (key === null) return undefined;
+  const tag = /<(\/?)array>/g;
+  tag.lastIndex = key.index + key[0].length;
+  for (let depth = 1, match = tag.exec(plist); match !== null; match = tag.exec(plist)) {
+    depth += match[1] === '/' ? -1 : 1;
+    if (depth === 0) return plist.slice(key.index + key[0].length, match.index);
+  }
+  return undefined;
+}
+
+/** macOS hands a damocles:// link to the app only when Contents/Info.plist lists the scheme under CFBundleURLTypes. */
+export function checkMacUrlScheme(plist: string | undefined): CheckResult {
+  const check = `${THEME_LINK_SCHEME}:// scheme`;
+  if (plist === undefined) return fail(check, 'Contents/Info.plist is missing');
+  const types = plistArray(plist, 'CFBundleURLTypes');
+  if (types === undefined) return fail(check, 'Contents/Info.plist has no CFBundleURLTypes');
+  const schemes = [...types.matchAll(/<key>CFBundleURLSchemes<\/key>\s*<array>([^]*?)<\/array>/g)]
+    .flatMap((match) => [...match[1]!.matchAll(/<string>([^<]*)<\/string>/g)].map((scheme) => scheme[1]!));
+  return schemes.includes(THEME_LINK_SCHEME)
+    ? pass(check, 'Info.plist CFBundleURLTypes lists it')
+    : fail(check, `Info.plist CFBundleURLTypes lists [${schemes.join(', ')}], not ${THEME_LINK_SCHEME}`);
+}
+
+// The .desktop file electron-builder's FpmTarget writes into the deb and rpm only (getDesktopFileName: linux.executableName).
+export const LINUX_DESKTOP_ENTRY = 'usr/share/applications/damocles.desktop';
+
+/** The deb's or rpm's .desktop file declares the scheme handler and passes the link to the app (`%U` or `%u`). */
+export function checkLinuxDesktopEntry(packageName: string, entry: Buffer | undefined): CheckResult {
+  const check = `${THEME_LINK_SCHEME}:// scheme ${packageName}`;
+  if (entry === undefined) return fail(check, `/${LINUX_DESKTOP_ENTRY} is not in the package`);
+  const lines = entry.toString('utf8').split(/\r?\n/);
+  const start = lines.indexOf('[Desktop Entry]');
+  const end = lines.findIndex((line, index) => index > start && line.startsWith('['));
+  const values = new Map(lines.slice(start + 1, end === -1 ? undefined : end).flatMap((line) => {
+    const equals = line.indexOf('=');
+    return equals > 0 ? [[line.slice(0, equals).trim(), line.slice(equals + 1).trim()] as const] : [];
+  }));
+  const handler = `x-scheme-handler/${THEME_LINK_SCHEME}`;
+  const problems = [
+    ...(start === -1 ? ['has no [Desktop Entry] group'] : []),
+    ...((values.get('MimeType') ?? '').split(';').includes(handler) ? [] : [`MimeType does not list ${handler}`]),
+    ...(/\s%[uU](\s|$)/.test(values.get('Exec') ?? '') ? [] : ['Exec takes no %U or %u, so the link never reaches the app']),
+  ];
+  return problems.length === 0 ? pass(check, `/${LINUX_DESKTOP_ENTRY} handles ${handler}`) : fail(check, problems.join('; '));
+}
+
+/**
+ * NSIS writes no protocol keys, so on Windows the installed app's main bundle registers the scheme itself, for its own
+ * executable and with `--` before the link, so no word of a link is read as a flag.
+ */
+export function checkWindowsSchemeRegistration(mainBundle: string | undefined): CheckResult {
+  const check = `${THEME_LINK_SCHEME}:// scheme`;
+  if (mainBundle === undefined) return fail(check, 'dist/desktop/main.js is not in app.asar');
+  // main.js is not minified, so the call names the scheme and the marker literally or through their constants
+  const literalOrConstant = (value: string): string => {
+    const constants = [...mainBundle.matchAll(new RegExp(`\\b([A-Za-z_$][\\w$]*)\\s*=\\s*["']${value}["']`, 'g'))].map((match) => match[1]!);
+    return [`["']${value}["']`, ...constants.map((name) => name.replace(/\$/g, '\\$'))].join('|');
+  };
+  const call = `\\.setAsDefaultProtocolClient\\(\\s*(?:${literalOrConstant(THEME_LINK_SCHEME)})\\s*,\\s*process\\.execPath\\s*,\\s*\\[\\s*(?:${literalOrConstant('--')})\\s*\\]\\s*\\)`;
+  return new RegExp(call).test(mainBundle)
+    ? pass(check, 'dist/desktop/main.js registers it with app.setAsDefaultProtocolClient, with -- before the link')
+    : fail(check, `dist/desktop/main.js never calls app.setAsDefaultProtocolClient('${THEME_LINK_SCHEME}', process.execPath, ['--'])`);
+}
+
+/** Reads bytes from the front of a stream: `take` returns exactly n bytes and `skip` drops n; both throw when the stream ends first. */
+class ByteReader {
+  private readonly chunks: Buffer[] = [];
+  private length = 0;
+  private readonly source: AsyncIterator<Buffer>;
+  /** How many bytes `take` and `skip` have consumed. */
+  offset = 0;
+
+  constructor(stream: AsyncIterable<Buffer>) {
+    this.source = stream[Symbol.asyncIterator]();
+  }
+
+  private async pull(): Promise<boolean> {
+    const next = await this.source.next();
+    if (next.done === true) return false;
+    this.chunks.push(next.value);
+    this.length += next.value.length;
+    return true;
+  }
+
+  /** Whether the stream is over with every byte consumed. */
+  async ended(): Promise<boolean> {
+    while (this.length === 0) if (!(await this.pull())) return true;
+    return false;
+  }
+
+  private truncated(): Error {
+    return new Error(`the archive ends inside an entry, at offset ${this.offset + this.length}`);
+  }
+
+  async take(n: number): Promise<Buffer> {
+    while (this.length < n) if (!(await this.pull())) throw this.truncated();
+    const parts: Buffer[] = [];
+    for (let rest = n; rest > 0;) {
+      const head = this.chunks[0]!;
+      if (head.length <= rest) {
+        parts.push(head);
+        this.chunks.shift();
+        rest -= head.length;
+      } else {
+        parts.push(head.subarray(0, rest));
+        this.chunks[0] = head.subarray(rest);
+        rest = 0;
+      }
+    }
+    this.length -= n;
+    this.offset += n;
+    return parts.length === 1 ? parts[0]! : Buffer.concat(parts);
+  }
+
+  async skip(n: number): Promise<void> {
+    for (let rest = n; rest > 0;) {
+      if (this.chunks.length === 0 && !(await this.pull())) throw this.truncated();
+      const head = this.chunks[0]!;
+      const dropped = Math.min(head.length, rest);
+      if (dropped === head.length) this.chunks.shift();
+      else this.chunks[0] = head.subarray(dropped);
+      this.length -= dropped;
+      this.offset += dropped;
+      rest -= dropped;
+    }
+  }
+}
+
+const archivePath = (name: string): string => name.replace(/^\.?\/+/, '');
+const nulTerminated = (bytes: Buffer): string => bytes.toString('utf8').replace(/\0[^]*$/, '');
+
+/**
+ * The bytes of the regular file `name` in a tar stream (a deb's data, as `dpkg-deb --fsys-tarfile` writes it). Undefined
+ * means the archive ended without it; a stream that ends inside an entry throws.
+ */
+export async function findTarEntry(stream: AsyncIterable<Buffer>, name: string): Promise<Buffer | undefined> {
+  const reader = new ByteReader(stream);
+  for (;;) {
+    if (await reader.ended()) return undefined;
+    const at = reader.offset;
+    const header = await reader.take(512);
+    if (header.every((byte) => byte === 0)) return undefined;
+    // only POSIX ustar has a name prefix there; GNU tar keeps times in those bytes
+    const prefix = header.subarray(257, 263).toString('latin1') === 'ustar\0' ? nulTerminated(header.subarray(345, 500)) : '';
+    const path = archivePath(prefix === '' ? nulTerminated(header.subarray(0, 100)) : `${prefix}/${nulTerminated(header.subarray(0, 100))}`);
+    const size = parseInt(nulTerminated(header.subarray(124, 136)).trim() || '0', 8);
+    if (Number.isNaN(size)) throw new Error(`not a tar archive at offset ${at}`);
+    const type = String.fromCharCode(header[156]!);
+    if (path === archivePath(name) && (type === '0' || type === '\0')) return reader.take(size);
+    await reader.skip(Math.ceil(size / 512) * 512);
+  }
+}
+
+/**
+ * The bytes of the regular file `name` in a newc cpio stream (an rpm's payload, as `rpm2cpio` writes it). Undefined means
+ * the archive ended without it; a header that is not newc, or a stream that ends inside an entry, throws.
+ */
+export async function findCpioEntry(stream: AsyncIterable<Buffer>, name: string): Promise<Buffer | undefined> {
+  const reader = new ByteReader(stream);
+  const pad = (n: number): number => (4 - (n % 4)) % 4;
+  for (;;) {
+    if (await reader.ended()) return undefined;
+    const at = reader.offset;
+    const header = await reader.take(110);
+    if (!/^07070[12]$/.test(header.subarray(0, 6).toString('ascii'))) throw new Error(`not a newc cpio archive at offset ${at}`);
+    const field = (index: number): number => parseInt(header.subarray(6 + index * 8, 14 + index * 8).toString('ascii'), 16);
+    const [mode, size, nameSize] = [field(1), field(6), field(11)];
+    if (Number.isNaN(mode) || Number.isNaN(size) || Number.isNaN(nameSize)) throw new Error(`not a newc cpio archive at offset ${at}`);
+    const path = await reader.take(nameSize);
+    await reader.skip(pad(110 + nameSize));
+    const entry = archivePath(nulTerminated(path));
+    if (entry === 'TRAILER!!!') return undefined;
+    if (entry === archivePath(name) && (mode & 0o170000) === 0o100000) return reader.take(size);
+    await reader.skip(size + pad(size));
+  }
+}
+
+/** Runs `command` and looks for an entry in the archive it writes to stdout, stopping it once found or once `find` throws. */
+export async function findInToolOutput(command: string, args: string[], find: (stream: AsyncIterable<Buffer>) => Promise<Buffer | undefined>): Promise<Buffer | undefined> {
+  const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  let stderr = '';
+  child.stderr.setEncoding('utf8').on('data', (text: string) => (stderr += text));
+  const closed = new Promise<number | null>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', resolve);
+  });
+  closed.catch(() => undefined);
+  const output: AsyncIterator<Buffer> = child.stdout[Symbol.asyncIterator]();
+  try {
+    const found = await find({ [Symbol.asyncIterator]: () => output });
+    if (found !== undefined) return found;
+    // a tool blocked on a full pipe never exits, so its exit code is read only after the rest of its output
+    while ((await output.next()).done !== true);
+    const code = await closed;
+    if (code !== 0) throw new Error(`${command} exited with ${code}: ${stderr.trim()}`);
+    return undefined;
+  } finally {
+    child.kill();
+  }
+}
+
+/** A file from a deb (through dpkg-deb) or an rpm (through rpm2cpio), the tools the Linux release legs build them with. */
+export type ReadLinuxPackageFile = (packageFile: string, name: string) => Promise<Buffer | undefined>;
+
+const readLinuxPackageFile: ReadLinuxPackageFile = (packageFile, name) => packageFile.endsWith('.deb')
+  ? findInToolOutput('dpkg-deb', ['--fsys-tarfile', packageFile], (stream) => findTarEntry(stream, name))
+  : findInToolOutput('rpm2cpio', [packageFile], (stream) => findCpioEntry(stream, name));
+
+/** The deb and rpm electron-builder wrote beside the unpacked app each hand damocles:// links to the app. */
+export async function checkLinuxSchemeHandlers(packageFiles: string[], read: ReadLinuxPackageFile): Promise<CheckResult[]> {
+  return Promise.all(packageFiles.map(async (file) => {
+    const name = file.split(/[\\/]/).at(-1)!;
+    if (!existsSync(file)) return fail(`${THEME_LINK_SCHEME}:// scheme ${name}`, `${file} is missing; build the deb/rpm targets, not --dir`);
+    try {
+      return checkLinuxDesktopEntry(name, await read(file, LINUX_DESKTOP_ENTRY));
+    } catch (error) {
+      return fail(`${THEME_LINK_SCHEME}:// scheme ${name}`, `cannot read ${file}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }));
+}
+
 function listFiles(dir: string): string[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { recursive: true, withFileTypes: true })
@@ -479,9 +750,10 @@ export interface VerifyOptions {
   serverPackages?: string;
   readFuseWire?: (fuseTarget: string) => Promise<FuseWire>;
   codesign?: (file: string) => CodesignResult;
+  readLinuxPackage?: ReadLinuxPackageFile;
 }
 
-export async function verifyPackage({ platform, arch, app, repoRoot, serverPackages, readFuseWire = getCurrentFuseWire, codesign = codesignVerify }: VerifyOptions): Promise<CheckResult[]> {
+export async function verifyPackage({ platform, arch, app, repoRoot, serverPackages, readFuseWire = getCurrentFuseWire, codesign = codesignVerify, readLinuxPackage = readLinuxPackageFile }: VerifyOptions): Promise<CheckResult[]> {
   const { binary, fuseTarget, resources } = layoutFor(platform, app);
   const asarPath = join(resources, 'app.asar');
   const unpacked = join(resources, 'app.asar.unpacked');
@@ -515,6 +787,16 @@ export async function verifyPackage({ platform, arch, app, repoRoot, serverPacka
   const changelogEntry = entries.find(({ path, entry }) => path === PACKED_CHANGELOG && !entry.unpacked);
   const packedChangelog = changelogEntry === undefined ? undefined : readAsarFile(asarPath, dataOffset, changelogEntry.entry);
   results.push(...checkChangelog(packedChangelog, readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf8'), repoVersion, process.env.GITHUB_REF_TYPE === 'tag'));
+  if (platform === 'win32') {
+    const mainEntry = entries.find(({ path, entry }) => path === 'dist/desktop/main.js' && !entry.unpacked);
+    results.push(checkWindowsSchemeRegistration(mainEntry === undefined ? undefined : readAsarFile(asarPath, dataOffset, mainEntry.entry)));
+  } else if (platform === 'darwin') {
+    const plist = join(app, 'Contents', 'Info.plist');
+    results.push(checkMacUrlScheme(existsSync(plist) ? readFileSync(plist, 'utf8') : undefined));
+  } else {
+    const packages = desktopArtifacts(`linux-${arch}`, repoVersion).filter((name) => /\.(deb|rpm)$/.test(name));
+    results.push(...await checkLinuxSchemeHandlers(packages.map((name) => join(dirname(app), name)), readLinuxPackage));
+  }
   if (serverPackages !== undefined) {
     const manifestFile = entries.find(({ path, entry }) => path === PACKED_SERVER_MANIFEST && !entry.unpacked);
     const packed = manifestFile === undefined ? undefined : readAsarFile(asarPath, dataOffset, manifestFile.entry);
@@ -525,6 +807,18 @@ export async function verifyPackage({ platform, arch, app, repoRoot, serverPacka
   results.push(...checkUnpackedSet(unpackedFiles, asarUnpackFor(platform)));
   results.push(...checkCoreHost(entries, unpackedFiles));
   results.push(...checkNoDaemon(entries, unpackedFiles));
+  results.push(...checkNoThemeValidator(entries, unpackedFiles));
+  const themes = join(repoRoot, 'resources', 'themes');
+  results.push(...checkBuiltinThemes(
+    [...new Set([...entries.map(({ path }) => path), ...unpackedFiles])],
+    listFiles(themes),
+    (file) => readFileSync(join(themes, file)),
+    (file) => {
+      const packed = entries.find(({ path, entry }) => path === file && !entry.unpacked);
+      if (packed !== undefined) return readAsarBytes(asarPath, dataOffset, packed.entry);
+      return existsSync(join(unpacked, file)) ? readFileSync(join(unpacked, file)) : undefined;
+    },
+  ));
   const unpackedScripts = unpackedFiles.filter((file) => /\.(c|m)?js$/.test(file));
   results.push(pass('unpacked scripts (outside asar integrity)', unpackedScripts.join(', ')));
 

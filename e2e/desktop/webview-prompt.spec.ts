@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { PROVIDER_SECRET_KEYS } from '../../src/core/pi-session/explore-providers';
 import { logFiles } from './support/app';
 import { activeChat, expect, test } from './support/fixtures';
-import { askHostPassword, chatInput, hostPromptAnswer, postFromWebview } from './support/ui';
+import { askHostPassword, chatInput, hostPromptAnswer, postFromWebview, promptReady } from './support/ui';
 import { openSettingsModal, settingsModal, settingsRow, waitForSettingsState } from './support/settings';
 
 const SECRET = 'sk-or-e2e-7f3a91';
@@ -25,6 +25,8 @@ test('host input box renders in the chat webview, accepts a masked value, and an
   await expect(input).toBeFocused();
   await expect(input).toHaveAttribute('type', 'password');
   await input.fill(SECRET);
+  // a host prompt is trusted UI: it takes no key until it has been shown whole for its hold
+  await promptReady(dialog.getByTestId('extension-ui-body'));
   await input.press('Enter');
   await expect(dialog).toBeHidden();
   expect(await hostPromptAnswer(app)).toBe(SECRET);
@@ -65,6 +67,7 @@ test('with the settings modal open, a host prompt renders in it, takes a masked 
   await expect(input).toBeFocused();
   await expect(input).toHaveAttribute('type', 'password');
   await input.fill(SECRET);
+  await promptReady(dialog.getByTestId('extension-ui-body'));
   await input.press('Enter');
   await expect(dialog).toBeHidden();
   await expect(settingsModal(overlay)).toBeVisible();
@@ -107,6 +110,7 @@ test('a host prompt raised from the modal\'s ChatGPT sign-in takes clicks, typin
   await expect(input).toHaveValue('typed then clicked');
   await expect(input).toBeFocused();
 
+  await promptReady(prompt.getByTestId('extension-ui-body'));
   await overlay.keyboard.press('Escape');
   await expect(prompt).toBeHidden();
   await expect(modal).toBeVisible();

@@ -112,9 +112,9 @@ function onKeydown(event: KeyboardEvent): void {
 
 // Each part rounds its own outer end and insets its focus ring, so the ring follows the pill and the header's title actions
 // beside the chip never cover it. Button's base sizes icons at size-4; the chip's are smaller.
-const PART = 'h-full text-10.5 font-normal transition-colors focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 [&_svg]:size-2.5';
+const PART = 'h-full text-10.5 font-normal transition-colors focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 [&_svg]:size-2.5';
 const TONE = computed(() => (worktreeShown.value
-  ? 'bg-(--d-accent-soft) text-(--d-accent-text) hover:bg-[color-mix(in_srgb,var(--d-accent)_22%,transparent)] hover:text-(--d-accent-text)'
+  ? 'bg-(--d-accent-soft) text-(--d-accent-text) hover:bg-[color-mix(in_srgb,var(--d-accent-fill)_22%,transparent)] hover:text-(--d-accent-text)'
   : 'bg-(--d-hover) text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text)'));
 </script>
 

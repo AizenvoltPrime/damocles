@@ -28,7 +28,7 @@ function focusCancel(event: Event): void {
   >
     <AlertDialogContent
       data-testid="forget-host-dialog"
-      class="max-w-md gap-0 overflow-hidden border-(--d-danger)/50 p-0"
+      class="max-w-md gap-0 overflow-hidden border-(--d-danger-fill)/50 p-0"
       @open-auto-focus="focusCancel"
     >
       <ConfirmDialogLayout

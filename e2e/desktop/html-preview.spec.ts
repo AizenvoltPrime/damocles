@@ -224,7 +224,9 @@ test('Open preview on index.html shows the page in a chat-less tab, with its fil
   expect(await previewTitle(app)).toMatch(/^report:/);
 
   // A target=_blank link's click reaches main's window-open handler, which opens it in the system browser and no window.
-  const windows = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length);
+  // the theme renderer's offscreen window comes and goes on its own, so only on-screen windows count
+  const onScreenWindows = (): Promise<number> => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((win) => !win.webContents.isOffscreen()).length);
+  const windows = await onScreenWindows();
   await app.evaluate(({ webContents }, scheme) => {
     const view = webContents.getAllWebContents().find((contents) => !contents.isDestroyed() && contents.getURL().startsWith(scheme))!;
     view.sendInputEvent({ type: 'mouseMove', x: 160, y: 20 });
@@ -233,7 +235,7 @@ test('Open preview on index.html shows the page in a chat-less tab, with its fil
   }, PREVIEW_SCHEME);
   await expect.poll(opened).toContain('https://example.com/blank');
   expect(await previewTitle(app)).toMatch(/^report:/);
-  expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(windows);
+  expect(await onScreenWindows()).toBe(windows);
 
   // No chat holds the tab: a new chat leaves it open and shown.
   await clickMenu(app, 'damocles.newChat');

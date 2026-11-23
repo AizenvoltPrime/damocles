@@ -8,6 +8,37 @@ export const SHELL_URL = 'app://damocles/shell/index.html';
 export const OVERLAY_URL = 'app://damocles/overlay/index.html';
 // The desktop popup window's page (D52); main opens the window for the first popup.
 export const NOTIFIER_URL = 'app://damocles/notifier/index.html';
+// The theme renderer's offscreen page, which main opens for a job and closes after it: never a page of the window.
+export const THEME_RENDER_URL = 'app://damocles/theme-render/index.html';
+
+/**
+ * Runs `fn` in main on the window that shows the shell. Never index BrowserWindow.getAllWindows() for it: the list puts the
+ * newest window first, and the theme renderer's offscreen window and the notifier come and go during a test.
+ */
+export async function onMainWindow<R, A = undefined>(app: ElectronApplication, fn: (window: Electron.BrowserWindow, arg: A) => R | Promise<R>, arg?: A): Promise<R> {
+  const handle = await app.evaluateHandle(({ BrowserWindow }, url) => {
+    const found = BrowserWindow.getAllWindows().find((window) => window.webContents.getURL().startsWith(url));
+    if (!found) throw new Error(`no window shows ${url}`);
+    return found;
+  }, SHELL_URL);
+  try {
+    // Playwright types the argument as its unboxed form, which a plain A is, so the call checks against A at the signature above
+    return (await handle.evaluate(fn as never, arg as never)) as R;
+  } finally {
+    await handle.dispose();
+  }
+}
+
+/** The bounds of the view that shows `page`, in window DIPs, as main placed it. */
+export async function viewBounds(app: ElectronApplication, page: Page): Promise<Electron.Rectangle> {
+  return app.evaluate(({ BaseWindow }, url) => {
+    for (const window of BaseWindow.getAllWindows()) {
+      const view = (window.contentView.children as Electron.WebContentsView[]).find((child) => child.webContents?.getURL() === url);
+      if (view) return view.getBounds();
+    }
+    throw new Error(`no view for ${url}`);
+  }, page.url());
+}
 
 /** The window's own page, which draws the title bar and sidebar. */
 export async function shellPage(app: ElectronApplication): Promise<Page> {

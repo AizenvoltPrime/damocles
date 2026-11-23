@@ -1,4 +1,4 @@
-// No imports: vite.shell.config.ts imports this table to copy the files, and theme.ts declares the same files in @font-face.
+// No imports: vite.shell.config.ts imports this table to copy the files, and fontFaceCss declares the same files in @font-face.
 
 export interface DesktopFontFile {
   readonly family: string;
@@ -47,6 +47,14 @@ export const DESKTOP_FONT_FILES: readonly DesktopFontFile[] = [
     greek: 'U+0370-0377,U+037A-037F,U+0384-038A,U+038C,U+038E-03A1,U+03A3-03FF',
   }),
 ];
+
+/** The @font-face rules for DESKTOP_FONT_FILES served from `origin`; the path must match where vite.shell.config.ts copies them. */
+export function fontFaceCss(origin: string): string {
+  return DESKTOP_FONT_FILES.map((font) =>
+    `@font-face { font-family: '${font.family}'; font-style: normal; font-display: swap; font-weight: 100 900; `
+    + `src: url(${origin}/desktop-shell/fonts/${font.output}) format('woff2-variations'); unicode-range: ${font.unicodeRange}; }`,
+  ).join('\n');
+}
 
 export const DESKTOP_FONT_LICENSES: ReadonlyArray<{ readonly pkg: string; readonly output: string }> = [
   { pkg: GEIST, output: 'geist-OFL.txt' },

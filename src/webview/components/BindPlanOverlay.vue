@@ -115,7 +115,7 @@ function browse(): void {
           :box="box"
           :radius="11"
           :animate="animate"
-          class="z-1 text-(--d-accent)"
+          class="z-1 [--tone:var(--d-accent-fill)]"
         />
         <div
           v-for="(file, index) in files"
@@ -124,7 +124,7 @@ function browse(): void {
           :aria-checked="index === selected"
           :tabindex="index === selected ? 0 : -1"
           :title="file.relativePath"
-          class="d-arrive flex items-center gap-2.5 rounded-11 border border-(--d-border) bg-(--d-card) px-3 py-2.5 transition-colors outline-none hover:border-(--d-accent) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent)"
+          class="d-arrive flex items-center gap-2.5 rounded-11 border border-(--d-border) bg-(--d-card) px-3 py-2.5 transition-colors outline-none hover:border-(--d-accent-fill) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent-fill)"
           :style="{ animationDelay: `${index * 30}ms` }"
           data-testid="bind-plan-file"
           @click="selected = index"
@@ -146,11 +146,11 @@ function browse(): void {
             </span>
             <span
               class="flex size-4.5 flex-none items-center justify-center rounded-full border-[1.5px] transition-colors"
-              :class="index === selected ? 'border-(--d-accent)' : 'border-(--d-border2)'"
+              :class="index === selected ? 'border-(--d-accent-fill)' : 'border-(--d-border2)'"
               aria-hidden="true"
             >
               <span
-                class="size-2 rounded-full bg-(--d-accent) transition-[opacity,transform] duration-150"
+                class="size-2 rounded-full bg-(--d-accent-fill) transition-[opacity,transform] duration-150"
                 :class="index === selected ? 'opacity-100' : 'scale-50 opacity-0'"
               />
             </span>
@@ -160,7 +160,7 @@ function browse(): void {
 
       <button
         type="button"
-        class="d-press flex items-center gap-2 rounded-11 border border-dashed border-(--d-border2) px-3 py-2.5 text-left text-12.5 text-(--d-muted) transition-colors hover:border-(--d-accent) hover:text-(--d-accent)"
+        class="d-press flex items-center gap-2 rounded-11 border border-dashed border-(--d-border2) px-3 py-2.5 text-left text-12.5 text-(--d-muted) transition-colors hover:border-(--d-accent-fill) hover:text-(--d-accent)"
         data-testid="bind-plan-browse"
         @click="browse"
       >
@@ -172,7 +172,7 @@ function browse(): void {
 
       <p
         v-if="hasPlan"
-        class="flex items-center gap-2 rounded-10 bg-[color-mix(in_srgb,var(--d-warning)_10%,transparent)] px-3 py-2.25 text-xs text-(--d-warning-text)"
+        class="flex items-center gap-2 rounded-10 bg-[color-mix(in_srgb,var(--d-warning-fill)_10%,transparent)] px-3 py-2.25 text-xs text-(--d-warning-text)"
         role="note"
         data-testid="bind-plan-overwrite"
       >
@@ -195,7 +195,7 @@ function browse(): void {
         </button>
         <button
           type="button"
-          class="d-press flex h-7.5 items-center gap-1.5 rounded-9 bg-(--d-accent) px-3.5 text-12.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110 disabled:cursor-default disabled:opacity-40 disabled:hover:brightness-100"
+          class="d-press flex h-7.5 items-center gap-1.5 rounded-9 bg-(--d-accent-fill) px-3.5 text-12.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110 disabled:cursor-default disabled:opacity-40 disabled:hover:brightness-100"
           :disabled="!selectedFile"
           data-testid="bind-plan-bind"
           @click="bind"

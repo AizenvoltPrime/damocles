@@ -109,7 +109,7 @@ describe('Connect dialog distro cards', () => {
     expect(dot(ubuntu).getAttribute('role')).toBe('img');
     expect(dot(ubuntu).getAttribute('aria-label')).toBe('Running');
     // a disc runs and a ring is stopped, so the state never rests on color alone
-    expect(dot(ubuntu).querySelector('circle')!.getAttribute('fill')).toBe('currentColor');
+    expect(dot(ubuntu).querySelector('circle')!.classList.contains('fill-(--d-success-fill)')).toBe(true);
     expect(dot(legacy).querySelector('circle')!.getAttribute('fill')).toBe('none');
     // the cards enter as host cards do, staggered after the saved hosts and aliases
     expect(ubuntu.closest<HTMLElement>('.host-card')!.style.getPropertyValue('--card-index')).toBe('0');
@@ -427,7 +427,7 @@ describe('Reopen in WSL in Projects', () => {
     option.dispatchEvent(pointer('pointerdown', 50));
     window.dispatchEvent(pointer('pointermove', 20));
     await flushPromises();
-    const lift = ['data-dragging:relative', 'data-dragging:z-5', 'data-dragging:bg-(--d-card)', 'data-dragging:shadow-(--d-shadow)', 'data-dragging:ring-1', 'data-dragging:ring-(--d-accent)'];
+    const lift = ['data-dragging:relative', 'data-dragging:z-5', 'data-dragging:bg-(--d-card)', 'data-dragging:shadow-(--d-shadow)', 'data-dragging:ring-1', 'data-dragging:ring-(--d-accent-fill)'];
     expect(unit.getAttribute('data-dragging')).toBe('true');
     expect([...unit.classList]).toEqual(expect.arrayContaining(lift));
     expect((unit as HTMLElement).style.transform).toContain('translateY(-30px)');

@@ -4,7 +4,7 @@ import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"
 import { Search } from "lucide-vue-next"
 import { injectListboxRootContext, ListboxFilter, useForwardProps } from "reka-ui"
-import { computed } from "vue"
+import { computed, watchEffect } from "vue"
 import { cn } from "@/lib/utils"
 import { isListEdgeChord, isListPageKey, useCommand } from "."
 import { pageRow } from "./page"
@@ -28,7 +28,12 @@ const forwardedProps = useForwardProps(delegatedProps)
 const { filterState, rows } = useCommand()
 const listbox = injectListboxRootContext()
 
-// A bound v-model hands filtering to the caller, so the list's own text filter stays off.
+// A bound v-model hands filtering to the caller: the list's own text filter stays off, and CommandEmpty shows when the
+// caller's text leaves no item.
+watchEffect(() => {
+  filterState.external = props.modelValue !== undefined
+  filterState.query = props.modelValue === undefined ? "" : String(props.modelValue)
+})
 const search = computed({
   get: () => props.modelValue ?? filterState.search,
   set: (value: string) => {

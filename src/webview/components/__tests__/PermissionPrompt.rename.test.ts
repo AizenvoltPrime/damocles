@@ -26,6 +26,7 @@ window.damoclesBridge = {
   onConnection: () => () => undefined,
   allowYolo: async () => false,
   queueAction: () => undefined,
+  setModalOpen: () => undefined,
 };
 
 describe('PermissionPrompt on a remote chat whose host is renamed', () => {

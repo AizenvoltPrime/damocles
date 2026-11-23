@@ -11,6 +11,10 @@ export type ThemeKind = 'dark' | 'light';
 export interface PanelTheme {
   readonly kind: ThemeKind;
   readonly css: string;
+  // the trusted palette, scoped to [data-trusted] in the shell and chat pages and to :root in the overlay and the notifier
+  readonly trustedCss: string;
+  // the theme's sanitized custom CSS for the page's scope roots; the preload sets it only as textContent; undefined: none
+  readonly customCss?: string;
   // damocles.desktop.reduceMotion, mirrored as the data-reduced-motion attribute of every renderer's root element
   readonly reducedMotion: boolean;
   // damocles.desktop.fileIconTheme, mirrored as the data-file-icon-theme attribute of every renderer's root element
@@ -80,4 +84,6 @@ export const PANEL_CHANNELS = {
   queueAction: 'damocles:panel:queue-action',
   // main → renderer, PanelHostNames after a host was added, renamed, recolored or forgotten; this computer's chats only
   hostNames: 'damocles:panel:host-names',
+  // renderer → main, boolean: a chat page shows a modal layer, whose scrim the shell's chat gutter continues
+  modal: 'damocles:panel:modal',
 } as const;

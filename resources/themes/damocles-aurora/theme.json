@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "id": "damocles-aurora",
+  "name": "Aurora",
+  "description": "Northern lights behind every panel: a night look and a dawn look, one image across the window.",
+  "author": "Damocles",
+  "license": "MIT",
+  "looks": {
+    "dark": {
+      "colors": {
+        "background": "#0b1020",
+        "panel": "#10172a",
+        "text": "#e4ecf5",
+        "accent": "#5ee6b0",
+        "success": "#4fd18b",
+        "warning": "#f2c14e",
+        "danger": "#ff6b7a",
+        "info": "#8ab4ff"
+      },
+      "wallpapers": [
+        {
+          "name": "Night",
+          "span": {
+            "asset": "cec925b0f7a8d5ac4d3f40098758d11d81456b70a52f73c7180c17dd214dac2a",
+            "panels": [
+              "titlebar",
+              "sidebar",
+              "chat",
+              "editor",
+              "terminal"
+            ],
+            "fit": "fill"
+          },
+          "spanLook": {
+            "titlebar": {
+              "dim": 0.6,
+              "blur": 2
+            },
+            "sidebar": {
+              "dim": 0.6,
+              "blur": 2
+            },
+            "chat": {
+              "dim": 0.6,
+              "blur": 2
+            },
+            "editor": {
+              "dim": 0.6,
+              "blur": 2
+            },
+            "terminal": {
+              "dim": 0.6,
+              "blur": 2
+            }
+          }
+        }
+      ],
+      "surfaceOpacity": 0.9
+    },
+    "light": {
+      "colors": {
+        "background": "#f4f7fb",
+        "panel": "#e8eef6",
+        "text": "#14202e",
+        "accent": "#0f7a68",
+        "success": "#1f7a3e",
+        "warning": "#8a5a00",
+        "danger": "#c0303c",
+        "info": "#3a5fc4"
+      },
+      "wallpapers": [
+        {
+          "name": "Dawn",
+          "span": {
+            "asset": "9b292d536c7b47d3bbdab9e3182201b29fc785bec4ea0f28f913e5ee8135bb74",
+            "panels": [
+              "titlebar",
+              "sidebar",
+              "chat",
+              "editor",
+              "terminal"
+            ],
+            "fit": "fill"
+          },
+          "spanLook": {
+            "titlebar": {
+              "dim": 0.62,
+              "blur": 2
+            },
+            "sidebar": {
+              "dim": 0.62,
+              "blur": 2
+            },
+            "chat": {
+              "dim": 0.62,
+              "blur": 2
+            },
+            "editor": {
+              "dim": 0.62,
+              "blur": 2
+            },
+            "terminal": {
+              "dim": 0.62,
+              "blur": 2
+            }
+          }
+        }
+      ],
+      "surfaceOpacity": 0.9
+    }
+  },
+  "assets": {
+    "cec925b0f7a8d5ac4d3f40098758d11d81456b70a52f73c7180c17dd214dac2a": {
+      "kind": "image",
+      "mime": "image/png",
+      "bytes": 403476,
+      "width": 1600,
+      "height": 1000,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    },
+    "9b292d536c7b47d3bbdab9e3182201b29fc785bec4ea0f28f913e5ee8135bb74": {
+      "kind": "image",
+      "mime": "image/png",
+      "bytes": 179348,
+      "width": 1600,
+      "height": 1000,
+      "license": {
+        "spdx": "MIT",
+        "author": "Damocles",
+        "source": "scripts/generate-theme-art.ts"
+      }
+    }
+  }
+}

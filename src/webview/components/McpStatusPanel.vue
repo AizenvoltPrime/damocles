@@ -126,8 +126,8 @@ function handleResourceExposure(server: McpServerStatusInfo, value: McpToolExpos
 /** The indicator is mixed into the opaque card under it, since a translucent one would show its seams. */
 function exposureIndicator(exposure: McpToolExposureSetting | undefined): string {
   return (exposure ?? 'deferred') === 'off'
-    ? 'text-[color-mix(in_srgb,var(--d-text)_9%,var(--d-card))]'
-    : 'text-[color-mix(in_srgb,var(--d-accent)_16%,var(--d-card))]';
+    ? '[--tone:color-mix(in_srgb,var(--d-text)_9%,var(--d-card))]'
+    : '[--tone:color-mix(in_srgb,var(--d-accent-fill)_16%,var(--d-card))]';
 }
 
 /** A server the host resolved a resource exposure for, unless it is known to offer no resources. */
@@ -652,7 +652,7 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
       <div
         v-for="configError in configErrors"
         :key="`${configError.path}:${configError.line ?? 0}`"
-        class="flex gap-2.5 rounded-10 border border-[color-mix(in_srgb,var(--d-danger)_30%,transparent)] bg-[color-mix(in_srgb,var(--d-danger)_8%,transparent)] px-3 py-2.5 text-xs"
+        class="flex gap-2.5 rounded-10 border border-[color-mix(in_srgb,var(--d-danger-fill)_30%,transparent)] bg-[color-mix(in_srgb,var(--d-danger-fill)_8%,transparent)] px-3 py-2.5 text-xs"
       >
         <FileX
           class="size-3.5 mt-0.5 flex-none text-(--d-danger)"
@@ -678,7 +678,7 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
         <button
           v-if="!inHostSettings"
           type="button"
-          class="flex-none self-end whitespace-nowrap rounded-7 px-2.25 py-1 text-11.5 font-semibold text-(--d-danger-text) transition-colors hover:bg-[color-mix(in_srgb,var(--d-danger)_12%,transparent)]"
+          class="flex-none self-end whitespace-nowrap rounded-7 px-2.25 py-1 text-11.5 font-semibold text-(--d-danger-text) transition-colors hover:bg-[color-mix(in_srgb,var(--d-danger-fill)_12%,transparent)]"
           @click="emit('openFile', configError.path, configError.line)"
         >
           {{ t('mcp.configErrorOpen') }}
@@ -689,7 +689,7 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
       <div
         v-if="localMcpUnignored"
         role="alert"
-        class="flex gap-2.5 rounded-10 border border-[color-mix(in_srgb,var(--d-danger)_30%,transparent)] bg-[color-mix(in_srgb,var(--d-danger)_8%,transparent)] px-3 py-2.5 text-xs"
+        class="flex gap-2.5 rounded-10 border border-[color-mix(in_srgb,var(--d-danger-fill)_30%,transparent)] bg-[color-mix(in_srgb,var(--d-danger-fill)_8%,transparent)] px-3 py-2.5 text-xs"
       >
         <TriangleAlert
           class="size-3.5 mt-0.5 flex-none text-(--d-danger)"
@@ -707,7 +707,7 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
 
       <div
         v-if="hasUntrustedServers"
-        class="flex items-center gap-2.5 rounded-10 bg-[color-mix(in_srgb,var(--d-warning)_10%,transparent)] px-3 py-2.25 text-xs text-(--d-warning-text)"
+        class="flex items-center gap-2.5 rounded-10 bg-[color-mix(in_srgb,var(--d-warning-fill)_10%,transparent)] px-3 py-2.25 text-xs text-(--d-warning-text)"
       >
         <ShieldAlert
           class="size-3.5 flex-none"
@@ -755,7 +755,7 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
           <SegmentedToggle
             :model-value="saveScope"
             :options="scopeOptions"
-            indicator-class="text-(--d-card)"
+            indicator-class="[--tone:var(--d-card)]"
             class="bg-(--d-hover)"
             data-testid="mcp-tool-exposure-scope"
             :aria-labelledby="`${panelId}-save-to`"
@@ -768,15 +768,15 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
           :ref="(el) => setRowElement(server.name, el)"
           :key="server.name"
           tabindex="-1"
-          class="overflow-hidden rounded-xl border bg-(--d-card) transition-colors duration-200 outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent)"
-          :class="pendingDeleteName === server.name ? 'border-[color-mix(in_srgb,var(--d-danger)_45%,transparent)]' : 'border-(--d-border)'"
+          class="overflow-hidden rounded-xl border bg-(--d-card) transition-colors duration-200 outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent-fill)"
+          :class="pendingDeleteName === server.name ? 'border-[color-mix(in_srgb,var(--d-danger-fill)_45%,transparent)]' : 'border-(--d-border)'"
           data-testid="mcp-server-row"
         >
           <div
             v-if="pendingDeleteName === server.name"
             role="alertdialog"
             :aria-labelledby="`${panelId}-delete-${rowIndex}`"
-            class="flex flex-col gap-2 bg-[color-mix(in_srgb,var(--d-danger)_6%,transparent)] p-3"
+            class="flex flex-col gap-2 bg-[color-mix(in_srgb,var(--d-danger-fill)_6%,transparent)] p-3"
           >
             <div
               :id="`${panelId}-delete-${rowIndex}`"
@@ -801,7 +801,7 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
               </button>
               <button
                 type="button"
-                class="d-press flex h-7 items-center gap-1.5 rounded-lg bg-(--d-danger) px-3 text-xs font-semibold text-(--d-on-danger)"
+                class="d-press flex h-7 items-center gap-1.5 rounded-lg bg-(--d-danger-fill) px-3 text-xs font-semibold text-(--d-on-danger)"
                 @click="confirmDelete"
               >
                 <Trash2

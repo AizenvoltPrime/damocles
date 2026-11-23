@@ -22,7 +22,7 @@ const shown = computed(() => props.changes.filter((change) => te(`design.change.
     >
       <span
         class="mt-1.25 size-1.5 flex-none rotate-45"
-        :class="change.kind === 'decisionAdded' ? 'bg-(--d-design)' : 'border border-(--d-design)'"
+        :class="change.kind === 'decisionAdded' ? 'bg-(--d-design-fill)' : 'border border-(--d-design-fill)'"
         aria-hidden="true"
       />
       <i18n-t

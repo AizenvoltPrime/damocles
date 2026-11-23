@@ -17,11 +17,8 @@ defineProps<{
     :title="label"
     class="relative inline-flex size-2.5 shrink-0 transition-colors duration-200 ease-out"
     :class="{
-      'text-(--d-success)': shape === 'live',
       'text-(--d-muted)': shape === 'idle',
       'text-(--d-faint)': shape === 'detected' || shape === 'ignored',
-      'text-(--d-danger)': shape === 'error',
-      'text-(--d-info)': shape === 'direct',
     }"
   >
     <!-- Live connections: a ring breathes out from the disc's edge (r 4 of 5, hence the 10% inset). -->
@@ -30,7 +27,7 @@ defineProps<{
       aria-hidden="true"
       class="absolute inset-[10%]"
     >
-      <span class="d-ring block size-full rounded-full [--ring-scale:2.6]" />
+      <span class="d-ring block size-full rounded-full [--ring-scale:2.6] [--tone:var(--d-success-fill)]" />
     </span>
     <Transition name="t-icon">
       <svg
@@ -44,7 +41,7 @@ defineProps<{
           cx="5"
           cy="5"
           r="4"
-          fill="currentColor"
+          class="fill-(--d-success-fill)"
         />
         <template v-else-if="shape === 'idle'">
           <circle
@@ -69,7 +66,7 @@ defineProps<{
           width="7.4"
           height="7.4"
           rx="1.8"
-          fill="currentColor"
+          class="fill-(--d-info-fill)"
         />
         <circle
           v-else-if="shape === 'detected'"
@@ -100,7 +97,7 @@ defineProps<{
         <template v-else>
           <path
             d="M5 .8 9.4 8.8H.6z"
-            fill="currentColor"
+            class="fill-(--d-danger-fill)"
             stroke-linejoin="round"
           />
           <path

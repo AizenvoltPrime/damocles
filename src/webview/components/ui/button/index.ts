@@ -11,13 +11,13 @@ export const buttonVariants = cva(
         default: "bg-primary text-primary-foreground hover:bg-primary/90",
         // The fill stays opaque on hover: --d-on-danger is chosen against the solid danger color.
         destructive:
-          "bg-destructive text-destructive-foreground hover:shadow-[0_0_0_3px_color-mix(in_srgb,var(--d-danger)_28%,transparent)]",
+          "bg-destructive text-destructive-foreground hover:shadow-[0_0_0_3px_color-mix(in_srgb,var(--d-danger-fill)_28%,transparent)]",
         outline:
           "border border-input bg-background hover:bg-accent hover:text-accent-foreground",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-secondary/80",
         ghost: "hover:bg-accent hover:text-accent-foreground",
-        link: "text-primary underline-offset-4 hover:underline",
+        link: "text-(--d-accent) underline-offset-4 hover:underline",
       },
       size: {
         "default": "h-10 px-4 py-2",

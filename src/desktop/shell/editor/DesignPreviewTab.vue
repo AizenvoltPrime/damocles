@@ -422,7 +422,7 @@ function toggleTweaks(): void {
 }
 function tweaksMotion(phase: 'enter' | 'leave'): string {
   if (prefersReducedMotion()) return '';
-  return phase === 'enter' ? 'animate-[d-zoom_.26s_var(--ease-out)]' : 'animate-[d-zoom-out_.16s_ease-in_both]';
+  return phase === 'enter' ? 'd-zoom-in' : 'd-zoom-out';
 }
 function closeTweaks(): void {
   const session = tweaksSession(props.tab.id);
@@ -467,9 +467,9 @@ const replayStep = computed(() => {
 });
 const REPLAY_DOT: Record<ReplayDot, string> = {
   pending: 'bg-(--d-border2)',
-  active: 'd-ring bg-(--d-design) text-(--d-design)',
-  pass: 'bg-(--d-success)',
-  fail: 'bg-(--d-danger)',
+  active: 'd-ring bg-(--d-design-fill) [--tone:var(--d-design-fill)]',
+  pass: 'bg-(--d-success-fill)',
+  fail: 'bg-(--d-danger-fill)',
 };
 
 // The frame's outer corner radius in CSS px: main lays the view over the frame's border box and rounds its corners to this.
@@ -598,7 +598,7 @@ const PILL = 'pointer-events-none absolute bottom-2.5 flex h-5.5 items-center ga
               :data-primary="preset.name === primaryBand || undefined"
               :title="preset.name === primaryBand ? t('editor.designPreview.presetPrimary', { preset: `${preset.name} · ${preset.width} px` }) : `${preset.name} · ${preset.width} px`"
               :class="cn(
-                'relative h-5.5 min-w-8.5 rounded-5 px-2 font-mono text-11 font-normal text-(--d-muted) transition-[color,background-color,box-shadow] duration-150 hover:bg-transparent hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 data-[state=on]:bg-(--d-hover) data-[state=on]:text-(--d-text)',
+                'relative h-5.5 min-w-8.5 rounded-5 px-2 font-mono text-11 font-normal text-(--d-muted) transition-[color,background-color,box-shadow] duration-150 hover:bg-transparent hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 data-[state=on]:bg-(--d-hover) data-[state=on]:text-(--d-text)',
                 preset.name === band && 'text-(--d-text) shadow-[inset_0_0_0_1px_var(--d-border2)]',
               )"
             >
@@ -607,11 +607,11 @@ const PILL = 'pointer-events-none absolute bottom-2.5 flex h-5.5 items-center ga
                 v-if="preset.name === primaryBand"
                 aria-hidden="true"
                 data-testid="design-preview-primary-dot"
-                class="absolute top-0.75 right-0.75 size-1 rounded-full bg-(--d-design)"
+                class="absolute top-0.75 right-0.75 size-1 rounded-full bg-(--d-design-fill)"
               />
             </ToggleGroupItem>
           </ToggleGroup>
-          <div class="flex h-6.5 items-center gap-1 rounded-7 border border-(--d-border) bg-(--d-input) pr-2 pl-1 font-mono text-11.5 transition-[border-color,box-shadow] duration-150 focus-within:border-(--d-accent) focus-within:shadow-[0_0_0_3px_var(--d-accent-soft)] hover:border-(--d-border2)">
+          <div class="flex h-6.5 items-center gap-1 rounded-7 border border-(--d-border) bg-(--d-input) pr-2 pl-1 font-mono text-11.5 transition-[border-color,box-shadow] duration-150 focus-within:border-(--d-accent-fill) focus-within:shadow-[0_0_0_3px_var(--d-accent-soft)] hover:border-(--d-border2)">
             <label
               :for="widthId"
               class="sr-only"
@@ -691,7 +691,7 @@ const PILL = 'pointer-events-none absolute bottom-2.5 flex h-5.5 items-center ga
               v-if="states.length > 0"
               :model-value="preview.state"
               :options="states.map((state) => ({ value: state, label: state, attrs: { 'data-testid': 'design-preview-state', 'data-state-name': state } }))"
-              indicator-class="text-(--d-hover)"
+              indicator-class="[--tone:var(--d-hover)]"
               :aria-label="t('editor.designPreview.states')"
               data-testid="design-preview-states"
               class="border border-(--d-border) bg-(--d-bg)"
@@ -766,7 +766,7 @@ const PILL = 'pointer-events-none absolute bottom-2.5 flex h-5.5 items-center ga
                   v-if="marksWaiting > 0"
                   aria-hidden="true"
                   data-testid="design-preview-markup-count"
-                  class="flex h-4 min-w-4 items-center justify-center rounded-full bg-(--d-design) px-1 text-10 font-semibold text-(--d-on-design) tabular-nums"
+                  class="flex h-4 min-w-4 items-center justify-center rounded-full bg-(--d-design-fill) px-1 text-10 font-semibold text-(--d-on-design) tabular-nums"
                 >{{ marksWaiting }}</span>
               </Transition>
             </Button>
@@ -787,7 +787,7 @@ const PILL = 'pointer-events-none absolute bottom-2.5 flex h-5.5 items-center ga
               variant="ghost"
               data-testid="design-preview-tweaks"
               :aria-pressed="tweaksOpen"
-              :class="cn(TOOLBAR_BUTTON, tweaksOpen && 'bg-[color-mix(in_srgb,var(--d-design)_14%,transparent)] text-(--d-design-text) hover:bg-[color-mix(in_srgb,var(--d-design)_20%,transparent)] hover:text-(--d-design-text)')"
+              :class="cn(TOOLBAR_BUTTON, tweaksOpen && 'bg-[color-mix(in_srgb,var(--d-design-fill)_14%,transparent)] text-(--d-design-text) hover:bg-[color-mix(in_srgb,var(--d-design-fill)_20%,transparent)] hover:text-(--d-design-text)')"
               :title="t('editor.designPreview.tweaks.buttonTitle')"
               @click="toggleTweaks"
             >
@@ -796,7 +796,7 @@ const PILL = 'pointer-events-none absolute bottom-2.5 flex h-5.5 items-center ga
                 <span
                   v-if="tweaksApplied > 0"
                   data-testid="design-preview-tweaks-count"
-                  class="flex h-4 min-w-4 items-center justify-center rounded-full bg-(--d-design) px-1 text-10 font-semibold text-(--d-on-design) tabular-nums"
+                  class="flex h-4 min-w-4 items-center justify-center rounded-full bg-(--d-design-fill) px-1 text-10 font-semibold text-(--d-on-design) tabular-nums"
                 ><span aria-hidden="true">{{ tweaksApplied }}</span><span class="sr-only">{{ t('editor.designPreview.tweaks.applied', { n: tweaksApplied }, tweaksApplied) }}</span></span>
               </Transition>
             </Button>
@@ -827,7 +827,7 @@ const PILL = 'pointer-events-none absolute bottom-2.5 flex h-5.5 items-center ga
           :class="[
             glides && 'design-frame-glide',
             markupOn
-              ? 'border-(--d-design) shadow-[0_0_0_3px_color-mix(in_srgb,var(--d-design)_22%,transparent),0_1rem_2.5rem_-0.75rem_var(--d-scrim)]'
+              ? 'border-(--d-design-fill) shadow-[0_0_0_3px_color-mix(in_srgb,var(--d-design-fill)_22%,transparent),0_1rem_2.5rem_-0.75rem_var(--d-scrim)]'
               : 'border-(--d-border2) shadow-[0_1rem_2.5rem_-0.75rem_var(--d-scrim)]',
           ]"
           :style="{ width: `${frameWidth}px`, height: `${room.height}px` }"
@@ -914,7 +914,7 @@ const PILL = 'pointer-events-none absolute bottom-2.5 flex h-5.5 items-center ga
           :key="flashes"
           aria-hidden="true"
           data-testid="design-preview-flash"
-          class="pointer-events-none absolute top-4 left-1/2 -translate-x-1/2 animate-[d-flash_.7s_var(--ease-out)_both] rounded-md shadow-[0_0_0_2px_var(--d-design),0_0_1.5rem_0.25rem_color-mix(in_srgb,var(--d-design)_55%,transparent)]"
+          class="pointer-events-none absolute top-4 left-1/2 -translate-x-1/2 d-flash rounded-md shadow-[0_0_0_2px_var(--d-design-fill),0_0_1.5rem_0.25rem_color-mix(in_srgb,var(--d-design-fill)_55%,transparent)]"
           :style="{ width: `${frameWidth}px`, height: `${room.height}px` }"
         />
         <div
@@ -950,7 +950,7 @@ const PILL = 'pointer-events-none absolute bottom-2.5 flex h-5.5 items-center ga
             :aria-label="t('editor.designPreview.replay.label')"
             data-testid="design-preview-replay"
             :data-outcome="replayView.outcome"
-            :class="cn(PILL, 'left-3 max-w-[calc(100%-14rem)] gap-2 border-[color-mix(in_srgb,var(--d-design)_40%,var(--d-border))] @max-[30rem]/stage:max-w-[calc(100%-1.5rem)]')"
+            :class="cn(PILL, 'left-3 max-w-[calc(100%-14rem)] gap-2 border-[color-mix(in_srgb,var(--d-design-fill)_40%,var(--d-border))] @max-[30rem]/stage:max-w-[calc(100%-1.5rem)]')"
           >
             <LoaderCircle
               v-if="replayView.outcome === 'running'"
@@ -987,7 +987,7 @@ const PILL = 'pointer-events-none absolute bottom-2.5 flex h-5.5 items-center ga
                 data-testid="design-preview-replay-dot"
                 :data-state="dot"
                 class="size-1.25 rounded-full"
-                :class="[REPLAY_DOT[dot], replayView.animate && (dot === 'pass' || dot === 'fail') && 'animate-[d-badge-pop_.34s_var(--ease-spring)_both]']"
+                :class="[REPLAY_DOT[dot], replayView.animate && (dot === 'pass' || dot === 'fail') && 'd-badge-pop']"
               />
             </span>
             <Transition
@@ -1015,7 +1015,7 @@ const PILL = 'pointer-events-none absolute bottom-2.5 flex h-5.5 items-center ga
         >
           <span
             aria-hidden="true"
-            class="size-1.5 rounded-full bg-(--d-success) shadow-[0_0_0.375rem_var(--d-success)]"
+            class="size-1.5 rounded-full bg-(--d-success-fill) shadow-[0_0_0.375rem_var(--d-success-fill)]"
           />
           {{ t('editor.designPreview.sandboxed') }}
         </span>

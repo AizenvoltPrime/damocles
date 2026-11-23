@@ -39,7 +39,7 @@ function openDesignMd(): void {
 
 <template>
   <section
-    class="@container overflow-hidden rounded-xl border border-[color-mix(in_srgb,var(--d-design)_40%,var(--d-border))] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--d-design)_8%,var(--d-card)),var(--d-card))]"
+    class="@container overflow-hidden rounded-xl border border-[color-mix(in_srgb,var(--d-design-fill)_40%,var(--d-border))] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--d-design-fill)_8%,var(--d-card)),var(--d-card))]"
     :aria-label="t('design.planStrip.label')"
     data-testid="design-plan-strip"
     :data-design-id="link.designId"
@@ -47,7 +47,7 @@ function openDesignMd(): void {
   >
     <div class="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5">
       <span
-        class="flex size-8 flex-none items-center justify-center rounded-9 bg-linear-135 from-(--d-design) to-[color-mix(in_srgb,var(--d-design)_55%,var(--d-accent))] text-(--d-on-design)"
+        class="flex size-8 flex-none items-center justify-center rounded-9 bg-linear-135 from-(--d-design-fill) to-[color-mix(in_srgb,var(--d-design-fill)_55%,var(--d-accent-fill))] text-(--d-on-design)"
         aria-hidden="true"
       >
         <Palette class="size-3.75" />
@@ -63,7 +63,7 @@ function openDesignMd(): void {
             data-testid="design-plan-strip-title"
           >{{ link.title }}</span>
           <span
-            class="flex-none rounded-full bg-[color-mix(in_srgb,var(--d-design)_16%,transparent)] px-1.75 py-px font-mono text-11 font-semibold text-(--d-design-text)"
+            class="flex-none rounded-full bg-[color-mix(in_srgb,var(--d-design-fill)_16%,transparent)] px-1.75 py-px font-mono text-11 font-semibold text-(--d-design-text)"
             data-testid="design-plan-strip-version"
           >{{ t('design.header.version', { version: link.version }) }}</span>
         </p>
@@ -76,7 +76,7 @@ function openDesignMd(): void {
       </div>
       <div class="flex w-full flex-wrap items-center gap-1.5 @min-[34rem]:w-auto @min-[34rem]:flex-none">
         <span
-          class="me-auto flex items-center gap-1.25 rounded-full border border-[color-mix(in_srgb,var(--d-design)_35%,var(--d-border))] px-2 py-0.5 text-11 font-medium text-(--d-design-text) @min-[34rem]:me-1"
+          class="me-auto flex items-center gap-1.25 rounded-full border border-[color-mix(in_srgb,var(--d-design-fill)_35%,var(--d-border))] px-2 py-0.5 text-11 font-medium text-(--d-design-text) @min-[34rem]:me-1"
           data-testid="design-plan-strip-records"
         >
           <Stamp
@@ -87,7 +87,7 @@ function openDesignMd(): void {
         <Button
           type="button"
           variant="ghost"
-          class="d-press h-7 gap-1.5 rounded-7 px-2.5 font-mono text-11.5 text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 [&_svg]:size-3"
+          class="d-press h-7 gap-1.5 rounded-7 px-2.5 font-mono text-11.5 text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 [&_svg]:size-3"
           data-testid="design-plan-strip-open-md"
           @click="openDesignMd"
         >
@@ -96,7 +96,7 @@ function openDesignMd(): void {
         <Button
           type="button"
           variant="ghost"
-          class="d-press d-tone-design h-7 gap-1.5 rounded-7 bg-(--tone)/12 px-2.5 text-xs font-semibold hover:bg-(--tone)/20 hover:text-(--d-design-text) focus-visible:ring-1 focus-visible:ring-(--d-design) focus-visible:ring-offset-0 [&_svg]:size-3"
+          class="d-press d-tone-design h-7 gap-1.5 rounded-7 bg-(--tone)/12 px-2.5 text-xs font-semibold hover:bg-(--tone)/20 hover:text-(--d-design-text) focus-visible:ring-1 focus-visible:ring-(--d-design-fill) focus-visible:ring-offset-0 [&_svg]:size-3"
           data-testid="design-plan-strip-open-chat"
           @click="openDesignChat"
         >
@@ -110,7 +110,7 @@ function openDesignMd(): void {
           <Button
             type="button"
             variant="ghost"
-            class="d-press h-7 gap-1.5 rounded-7 px-2.5 text-xs text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 [&_svg]:size-3"
+            class="d-press h-7 gap-1.5 rounded-7 px-2.5 text-xs text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 [&_svg]:size-3"
             data-testid="design-plan-strip-open-preview"
           >
             <Monitor aria-hidden="true" />{{ t('design.preview.open') }}
@@ -122,13 +122,13 @@ function openDesignMd(): void {
     <Collapsible
       v-if="link.warnings.length > 0"
       v-model:open="warningsOpen"
-      class="border-t border-[color-mix(in_srgb,var(--d-design)_18%,var(--d-border))] px-3 py-1.5"
+      class="border-t border-[color-mix(in_srgb,var(--d-design-fill)_18%,var(--d-border))] px-3 py-1.5"
       data-testid="design-plan-strip-warnings"
     >
       <CollapsibleTrigger as-child>
         <Button
           variant="ghost"
-          class="h-6 gap-1 rounded-md px-1 text-xs font-semibold text-(--d-warning-text) hover:bg-(--d-hover) hover:text-(--d-warning-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 [&_svg]:size-3"
+          class="h-6 gap-1 rounded-md px-1 text-xs font-semibold text-(--d-warning-text) hover:bg-(--d-hover) hover:text-(--d-warning-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 [&_svg]:size-3"
           data-testid="design-plan-strip-warnings-toggle"
         >
           <ChevronRight
@@ -147,7 +147,7 @@ function openDesignMd(): void {
             class="flex min-w-0 items-start gap-2"
           >
             <span
-              class="mt-1.25 size-1.5 flex-none rotate-45 bg-(--d-warning)"
+              class="mt-1.25 size-1.5 flex-none rotate-45 bg-(--d-warning-fill)"
               aria-hidden="true"
             />
             <span class="min-w-0 text-pretty">

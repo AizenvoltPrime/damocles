@@ -17,7 +17,6 @@ defineProps<{
     :aria-label="label"
     class="relative inline-flex size-2.5 shrink-0 transition-colors duration-200 ease-out"
     :class="{
-      'text-(--d-success)': state === 'running',
       'text-(--d-faint)': state === 'stopped',
       'text-(--d-faint-text)': state === 'other',
     }"
@@ -34,7 +33,7 @@ defineProps<{
           cx="5"
           cy="5"
           r="4"
-          fill="currentColor"
+          class="fill-(--d-success-fill)"
         />
         <circle
           v-else-if="state === 'other'"

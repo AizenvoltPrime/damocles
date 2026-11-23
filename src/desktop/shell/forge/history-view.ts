@@ -5,7 +5,7 @@ import { referenceLabel, type ForgeReference } from '@shared/forge/references';
 // History details as the Graph and blame ask for them and show them.
 
 /** A link inside commit text or a card: a dotted underline at rest, so it never differs from the text by colour alone. */
-export const LINK = 'rounded-5 underline decoration-dotted underline-offset-2 outline-none hover:decoration-solid focus-visible:shadow-[0_0_0_1px_var(--d-accent)]';
+export const LINK = 'rounded-5 underline decoration-dotted underline-offset-2 outline-none hover:decoration-solid focus-visible:shadow-[0_0_0_1px_var(--d-accent-fill)]';
 
 /** name within max UTF-16 units, never ending inside a surrogate pair, as main measures it. */
 function boundedName(name: string, max: number): string {

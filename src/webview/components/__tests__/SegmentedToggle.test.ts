@@ -14,7 +14,7 @@ function mountToggle(): VueWrapper {
     props: {
       modelValue: 'cost',
       options: [{ value: 'cost', label: 'Cost' }, { value: 'tokens', label: 'Tokens' }],
-      indicatorClass: 'text-(--d-card)',
+      indicatorClass: '[--tone:var(--d-card)]',
     },
     attachTo: document.body,
   });

@@ -36,6 +36,11 @@ function rootName(expression: ts.Expression): string | undefined {
   return undefined;
 }
 
+// Whether any name of a callee such as test.describe.serial is `name`.
+function chainNames(expression: ts.Expression, name: string): boolean {
+  return ts.isPropertyAccessExpression(expression) && (expression.name.text === name || chainNames(expression.expression, name));
+}
+
 // What a node does that needs the foreground, if anything; `readers` are this file's functions that need it.
 function needOf(node: ts.Node, readers: ReadonlySet<string>): string | undefined {
   if (ts.isCallExpression(node)) {
@@ -110,6 +115,8 @@ function readersOf(file: ts.SourceFile): Set<string> {
 // The fixture names a test's callback destructures, in order; undefined for a call that is not a test.
 function testFixtures(call: ts.CallExpression): string[] | undefined {
   if (rootName(call.expression) !== 'test') return undefined;
+  // a describe block, test.describe.serial and the like included, is no test: the tests inside it are scanned on their own
+  if (chainNames(call.expression, 'describe')) return undefined;
   const callback = call.arguments.find((arg): arg is ts.ArrowFunction | ts.FunctionExpression => ts.isArrowFunction(arg) || ts.isFunctionExpression(arg));
   const pattern = callback?.parameters[0]?.name;
   if (!pattern || !ts.isObjectBindingPattern(pattern)) return callback ? [] : undefined;
@@ -165,6 +172,8 @@ describe('e2e foreground', () => {
       "test('t', async ({ launch }) => { await clickSectionAction(shell, 'new-chat'); });",
       "async function moreActions(shell) { await (await sectionAction(shell, 'scm-more-actions')).click(); }\ntest('t', async ({ launch }) => { await moreActions(shell); });",
       "test('t', async ({ foreground: _foreground, clipboard, launch }) => { await launch(); });",
+      "test.describe('d', () => { test('t', async ({ launch }) => { await row.hover(); }); });",
+      "test.describe.serial('d', () => { test('t', async ({ launch }) => { await row.hover(); }); });",
     ];
     for (const sample of needs) expect(foregroundFindings('sample.spec.ts', sample), sample).not.toEqual([]);
   });
@@ -174,6 +183,9 @@ describe('e2e foreground', () => {
       "test('t', async ({ clipboard, home, launch }) => { expect(await viewFocused(app, shell)).toBe(true); });",
       "test('t', async ({ foreground: _foreground, launch }) => { expect(await viewFocused(app, chat)).toBe(true); await row.hover(); });",
       "test('t', async ({ foreground: _foreground, launch }) => { await saveWithKeyboard(app); });",
+      "test.describe('d', () => { test('t', async ({ foreground: _foreground, launch }) => { await row.hover(); }); });",
+      "test.describe.serial('d', () => { test('t', async ({ foreground: _foreground, launch }) => { await row.hover(); }); });",
+      "test.describe.parallel('d', () => { test('t', async ({ foreground: _foreground, launch }) => { await row.hover(); }); });",
       "test('t', async ({ clipboard, launch }) => { await pressKeys(app, '/shell/', 'V', [PRIMARY]); });",
       "test('t', async ({ launch }) => { await shell.keyboard.press('Control+Shift+F'); });",
       "test('t', async ({ launch }) => { await expect(chatInput(tab)).toBeFocused(); });",

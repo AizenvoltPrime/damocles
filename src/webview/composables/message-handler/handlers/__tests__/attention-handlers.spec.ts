@@ -93,7 +93,8 @@ describe('focusAttention', () => {
 
     expect(document.activeElement?.getAttribute('role')).toBe('option');
     expect(card.element.contains(document.activeElement)).toBe(true);
-    expect(card.element.classList.contains('d-attention')).toBe(true);
+    // the ring is on the card's body, inside the dock's shadow wrapper
+    expect(card.get('[data-testid="skill-card"]').classes()).toContain('d-attention');
   });
 
   it('focuses an input form for a question when no question card is up', async () => {
@@ -109,7 +110,7 @@ describe('focusAttention', () => {
 
     expect(document.activeElement?.tagName).toBe('INPUT');
     expect(card.element.contains(document.activeElement)).toBe(true);
-    expect(card.element.classList.contains('d-attention')).toBe(true);
+    expect(card.get('[data-testid="form-card"]').classes()).toContain('d-attention');
   });
 
   it('focuses the design version prompt\'s options for a question, and rings it', async () => {

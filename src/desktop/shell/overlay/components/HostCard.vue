@@ -223,7 +223,7 @@ async function save(name: string): Promise<void> {
       <p
         v-if="failure"
         role="alert"
-        class="rounded-8 bg-(--d-danger)/12 px-2.5 py-2 font-mono text-11.5 text-(--d-danger-text)"
+        class="rounded-8 bg-(--d-danger-fill)/12 px-2.5 py-2 font-mono text-11.5 text-(--d-danger-text)"
       >
         {{ failure }}
       </p>
@@ -264,7 +264,7 @@ async function save(name: string): Promise<void> {
           :key="notice.key"
           data-testid="host-notice"
           :data-code="notice.key"
-          class="flex gap-2 rounded-8 bg-(--d-warning)/12 px-2.5 py-2 text-12 text-(--d-warning-text)"
+          class="flex gap-2 rounded-8 bg-(--d-warning-fill)/12 px-2.5 py-2 text-12 text-(--d-warning-text)"
         >
           <Users
             v-if="notice.key === 'sharedHome'"
@@ -328,7 +328,7 @@ async function save(name: string): Promise<void> {
         <p
           v-if="devicesDiffer(host.devices)"
           data-testid="host-account-advice"
-          class="flex gap-2 rounded-8 bg-(--d-info)/12 px-2.5 py-2 text-12 text-(--d-info-text)"
+          class="flex gap-2 rounded-8 bg-(--d-info-fill)/12 px-2.5 py-2 text-12 text-(--d-info-text)"
         >
           <Users
             aria-hidden="true"

@@ -31,6 +31,7 @@ function bridge(initial: Label | undefined, hostNames?: Record<string, { name: s
     onConnection: vi.fn(() => () => {}),
     allowYolo: vi.fn(async () => false),
     queueAction: vi.fn(),
+    setModalOpen: vi.fn(),
   };
   return { answer: (host: Label) => listener?.(host) };
 }

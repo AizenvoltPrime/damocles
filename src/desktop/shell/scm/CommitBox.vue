@@ -407,7 +407,7 @@ defineExpose({
     <!-- overflow-hidden: swapped text moves inside the box and never crosses its border. -->
     <div
       class="relative overflow-hidden rounded-9 border bg-(--d-input) transition-colors duration-200"
-      :class="lengthWarning ? 'border-(--d-warning)' : 'border-(--d-border2) focus-within:border-(--d-accent)'"
+      :class="lengthWarning ? 'border-(--d-warning-fill)' : 'border-(--d-border2) focus-within:border-(--d-accent-fill)'"
     >
       <!-- The box's own field; shadcn's Textarea, sized by its content up to a cap. -->
       <Textarea
@@ -481,7 +481,7 @@ defineExpose({
           <button
             type="button"
             data-testid="scm-amend-cancel"
-            class="ml-auto shrink-0 cursor-pointer rounded-xs underline underline-offset-2 outline-none hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent)"
+            class="ml-auto shrink-0 cursor-pointer rounded-xs underline underline-offset-2 outline-none hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill)"
             :aria-label="t('scm.commit.cancelAmendAria')"
             @click="cancelAmend"
           >
@@ -505,7 +505,7 @@ defineExpose({
               v-if="showPublish"
               type="button"
               data-testid="scm-publish"
-              class="d-press h-6.5 gap-1.5 rounded-7 bg-(--d-accent) px-2.75 py-0 text-xs font-semibold text-(--d-on-accent) [grid-area:1/1] hover:bg-(--d-accent) hover:brightness-[1.08] focus-visible:ring-2 focus-visible:ring-(--d-on-accent)/70 focus-visible:ring-offset-0 focus-visible:ring-inset aria-disabled:cursor-default aria-disabled:hover:brightness-100 [&_svg]:size-3.25"
+              class="d-press h-6.5 gap-1.5 rounded-7 bg-(--d-accent-fill) px-2.75 py-0 text-xs font-semibold text-(--d-on-accent) [grid-area:1/1] hover:bg-(--d-accent-fill) hover:brightness-[1.08] focus-visible:ring-2 focus-visible:ring-(--d-on-accent)/70 focus-visible:ring-offset-0 focus-visible:ring-inset aria-disabled:cursor-default aria-disabled:hover:brightness-100 [&_svg]:size-3.25"
               :title="publishTitle"
               :aria-disabled="publishBlocked || undefined"
               :aria-busy="publishing || undefined"
@@ -528,7 +528,7 @@ defineExpose({
               data-split-button
               data-testid="scm-commit-split"
               class="d-press inline-flex h-6.5 shrink-0 overflow-hidden rounded-7 text-xs font-semibold transition-colors duration-200 [grid-area:1/1]"
-              :class="ready ? 'bg-(--d-accent) text-(--d-on-accent)' : 'bg-(--d-hover) text-(--d-muted)'"
+              :class="ready ? 'bg-(--d-accent-fill) text-(--d-on-accent)' : 'bg-(--d-hover) text-(--d-muted)'"
             >
               <button
                 type="button"
@@ -536,7 +536,7 @@ defineExpose({
                 :data-ready="ready || undefined"
                 :data-variant="amending ? 'amend' : 'commit'"
                 class="flex cursor-pointer items-center gap-1.5 px-2.5 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset"
-                :class="ready ? 'hover:bg-(--d-on-accent)/10 focus-visible:ring-(--d-on-accent)/70' : 'hover:bg-(--d-border2) hover:text-(--d-text) focus-visible:ring-(--d-accent)'"
+                :class="ready ? 'hover:bg-(--d-on-accent)/10 focus-visible:ring-(--d-on-accent)/70' : 'hover:bg-(--d-border2) hover:text-(--d-text) focus-visible:ring-(--d-accent-fill)'"
                 :aria-busy="phase === 'busy' || undefined"
                 :title="t('scm.commit.withShortcut', { label, shortcut })"
                 @click="commit()"
@@ -586,7 +586,7 @@ defineExpose({
                 :aria-label="t('scm.commit.moreActions')"
                 :title="t('scm.commit.moreActions')"
                 class="flex w-5.5 cursor-pointer items-center justify-center border-l border-current/20 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset"
-                :class="ready ? 'hover:bg-(--d-on-accent)/10 focus-visible:ring-(--d-on-accent)/70' : 'hover:bg-(--d-border2) hover:text-(--d-text) focus-visible:ring-(--d-accent)'"
+                :class="ready ? 'hover:bg-(--d-on-accent)/10 focus-visible:ring-(--d-on-accent)/70' : 'hover:bg-(--d-border2) hover:text-(--d-text) focus-visible:ring-(--d-accent-fill)'"
                 @click="openCommitMenu"
               >
                 <ChevronDown
@@ -611,7 +611,7 @@ defineExpose({
       </div>
       <span
         v-if="generating"
-        class="d-sheen text-(--d-accent)"
+        class="d-sheen [--tone:var(--d-accent-fill)]"
         aria-hidden="true"
       />
     </div>

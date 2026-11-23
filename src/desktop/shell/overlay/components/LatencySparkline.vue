@@ -33,7 +33,7 @@ const path = computed(() => {
       stroke-linecap="round"
       stroke-linejoin="round"
       class="d-draw"
-      :class="slow ? 'stroke-(--d-warning)' : 'stroke-(--d-accent)'"
+      :class="slow ? 'stroke-(--d-warning-fill)' : 'stroke-(--d-accent-fill)'"
       style="--len: 400"
     />
   </svg>

@@ -19,8 +19,8 @@ const emit = defineEmits<{ stage: []; unstage: []; revert: []; next: []; previou
 const { t } = useI18n();
 
 const position = computed(() => t('quickDiff.position', { index: props.index + 1, count: props.count }));
-const KIND_BORDER: Readonly<Record<ChangeKind, string>> = { added: 'border-(--d-success)', modified: 'border-(--d-info)', deleted: 'border-(--d-danger)' };
-const KIND_FILL: Readonly<Record<ChangeKind, string>> = { added: 'bg-(--d-success)', modified: 'bg-(--d-info)', deleted: 'bg-(--d-danger)' };
+const KIND_BORDER: Readonly<Record<ChangeKind, string>> = { added: 'border-(--d-success-fill)', modified: 'border-(--d-info-fill)', deleted: 'border-(--d-danger-fill)' };
+const KIND_FILL: Readonly<Record<ChangeKind, string>> = { added: 'bg-(--d-success-fill)', modified: 'bg-(--d-info-fill)', deleted: 'bg-(--d-danger-fill)' };
 const ICON_BUTTON = 'd-press size-6 rounded-md text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) [&_svg]:size-3.5';
 </script>
 

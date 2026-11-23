@@ -100,6 +100,8 @@ export default defineConfig({
           ...sharedTest,
           name: 'webview',
           include: tests(['src/webview', 'src/desktop/shell']),
+          // its ES modules import without file extensions, which only a bundler resolves, so Vite transforms it as the build does
+          server: { deps: { inline: ['@material/material-color-utilities'] } },
           setupFiles: [hermeticHome, fakePlatform, 'src/webview/__tests__/vitest.setup.ts'],
           benchmark: { include: ['src/webview/**/*.bench.ts'] },
         },

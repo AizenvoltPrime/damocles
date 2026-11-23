@@ -63,6 +63,7 @@ import type { RelayedMcpServer } from "../../shared/remote-user";
 import type { SettingsChange } from "../../platform/settings-store";
 import type { ForgeService, RecordedRefusal } from "../forge";
 import type { ChatRepository, ForgeDescribeAnswer, ForgeToolAnswer, ForgeToolRequest } from "../../shared/forge/tools";
+import type { ThemeAgentHost } from "../pi-session/tools/theme-tools";
 import type { ForgeCall, ForgeToolsPort } from "../pi-session/tools/forge-tools";
 import { relayedForgeTools } from "../pi-session/tools/forge-relay";
 import { localForgeTools } from "./forge-tools-port";
@@ -108,6 +109,8 @@ export interface ChatPanelHostDeps {
   forge?: ForgeService;
   /** A desktop core's reader of a chat's repository for the GitHub and GitLab tools; absent: chats have none. */
   forgeRepositories?: (folder: string) => Promise<ChatRepository>;
+  /** The desktop theme tools: only this computer's desktop core has them. */
+  themeTools?: ThemeAgentHost;
 }
 
 export class ChatPanelProvider {
@@ -208,7 +211,11 @@ export class ChatPanelProvider {
       watcherFactory: platform.fileWatchers,
       metaIndex,
       memory: this.memoryService,
-      hostState: { mcp: { relocateFolders: (pairs) => this.settingsManager.relocateMcpFolders(pairs) }, ...(hostDeps.forge ? { forge: hostDeps.forge } : {}) },
+      hostState: {
+        mcp: { relocateFolders: (pairs) => this.settingsManager.relocateMcpFolders(pairs) },
+        ...(hostDeps.forge ? { forge: hostDeps.forge } : {}),
+        ...(hostDeps.themeTools ? { themes: hostDeps.themeTools.themes.projectLooks } : {}),
+      },
       ...(worktreeHost ? {
         worktrees: worktreeHost.registry,
         git: () => worktreeHost.git(),
@@ -246,6 +253,10 @@ export class ChatPanelProvider {
         if (change.topic === "actingClient" && !PiRuntime.observesActingClient) this.accountInputsChanged("nothing");
         // the GitHub and GitLab group is loadable only while the device the chat's tools run on has an account
         if (change.topic === "clientForges") this.forgeAccountsChanged();
+        // the Theme group reaches its app only while a device that lists themes is attached, so its row follows that list
+        if (change.topic === "clientFeatures") {
+          for (const [, instance] of this.panelManager.getPanels()) this.settingsManager.sendToolStatus(instance.session, instance.host);
+        }
         // a host's Allow YOLO switch changed on that client: its views show or hide the YOLO control at once
         if (change.topic === "clientPolicy" && change.clientId !== undefined) {
           const clientId = change.clientId;
@@ -408,6 +419,8 @@ export class ChatPanelProvider {
       getCompassService: (folderKey) => this.startCompassFor(folderKey),
       onAssistantTextFinal: (text, panelId) => this.dispatchTtsForReply(text, panelId),
       forgeTools: (panelId, host) => this.forgeToolsFor(panelId, host),
+      // a daemon's core builds no theme store: its chats' tools reach the turn's device through the relay
+      ...(hostDeps.themeTools ? { themeTools: hostDeps.themeTools } : platform.remote ? { themeTools: { relayed: platform.remote } } : {}),
       platform: this.platform,
     });
 

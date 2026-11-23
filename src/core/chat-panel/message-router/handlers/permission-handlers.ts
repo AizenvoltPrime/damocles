@@ -7,6 +7,12 @@ import { syncPermissionRulesToSettings } from "../../settings-manager/utils";
 import { computePlanFilePath } from "../../../paths";
 import { log } from "../../../logger";
 import { l } from "../../../l10n";
+import { MAX_PROMPT_ANSWER_CHARS } from "../../../../shared/types/constants";
+
+/** A prompt answer's free text: absent, or a string no longer than its input lets the user type. */
+function isAnswerText(value: unknown): value is string | undefined {
+  return value === undefined || (typeof value === "string" && value.length <= MAX_PROMPT_ANSWER_CHARS);
+}
 
 /** Write the approved plan to a session's deterministic plan path, creating the plans dir if needed. */
 async function writePlanFile(planFilePath: string, planContent: string): Promise<void> {
@@ -29,7 +35,7 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
       ctx.permissionHandler.continueWithSignIn(msg.requestId);
     },
     approveEdit: async (msg, ctx) => {
-      if (msg.type !== "approveEdit") return;
+      if (msg.type !== "approveEdit" || !isAnswerText(msg.customMessage)) return;
 
       // Settled first, so a failed rule write cannot strand the tool call, and a click that matches no
       // pending approval (one answered from a panel that has since switched folder) saves nothing.
@@ -169,8 +175,42 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
     resolveDesignApproval: (msg, ctx) => {
       if (msg.type !== "resolveDesignApproval" || typeof msg.promptId !== "string") return;
       if (msg.choice !== "approve" && msg.choice !== "changes" && msg.choice !== "stop") return;
-      if (msg.feedback !== undefined && typeof msg.feedback !== "string") return;
+      if (!isAnswerText(msg.feedback)) return;
       ctx.permissionHandler.resolveDesignApproval(msg.promptId, msg.choice, msg.feedback);
+    },
+
+    resolveThemeChange: (msg, ctx) => {
+      if (msg.type !== "resolveThemeChange" || typeof msg.promptId !== "string") return;
+      if (msg.choice !== "apply" && msg.choice !== "discard" && msg.choice !== "change") return;
+      if (!isAnswerText(msg.note)) return;
+      ctx.permissionHandler.resolveThemeChange(msg.promptId, msg.choice, msg.note);
+    },
+
+    setThemeShowInWindow: (msg, ctx) => {
+      if (msg.type !== "setThemeShowInWindow" || typeof msg.promptId !== "string" || typeof msg.on !== "boolean") return;
+      ctx.permissionHandler.setThemeShowInWindow(msg.promptId, msg.on);
+    },
+
+    resolveThemeScreenshot: (msg, ctx) => {
+      if (msg.type !== "resolveThemeScreenshot" || typeof msg.promptId !== "string") return;
+      if (msg.choice !== "allow" && msg.choice !== "deny") return;
+      ctx.permissionHandler.resolveThemeScreenshot(msg.promptId, msg.choice);
+    },
+
+    resolveThemeInstall: (msg, ctx) => {
+      if (msg.type !== "resolveThemeInstall" || typeof msg.promptId !== "string") return;
+      if (msg.choice === "cancel") {
+        ctx.permissionHandler.resolveThemeInstall(msg.promptId, { choice: "cancel" });
+        return;
+      }
+      if (msg.choice !== "install" || typeof msg.useArrangement !== "boolean") return;
+      if (msg.onClash !== undefined && msg.onClash !== "keepBoth" && msg.onClash !== "replace") return;
+      ctx.permissionHandler.resolveThemeInstall(msg.promptId, { choice: "install", ...(msg.onClash !== undefined ? { onClash: msg.onClash } : {}), useArrangement: msg.useArrangement });
+    },
+
+    allowThemeInstallFlash: (msg, ctx) => {
+      if (msg.type !== "allowThemeInstallFlash" || typeof msg.promptId !== "string" || typeof msg.installId !== "string" || typeof msg.sha256 !== "string") return;
+      ctx.permissionHandler.allowThemeInstallFlash(msg.promptId, msg.sha256);
     },
 
     extensionUiResponse: (msg, ctx) => {

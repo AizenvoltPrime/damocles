@@ -58,7 +58,7 @@ const rows = computed(() => props.files.map((file) => {
       >{{ row.folder }}</span>
       <span
         v-if="row.mark"
-        class="ms-auto shrink-0 rounded-full bg-(--d-warning)/15 px-1.5 text-10.5/4 font-medium text-(--d-warning-text)"
+        class="ms-auto shrink-0 rounded-full bg-(--d-warning-fill)/15 px-1.5 text-10.5/4 font-medium text-(--d-warning-text)"
         data-testid="worktree-dialog-file-mark"
       >{{ row.mark }}</span>
       <template v-if="row.letter && row.tone">

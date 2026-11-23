@@ -6,7 +6,7 @@ import { activeTab, DOCUMENT_END, editorShows, filesRow, openInEditor } from './
 import { activeChat, expect, test } from './support/fixtures';
 import { writeUserSettings } from './support/hermetic';
 import { openProjectChat } from './support/screenshots';
-import { overlayPage, selectedProjectKey, shellPage } from './support/shell';
+import { onMainWindow, overlayPage, selectedProjectKey, SHELL_URL, shellPage } from './support/shell';
 import { chatInput } from './support/ui';
 
 // A quit takes about a second; its teardown is bounded at 10 s.
@@ -53,7 +53,7 @@ test('a quit closes every page before the core disposes, so no request can reach
   await expect.poll(() => isAlive(core), { timeout: CORE_EXIT_MS, message: `Damocles Core (pid ${core}) outlived the app` }).toBe(false);
 });
 
-const windowVisible = (app: ElectronApplication): Promise<boolean> => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.isVisible());
+const windowVisible = (app: ElectronApplication): Promise<boolean> => onMainWindow(app, (win) => win.isVisible());
 
 test('a quit while the window is hidden to the tray shows it to ask, every close and quit meanwhile shares that one question, and Escape keeps the app running', async ({ home, launch }) => {
   fs.writeFileSync(path.join(home.project, 'draft.ts'), 'export const draft = 1;\n');
@@ -69,16 +69,16 @@ test('a quit while the window is hidden to the tray shows it to ask, every close
   const overlay = await overlayPage(app);
   const dialog = overlay.getByRole('alertdialog');
 
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.hide());
+  await onMainWindow(app, (win) => win.hide());
   expect(await windowVisible(app)).toBe(false);
   // The tray's Quit, then Alt+F4 and a second Quit while the question is open.
-  await app.evaluate(({ app: electronApp, BrowserWindow }) => {
+  await app.evaluate(({ app: electronApp, BrowserWindow }, shellUrl) => {
     setImmediate(() => {
       electronApp.quit();
-      BrowserWindow.getAllWindows()[0]!.close();
+      BrowserWindow.getAllWindows().find((win) => win.webContents.getURL().startsWith(shellUrl))!.close();
       electronApp.quit();
     });
-  });
+  }, SHELL_URL);
   await expect(dialog).toContainText('draft.ts');
   await expect.poll(() => windowVisible(app)).toBe(true);
   await overlay.keyboard.press('Escape');

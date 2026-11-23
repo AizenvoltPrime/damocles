@@ -6,7 +6,7 @@ import { boundGraphChoices, boundRepositoryViewStates, MAX_SEARCH_VIEW_STATES, M
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import { remPx } from '@/composables/useRemPx';
 import { useHostConnection } from '@/composables/useHostConnection';
-import { atRootFont, GRID_SASH_REM, ROW_SASH_OVERLAP_REM, ROW_SASH_REM, SASH_KEY_STEP_REM, SECTION_HEADER_REM } from '../layout';
+import { atRootScale, GRID_SASH_REM, ROW_SASH_OVERLAP_REM, ROW_SASH_REM, SASH_KEY_STEP_REM, SECTION_HEADER_REM, storedMinimum } from '../layout';
 import ProjectsSection from './ProjectsSection.vue';
 import ChatsSection from './ChatsSection.vue';
 import FilesSection from './FilesSection.vue';
@@ -57,10 +57,10 @@ watch(() => props.state.layoutRevision, () => {
 const dragging = ref<{ pointerId: number; startX: number; startWidth: number } | null>(null);
 const rowDragging = ref(false);
 
-// The layout main stores is px; its minimums are px at the default font, so they follow the root font here.
-const minWidth = computed(() => atRootFont(MIN_SIDEBAR_WIDTH));
-const minSection = computed(() => atRootFont(MIN_SECTION_SIZE));
-const gridMin = computed(() => gridMinWidth(gridAreas(props.state.layout.grid), atRootFont(COLUMN_MIN_PX), remPx(GRID_SASH_REM)));
+// The layout main stores is px; its minimums are px at the default font, so they follow the root font and density here.
+const minWidth = computed(() => storedMinimum(MIN_SIDEBAR_WIDTH));
+const minSection = computed(() => storedMinimum(MIN_SECTION_SIZE));
+const gridMin = computed(() => gridMinWidth(gridAreas(props.state.layout.grid), atRootScale(COLUMN_MIN_PX), remPx(GRID_SASH_REM)));
 const maxWidth = computed(() => Math.max(minWidth.value, windowWidth.value - gridMin.value));
 const width = computed(() => Math.min(Math.max(layout.value.sidebarWidth, minWidth.value), maxWidth.value));
 // The first open section of Chats, Files, Search, Projects, Repositories, Source control and Graph fills the height the others leave,
@@ -328,9 +328,10 @@ defineExpose({
   <nav
     ref="root"
     data-testid="sidebar"
+    data-wallpaper-panel="sidebar"
     :aria-label="t('sidebar.label')"
     :inert="!state.layout.sidebarVisible"
-    class="relative flex shrink-0 flex-col overflow-hidden border-r border-(--d-border) bg-(--d-panel) [reading-flow:flex-visual]"
+    class="relative flex shrink-0 flex-col overflow-hidden border-r border-(--d-border) bg-(--d-pane-sidebar) [reading-flow:flex-visual]"
     :class="rowDragging ? '' : 'sidebar-sections-animated'"
     :style="slideStyle"
     @transitionrun="onSlide($event, true)"

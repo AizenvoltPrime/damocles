@@ -13,7 +13,7 @@ const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>();
     :model-value="modelValue"
     size="sm"
     :data-testid="testid"
-    class="h-5 min-w-5 rounded-5 border border-transparent px-0 text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 data-[state=on]:border-(--d-accent) data-[state=on]:bg-(--d-accent-soft) data-[state=on]:text-(--d-accent-text) [&_svg]:size-3.5"
+    class="h-5 min-w-5 rounded-5 border border-transparent px-0 text-(--d-muted) hover:bg-(--d-border2) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 data-[state=on]:border-(--d-accent-fill) data-[state=on]:bg-(--d-accent-soft) data-[state=on]:text-(--d-accent-text) [&_svg]:size-3.5"
     :aria-label="label"
     :title="title"
     @update:model-value="emit('update:modelValue', $event)"

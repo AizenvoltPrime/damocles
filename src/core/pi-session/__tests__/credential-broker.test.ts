@@ -42,6 +42,7 @@ function remoteHost(answer: (provider: string, clientId: string) => Promise<Brok
     mcpPending: () => undefined,
     mcpClients: () => [],
     forges: () => undefined,
+    features: () => undefined,
     onDidChange: (cb) => {
       listeners.add(cb);
       return { dispose: () => listeners.delete(cb) };
@@ -51,7 +52,10 @@ function remoteHost(answer: (provider: string, clientId: string) => Promise<Brok
   const runProviders = vi.fn();
   const remote: RemoteHost = {
     hostId: 'h', clients, agentSocket: () => undefined, credentials, speak: vi.fn(), runProviders, runConfiguredProviders: vi.fn(), browserTool: vi.fn(), browserRelease: vi.fn(), browserDiscard: vi.fn(), shellOutput: () => ({ write: () => undefined, end: () => undefined }),
-    memorySearch: vi.fn(), memoryProfile: vi.fn(), memoryResolve: vi.fn(), memoryApply: vi.fn(), memoryList: vi.fn(), heldMemoryChanged: vi.fn(), mcpCall: vi.fn(), mcpResources: vi.fn(), mcpReadResource: vi.fn(), forgeTool: vi.fn(), forgeDescribe: vi.fn(),
+    memorySearch: vi.fn(), memoryProfile: vi.fn(), memoryResolve: vi.fn(), memoryApply: vi.fn(), memoryList: vi.fn(), heldMemoryChanged: vi.fn(), mcpCall: vi.fn(), mcpResources: vi.fn(), mcpReadResource: vi.fn(), forgeTool: vi.fn(), forgeDescribe: vi.fn(), themeCall: vi.fn(), onThemeShowEnded: () => ({ dispose: () => undefined }),
+    onThemeInstallUpdated: () => ({ dispose: () => undefined }), onThemeInstallProgress: () => ({ dispose: () => undefined }),
+    onThemeInstallExpired: () => ({ dispose: () => undefined }),
+    onThemeScreenshotGone: () => ({ dispose: () => undefined }),
   };
   return {
     remote,

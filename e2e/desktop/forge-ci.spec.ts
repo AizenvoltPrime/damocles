@@ -7,10 +7,12 @@ import { expect, test } from './support/fixtures';
 import type { LaunchOptions, DesktopApp } from './support/app';
 import type { HermeticHome } from './support/hermetic';
 import { git, initRepo } from './support/git';
-import { overlayViewState, readyOverlay } from './support/overlay';
+import { menuItem, overlayMenu, overlayViewState, readyOverlay } from './support/overlay';
+import { cssToken, glyphButtons, menuItemHeight, useCompactTheme } from './support/themes';
 import { openScmProject, scmSection, setSection } from './support/scm';
 import { setReducedMotion } from './support/screenshots';
 import { setContentSize } from './support/settings';
+import { onMainWindow } from './support/shell';
 import { openedExternally, recordOpenExternal } from './support/updates';
 
 // The CI chip and job list, the job log tab and the commit status row, against the forge stub, whose gitlab.com carries the
@@ -196,13 +198,40 @@ test('polling stops while the window is blurred, an unchanged log answers 304, a
   stub.gitlab.ci.freezeLog(false);
 
   // blur: neither the log nor the status is polled until the window has focus again
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.emit('blur'));
+  await onMainWindow(app, (win) => win.emit('blur'));
   const traces = traceReads(stub);
   const pipelines = pipelineReads(stub);
   // longer than the 15 s status cadence of a running pipeline, so a status poll during the blur would show
   await new Promise((resolve) => setTimeout(resolve, 18_000));
   expect(traceReads(stub)).toBe(traces);
   expect(pipelineReads(stub)).toBe(pipelines);
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.emit('focus'));
+  await onMainWindow(app, (win) => win.emit('focus'));
   await expect.poll(() => traceReads(stub), { timeout: 2 * LOG_TICK_MS + 10_000 }).toBeGreaterThan(traces);
+});
+
+test('in a compact theme the job log\'s fold button keeps its size inside its row, and the row\'s menu folds the section at full size', async ({ foreground: _foreground, home, launch }) => {
+  test.setTimeout(240_000);
+  useCompactTheme(home);
+  const run = await launchCi(launch, home, 1280);
+  const { shell } = run;
+  await openUnitLog(run);
+  await expect.poll(() => cssToken(shell, '--d-hit-min')).toBe('1.5rem');
+  const fold = shell.getByRole('button', { name: 'Fold Executing "step_script" stage of the job script', exact: true });
+  const row = jobLog(shell).getByTestId('job-log-row').filter({ has: fold });
+  await row.hover();
+  await shell.screenshot({ path: test.info().outputPath('compact-job-log.png') });
+  // the row is 1.25rem, and so is the button: it opts out of the 1.5rem floor
+  expect(await glyphButtons(row)).toEqual([{ size: 1.25, inRow: true }]);
+  // what the floor does to a button without the opt-out: taller than its row, over the lines above and below
+  await fold.evaluate((button) => button.classList.remove('d-hit-free'));
+  expect(await glyphButtons(row)).toEqual([{ size: 1.5, inRow: false }]);
+
+  // the same command in the row's menu, whose item does keep the floor
+  const overlay = await readyOverlay(run.app);
+  await row.click({ button: 'right', position: { x: 300, y: 8 } });
+  await expect(overlayMenu(overlay)).toBeVisible();
+  await expect(menuItem(overlay, 'fold')).toHaveText('Fold section');
+  expect(await menuItemHeight(overlay)).toBeGreaterThanOrEqual(1.5 - 0.01);
+  await menuItem(overlay, 'fold').click();
+  await expect(shell.getByRole('button', { name: 'Unfold Executing "step_script" stage of the job script', exact: true })).toHaveAttribute('aria-expanded', 'false');
 });

@@ -65,7 +65,7 @@ const stopMoving = (): Promise<void> => run(() => confirmStopMoving(props.api, p
     :data-project-key="project.key"
     :data-state="state"
     aria-hidden="true"
-    class="ms-8 me-1 flex items-start gap-2 rounded-lg bg-(--d-warning)/12 px-2 py-1.5 text-11 text-(--d-warning-text)"
+    class="ms-8 me-1 flex items-start gap-2 rounded-lg bg-(--d-warning-fill)/12 px-2 py-1.5 text-11 text-(--d-warning-text)"
     @click.stop
     @contextmenu.stop
   >

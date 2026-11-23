@@ -123,8 +123,8 @@ function accessibleLabel(p: MemoryAuditProposalView): string {
 
 function statusClass(status: MemoryAuditProposalStatus): string {
   switch (status) {
-    case 'applied': return 'text-success border-success/40';
-    case 'stale': return 'text-warning border-warning/40';
+    case 'applied': return 'text-(--d-success) border-success/40';
+    case 'stale': return 'text-(--d-warning) border-warning/40';
     case 'rejected':
     case 'reverted':
     case 'pending': return 'text-muted-foreground';
@@ -193,7 +193,7 @@ function confirmRevert(): void {
       <div
         v-if="error"
         role="alert"
-        class="flex items-start gap-2 rounded-md border border-[color-mix(in_srgb,var(--d-danger)_50%,transparent)] p-3 text-xs text-(--d-danger)"
+        class="flex items-start gap-2 rounded-md border border-[color-mix(in_srgb,var(--d-danger-fill)_50%,transparent)] p-3 text-xs text-(--d-danger)"
         data-audit-error
       >
         <TriangleAlert class="size-3.5 shrink-0 mt-0.5" />
@@ -219,7 +219,7 @@ function confirmRevert(): void {
 
       <div
         v-if="heldElsewhere"
-        class="flex items-center gap-2 rounded-md border border-[color-mix(in_srgb,var(--d-warning)_40%,transparent)] bg-[color-mix(in_srgb,var(--d-warning)_10%,transparent)] p-3 text-xs"
+        class="flex items-center gap-2 rounded-md border border-[color-mix(in_srgb,var(--d-warning-fill)_40%,transparent)] bg-[color-mix(in_srgb,var(--d-warning-fill)_10%,transparent)] p-3 text-xs"
         data-audit-held
       >
         <Info class="size-3.5 shrink-0 text-(--d-warning)" />
@@ -261,7 +261,7 @@ function confirmRevert(): void {
             :aria-valuenow="progressPercent"
           >
             <div
-              class="h-full origin-left rounded-full bg-(--d-accent) transition-transform duration-300 ease-out rtl:origin-right"
+              class="h-full origin-left rounded-full bg-(--d-accent-fill) transition-transform duration-300 ease-out rtl:origin-right"
               :style="{ transform: `scaleX(${progressPercent / 100})` }"
             />
           </div>
@@ -403,7 +403,7 @@ function confirmRevert(): void {
           <div
             v-if="confirmingStart"
             role="alert"
-            class="space-y-2 rounded-md border border-[color-mix(in_srgb,var(--d-warning)_40%,transparent)] bg-[color-mix(in_srgb,var(--d-warning)_10%,transparent)] p-2 text-xs"
+            class="space-y-2 rounded-md border border-[color-mix(in_srgb,var(--d-warning-fill)_40%,transparent)] bg-[color-mix(in_srgb,var(--d-warning-fill)_10%,transparent)] p-2 text-xs"
             data-audit-start-prompt
           >
             <p>{{ t('memoryAudit.estimate.confirmNew') }}</p>
@@ -592,7 +592,7 @@ function confirmRevert(): void {
                       {{ p.profileBefore[section] || t('memoryAudit.profile.empty') }}
                     </p>
                   </div>
-                  <div class="rounded border border-[color-mix(in_srgb,var(--d-accent)_30%,transparent)] p-1.5">
+                  <div class="rounded border border-[color-mix(in_srgb,var(--d-accent-fill)_30%,transparent)] p-1.5">
                     <p class="text-xs text-(--d-faint) mb-0.5">
                       {{ t('memoryAudit.profile.after') }}
                     </p>

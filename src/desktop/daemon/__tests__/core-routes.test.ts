@@ -30,6 +30,7 @@ import { createRunRegistry, type RunRegistry } from '../run-registry';
 import { CodecError, decode, encode } from '../../../remote/codec';
 import { FEATURES } from '../../../remote/protocol-version';
 import { CLIENT_FEATURE_MISSING, CREDENTIAL_CLIENT_ABSENT } from '../../../shared/remote-user';
+import { THEMES_FEATURE } from '../../../shared/themes/relay';
 import { DEFAULT_RENDER_MEDIA, DESIGN_JOURNEY_UPDATE_NEEDED, DESIGN_PREVIEW_CLIENT_ABSENT, DESIGN_RENDER_CLIENT_ABSENT, DESIGN_RENDER_PREDATES } from '../../../shared/design-render';
 
 const quiet = (): void => undefined;
@@ -1080,6 +1081,54 @@ describe('core routes', () => {
     h.client('c1', { before: (main) => main.onEvent('chat.activity', (payload) => seen.push(payload)) });
     await flush();
     expect(seen).toEqual([{ panelId: 'panel-1', activity: running, sessionId: 'S1' }, { panelId: 'panel-2', activity: idle }]);
+  });
+
+  // an older app's parser refuses a prompt kind it does not know, which would close its connection
+  it('name a theme prompt in chat.activity only to a client whose attach listed its feature, live and on attach', async () => {
+    const h = setUp();
+    h.core.publish('chats', { panelId: 'panel-1', entry: entry('panel-1', 'view-1') });
+    const waiting = {
+      state: 'requires_action', pendingKinds: ['approval', 'themeChange'], background: false,
+      pendingPrompts: [{ id: 'call-1', kind: 'approval', owner: { kind: 'main' } }, { id: 'themechange-1', kind: 'themeChange', owner: { kind: 'main' } }],
+    } as const;
+    const themeOnly = { state: 'requires_action', pendingKinds: ['themeScreenshot'], pendingPrompts: [{ id: 'themeshot-1', kind: 'themeScreenshot', owner: { kind: 'main' } }], background: false } as const;
+    const installOnly = { state: 'requires_action', pendingKinds: ['themeInstall'], pendingPrompts: [{ id: 'themeinstall-1', kind: 'themeInstall', owner: { kind: 'main' } }], background: false } as const;
+    const seen: Record<string, unknown[]> = { current: [], older: [] };
+    h.client('current', { features: [THEMES_FEATURE], before: (main) => main.onEvent('chat.activity', (payload) => seen['current']!.push(payload.activity)) });
+    h.client('older', { features: [], before: (main) => main.onEvent('chat.activity', (payload) => seen['older']!.push(payload.activity)) });
+    await flush();
+    h.core.emit('chat.activity', { panelId: 'panel-1', activity: waiting });
+    h.core.emit('chat.activity', { panelId: 'panel-1', activity: themeOnly });
+    h.core.emit('chat.activity', { panelId: 'panel-1', activity: installOnly });
+    await flush();
+    expect(seen['current']).toEqual([waiting, themeOnly, installOnly]);
+    expect(seen['older']).toEqual([
+      { state: 'requires_action', pendingKinds: ['approval'], pendingPrompts: [waiting.pendingPrompts[0]], background: false },
+      { state: 'running', pendingKinds: [], pendingPrompts: [], background: false },
+      { state: 'running', pendingKinds: [], pendingPrompts: [], background: false },
+    ]);
+
+    const late: unknown[] = [];
+    h.client('late', { features: [], before: (main) => main.onEvent('chat.activity', (payload) => late.push(payload.activity)) });
+    await flush();
+    expect(late).toEqual([{ state: 'running', pendingKinds: [], pendingPrompts: [], background: false }]);
+  });
+
+  it("publish to core which of the features it reads each client's attach listed, and drop them at its detach", async () => {
+    const h = setUp();
+    const deltas: unknown[] = [];
+    h.core.onMirror('clientFeatures', (patch) => deltas.push(patch));
+    const current = h.client('connection-1', { clientId: 'device-a', features: [THEMES_FEATURE, 'user.forge'] });
+    h.client('connection-2', { clientId: 'device-b', features: ['user.forge'] });
+    await flush();
+    current.detach();
+    await flush();
+    expect(deltas).toEqual([
+      { clientId: 'device-a', value: { features: [THEMES_FEATURE] } },
+      { clientId: 'device-b', value: { features: [] } },
+      { clientId: 'device-a' },
+    ]);
+    expect([...h.mirrors.clientFeatures.keys()]).toEqual(['device-b']);
   });
 
   it('give a run to the client whose work started it, else to the acting client', async () => {

@@ -4,11 +4,12 @@ import type { Page } from '@playwright/test';
 import type { DesktopApp, LaunchOptions } from './support/app';
 import { expect, test } from './support/fixtures';
 import { git } from './support/git';
-import { seedStubModel, type HermeticHome } from './support/hermetic';
+import { seedStubModel, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { openProjectChat, setPageSize, settled } from './support/screenshots';
 import { setContentSize } from './support/settings';
-import { chatInput, sendAndAwaitEcho } from './support/ui';
+import { shellPage } from './support/shell';
+import { chatInput, horizontalOverflow, pageOverflow, sendAndAwaitEcho } from './support/ui';
 
 // The chat page at VS Code font sizes above the 13px default: every webview size is rem (docs/invariants.md "Design
 // tokens"), so the panel scales without overflowing or clipping, and its container breakpoints move with the font.
@@ -28,36 +29,6 @@ async function setHostFont(tab: Page, px: number | null): Promise<void> {
     else document.documentElement.style.setProperty('--d-font-size', `${size}px`);
   }, px);
   await settled(tab);
-}
-
-/**
- * Each element inside a chat column that reaches past the column's sides, and the header and page when they scroll
- * sideways. An element inside its own clipping or scrolling box, and a 1px visually hidden label, do not count.
- */
-async function horizontalOverflow(tab: Page): Promise<string[]> {
-  return tab.evaluate(() => {
-    const found: string[] = [];
-    const name = (el: Element): string => `${el.tagName.toLowerCase()}${el.getAttribute('data-testid') ? `[${el.getAttribute('data-testid')}]` : ''}.${[...el.classList].slice(0, 4).join('.')}`;
-    const root = document.documentElement;
-    if (root.scrollWidth > root.clientWidth) found.push(`page scrolls sideways (${root.scrollWidth} > ${root.clientWidth})`);
-    const header = document.querySelector('[data-testid="chat-header"]');
-    if (header && header.scrollWidth > header.clientWidth) found.push(`header scrolls sideways (${header.scrollWidth} > ${header.clientWidth})`);
-    for (const column of document.querySelectorAll<HTMLElement>('.chat-column')) {
-      if (column.getClientRects().length === 0) continue;
-      const box = column.getBoundingClientRect();
-      for (const el of column.querySelectorAll<HTMLElement>('*')) {
-        const rect = el.getBoundingClientRect();
-        if (rect.width <= 1 || rect.height <= 1) continue;
-        if (rect.left >= box.left - 0.5 && rect.right <= box.right + 0.5) continue;
-        let clipped = false;
-        for (let up = el.parentElement; up && up !== column; up = up.parentElement) {
-          if (getComputedStyle(up).overflowX !== 'visible') clipped = true;
-        }
-        if (!clipped) found.push(`${name(el)} spans ${Math.round(rect.left)}..${Math.round(rect.right)} in a column of ${Math.round(box.left)}..${Math.round(box.right)}`);
-      }
-    }
-    return found;
-  });
 }
 
 /** How the composer's text box clips its text: sideways, or downwards while it is still under its height cap. */
@@ -156,6 +127,28 @@ test('the chat page scales with the host font without overflowing, clipping its 
     await setHostFont(tab, null);
   } finally {
     await stub.close();
+  }
+});
+
+// Desktop's text size setting (damocles.desktop.textSize) sets --d-font-size in the window page too: the title bar, sidebar and
+// grid scale with it, and the sidebar's and the grid's minimums follow the root font.
+test('the window page scales with the text size setting without overflowing', async ({ home, launch }) => {
+  test.setTimeout(180_000);
+  for (const size of FONT_SIZES) {
+    writeUserSettings(home, { 'damocles.desktop.textSize': size });
+    const { app } = await launch();
+    const shell = await shellPage(app);
+    await expect.poll(() => shell.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--d-font-size').trim())).toBe(`${size}px`);
+    const rem = await shell.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).fontSize));
+    expect(rem).toBeCloseTo((size * 16) / 13, 1);
+    for (const width of [1280, 900]) {
+      await setContentSize(app, width, HEIGHT);
+      await expect.poll(() => pageOverflow(shell), { message: `the window page at ${size}px and ${width}px` }).toEqual([]);
+      // the sidebar keeps its minimum at the root font: 220px at 13px
+      const sidebar = await shell.getByTestId('sidebar').evaluate((element) => element.getBoundingClientRect().width);
+      expect(sidebar).toBeGreaterThanOrEqual(Math.floor((220 * rem) / 16) - 1);
+    }
+    await app.close();
   }
 });
 

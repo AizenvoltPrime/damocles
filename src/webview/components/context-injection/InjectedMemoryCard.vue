@@ -105,7 +105,7 @@ const notRankedText = computed(() => {
         <Badge
           v-if="pinned"
           variant="outline"
-          class="border-[color-mix(in_srgb,var(--d-warning)_40%,transparent)] px-1.5 py-0 text-10 text-(--d-warning-text)"
+          class="border-[color-mix(in_srgb,var(--d-warning-fill)_40%,transparent)] px-1.5 py-0 text-10 text-(--d-warning-text)"
           data-badge="pinned"
         >
           <Pin
@@ -117,7 +117,7 @@ const notRankedText = computed(() => {
         <Badge
           v-if="memory.isStale"
           variant="outline"
-          class="border-[color-mix(in_srgb,var(--d-warning)_40%,transparent)] px-1.5 py-0 text-10 text-(--d-warning-text)"
+          class="border-[color-mix(in_srgb,var(--d-warning-fill)_40%,transparent)] px-1.5 py-0 text-10 text-(--d-warning-text)"
           data-badge="stale"
         >
           {{ t('contextInjection.badge.stale') }}
@@ -125,7 +125,7 @@ const notRankedText = computed(() => {
         <Badge
           v-if="memory.upgradedFromCompact"
           variant="outline"
-          class="border-[color-mix(in_srgb,var(--d-info)_40%,transparent)] px-1.5 py-0 text-10 text-(--d-info-text)"
+          class="border-[color-mix(in_srgb,var(--d-info-fill)_40%,transparent)] px-1.5 py-0 text-10 text-(--d-info-text)"
           data-badge="upgraded"
         >
           {{ t('contextInjection.badge.upgraded') }}
@@ -150,7 +150,7 @@ const notRankedText = computed(() => {
         <Badge
           v-if="forgotten"
           variant="outline"
-          class="border-[color-mix(in_srgb,var(--d-danger)_40%,transparent)] px-1.5 py-0 text-10 text-(--d-danger-text)"
+          class="border-[color-mix(in_srgb,var(--d-danger-fill)_40%,transparent)] px-1.5 py-0 text-10 text-(--d-danger-text)"
           data-badge="forgotten"
         >
           {{ t('contextInjection.badge.forgotten') }}

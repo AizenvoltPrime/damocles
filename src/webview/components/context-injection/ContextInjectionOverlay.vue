@@ -57,7 +57,7 @@ function noticeText(notice: MemoryNotice): string {
     :title="t('contextInjection.title')"
     :subtitle="t('contextInjection.promptN', { n: store.activePromptIndex + 1 })"
     :icon="IconDatabase"
-    icon-class="text-primary"
+    icon-class="text-(--d-accent)"
     @close="emit('close')"
   >
     <template #header-actions>

@@ -25,7 +25,7 @@ defineProps<{
           <!-- A 24px target (WCAG 2.5.8) whose negative margin keeps the 11px icon's footprint in the row. -->
           <button
             type="button"
-            class="-m-[0.40625rem] flex size-6 flex-none items-center justify-center rounded-sm text-(--d-faint) transition-colors hover:text-(--d-text) focus-visible:outline-2 focus-visible:outline-(--d-accent)"
+            class="-m-[0.40625rem] flex size-6 flex-none items-center justify-center rounded-sm text-(--d-faint) transition-colors hover:text-(--d-text) focus-visible:outline-2 focus-visible:outline-(--d-accent-fill)"
             :aria-label="infoLabel"
           >
             <Info

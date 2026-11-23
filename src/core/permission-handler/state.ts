@@ -7,7 +7,12 @@ import type {
   PendingElicitation,
   PendingDesignVersion,
   PendingDesignApproval,
+  PendingThemeChange,
+  PendingThemeScreenshot,
+  PendingThemeInstall,
   PostMessageFn,
+  DeviceMessage,
+  DevicePostFn,
   PermissionMode,
   PermissionRequiredNotifier,
   CanUseToolContext,
@@ -85,13 +90,20 @@ export class PermissionState {
   pendingSignIns: Map<string, PendingSignIn> = new Map();
   pendingDesignVersions: Map<string, PendingDesignVersion> = new Map();
   pendingDesignApprovals: Map<string, PendingDesignApproval> = new Map();
-  /** The exact message each live prompt was posted with, in the order they were raised, so a webview
-   *  reload can put the same dialogs back on screen without rebuilding a payload. */
+  pendingThemeChanges: Map<string, PendingThemeChange> = new Map();
+  pendingThemeScreenshots: Map<string, PendingThemeScreenshot> = new Map();
+  pendingThemeInstalls: Map<string, PendingThemeInstall> = new Map();
+  /** The request each live prompt holds now, in the order they were raised, which a re-post carries: a theme card's update
+   *  replaces it, and a prompt in `devicePrompts` is built per device from it. */
   pendingPromptRequests: Map<string, ExtensionToWebviewMessage> = new Map();
   autoApprovedSkills: Set<string> = new Set();
   /** The image model each approved GenerateImage prompt showed, by tool use id, until the tool takes it. */
   approvedImageModels: Map<string, string> = new Map();
   postMessageToWebview: PostMessageFn | null = null;
+  /** Posts each device's own message to that device's views; a device whose message is undefined gets none. */
+  postToDevices: DevicePostFn | null = null;
+  /** A prompt each device is shown its own way (a remote chat's theme cards), by prompt id; a reload re-posts it that way. */
+  devicePrompts: Map<string, DeviceMessage> = new Map();
   permissionRequiredNotifier: PermissionRequiredNotifier | null = null;
   permissionMode: PermissionMode = 'default';
   dangerouslySkipPermissions = false;
@@ -110,6 +122,13 @@ export class PermissionState {
     return this.cwd;
   }
 
+  /** Posts a raised prompt: each device its own message when the prompt has one per device, else every view the same. */
+  postPrompt(id: string, request: ExtensionToWebviewMessage, post: PostMessageFn | null = this.postMessageToWebview): void {
+    const perDevice = this.devicePrompts.get(id);
+    if (perDevice !== undefined && this.postToDevices) this.postToDevices(perDevice);
+    else post?.(request);
+  }
+
   /** The owner a prompt raised now states on its message; with no session there is no nested agent to name. */
   promptOwner(parentToolUseId: string | null | undefined): PromptOwner {
     return this.promptOwnerResolver?.(parentToolUseId) ?? { kind: 'main' };
@@ -124,6 +143,9 @@ export class PermissionState {
     if (this.pendingSignIns.has(id)) return 'signIn';
     if (this.pendingDesignVersions.has(id)) return 'designVersion';
     if (this.pendingDesignApprovals.has(id)) return 'designApproval';
+    if (this.pendingThemeChanges.has(id)) return 'themeChange';
+    if (this.pendingThemeScreenshots.has(id)) return 'themeScreenshot';
+    if (this.pendingThemeInstalls.has(id)) return 'themeInstall';
     return undefined;
   }
 
@@ -261,6 +283,67 @@ export class PermissionState {
     return prompt;
   }
 
+  addPendingThemeChange(promptId: string, prompt: PendingThemeChange): void {
+    this.pendingThemeChanges.set(promptId, prompt);
+    this.pendingPromptRequests.set(promptId, prompt.request);
+    this.onPendingChanged?.();
+  }
+
+  /** A card's new state, which a returning webview is shown; the raise order stays. */
+  updatePendingThemeChange(promptId: string, request: PendingThemeChange['request']): void {
+    const prompt = this.pendingThemeChanges.get(promptId);
+    if (!prompt) return;
+    prompt.request = request;
+    this.pendingPromptRequests.set(promptId, request);
+  }
+
+  removePendingThemeChange(promptId: string): PendingThemeChange | undefined {
+    const prompt = this.pendingThemeChanges.get(promptId);
+    if (!this.pendingThemeChanges.delete(promptId)) return undefined;
+    this.pendingPromptRequests.delete(promptId);
+    this.devicePrompts.delete(promptId);
+    this.onPendingChanged?.();
+    return prompt;
+  }
+
+  addPendingThemeScreenshot(promptId: string, prompt: PendingThemeScreenshot): void {
+    this.pendingThemeScreenshots.set(promptId, prompt);
+    this.pendingPromptRequests.set(promptId, prompt.request);
+    this.onPendingChanged?.();
+  }
+
+  removePendingThemeScreenshot(promptId: string): PendingThemeScreenshot | undefined {
+    const prompt = this.pendingThemeScreenshots.get(promptId);
+    if (!this.pendingThemeScreenshots.delete(promptId)) return undefined;
+    this.pendingPromptRequests.delete(promptId);
+    this.devicePrompts.delete(promptId);
+    this.onPendingChanged?.();
+    return prompt;
+  }
+
+  addPendingThemeInstall(promptId: string, prompt: PendingThemeInstall): void {
+    this.pendingThemeInstalls.set(promptId, prompt);
+    this.pendingPromptRequests.set(promptId, prompt.request);
+    this.onPendingChanged?.();
+  }
+
+  /** A card's new preview, which a returning webview is shown; the raise order stays. */
+  updatePendingThemeInstall(promptId: string, request: PendingThemeInstall['request']): void {
+    const prompt = this.pendingThemeInstalls.get(promptId);
+    if (!prompt) return;
+    prompt.request = request;
+    this.pendingPromptRequests.set(promptId, request);
+  }
+
+  removePendingThemeInstall(promptId: string): PendingThemeInstall | undefined {
+    const prompt = this.pendingThemeInstalls.get(promptId);
+    if (!this.pendingThemeInstalls.delete(promptId)) return undefined;
+    this.pendingPromptRequests.delete(promptId);
+    this.devicePrompts.delete(promptId);
+    this.onPendingChanged?.();
+    return prompt;
+  }
+
   clearAll(): void {
     // Teardown, not a user decision: the diagnostic keeps `userAnswered` absent, so the deny cannot be
     // mistaken for an unexplained "no" and end a turn that is already being torn down.
@@ -311,7 +394,18 @@ export class PermissionState {
       this.postMessageToWebview?.({ type: 'designApprovalClosed', promptId });
       prompt.resolve(undefined);
     }
+    // each card's close posts its own themeChangeClosed or themeInstallClosed and ends its tool's wait
+    for (const prompt of [...this.pendingThemeChanges.values()]) prompt.close();
+    for (const prompt of [...this.pendingThemeInstalls.values()]) prompt.close();
+    const screenshots = [...this.pendingThemeScreenshots];
+    this.pendingThemeScreenshots.clear();
+    for (const [promptId, prompt] of screenshots) {
+      prompt.cleanup();
+      this.postMessageToWebview?.({ type: 'themeScreenshotClosed', promptId });
+      prompt.resolve(undefined);
+    }
     this.pendingPromptRequests.clear();
+    this.devicePrompts.clear();
 
     this.autoApprovedSkills.clear();
     this.approvedImageModels.clear();

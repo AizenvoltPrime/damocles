@@ -1,6 +1,6 @@
 import { expect, type ElectronApplication, type Locator, type Page } from '@playwright/test';
 import { readyOverlay } from './overlay';
-import { shellState } from './shell';
+import { SHELL_URL, shellState } from './shell';
 
 // Leading text of the desktop trust prompt (src/desktop/main/trust-store.ts).
 export const TRUST_PROMPT = 'Do you trust the authors of the files in';
@@ -205,11 +205,19 @@ export function hostPromptAnswer(app: ElectronApplication): Promise<string | und
 
 /** Clicks an application menu item by id, as a user choosing it would. */
 export async function clickMenu(app: ElectronApplication, id: string): Promise<void> {
-  await app.evaluate(({ Menu, BrowserWindow }, itemId) => {
+  await app.evaluate(({ Menu, BrowserWindow }, [itemId, shellUrl]) => {
     const item = Menu.getApplicationMenu()?.getMenuItemById(itemId);
     if (!item) throw new Error(`no menu item ${itemId}`);
-    const win = BrowserWindow.getAllWindows()[0];
+    const win = BrowserWindow.getAllWindows().find((each) => each.webContents.getURL().startsWith(shellUrl));
     item.click(undefined, win, undefined as never);
+  }, [id, SHELL_URL] as const);
+}
+
+/** An application menu item as main has it now, or undefined when the menu has none of that id. */
+export function menuItemState(app: ElectronApplication, id: string): Promise<{ accelerator: string | null; enabled: boolean; visible: boolean } | undefined> {
+  return app.evaluate(({ Menu }, itemId) => {
+    const item = Menu.getApplicationMenu()?.getMenuItemById(itemId);
+    return item ? { accelerator: item.accelerator ?? null, enabled: item.enabled, visible: item.visible } : undefined;
   }, id);
 }
 
@@ -233,6 +241,18 @@ export async function addProject(app: ElectronApplication, dir: string, trust: b
 }
 
 /** Sends `text` from the tab and waits for the stub's echo of it to render. */
+/**
+ * Waits until a trusted card takes an answer: it has been shown for its hold and Chromium reports it whole and uncovered
+ * (`useTrustedVisibility`). `card` is the element the check observes: a dock prompt's region, a shell banner, the plan
+ * overlay's footer. A key pressed before this is swallowed, so every key that answers a card waits here first; a click on
+ * a card's control waits by itself, because a held card's controls are aria-disabled and Playwright clicks only an
+ * enabled one. Where the dock is taller than the chat pane the page scrolls, and a click Playwright retries scrolls it
+ * (each retry aligns the control another way), which cuts the card off and holds it: there a click waits here first too.
+ */
+export async function promptReady(card: Locator): Promise<void> {
+  await expect(card).toHaveAttribute('data-trusted-ready', 'true');
+}
+
 /**
  * Waits until the chat's turn has ended. A reply shows while it streams, and pi saves it to the session file only at its
  * message_end, before core lowers the spinner; with an empty composer the send button reads Stop until then.
@@ -288,4 +308,53 @@ export async function listedSessionIds(tab: Page): Promise<string[]> {
   const lists = await hostMessages(tab, 'storedSessions');
   const sessions = (lists.at(-1)?.['sessions'] ?? []) as { id: string }[];
   return sessions.map((session) => session.id);
+}
+
+/** Elements of a page reaching past its sides outside a clipping or scrolling box, and a page that scrolls sideways. */
+export async function pageOverflow(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const found: string[] = [];
+    const root = document.documentElement;
+    if (root.scrollWidth > root.clientWidth) found.push(`page scrolls sideways (${root.scrollWidth} > ${root.clientWidth})`);
+    for (const el of document.body.querySelectorAll<HTMLElement>('*')) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 1 || rect.height <= 1 || (rect.left >= -0.5 && rect.right <= root.clientWidth + 0.5)) continue;
+      let clipped = false;
+      for (let up = el.parentElement; up && up !== document.body; up = up.parentElement) {
+        if (getComputedStyle(up).overflowX !== 'visible') clipped = true;
+      }
+      if (!clipped) found.push(`${el.tagName.toLowerCase()}.${[...el.classList].slice(0, 4).join('.')} spans ${Math.round(rect.left)}..${Math.round(rect.right)} of ${root.clientWidth}`);
+    }
+    return found;
+  });
+}
+
+/**
+ * Each element inside a chat column that reaches past the column's sides, and the header and page when they scroll
+ * sideways. An element inside its own clipping or scrolling box, and a 1px visually hidden label, do not count.
+ */
+export async function horizontalOverflow(tab: Page): Promise<string[]> {
+  return tab.evaluate(() => {
+    const found: string[] = [];
+    const name = (el: Element): string => `${el.tagName.toLowerCase()}${el.getAttribute('data-testid') ? `[${el.getAttribute('data-testid')}]` : ''}.${[...el.classList].slice(0, 4).join('.')}`;
+    const root = document.documentElement;
+    if (root.scrollWidth > root.clientWidth) found.push(`page scrolls sideways (${root.scrollWidth} > ${root.clientWidth})`);
+    const header = document.querySelector('[data-testid="chat-header"]');
+    if (header && header.scrollWidth > header.clientWidth) found.push(`header scrolls sideways (${header.scrollWidth} > ${header.clientWidth})`);
+    for (const column of document.querySelectorAll<HTMLElement>('.chat-column')) {
+      if (column.getClientRects().length === 0) continue;
+      const box = column.getBoundingClientRect();
+      for (const el of column.querySelectorAll<HTMLElement>('*')) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 1 || rect.height <= 1) continue;
+        if (rect.left >= box.left - 0.5 && rect.right <= box.right + 0.5) continue;
+        let clipped = false;
+        for (let up = el.parentElement; up && up !== column; up = up.parentElement) {
+          if (getComputedStyle(up).overflowX !== 'visible') clipped = true;
+        }
+        if (!clipped) found.push(`${name(el)} spans ${Math.round(rect.left)}..${Math.round(rect.right)} in a column of ${Math.round(box.left)}..${Math.round(box.right)}`);
+      }
+    }
+    return found;
+  });
 }

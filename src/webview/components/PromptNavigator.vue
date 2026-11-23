@@ -133,7 +133,7 @@ const statusText = computed(() => statusOverride.value ?? t("promptNavigator.sta
     @close="navigatorStore.close()"
   >
     <div class="flex flex-col gap-2.5 px-4 pt-3 pb-4">
-      <label class="flex h-9 items-center gap-2 rounded-10 border border-(--d-border2) bg-(--d-input) px-3 transition-[border-color,box-shadow] focus-within:border-(--d-accent) focus-within:shadow-[0_0_0_4px_var(--d-accent-soft)]">
+      <label class="flex h-9 items-center gap-2 rounded-10 border border-(--d-border2) bg-(--d-input) px-3 transition-[border-color,box-shadow] focus-within:border-(--d-accent-fill) focus-within:shadow-[0_0_0_4px_var(--d-accent-soft)]">
         <Search
           class="size-3.5 flex-none text-(--d-faint)"
           aria-hidden="true"
@@ -180,7 +180,7 @@ const statusText = computed(() => statusOverride.value ?? t("promptNavigator.sta
           :box="box"
           :radius="11"
           :animate="animate"
-          class="z-1 text-(--d-accent)"
+          class="z-1 [--tone:var(--d-accent-fill)]"
         />
         <div
           v-for="(prompt, index) in filteredPrompts"
@@ -213,7 +213,7 @@ const statusText = computed(() => statusOverride.value ?? t("promptNavigator.sta
               <span class="tabular-nums">{{ prompt.time }}</span>
               <span
                 v-if="prompt.errored"
-                class="size-1.5 rounded-full bg-(--d-danger)"
+                class="size-1.5 rounded-full bg-(--d-danger-fill)"
                 role="img"
                 :aria-label="t('common.error')"
               />

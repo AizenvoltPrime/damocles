@@ -3,7 +3,7 @@ import { computed } from 'vue';
 import ProjectAvatar from '../../components/ProjectAvatar.vue';
 import { TONE_CLASSES, type NotificationView } from '../notification-view';
 
-// The project's initial on its colour, else the app's, with the kind's badge on its corner.
+// The project's character or its initial on its colour, else the app's, with the kind's badge on its corner.
 const props = defineProps<{ view: NotificationView; size: 'toast' | 'row' }>();
 const tone = computed(() => TONE_CLASSES[props.view.tone]);
 const large = computed(() => props.size === 'toast');
@@ -18,6 +18,7 @@ const large = computed(() => props.size === 'toast');
     <ProjectAvatar
       v-if="view.project"
       :name="view.project.name"
+      :project-key="view.project.key"
       class="size-full"
       :class="large ? 'rounded-xl text-lg' : 'rounded-9 text-13'"
     />

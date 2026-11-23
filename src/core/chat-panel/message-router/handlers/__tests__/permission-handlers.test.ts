@@ -29,6 +29,7 @@ import type { PermissionUpdate } from "../../../../../shared/types/permissions";
 import type { LocalizedText } from "../../../../../shared/localized-text";
 import type { ExtensionToWebviewMessage } from "../../../../../shared/types/messages";
 import { l } from "../../../../l10n";
+import { MAX_PROMPT_ANSWER_CHARS } from "../../../../../shared/types/constants";
 import { buildPlanImplementationMessage } from "../../utils";
 import { computePlanFilePath } from "../../../../paths";
 import type { HandlerContext, HandlerDependencies } from "../../types";
@@ -348,5 +349,104 @@ describe("resolveDesignApproval", () => {
     const stopped = approvalPrompt();
     await stopped.send({ choice: "stop" });
     expect(await stopped.answer).toEqual({ choice: "stop" });
+  });
+});
+
+describe("the theme cards' answers", () => {
+  const SHA = "a".repeat(64);
+
+  function themeHandlers() {
+    const { deps, ctx } = setup();
+    const permissionHandler = {
+      resolveThemeChange: vi.fn(),
+      setThemeShowInWindow: vi.fn(),
+      resolveThemeScreenshot: vi.fn(),
+      resolveThemeInstall: vi.fn(),
+      allowThemeInstallFlash: vi.fn(),
+    };
+    const handlers = createPermissionHandlers(deps);
+    const send = (message: Record<string, unknown>) =>
+      handlers[message["type"] as keyof typeof handlers]!(message as never, { ...ctx, permissionHandler } as unknown as HandlerContext);
+    return { permissionHandler, send };
+  }
+
+  it("resolveThemeChange passes each choice on with its note, and refuses a malformed id, choice or note", async () => {
+    const { permissionHandler, send } = themeHandlers();
+    for (const bad of [{ promptId: 7, choice: "apply" }, { promptId: "p", choice: "approve" }, { promptId: "p" }, { promptId: "p", choice: "change", note: 42 }, { promptId: "p", choice: "change", note: null }]) {
+      await send({ type: "resolveThemeChange", ...bad });
+    }
+    expect(permissionHandler.resolveThemeChange).not.toHaveBeenCalled();
+    await send({ type: "resolveThemeChange", promptId: "p", choice: "apply" });
+    await send({ type: "resolveThemeChange", promptId: "p", choice: "discard" });
+    await send({ type: "resolveThemeChange", promptId: "p", choice: "change", note: "Warmer." });
+    expect(permissionHandler.resolveThemeChange.mock.calls).toEqual([["p", "apply", undefined], ["p", "discard", undefined], ["p", "change", "Warmer."]]);
+  });
+
+  it("takes a free-text answer no longer than its input holds, for a theme note, a design approval's note and an approval's feedback", async () => {
+    const { deps, ctx } = setup();
+    const permissionHandler = { resolveThemeChange: vi.fn(), resolveDesignApproval: vi.fn(), resolveApproval: vi.fn(async () => null) };
+    const handlers = createPermissionHandlers(deps);
+    const context = { ...ctx, permissionHandler } as unknown as HandlerContext;
+    const longest = "x".repeat(MAX_PROMPT_ANSWER_CHARS);
+    for (const text of [longest, `${longest}x`]) {
+      await handlers.resolveThemeChange!({ type: "resolveThemeChange", promptId: "p", choice: "change", note: text }, context);
+      await handlers.resolveDesignApproval!({ type: "resolveDesignApproval", promptId: "p", choice: "changes", feedback: text }, context);
+      await handlers.approveEdit!({ type: "approveEdit", toolUseId: "t", approved: false, customMessage: text }, context);
+    }
+    expect(permissionHandler.resolveThemeChange.mock.calls).toEqual([["p", "change", longest]]);
+    expect(permissionHandler.resolveDesignApproval.mock.calls).toEqual([["p", "changes", longest]]);
+    expect(permissionHandler.resolveApproval.mock.calls).toEqual([["t", false, { customMessage: longest }]]);
+  });
+
+  it("setThemeShowInWindow passes a boolean on, and nothing else", async () => {
+    const { permissionHandler, send } = themeHandlers();
+    for (const bad of [{ promptId: 7, on: true }, { promptId: "p", on: "true" }, { promptId: "p" }, { promptId: "p", on: 1 }]) await send({ type: "setThemeShowInWindow", ...bad });
+    expect(permissionHandler.setThemeShowInWindow).not.toHaveBeenCalled();
+    await send({ type: "setThemeShowInWindow", promptId: "p", on: true });
+    await send({ type: "setThemeShowInWindow", promptId: "p", on: false });
+    expect(permissionHandler.setThemeShowInWindow.mock.calls).toEqual([["p", true], ["p", false]]);
+  });
+
+  it("resolveThemeScreenshot passes Allow and Deny on, and no other choice", async () => {
+    const { permissionHandler, send } = themeHandlers();
+    for (const bad of [{ promptId: 7, choice: "allow" }, { promptId: "p", choice: "yes" }, { promptId: "p", choice: true }, { promptId: "p" }]) await send({ type: "resolveThemeScreenshot", ...bad });
+    expect(permissionHandler.resolveThemeScreenshot).not.toHaveBeenCalled();
+    await send({ type: "resolveThemeScreenshot", promptId: "p", choice: "allow" });
+    await send({ type: "resolveThemeScreenshot", promptId: "p", choice: "deny" });
+    expect(permissionHandler.resolveThemeScreenshot.mock.calls).toEqual([["p", "allow"], ["p", "deny"]]);
+  });
+
+  it("resolveThemeInstall passes Cancel on as the choice alone, and Install only with a boolean arrangement and a known clash choice", async () => {
+    const { permissionHandler, send } = themeHandlers();
+    const bad = [
+      { promptId: 7, choice: "cancel" },
+      { promptId: "p", choice: "later" },
+      { promptId: "p", choice: "install" },
+      { promptId: "p", choice: "install", useArrangement: "yes" },
+      { promptId: "p", choice: "install", useArrangement: true, onClash: "overwrite" },
+      { promptId: "p", choice: "install", useArrangement: true, onClash: null },
+    ];
+    for (const message of bad) await send({ type: "resolveThemeInstall", ...message });
+    expect(permissionHandler.resolveThemeInstall).not.toHaveBeenCalled();
+    await send({ type: "resolveThemeInstall", promptId: "p", choice: "cancel", useArrangement: true, onClash: "replace" });
+    await send({ type: "resolveThemeInstall", promptId: "p", choice: "install", useArrangement: true });
+    await send({ type: "resolveThemeInstall", promptId: "p", choice: "install", useArrangement: false, onClash: "keepBoth" });
+    await send({ type: "resolveThemeInstall", promptId: "p", choice: "install", useArrangement: false, onClash: "replace" });
+    expect(permissionHandler.resolveThemeInstall.mock.calls).toEqual([
+      ["p", { choice: "cancel" }],
+      ["p", { choice: "install", useArrangement: true }],
+      ["p", { choice: "install", onClash: "keepBoth", useArrangement: false }],
+      ["p", { choice: "install", onClash: "replace", useArrangement: false }],
+    ]);
+  });
+
+  it("allowThemeInstallFlash passes the card and the file on, and refuses an id or a hash that is not a string", async () => {
+    const { permissionHandler, send } = themeHandlers();
+    for (const bad of [{ promptId: 7, installId: "i", sha256: SHA }, { promptId: "p", installId: 7, sha256: SHA }, { promptId: "p", sha256: SHA }, { promptId: "p", installId: "i", sha256: 7 }, { promptId: "p", installId: "i" }]) {
+      await send({ type: "allowThemeInstallFlash", ...bad });
+    }
+    expect(permissionHandler.allowThemeInstallFlash).not.toHaveBeenCalled();
+    await send({ type: "allowThemeInstallFlash", promptId: "p", installId: "i", sha256: SHA });
+    expect(permissionHandler.allowThemeInstallFlash.mock.calls).toEqual([["p", SHA]]);
   });
 });

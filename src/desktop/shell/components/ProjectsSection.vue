@@ -177,6 +177,23 @@ async function remove(project: ShellProject): Promise<void> {
   if (!result.ok) refusal.value = { text: t('projects.removeRefused', { name: project.name, reason: result.reason }) };
 }
 
+// Project look…: the dialog opens in the overlay; what it saved stays said under the list until the next menu opens.
+const lookSaved = ref('');
+async function openLook(project: ShellProject): Promise<void> {
+  refusal.value = undefined;
+  const result = await props.api.projectLook(project.key);
+  if (result.kind === 'failed') refusal.value = { text: t('projects.look.failed', { name: project.name, reason: result.reason }) };
+  if (result.kind !== 'saved') return;
+  const { name } = project;
+  const shows = t('projects.look.shows', { name });
+  if (result.look === 'none') lookSaved.value = t('projects.look.savedNone', { name });
+  else if (result.look === 'touches') lookSaved.value = `${t('projects.look.saved.touches', { name })} ${shows}`;
+  // a theme that is gone has no name, and one that cannot show is said to be missing
+  else if (result.themeName === undefined) lookSaved.value = t('projects.look.saved.fullMissingUnknown', { name });
+  else if (result.missingTheme) lookSaved.value = t('projects.look.saved.fullMissing', { name, theme: result.themeName });
+  else lookSaved.value = `${t('projects.look.saved.full', { name, theme: result.themeName })} ${shows}`;
+}
+
 // A project or group moved by keyboard or menu: the row settles with a spring once the state shows it moved.
 let settleId: string | undefined;
 
@@ -288,6 +305,7 @@ async function reopenInContainer(project: ShellProject): Promise<void> {
 // element: the row the menu was opened on, which Details hangs the host's card from
 async function openProjectMenu(project: ShellProject, anchor: OverlayRect, element: HTMLElement | null): Promise<void> {
   activeId.value = `p:${project.key}`;
+  lookSaved.value = '';
   const hostId = project.authority.hostId;
   // a folder that is not there offers Locate…, or Retry and Stop moving… while its move is paused, and no Trust or Reopen item
   const present = project.presence === undefined;
@@ -317,6 +335,8 @@ async function openProjectMenu(project: ShellProject, anchor: OverlayRect, eleme
     ]),
     ...moveItems(projectStep(project, -1), projectStep(project, 1)),
     { kind: 'separator' },
+    { kind: 'item', id: 'look', label: t('projects.look.action'), icon: 'palette' },
+    { kind: 'separator' },
     { kind: 'item', id: 'remove', label: t('projects.remove'), icon: 'folder-minus', danger: true },
   ];
   const answer = await props.api.requestOverlay({ kind: 'menu', label: t('projects.menuLabel', { name: project.name }), anchor, items });
@@ -331,6 +351,7 @@ async function openProjectMenu(project: ShellProject, anchor: OverlayRect, eleme
   else if (answer.itemId === 'reopenInContainer') await reopenInContainer(project);
   else if (answer.itemId === 'rebuildContainer') await props.api.rebuildContainer(project.key);
   else if (answer.itemId === 'remove') await remove(project);
+  else if (answer.itemId === 'look') await openLook(project);
   else if (answer.itemId === 'moveUp' && row) await stepRow(row, -1);
   else if (answer.itemId === 'moveDown' && row) await stepRow(row, 1);
   else if (answer.itemId === 'hostDetails') await openHostDetails(hostId, hostElement(element));
@@ -948,6 +969,14 @@ defineExpose({
       aria-live="polite"
     >
       {{ announcement }}
+    </p>
+    <p
+      role="status"
+      data-testid="projects-look-saved"
+      class="px-3 text-xs text-(--d-muted)"
+      :class="lookSaved ? 'pb-2' : ''"
+    >
+      {{ lookSaved }}
     </p>
   </SidebarSection>
 </template>

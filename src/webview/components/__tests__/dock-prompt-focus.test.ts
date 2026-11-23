@@ -113,6 +113,26 @@ describe('a docked prompt as it appears', () => {
     expect(focusedListbox()?.getAttribute('aria-label')).toBe('Which remote?');
   });
 
+  // reka's listbox focuses its selected option whenever the selection changes in code; the next request is a new listbox, which mounts under the rule above
+  it('leaves focus in the composer when the next request resets a selection the user moved', async () => {
+    const card = await show(mount(PermissionPrompt, {
+      props: { visible: true, toolUseId: 'p-1', toolName: 'Bash', command: 'ls', suggestions: [{ type: 'addRules', behavior: 'allow', destination: 'session', rules: [{ toolName: 'Bash', ruleContent: 'ls' }] }] },
+      global: { plugins: [i18n], stubs: { PermissionDestinationPicker: true } },
+      attachTo: document.body,
+    }));
+    await card.get('[data-testid="permission-option-always-allow"]').trigger('click');
+    card.getComponent({ name: 'PermissionDestinationPicker' }).vm.$emit('cancel');
+    await flushPromises();
+    expect(card.get('[data-testid="permission-option-always-allow"]').attributes('data-state')).toBe('checked');
+    const textarea = composer();
+
+    await card.setProps({ toolUseId: 'p-2' });
+    await flushPromises();
+
+    expect(card.get('[data-testid="permission-option-yes"]').attributes('data-state')).toBe('checked');
+    expect(document.activeElement).toBe(textarea);
+  });
+
   it('moves no focus while the prompt is not visible', async () => {
     const button = document.createElement('button');
     document.body.appendChild(button);

@@ -38,7 +38,7 @@ const engines = computed<EngineRow[]>(() => [
         class="flex gap-2 text-pretty"
       >
         <span
-          class="mt-2 size-1.25 flex-none rounded-full bg-(--d-accent)"
+          class="mt-2 size-1.25 flex-none rounded-full bg-(--d-accent-fill)"
           aria-hidden="true"
         />
         <span>{{ point }}</span>

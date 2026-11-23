@@ -256,14 +256,14 @@ function unavailableReason(model: ModelInfo): string {
             :box="effortBox"
             :radius="6"
             :animate="effortAnimate"
-            class="z-1 text-(--d-accent)"
+            class="z-1 [--tone:var(--d-accent-fill)]"
           />
           <!-- The pill fill sits in ::before below the indicator (z 1) and the label above it, so the indicator slides between them. -->
           <DropdownMenuRadioItem
             v-for="level in effortLevels"
             :key="level"
             :value="level"
-            class="rounded-md px-2 py-0.75 text-11.5/normal transition-colors duration-200 before:absolute before:inset-0 before:rounded-[inherit] before:bg-(--d-hover) before:content-[''] focus:bg-transparent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--d-accent) focus-visible:outline-solid [&>span:first-child]:hidden"
+            class="rounded-md px-2 py-0.75 text-11.5/normal transition-colors duration-200 before:absolute before:inset-0 before:rounded-[inherit] before:bg-(--d-hover) before:content-[''] focus:bg-transparent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--d-accent-fill) focus-visible:outline-solid [&>span:first-child]:hidden"
             :class="level === effort ? 'text-(--d-on-accent) focus:text-(--d-on-accent)' : 'text-(--d-muted) focus:text-(--d-text)'"
             data-testid="composer-effort-option"
             @select.prevent

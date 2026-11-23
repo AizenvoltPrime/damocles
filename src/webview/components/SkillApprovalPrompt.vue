@@ -7,11 +7,15 @@ import { Textarea } from '@/components/ui/textarea';
 import { MessageSquare, SendHorizontal, Sparkles } from 'lucide-vue-next';
 import { useDockPromptDigits } from '@/composables/useDockPrompt';
 import { useAttentionCard } from '@/composables/useAttention';
+import { useDockCardVisibility } from '@/composables/useDockCardVisibility';
+import TrustedCheckingNote from './TrustedCheckingNote.vue';
 
 const { t } = useI18n();
 
 defineProps<{
   visible: boolean;
+  /** The request this card answers; the card's element is keyed by it. */
+  requestId?: string | undefined;
   skillName: string;
   skillDescription?: string | undefined;
 }>();
@@ -25,6 +29,7 @@ const customMessage = ref('');
 const selectedValue = ref<string>('yes');
 const cardRef = ref<HTMLElement | null>(null);
 useAttentionCard('approval', cardRef);
+const { isVisible, explain, refuse } = useDockCardVisibility(cardRef);
 const textareaRef = ref<{ $el?: HTMLElement } | null>(null);
 
 const choices = computed(() => [
@@ -79,113 +84,136 @@ useDockPromptDigits(cardRef, (digit) => {
   if (!choice) return false;
   handleSelect(choice.value);
   return true;
-});
+}, refuse);
 </script>
 
 <template>
   <div
     v-if="visible"
-    ref="cardRef"
-    class="overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--d-warning)_45%,transparent)] bg-(--d-card) text-(--d-text) shadow-(--d-shadow) [--attention-ring:var(--d-warning)]"
-    role="region"
-    :aria-label="t('skill.ariaLabel')"
-    data-dock-prompt
-    data-testid="skill-card"
+    class="d-dock-shadow rounded-14"
+    data-trusted
   >
-    <header class="flex items-center gap-2.5 border-b border-(--d-border) bg-linear-to-b from-[color-mix(in_srgb,var(--d-warning)_10%,transparent)] to-transparent px-3 py-2">
-      <span
-        class="d-ring flex size-6.5 flex-none items-center justify-center rounded-lg bg-[color-mix(in_srgb,var(--d-warning)_16%,transparent)] text-(--d-warning)"
-        aria-hidden="true"
-      >
-        <Sparkles class="size-3.5" />
-      </span>
-      <div class="min-w-0 flex-1">
-        <div class="truncate font-semibold">
-          {{ t('skill.title', { name: skillName }) }}
-        </div>
-        <div class="truncate text-xs text-(--d-muted)">
-          {{ t('skill.explanation') }}
-        </div>
-      </div>
-    </header>
-
-    <p
-      v-if="skillDescription"
-      class="px-3.5 pt-2.5 text-12.5 text-pretty text-(--d-muted)"
-    >
-      {{ skillDescription }}
-    </p>
-
+    <!-- One bounded element that scrolls inside itself under its answers, so the whole card always fits the page. -->
+    <!-- Keyed by the request: the next request is a new element, which starts held (useTrustedVisibility). -->
     <div
-      v-if="!showCustomInput"
-      class="px-1.5 pt-1 pb-1.5"
+      ref="cardRef"
+      :key="requestId"
+      class="max-h-[70dvh] overflow-x-hidden overflow-y-auto rounded-14 border border-[color-mix(in_srgb,var(--d-warning-fill)_45%,transparent)] bg-(--d-card) text-(--d-text) [--attention-ring:var(--d-warning-fill)]"
+      role="region"
+      :aria-label="t('skill.ariaLabel')"
+      data-dock-prompt
+      data-trusted
+      data-testid="skill-card"
     >
-      <ListboxRoot
-        v-model="selectedValue"
-        class="flex flex-col outline-none"
-        orientation="vertical"
+      <header class="flex items-center gap-2.5 border-b border-(--d-border) bg-linear-to-b from-[color-mix(in_srgb,var(--d-warning-fill)_10%,transparent)] to-transparent px-3 py-2">
+        <span
+          class="d-ring [--tone:var(--d-warning-fill)] flex size-6.5 flex-none items-center justify-center rounded-lg bg-[color-mix(in_srgb,var(--d-warning-fill)_16%,transparent)] text-(--d-warning)"
+          aria-hidden="true"
+        >
+          <Sparkles class="size-3.5" />
+        </span>
+        <div class="min-w-0 flex-1">
+          <div class="truncate font-semibold">
+            {{ t('skill.title', { name: skillName }) }}
+          </div>
+          <div class="truncate text-xs text-(--d-muted)">
+            {{ t('skill.explanation') }}
+          </div>
+        </div>
+      </header>
+      <TrustedCheckingNote
+        overlay
+        class="bottom-0"
+        :shown="explain"
+        :text="t('trusted.checkingVisible')"
+      />
+
+      <p
+        v-if="skillDescription"
+        class="px-3.5 pt-2.5 text-12.5 text-pretty text-(--d-muted)"
       >
-        <DockPromptOptions :aria-label="t('skill.title', { name: skillName })">
-          <ListboxItem
-            v-for="(option, index) in choices"
-            :key="option.value"
-            :value="option.value"
-            class="group flex items-center gap-2.5 rounded-9 px-2.5 py-1.25 transition-colors outline-none data-highlighted:bg-(--d-accent-soft) data-highlighted:text-(--d-accent-text)"
-            @select="handleSelect(option.value)"
+        {{ skillDescription }}
+      </p>
+
+      <div
+        v-if="!showCustomInput"
+        class="sticky bottom-0 bg-(--d-card) px-1.5 pt-1 pb-1.5"
+      >
+        <ListboxRoot
+          v-model="selectedValue"
+          class="flex flex-col outline-none"
+          orientation="vertical"
+        >
+          <DockPromptOptions
+            :aria-label="t('skill.title', { name: skillName })"
+            :aria-disabled="!isVisible || undefined"
           >
-            <span
-              class="flex size-5 flex-none items-center justify-center rounded-md border border-(--d-border2) font-mono text-11 group-data-highlighted:border-(--d-accent)"
-              aria-hidden="true"
-            >{{ index + 1 }}</span>
-            <span class="min-w-0 flex-1 truncate font-medium">{{ option.label }}</span>
-          </ListboxItem>
-          <ListboxItem
-            value="custom"
-            class="mx-1 mt-0.75 flex h-7.5 items-center gap-2 rounded-9 border border-(--d-border) bg-(--d-input) px-2.5 text-12.5 text-(--d-faint) transition-colors outline-none data-highlighted:border-(--d-accent)"
-            @select="handleSelect('custom')"
+            <ListboxItem
+              v-for="(option, index) in choices"
+              :key="option.value"
+              :value="option.value"
+              class="group flex items-center gap-2.5 rounded-9 px-2.5 py-1.25 transition-colors outline-none data-highlighted:bg-(--d-accent-soft) data-highlighted:text-(--d-accent-text)"
+              @select="handleSelect(option.value)"
+            >
+              <span
+                class="flex size-5 flex-none items-center justify-center rounded-md border border-(--d-border2) font-mono text-11 group-data-highlighted:border-(--d-accent-fill)"
+                aria-hidden="true"
+              >{{ index + 1 }}</span>
+              <span class="min-w-0 flex-1 truncate font-medium">{{ option.label }}</span>
+            </ListboxItem>
+            <ListboxItem
+              value="custom"
+              class="mx-1 mt-0.75 flex h-7.5 items-center gap-2 rounded-9 border border-(--d-border) bg-(--d-input) px-2.5 text-12.5 text-(--d-faint) transition-colors outline-none data-highlighted:border-(--d-accent-fill)"
+              @select="handleSelect('custom')"
+            >
+              <MessageSquare
+                class="size-3.25 flex-none"
+                aria-hidden="true"
+              />
+              <span class="min-w-0 flex-1 truncate">{{ t('skill.options.custom') }}</span>
+            </ListboxItem>
+          </DockPromptOptions>
+        </ListboxRoot>
+      </div>
+
+      <div
+        v-else
+        class="flex flex-col gap-2 px-3 pt-2.5 pb-3"
+      >
+        <Textarea
+          ref="textareaRef"
+          v-model="customMessage"
+          class="max-h-32 min-h-20 resize-none rounded-10 border-(--d-border2) bg-(--d-input) text-12.5 focus:border-(--d-accent-fill)"
+          :placeholder="t('skill.customPlaceholder')"
+          @keydown.enter.ctrl="handleCustomSubmit"
+          @keydown.escape="handleCustomBack"
+        />
+        <div
+          class="flex justify-end gap-2"
+          role="group"
+          :aria-label="t('skill.options.custom')"
+          :aria-disabled="!isVisible || undefined"
+        >
+          <button
+            type="button"
+            class="d-press flex h-7.5 items-center rounded-9 px-3 text-12.5 transition-colors hover:bg-(--d-hover)"
+            @click="handleCustomBack"
           >
-            <MessageSquare
-              class="size-3.25 flex-none"
+            {{ t('common.back') }}
+          </button>
+          <button
+            type="button"
+            class="d-press flex h-7.5 items-center gap-1.5 rounded-9 bg-(--d-accent-fill) px-3.5 text-12.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110 disabled:cursor-default disabled:opacity-40 disabled:hover:brightness-100"
+            :disabled="!customMessage.trim()"
+            @click="handleCustomSubmit"
+          >
+            <SendHorizontal
+              class="size-3.25"
               aria-hidden="true"
             />
-            <span class="min-w-0 flex-1 truncate">{{ t('skill.options.custom') }}</span>
-          </ListboxItem>
-        </DockPromptOptions>
-      </ListboxRoot>
-    </div>
-
-    <div
-      v-else
-      class="flex flex-col gap-2 px-3 pt-2.5 pb-3"
-    >
-      <Textarea
-        ref="textareaRef"
-        v-model="customMessage"
-        class="max-h-32 min-h-20 resize-none rounded-10 border-(--d-border2) bg-(--d-input) text-12.5 focus:border-(--d-accent)"
-        :placeholder="t('skill.customPlaceholder')"
-        @keydown.enter.ctrl="handleCustomSubmit"
-        @keydown.escape="handleCustomBack"
-      />
-      <div class="flex justify-end gap-2">
-        <button
-          type="button"
-          class="d-press flex h-7.5 items-center rounded-9 px-3 text-12.5 transition-colors hover:bg-(--d-hover)"
-          @click="handleCustomBack"
-        >
-          {{ t('common.back') }}
-        </button>
-        <button
-          type="button"
-          class="d-press flex h-7.5 items-center gap-1.5 rounded-9 bg-(--d-accent) px-3.5 text-12.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110 disabled:cursor-default disabled:opacity-40 disabled:hover:brightness-100"
-          :disabled="!customMessage.trim()"
-          @click="handleCustomSubmit"
-        >
-          <SendHorizontal
-            class="size-3.25"
-            aria-hidden="true"
-          />
-          {{ t('permission.sendToClaude') }}
-        </button>
+            {{ t('permission.sendToClaude') }}
+          </button>
+        </div>
       </div>
     </div>
   </div>

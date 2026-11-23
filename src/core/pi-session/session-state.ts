@@ -7,9 +7,10 @@ export type SessionState = Extract<ExtensionToWebviewMessage, { type: 'sessionSt
 
 /**
  * What an unanswered prompt asks of the user; `input` covers forms, MCP elicitations and extension UI dialogs, `designVersion` the
- * version pause (PD-29), `designApproval` FinishDesign's approval.
+ * version pause (PD-29), `designApproval` FinishDesign's approval, `themeChange` the theme card of ThemeSet and ThemeSchedule,
+ * `themeScreenshot` ThemeRead's screenshot card, `themeInstall` the install card of ThemeSet install.
  */
-export type PendingKind = 'approval' | 'question' | 'plan' | 'input' | 'signIn' | 'designVersion' | 'designApproval';
+export type PendingKind = 'approval' | 'question' | 'plan' | 'input' | 'signIn' | 'designVersion' | 'designApproval' | 'themeChange' | 'themeScreenshot' | 'themeInstall';
 
 /** One unanswered prompt, for attention routing; a notification keys on `id`, so one prompt notifies once. */
 export interface PendingPrompt {

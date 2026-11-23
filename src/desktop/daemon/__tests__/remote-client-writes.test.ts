@@ -28,7 +28,10 @@ import { FEATURES } from '../../../remote/protocol-version';
 import { MAX_DESIGN_ID_CHARS } from '../../../shared/design-paths';
 import { createActorContext, processActor, type ActorContext } from '../../core-protocol/actor';
 import { DesktopSettingsStore } from '../../local-services/settings-store';
-import { createClientMirrors, createCoreRouter, type CoreRouter } from '../core-routes';
+import { CORE_REQUEST_ROUTES, createClientMirrors, createCoreRouter, type CoreRouter } from '../core-routes';
+import { THEME_UPLOAD_CHUNK_BYTES, THEMES_FEATURE, USER_THEME_METHODS } from '../../../shared/themes/relay';
+import { startCoreThemes } from '../../core-host/themes';
+import type { CorePlatform } from '../../core-host/platform';
 import { createDaemonState } from '../daemon-state';
 import { createRunRegistry } from '../run-registry';
 
@@ -79,7 +82,8 @@ function attachedClient() {
 }
 
 // The user-scope relays are the designed exceptions, checked by main: user.memory.apply and user.mcp.* (user-relays.test.ts), user.forge.*
-// (forge-relay.test.ts, routing below), and
+// (forge-relay.test.ts, routing below), user.theme.*, whose theme files only the pinned device's own core writes (main/remote's
+// theme-relay.test.ts, routing below), and
 // user.browser.tool, whose profile and saved downloads are under ~/.damocles/browser-profiles/<authority>/ (main/remote's browser-relay.test.ts).
 describe('a daemon\'s core cannot write client files or change client credentials', () => {
   it.each(PROVIDER_KEY_SECRETS)('provider key %s: get answers undefined unasked, store and delete refuse, keys omit it', async (key) => {
@@ -609,5 +613,141 @@ describe("a daemon's core reaches this computer's GitHub and GitLab accounts onl
     const main = attach('client-1', FEATURES);
     await expect(main.request('user.forge.tool', { request: { tool: 'ForgePipelines', input: {}, authorityKey: 'local', project: 'app', endpoints: [] }, toolCallId: 'call-1' })).rejects.toThrow('user.forge.tool is not available on this host');
     expect(served).not.toHaveBeenCalled();
+  });
+});
+
+// The user.theme relay is a designed exception: a remote chat's theme tools change the app of the device the turn is pinned
+// to, whose own core alone writes its theme files (main/remote's theme-relay.test.ts checks the switch and the bounds). The
+// daemon routes every user.theme.* request to that device alone, and only to one whose attach listed themes.
+describe("a daemon's core changes this computer's look only through user.theme on the pinned device", () => {
+  const MIRRORS = {
+    trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' },
+    clientAuth: { providers: {} }, clientUser: { settings: {}, permissionRules: [] }, clientPolicy: { voice: false, allowBypass: false },
+  } as const;
+  const STAGE = { tool: 'set' as const, input: { name: 'Amber Night' }, toolCallId: 'call-1', chat: { id: 'S1' }, planMode: false, folder: '/srv/app' };
+  const STAGED = { kind: 'done' as const, content: [{ type: 'text' as const, text: 'staged' }], details: { tool: 'ThemeSet' as const } };
+
+  function themeDaemon() {
+    const coreLoop = createLoopback();
+    const coreActors = createActorContext();
+    const core = createCoreEndpoint(coreLoop.core, quiet, undefined, coreActors);
+    const state = createDaemonState(path.join(dir, 'state'), quiet);
+    router = createCoreRouter({ core: createMainEndpoint(coreLoop.main, quiet, undefined, processActor), state, registry: createRunRegistry(), mirrors: createClientMirrors(), secrets: new Map(), e2eHooks: false, reload: vi.fn(), agentShellUrl: () => undefined, clientPolicyChanged: () => undefined, log: quiet });
+    const attach = (clientId: string, features: readonly string[], actors?: ActorContext) => {
+      const loop = createLoopback();
+      const main = createMainEndpoint(loop.main, quiet, (error) => { throw error; }, actors);
+      router!.attach({ id: `connection-${clientId}`, clientId, hostId: 'h1', features: new Set(features), transport: loop.core, mirrors: MIRRORS, close: vi.fn(), drained: () => Promise.resolve(), lost: () => false, onLostChange: () => ({ dispose: () => undefined }) });
+      return main;
+    };
+    return { core, coreActors, attach };
+  }
+
+  it("delivers a client's user.theme.showEnded to core with that client as the actor, whatever its envelope names", async () => {
+    const { core, coreActors, attach } = themeDaemon();
+    attach('client-1', FEATURES);
+    const senderActors = createActorContext();
+    const sender = attach('client-2', FEATURES, senderActors);
+    const ended: unknown[] = [];
+    core.serve('user.theme.showEnded', (params) => {
+      ended.push({ actor: coreActors.current(), ...params });
+    });
+    await senderActors.run('client-1', () => sender.request('user.theme.showEnded', { stageId: 'stage-1', promptId: 'card-1', reason: 'takenOver' }));
+    expect(ended).toEqual([{ actor: 'client-2', stageId: 'stage-1', promptId: 'card-1', reason: 'takenOver' }]);
+  });
+
+  it('routes every user.theme.* request only to pinnedClient, needing themes; no route carries an Allow flashing', () => {
+    const routes = USER_THEME_METHODS.map((method) => [`user.theme.${method}`, CORE_REQUEST_ROUTES[`user.theme.${method}` as keyof typeof CORE_REQUEST_ROUTES]]);
+    expect(routes).toEqual(USER_THEME_METHODS.map((method) => [`user.theme.${method}`, { to: 'pinnedClient', needs: THEMES_FEATURE }]));
+    expect(Object.keys(CORE_REQUEST_ROUTES).filter((name) => name.startsWith('user.theme.')).sort()).toEqual(USER_THEME_METHODS.map((method) => `user.theme.${method}`).sort());
+    expect(Object.keys(CORE_REQUEST_ROUTES).filter((name) => /allowflash/i.test(name))).toEqual([]);
+  });
+
+  it('never asks a client whose attach did not list themes to prepare an install', async () => {
+    const { core, attach } = themeDaemon();
+    const asked = vi.fn();
+    const old = attach('client-old', FEATURES.filter((feature) => feature !== THEMES_FEATURE));
+    old.serve('user.theme.installPrepare', asked);
+    await expect(core.request('user.theme.installPrepare', { clientId: 'client-old', url: 'https://themes.example/a.damocles-theme' })).rejects.toThrow(CLIENT_FEATURE_MISSING);
+    expect(asked).not.toHaveBeenCalled();
+  });
+
+  it("delivers a client's user.theme.installUpdated, installProgress and installExpired to core with that client as the actor", async () => {
+    const { core, coreActors, attach } = themeDaemon();
+    const senderActors = createActorContext();
+    const sender = attach('client-2', FEATURES, senderActors);
+    const heard: unknown[] = [];
+    core.serve('user.theme.installProgress', (params) => {
+      heard.push({ actor: coreActors.current(), ...params });
+    });
+    core.serve('user.theme.installExpired', (params) => {
+      heard.push({ actor: coreActors.current(), ...params });
+    });
+    await senderActors.run('client-1', () => sender.request('user.theme.installProgress', { installId: 'install-1', sha256: 'a'.repeat(64), fraction: 0.5 }));
+    await senderActors.run('client-1', () => sender.request('user.theme.installExpired', { installId: 'install-1' }));
+    expect(heard).toEqual([{ actor: 'client-2', installId: 'install-1', sha256: 'a'.repeat(64), fraction: 0.5 }, { actor: 'client-2', installId: 'install-1' }]);
+  });
+
+  it('reaches exactly the client the request names, a 4 MiB chunk included', async () => {
+    const { core, attach } = themeDaemon();
+    const asked = { 'client-1': vi.fn(), 'client-2': vi.fn() };
+    for (const clientId of ['client-1', 'client-2'] as const) {
+      const main = attach(clientId, FEATURES);
+      main.serve('user.theme.stage', (params) => {
+        asked[clientId]('stage', params);
+        return STAGED;
+      });
+      main.serve('user.theme.uploadChunk', (params) => {
+        asked[clientId]('chunk', params.data.byteLength);
+        return { received: params.data.byteLength, complete: false };
+      });
+    }
+    await expect(core.request('user.theme.stage', { clientId: 'client-2', ...STAGE })).resolves.toEqual(STAGED);
+    await expect(core.request('user.theme.uploadChunk', { clientId: 'client-2', uploadId: 'up-1', offset: 0, data: new Uint8Array(THEME_UPLOAD_CHUNK_BYTES) })).resolves.toEqual({ received: THEME_UPLOAD_CHUNK_BYTES, complete: false });
+    expect(asked['client-2'].mock.calls).toEqual([['stage', { clientId: 'client-2', ...STAGE }], ['chunk', THEME_UPLOAD_CHUNK_BYTES]]);
+    expect(asked['client-1']).not.toHaveBeenCalled();
+  });
+
+  it("carries no word of consent from the daemon's core: a commit reaches the device as the stage alone", async () => {
+    const { core, attach } = themeDaemon();
+    const asked = vi.fn();
+    const main = attach('client-1', FEATURES);
+    main.serve('user.theme.commit', (params) => {
+      asked(params);
+      return { refused: 'Not applied' };
+    });
+    main.serve('user.theme.installCommit', (params) => {
+      asked(params);
+      return { refused: { message: 'Not installed' } };
+    });
+    await core.request('user.theme.commit', { clientId: 'client-1', stageId: 'stage-1', pressed: true } as never);
+    await core.request('user.theme.installCommit', { clientId: 'client-1', installId: 'install-1', useArrangement: false, chat: { id: 's' }, pressed: true } as never);
+    expect(asked.mock.calls).toEqual([[{ clientId: 'client-1', stageId: 'stage-1' }], [{ clientId: 'client-1', installId: 'install-1', useArrangement: false, chat: { id: 's' } }]]);
+  });
+
+  it('never asks a client whose attach did not list themes, and refuses a detached one as absent', async () => {
+    const { core, attach } = themeDaemon();
+    const asked = vi.fn();
+    attach('client-old', FEATURES.filter((feature) => feature !== THEMES_FEATURE)).serve('user.theme.stage', asked);
+    await expect(core.request('user.theme.stage', { clientId: 'client-old', ...STAGE })).rejects.toThrow(CLIENT_FEATURE_MISSING);
+    await expect(core.request('user.theme.stage', { clientId: 'client-gone', ...STAGE })).rejects.toThrow(CREDENTIAL_CLIENT_ABSENT);
+    expect(asked).not.toHaveBeenCalled();
+  });
+
+  it("refuses a client's own themes.* and themes.relay.* requests, so nothing reaches the daemon's core, which holds no theme store", async () => {
+    const { core, attach } = themeDaemon();
+    const served = vi.fn();
+    core.serve('themes.relay.stage', served);
+    core.serve('themes.saveTheme', served);
+    const main = attach('client-1', FEATURES);
+    await expect(main.request('themes.relay.stage', { authority: 'ssh+h1', request: STAGE })).rejects.toThrow('themes.relay.stage is not available on this host');
+    await expect(main.request('themes.relay.installPrepare', { authority: 'ssh+h1', url: 'https://themes.example/a.damocles-theme' })).rejects.toThrow('themes.relay.installPrepare is not available on this host');
+    await expect(main.request('themes.install.allowFlash', { installId: 'install-1', sha256: 'a'.repeat(64) })).rejects.toThrow('themes.install.allowFlash is not available on this host');
+    await expect(main.request('themes.relay.allowFlash', { authority: 'ssh+h1', installId: 'install-1', sha256: 'a'.repeat(64) })).rejects.toThrow('themes.relay.allowFlash is not available on this host');
+    await expect(main.request('themes.saveTheme', { themeId: 'damocles', theme: {} })).rejects.toThrow('themes.saveTheme is not available on this host');
+    expect(served).not.toHaveBeenCalled();
+  });
+
+  it("builds no theme store in a daemon's core", () => {
+    expect(startCoreThemes({ init: { remote: { hostId: 'h1' } } } as unknown as CorePlatform)).toBeUndefined();
   });
 });

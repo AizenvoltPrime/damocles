@@ -25,6 +25,7 @@ const headerText = computed(() => {
 
 <template>
   <ToolCardFrame
+    :tool="toolCall.name"
     :icon="Compass"
     :name="headerText"
     :status="toolCall.status"

@@ -9,8 +9,10 @@ import MarkdownRenderer from './MarkdownRenderer.vue';
 import { Textarea } from '@/components/ui/textarea';
 import SlidingIndicator from './SlidingIndicator.vue';
 import { useSlidingIndicator } from '@/composables/useSlidingIndicator';
-import { useDockPromptDigits } from '@/composables/useDockPrompt';
+import { useDockPromptDigits, useShownRequest } from '@/composables/useDockPrompt';
 import { useAttentionCard } from '@/composables/useAttention';
+import { useDockCardVisibility } from '@/composables/useDockCardVisibility';
+import TrustedCheckingNote from './TrustedCheckingNote.vue';
 import { useQuestionStore } from '@/stores/useQuestionStore';
 import type { Question, QuestionAnnotations, QuestionOption } from '@shared/types/permissions';
 
@@ -37,6 +39,7 @@ const previewTitleId = useId();
 const previewOptionId = useId();
 const cardRef = ref<HTMLElement | null>(null);
 useAttentionCard('question', cardRef);
+const { isVisible, explain, refuse } = useDockCardVisibility(cardRef);
 const tabRow = ref<HTMLElement | null>(null);
 const { box: tabBox, animate: tabAnimate } = useSlidingIndicator(tabRow, '[data-question-tab]', () => store.currentTabIndex);
 
@@ -176,7 +179,7 @@ useDockPromptDigits(cardRef, (digit) => {
   if (hasDesignPreviews.value && !isMultiSelect.value) handleDesignChoose(option.label);
   else handleOptionSelect(option.label);
   return true;
-});
+}, refuse);
 
 function handleNextOrSubmit() {
   if (isLastQuestionTab.value) {
@@ -214,12 +217,14 @@ function handleCustomInputBack() {
   store.exitCustomInputMode();
 }
 
+const showsRequest = useShownRequest(() => store.pendingQuestion?.toolUseId);
+
 function handleSubmit() {
-  emit('submit', store.compiledAnswers, store.compiledAnnotations);
+  if (showsRequest()) emit('submit', store.compiledAnswers, store.compiledAnnotations);
 }
 
 function handleCancel() {
-  emit('cancel');
+  if (showsRequest()) emit('cancel');
 }
 
 function getAnswerSummary(question: Question): string {
@@ -241,352 +246,387 @@ watch(() => store.currentTabIndex, () => {
 <template>
   <div
     v-if="visible && store.pendingQuestion"
-    ref="cardRef"
-    class="overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--d-accent)_45%,var(--d-border))] bg-(--d-card) text-(--d-text) shadow-(--d-shadow) [--attention-ring:var(--d-accent)]"
-    role="region"
-    :aria-label="t('question.ariaLabel')"
-    data-dock-prompt
-    data-testid="question-card"
+    class="d-dock-shadow rounded-14"
+    data-trusted
   >
-    <div class="flex items-center gap-2.5 border-b border-(--d-border) bg-linear-to-b from-[color-mix(in_srgb,var(--d-accent)_10%,transparent)] to-transparent px-3 py-2">
-      <span
-        class="d-ring flex size-6.5 flex-none items-center justify-center rounded-lg bg-(--d-accent-soft) text-(--d-accent)"
-        aria-hidden="true"
-      >
-        <MessageCircleQuestion class="size-3.5" />
-      </span>
-      <div class="min-w-0 flex-1 font-semibold">
-        {{ t('question.title') }}
-      </div>
-      <span
-        class="flex-none text-11 text-(--d-muted)"
-        aria-live="polite"
-        data-testid="question-waiting"
-      >
-        <Transition name="t-fade">
-          <span v-if="store.waitingCount > 0">{{ t('question.moreWaiting', { n: store.waitingCount }, store.waitingCount) }}</span>
-        </Transition>
-      </span>
-      <span
-        v-if="hasAgentDescription"
-        class="flex min-w-0 items-center gap-1.5 truncate rounded-full bg-(--d-accent-soft) px-2 py-0.5 text-11 font-medium text-(--d-accent-text)"
-      >
-        <Bot
-          class="size-3 flex-none"
-          aria-hidden="true"
-        />
-        <span class="truncate">{{ agentDescription }}</span>
-      </span>
-    </div>
-
+    <!-- One bounded element that scrolls inside itself, so the whole card always fits the page. -->
+    <!-- Keyed by the request: the next request is a new element, which starts held (useTrustedVisibility). -->
     <div
-      ref="tabRow"
-      class="relative flex flex-wrap gap-1.5 px-3 pt-2.5 pb-1"
+      ref="cardRef"
+      :key="store.pendingQuestion.toolUseId"
+      class="max-h-[70dvh] overflow-x-hidden overflow-y-auto rounded-14 border border-[color-mix(in_srgb,var(--d-accent-fill)_45%,var(--d-border))] bg-(--d-card) text-(--d-text) [--attention-ring:var(--d-accent-fill)]"
+      role="region"
+      :aria-label="t('question.ariaLabel')"
+      data-dock-prompt
+      data-trusted
+      data-testid="question-card"
     >
-      <SlidingIndicator
-        :box="tabBox"
-        radius="pill"
-        :animate="tabAnimate"
-        class="text-(--d-accent)"
-      />
-      <button
-        v-for="tab in tabHeaders"
-        :key="tab.index"
-        type="button"
-        data-question-tab
-        class="relative rounded-full border px-2.5 py-0.75 text-xs font-medium transition-colors duration-200"
-        :class="[
-          store.currentTabIndex === tab.index
-            ? 'border-transparent text-(--d-on-accent)'
-            : tab.isComplete
-              ? 'border-[color-mix(in_srgb,var(--d-accent)_45%,var(--d-border))] text-(--d-text) hover:bg-(--d-hover)'
-              : 'border-(--d-border) text-(--d-muted) hover:bg-(--d-hover)'
-        ]"
-        :aria-current="store.currentTabIndex === tab.index ? 'step' : undefined"
-        @click="handleTabClick(tab.index)"
-      >
-        {{ tab.label }}
-      </button>
-    </div>
-
-    <template v-if="!isOnSubmitTab && currentQuestion">
-      <div class="px-3.5 pt-1.5 pb-1 text-13 font-medium text-pretty">
-        {{ currentQuestion.question }}
-      </div>
-
-      <div
-        v-if="!isCustomInputMode && hasDesignPreviews && store.pendingQuestion"
-        data-testid="question-design-grid"
-      >
-        <QuestionDesignGrid
-          :key="currentQuestion.question"
-          :tool-use-id="store.pendingQuestion.toolUseId"
-          :question-index="store.currentTabIndex"
-          :question="currentQuestion"
-          :selected="currentSelections"
-          @choose="handleDesignChoose"
-          @toggle="handleOptionSelect"
-          @confirm="handleNextOrSubmit"
-        />
-        <div class="flex flex-wrap items-center gap-2 px-3 pt-0.5 pb-2.5">
-          <button
-            type="button"
-            class="flex min-w-0 flex-1 items-center gap-2 rounded-9 border border-(--d-border) bg-(--d-input) px-2.5 py-1.5 text-left transition-colors outline-none hover:border-(--d-border2) focus-visible:border-(--d-accent)"
-            data-testid="question-design-other"
-            @click="handleCustomInputClick"
-          >
-            <Check
-              v-if="hasCustomInput"
-              class="size-3.25 flex-none text-(--d-accent)"
-              aria-hidden="true"
-            />
-            <MessageSquare
-              v-else
-              class="size-3.25 flex-none text-(--d-faint)"
-              aria-hidden="true"
-            />
-            <span
-              class="min-w-0 flex-1 truncate text-12.5"
-              :class="hasCustomInput ? 'text-(--d-text)' : 'text-(--d-faint)'"
-            >{{ hasCustomInput ? customInputPreview : t('question.customPlaceholder') }}</span>
-            <span class="flex-none text-11 text-(--d-faint)">{{ t('question.otherLabel') }}</span>
-          </button>
-          <button
-            type="button"
-            class="d-press flex h-7.5 flex-none items-center gap-1.5 rounded-9 bg-(--d-accent) px-3.5 text-12.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110 disabled:cursor-default disabled:opacity-40 disabled:hover:brightness-100"
-            :disabled="!hasAnswerFor(currentQuestion)"
-            data-testid="question-design-next"
-            @click="handleNextOrSubmit"
-          >
-            {{ isLastQuestionTab ? t('question.reviewAnswers') : t('question.nextQuestion') }}
-            <ChevronRight
-              class="size-3.25"
-              aria-hidden="true"
-            />
-          </button>
-        </div>
-      </div>
-
-      <div
-        v-else-if="!isCustomInputMode"
-        class="px-1.5 pt-1 pb-1.5"
-        :class="hasPreviewPane ? '@container/question' : undefined"
-      >
-        <div
-          ref="optionsGridRef"
-          :class="hasPreviewPane ? 'grid gap-1.5 @min-[36rem]/question:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]' : undefined"
-          data-testid="question-options"
-          @pointerover="handleOptionPointer"
-          @pointerleave="setPointerOption(null)"
-          @focusin="handleOptionFocus"
-          @focusout="handleOptionBlur"
+      <div class="flex items-center gap-2.5 border-b border-(--d-border) bg-linear-to-b from-[color-mix(in_srgb,var(--d-accent-fill)_10%,transparent)] to-transparent px-3 py-2">
+        <span
+          class="d-ring [--tone:var(--d-accent-fill)] flex size-6.5 flex-none items-center justify-center rounded-lg bg-(--d-accent-soft) text-(--d-accent)"
+          aria-hidden="true"
         >
-          <!-- Keyed by question, so each question's options mount and take focus as dock prompt options do. -->
-          <ListboxRoot
+          <MessageCircleQuestion class="size-3.5" />
+        </span>
+        <div class="min-w-0 flex-1 font-semibold">
+          {{ t('question.title') }}
+        </div>
+        <span
+          class="flex-none text-11 text-(--d-muted)"
+          aria-live="polite"
+          data-testid="question-waiting"
+        >
+          <Transition name="t-fade">
+            <span v-if="store.waitingCount > 0">{{ t('question.moreWaiting', { n: store.waitingCount }, store.waitingCount) }}</span>
+          </Transition>
+        </span>
+        <span
+          v-if="hasAgentDescription"
+          class="flex min-w-0 items-center gap-1.5 truncate rounded-full bg-(--d-accent-soft) px-2 py-0.5 text-11 font-medium text-(--d-accent-text)"
+        >
+          <Bot
+            class="size-3 flex-none"
+            aria-hidden="true"
+          />
+          <span class="truncate">{{ agentDescription }}</span>
+        </span>
+      </div>
+
+      <TrustedCheckingNote
+        overlay
+        class="bottom-0"
+        :shown="explain"
+        :text="t('trusted.checkingVisible')"
+      />
+
+      <div
+        ref="tabRow"
+        class="relative flex flex-wrap gap-1.5 px-3 pt-2.5 pb-1"
+        role="group"
+        :aria-disabled="!isVisible || undefined"
+      >
+        <SlidingIndicator
+          :box="tabBox"
+          radius="pill"
+          :animate="tabAnimate"
+          class="[--tone:var(--d-accent-fill)]"
+        />
+        <button
+          v-for="tab in tabHeaders"
+          :key="tab.index"
+          type="button"
+          data-question-tab
+          class="relative rounded-full border px-2.5 py-0.75 text-xs font-medium transition-colors duration-200"
+          :class="[
+            store.currentTabIndex === tab.index
+              ? 'border-transparent text-(--d-on-accent)'
+              : tab.isComplete
+                ? 'border-[color-mix(in_srgb,var(--d-accent-fill)_45%,var(--d-border))] text-(--d-text) hover:bg-(--d-hover)'
+                : 'border-(--d-border) text-(--d-muted) hover:bg-(--d-hover)'
+          ]"
+          :aria-current="store.currentTabIndex === tab.index ? 'step' : undefined"
+          @click="handleTabClick(tab.index)"
+        >
+          {{ tab.label }}
+        </button>
+      </div>
+
+      <template v-if="!isOnSubmitTab && currentQuestion">
+        <div class="px-3.5 pt-1.5 pb-1 text-13 font-medium text-pretty">
+          {{ currentQuestion.question }}
+        </div>
+
+        <div
+          v-if="!isCustomInputMode && hasDesignPreviews && store.pendingQuestion"
+          role="group"
+          :aria-disabled="!isVisible || undefined"
+          data-testid="question-design-grid"
+        >
+          <QuestionDesignGrid
             :key="currentQuestion.question"
-            class="flex flex-col outline-none"
-            orientation="vertical"
-          >
-            <DockPromptOptions :aria-label="currentQuestion.question">
-              <ListboxItem
-                v-for="(option, index) in currentQuestion.options"
-                :key="option.label"
-                :value="option.label"
-                class="group flex items-center gap-2.5 rounded-9 px-2.5 py-1.25 text-left transition-colors outline-none data-highlighted:bg-(--d-accent-soft) data-highlighted:text-(--d-accent-text)"
-                :data-option-label="option.label"
-                :aria-describedby="option.preview?.kind === 'markdown' ? previewHintId : undefined"
-                @select="handleOptionSelect(option.label)"
-              >
-                <span
-                  class="flex size-5 flex-none items-center justify-center border font-mono text-11 transition-colors"
-                  :class="[
-                    isMultiSelect ? 'rounded-md' : 'rounded-full',
-                    isOptionSelected(option.label)
-                      ? 'border-(--d-accent) bg-(--d-accent) text-(--d-on-accent)'
-                      : 'border-(--d-border2) group-data-highlighted:border-(--d-accent)',
-                  ]"
-                  aria-hidden="true"
-                >
-                  <Check
-                    v-if="isOptionSelected(option.label)"
-                    class="size-3"
-                  />
-                  <template v-else>
-                    {{ index + 1 }}
-                  </template>
-                </span>
-                <span class="min-w-0 flex-1">
-                  <span class="block font-medium">{{ option.label }}</span>
-                  <span
-                    v-if="option.description"
-                    class="block text-xs text-pretty text-(--d-faint) group-data-highlighted:text-(--d-faint-text)"
-                  >
-                    {{ option.description }}
-                  </span>
-                </span>
-                <Eye
-                  v-if="option.preview?.kind === 'markdown'"
-                  class="size-3.25 flex-none transition-colors"
-                  :class="shownPreviewOption?.label === option.label ? 'text-(--d-accent)' : 'text-(--d-faint)'"
-                  aria-hidden="true"
-                />
-              </ListboxItem>
-
-              <ListboxItem
-                value="__custom__"
-                class="mx-1 mt-0.75 flex items-center gap-2 rounded-9 border border-(--d-border) bg-(--d-input) px-2.5 py-1.5 text-left transition-colors outline-none data-highlighted:border-(--d-accent)"
-                @select="handleCustomInputClick"
-              >
-                <Check
-                  v-if="hasCustomInput"
-                  class="size-3.25 flex-none text-(--d-accent)"
-                  aria-hidden="true"
-                />
-                <MessageSquare
-                  v-else
-                  class="size-3.25 flex-none text-(--d-faint)"
-                  aria-hidden="true"
-                />
-                <span
-                  class="min-w-0 flex-1 truncate text-12.5"
-                  :class="hasCustomInput ? 'text-(--d-text)' : 'text-(--d-faint)'"
-                >{{ hasCustomInput ? customInputPreview : t('question.customPlaceholder') }}</span>
-                <span class="flex-none text-11 text-(--d-faint)">{{ t('question.otherLabel') }}</span>
-              </ListboxItem>
-
-              <ListboxItem
-                v-if="isMultiSelect"
-                value="__next__"
-                class="mt-1 flex items-center justify-end gap-1.5 rounded-9 px-2.5 py-1.25 text-12.5 font-semibold text-(--d-accent) transition-colors outline-none data-highlighted:bg-(--d-accent-soft) data-highlighted:text-(--d-accent-text)"
-                @select="handleNextOrSubmit"
-              >
-                {{ isLastQuestionTab ? t('question.reviewAnswers') : t('question.nextQuestion') }}
-                <ChevronRight
-                  class="size-3.25"
-                  aria-hidden="true"
-                />
-              </ListboxItem>
-            </DockPromptOptions>
-          </ListboxRoot>
-
+            :tool-use-id="store.pendingQuestion.toolUseId"
+            :question-index="store.currentTabIndex"
+            :question="currentQuestion"
+            :selected="currentSelections"
+            @choose="handleDesignChoose"
+            @toggle="handleOptionSelect"
+            @confirm="handleNextOrSubmit"
+          />
           <div
-            v-if="shownPreviewOption"
-            ref="previewPaneRef"
-            class="mx-1 flex h-72 min-w-0 flex-col overflow-hidden rounded-10 border border-(--d-border) bg-(--d-code) @min-[36rem]/question:ms-0"
-            data-testid="question-option-preview"
+            class="flex flex-wrap items-center gap-2 px-3 pt-0.5 pb-2.5"
+            role="group"
+            :aria-disabled="!isVisible || undefined"
           >
-            <div class="flex items-center gap-1.5 border-b border-(--d-border) px-2.5 py-1.25 text-11 font-medium text-(--d-muted)">
-              <Eye
-                class="size-3 flex-none"
+            <button
+              type="button"
+              class="flex min-w-0 flex-1 items-center gap-2 rounded-9 border border-(--d-border) bg-(--d-input) px-2.5 py-1.5 text-left transition-colors outline-none hover:border-(--d-border2) focus-visible:border-(--d-accent-fill)"
+              data-testid="question-design-other"
+              @click="handleCustomInputClick"
+            >
+              <Check
+                v-if="hasCustomInput"
+                class="size-3.25 flex-none text-(--d-accent)"
+                aria-hidden="true"
+              />
+              <MessageSquare
+                v-else
+                class="size-3.25 flex-none text-(--d-faint)"
                 aria-hidden="true"
               />
               <span
-                :id="previewTitleId"
-                class="flex-none"
-              >{{ t('question.previewTitle') }}</span>
-              <span
-                :id="previewOptionId"
-                class="ms-auto min-w-0 truncate text-(--d-faint)"
-              >{{ shownPreviewOption.label }}</span>
-            </div>
-            <section
-              :key="shownPreviewOption.label"
-              :aria-labelledby="`${previewTitleId} ${previewOptionId}`"
-              tabindex="0"
-              class="min-h-0 flex-1 animate-[d-swap-in_.2s_var(--ease-out)] overflow-auto px-3 py-1.5 text-xs outline-none focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-inset [&_.markdown-renderer>:first-child]:mt-0! [&_.markdown-renderer>:last-child]:mb-0!"
-              data-testid="question-option-preview-body"
+                class="min-w-0 flex-1 truncate text-12.5"
+                :class="hasCustomInput ? 'text-(--d-text)' : 'text-(--d-faint)'"
+              >{{ hasCustomInput ? customInputPreview : t('question.customPlaceholder') }}</span>
+              <span class="flex-none text-11 text-(--d-faint)">{{ t('question.otherLabel') }}</span>
+            </button>
+            <button
+              type="button"
+              class="d-press flex h-7.5 flex-none items-center gap-1.5 rounded-9 bg-(--d-accent-fill) px-3.5 text-12.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110 disabled:cursor-default disabled:opacity-40 disabled:hover:brightness-100"
+              :disabled="!hasAnswerFor(currentQuestion)"
+              data-testid="question-design-next"
+              @click="handleNextOrSubmit"
             >
-              <MarkdownRenderer
-                :content="shownPreviewOption.preview.content"
-                :allow-remote-images="false"
+              {{ isLastQuestionTab ? t('question.reviewAnswers') : t('question.nextQuestion') }}
+              <ChevronRight
+                class="size-3.25"
+                aria-hidden="true"
               />
-            </section>
+            </button>
           </div>
         </div>
-        <span
-          v-if="hasPreviewPane"
-          :id="previewHintId"
-          class="sr-only"
-        >{{ t('question.previewHint') }}</span>
-      </div>
 
-      <div
-        v-else
-        class="flex flex-col gap-2 px-3 pt-1 pb-3"
-      >
-        <Textarea
-          ref="textareaRef"
-          v-model="customInputValue"
-          class="max-h-32 min-h-20 resize-none rounded-10 border-(--d-border2) bg-(--d-input) text-12.5 focus:border-(--d-accent)"
-          :placeholder="t('question.customTextareaPlaceholder')"
-          @keydown="handleCustomInputKeydown"
-        />
-        <div class="flex justify-end gap-2">
-          <button
-            type="button"
-            class="d-press flex h-7.5 items-center rounded-9 px-3 text-12.5 transition-colors hover:bg-(--d-hover)"
-            @click="handleCustomInputBack"
-          >
-            {{ t('common.back') }}
-          </button>
-          <button
-            type="button"
-            class="d-press flex h-7.5 items-center rounded-9 bg-(--d-accent) px-3.5 text-12.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110"
-            @click="handleCustomInputSave"
-          >
-            {{ t('common.save') }}
-          </button>
-        </div>
-      </div>
-    </template>
-
-    <template v-else-if="isOnSubmitTab">
-      <div class="px-3.5 pt-1.5 pb-2 text-13 font-medium">
-        {{ t('question.reviewHeading') }}
-      </div>
-
-      <div class="flex flex-col gap-2 px-3 pb-3">
         <div
-          v-for="question in store.questions"
-          :key="question.question"
-          class="rounded-10 border border-(--d-border) bg-(--d-bg) px-3 py-2"
+          v-else-if="!isCustomInputMode"
+          class="px-1.5 pt-1 pb-1.5"
+          :class="hasPreviewPane ? '@container/question' : undefined"
         >
-          <div class="mb-1 text-11 font-semibold tracking-[.06em] text-(--d-faint) uppercase">
-            {{ question.header || t('question.questionHeader') }}
-          </div>
-          <div class="max-h-24 overflow-y-auto text-12.5 wrap-break-word whitespace-pre-wrap">
-            {{ getAnswerSummary(question) }}
-          </div>
-          <Textarea
-            class="mt-2 h-8 min-h-8 resize-none rounded-lg border-(--d-border) bg-(--d-input) text-xs"
-            :placeholder="t('question.notesPlaceholder')"
-            :model-value="store.annotationNotes.get(question.question) ?? ''"
-            @update:model-value="(v) => store.setAnnotationNotes(question.question, String(v))"
-          />
-        </div>
-      </div>
+          <div
+            ref="optionsGridRef"
+            :class="hasPreviewPane ? 'grid gap-1.5 @min-[36rem]/question:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]' : undefined"
+            data-testid="question-options"
+            @pointerover="handleOptionPointer"
+            @pointerleave="setPointerOption(null)"
+            @focusin="handleOptionFocus"
+            @focusout="handleOptionBlur"
+          >
+            <!-- Keyed by question, so each question's options mount and take focus as dock prompt options do. -->
+            <ListboxRoot
+              :key="currentQuestion.question"
+              class="flex flex-col outline-none"
+              orientation="vertical"
+            >
+              <DockPromptOptions
+                :aria-label="currentQuestion.question"
+                :aria-disabled="!isVisible || undefined"
+              >
+                <ListboxItem
+                  v-for="(option, index) in currentQuestion.options"
+                  :key="option.label"
+                  :value="option.label"
+                  class="group flex items-center gap-2.5 rounded-9 px-2.5 py-1.25 text-left transition-colors outline-none data-highlighted:bg-(--d-accent-soft) data-highlighted:text-(--d-accent-text)"
+                  :data-option-label="option.label"
+                  :aria-describedby="option.preview?.kind === 'markdown' ? previewHintId : undefined"
+                  @select="handleOptionSelect(option.label)"
+                >
+                  <span
+                    class="flex size-5 flex-none items-center justify-center border font-mono text-11 transition-colors"
+                    :class="[
+                      isMultiSelect ? 'rounded-md' : 'rounded-full',
+                      isOptionSelected(option.label)
+                        ? 'border-(--d-accent-fill) bg-(--d-accent-fill) text-(--d-on-accent)'
+                        : 'border-(--d-border2) group-data-highlighted:border-(--d-accent-fill)',
+                    ]"
+                    aria-hidden="true"
+                  >
+                    <Check
+                      v-if="isOptionSelected(option.label)"
+                      class="size-3"
+                    />
+                    <template v-else>
+                      {{ index + 1 }}
+                    </template>
+                  </span>
+                  <span class="min-w-0 flex-1">
+                    <span class="block font-medium">{{ option.label }}</span>
+                    <span
+                      v-if="option.description"
+                      class="block text-xs text-pretty text-(--d-faint) group-data-highlighted:text-(--d-faint-text)"
+                    >
+                      {{ option.description }}
+                    </span>
+                  </span>
+                  <Eye
+                    v-if="option.preview?.kind === 'markdown'"
+                    class="size-3.25 flex-none transition-colors"
+                    :class="shownPreviewOption?.label === option.label ? 'text-(--d-accent)' : 'text-(--d-faint)'"
+                    aria-hidden="true"
+                  />
+                </ListboxItem>
 
-      <div class="flex justify-end gap-2 border-t border-(--d-border) bg-(--d-panel) px-3.5 py-2.5">
-        <button
-          type="button"
-          class="d-press flex h-7.5 items-center rounded-9 border border-(--d-border2) px-3 text-12.5 transition-colors hover:bg-(--d-hover)"
-          @click="handleCancel"
+                <ListboxItem
+                  value="__custom__"
+                  class="mx-1 mt-0.75 flex items-center gap-2 rounded-9 border border-(--d-border) bg-(--d-input) px-2.5 py-1.5 text-left transition-colors outline-none data-highlighted:border-(--d-accent-fill)"
+                  @select="handleCustomInputClick"
+                >
+                  <Check
+                    v-if="hasCustomInput"
+                    class="size-3.25 flex-none text-(--d-accent)"
+                    aria-hidden="true"
+                  />
+                  <MessageSquare
+                    v-else
+                    class="size-3.25 flex-none text-(--d-faint)"
+                    aria-hidden="true"
+                  />
+                  <span
+                    class="min-w-0 flex-1 truncate text-12.5"
+                    :class="hasCustomInput ? 'text-(--d-text)' : 'text-(--d-faint)'"
+                  >{{ hasCustomInput ? customInputPreview : t('question.customPlaceholder') }}</span>
+                  <span class="flex-none text-11 text-(--d-faint)">{{ t('question.otherLabel') }}</span>
+                </ListboxItem>
+
+                <ListboxItem
+                  v-if="isMultiSelect"
+                  value="__next__"
+                  class="mt-1 flex items-center justify-end gap-1.5 rounded-9 px-2.5 py-1.25 text-12.5 font-semibold text-(--d-accent) transition-colors outline-none data-highlighted:bg-(--d-accent-soft) data-highlighted:text-(--d-accent-text)"
+                  @select="handleNextOrSubmit"
+                >
+                  {{ isLastQuestionTab ? t('question.reviewAnswers') : t('question.nextQuestion') }}
+                  <ChevronRight
+                    class="size-3.25"
+                    aria-hidden="true"
+                  />
+                </ListboxItem>
+              </DockPromptOptions>
+            </ListboxRoot>
+
+            <div
+              v-if="shownPreviewOption"
+              ref="previewPaneRef"
+              class="mx-1 flex h-72 min-w-0 flex-col overflow-hidden rounded-10 border border-(--d-border) bg-(--d-code) @min-[36rem]/question:ms-0"
+              data-testid="question-option-preview"
+            >
+              <div class="flex items-center gap-1.5 border-b border-(--d-border) px-2.5 py-1.25 text-11 font-medium text-(--d-muted)">
+                <Eye
+                  class="size-3 flex-none"
+                  aria-hidden="true"
+                />
+                <span
+                  :id="previewTitleId"
+                  class="flex-none"
+                >{{ t('question.previewTitle') }}</span>
+                <span
+                  :id="previewOptionId"
+                  class="ms-auto min-w-0 truncate text-(--d-faint)"
+                >{{ shownPreviewOption.label }}</span>
+              </div>
+              <section
+                :key="shownPreviewOption.label"
+                :aria-labelledby="`${previewTitleId} ${previewOptionId}`"
+                tabindex="0"
+                class="min-h-0 flex-1 d-swap-in overflow-auto px-3 py-1.5 text-xs outline-none focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-inset [&_.markdown-renderer>:first-child]:mt-0! [&_.markdown-renderer>:last-child]:mb-0!"
+                data-testid="question-option-preview-body"
+              >
+                <MarkdownRenderer
+                  :content="shownPreviewOption.preview.content"
+                  :allow-remote-images="false"
+                />
+              </section>
+            </div>
+          </div>
+          <span
+            v-if="hasPreviewPane"
+            :id="previewHintId"
+            class="sr-only"
+          >{{ t('question.previewHint') }}</span>
+        </div>
+
+        <div
+          v-else
+          class="flex flex-col gap-2 px-3 pt-1 pb-3"
         >
-          {{ t('common.cancel') }}
-        </button>
-        <button
-          type="button"
-          class="d-press flex h-7.5 items-center gap-1.5 rounded-9 bg-(--d-accent) px-3.5 text-12.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110 disabled:cursor-default disabled:opacity-40 disabled:hover:brightness-100"
-          :disabled="!allAnswered"
-          @click="handleSubmit"
-        >
-          <SendHorizontal
-            class="size-3.25"
-            aria-hidden="true"
+          <Textarea
+            ref="textareaRef"
+            v-model="customInputValue"
+            class="max-h-32 min-h-20 resize-none rounded-10 border-(--d-border2) bg-(--d-input) text-12.5 focus:border-(--d-accent-fill)"
+            :placeholder="t('question.customTextareaPlaceholder')"
+            @keydown="handleCustomInputKeydown"
           />
-          {{ t('common.submit') }}
-        </button>
-      </div>
-    </template>
+          <div
+            class="flex justify-end gap-2"
+            role="group"
+            :aria-disabled="!isVisible || undefined"
+          >
+            <button
+              type="button"
+              class="d-press flex h-7.5 items-center rounded-9 px-3 text-12.5 transition-colors hover:bg-(--d-hover)"
+              @click="handleCustomInputBack"
+            >
+              {{ t('common.back') }}
+            </button>
+            <button
+              type="button"
+              class="d-press flex h-7.5 items-center rounded-9 bg-(--d-accent-fill) px-3.5 text-12.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110"
+              @click="handleCustomInputSave"
+            >
+              {{ t('common.save') }}
+            </button>
+          </div>
+        </div>
+      </template>
+
+      <template v-else-if="isOnSubmitTab">
+        <div class="px-3.5 pt-1.5 pb-2 text-13 font-medium">
+          {{ t('question.reviewHeading') }}
+        </div>
+
+        <div class="flex flex-col gap-2 px-3 pb-3">
+          <div
+            v-for="question in store.questions"
+            :key="question.question"
+            class="rounded-10 border border-(--d-border) bg-(--d-bg) px-3 py-2"
+          >
+            <div class="mb-1 text-11 font-semibold tracking-[.06em] text-(--d-faint) uppercase">
+              {{ question.header || t('question.questionHeader') }}
+            </div>
+            <div class="max-h-24 overflow-y-auto text-12.5 wrap-break-word whitespace-pre-wrap">
+              {{ getAnswerSummary(question) }}
+            </div>
+            <Textarea
+              class="mt-2 h-8 min-h-8 resize-none rounded-lg border-(--d-border) bg-(--d-input) text-xs"
+              :placeholder="t('question.notesPlaceholder')"
+              :model-value="store.annotationNotes.get(question.question) ?? ''"
+              @update:model-value="(v) => store.setAnnotationNotes(question.question, String(v))"
+            />
+          </div>
+        </div>
+
+        <div
+          class="sticky bottom-0 flex justify-end gap-2 border-t border-(--d-border) bg-(--d-card) bg-linear-to-b from-(--d-panel) to-(--d-panel) px-3.5 py-2.5"
+          role="group"
+          :aria-disabled="!isVisible || undefined"
+        >
+          <button
+            type="button"
+            class="d-press flex h-7.5 items-center rounded-9 border border-(--d-border2) px-3 text-12.5 transition-colors hover:bg-(--d-hover)"
+            @click="handleCancel"
+          >
+            {{ t('common.cancel') }}
+          </button>
+          <button
+            type="button"
+            class="d-press flex h-7.5 items-center gap-1.5 rounded-9 bg-(--d-accent-fill) px-3.5 text-12.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110 disabled:cursor-default disabled:opacity-40 disabled:hover:brightness-100"
+            :disabled="!allAnswered"
+            @click="handleSubmit"
+          >
+            <SendHorizontal
+              class="size-3.25"
+              aria-hidden="true"
+            />
+            {{ t('common.submit') }}
+          </button>
+        </div>
+      </template>
+    </div>
   </div>
 </template>

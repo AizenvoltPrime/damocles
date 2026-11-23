@@ -94,7 +94,7 @@ function onKeydown(event: KeyboardEvent): void {
       data-testid="client-certificate-list"
       :aria-label="t('clientCertificate.listLabel', { site: request.site })"
       :aria-activedescendant="optionId(active)"
-      class="flex max-h-72 flex-col gap-0.5 overflow-y-auto overscroll-contain rounded-9 border border-(--d-border) p-1 outline-none focus-visible:ring-1 focus-visible:ring-(--d-accent)"
+      class="flex max-h-72 flex-col gap-0.5 overflow-y-auto overscroll-contain rounded-9 border border-(--d-border) p-1 outline-none focus-visible:ring-1 focus-visible:ring-(--d-accent-fill)"
       @keydown="onKeydown"
     >
       <li
@@ -135,7 +135,7 @@ function onKeydown(event: KeyboardEvent): void {
             {{ validity(row) }}
             <span
               v-if="standing(row)"
-              class="rounded-5 bg-(--d-warning)/12 px-1.5 text-(--d-warning-text)"
+              class="rounded-5 bg-(--d-warning-fill)/12 px-1.5 text-(--d-warning-text)"
             >{{ standing(row) }}</span>
           </span>
           <span

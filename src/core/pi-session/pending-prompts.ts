@@ -87,7 +87,11 @@ function approvalSummary(request: PermissionRequest, cwd: string): LocalizedText
     const firstLine = command.split(/\r?\n/).map((line) => line.trim()).find((line) => line !== '');
     return firstLine === undefined ? undefined : l('run `{0}`', oneLine(firstLine, PROMPT_SUMMARY_MAX_CHARS) ?? '');
   }
-  if (request.toolName === TOOL_GENERATE_IMAGE) return file === undefined ? undefined : l('generate image {0}', file);
+  if (request.toolName === TOOL_GENERATE_IMAGE) {
+    // only a theme's image is asked for with no path
+    if (request.filePath === undefined) return l('generate an image for a theme');
+    return file === undefined ? undefined : l('generate image {0}', file);
+  }
   return l('use {0}', oneLine(request.toolName, PROMPT_SUMMARY_MAX_CHARS) ?? '');
 }
 
@@ -116,6 +120,18 @@ function summaryOf(request: ExtensionToWebviewMessage, cwd: string): LocalizedTe
       return asked(request.title);
     case 'requestDesignApproval':
       return request.hasParent ? l('send the design to its main chat') : l('make a version of the design');
+    case 'requestThemeChange': {
+      if (request.action === 'schedule') return l('change the theme schedule');
+      if (request.action === 'undo') return l('undo its theme change');
+      const name = request.themeName === undefined ? undefined : oneLine(request.themeName, PROMPT_SUMMARY_MAX_CHARS);
+      return name === undefined ? l('change the theme') : l('change the theme to {0}', name);
+    }
+    case 'requestThemeScreenshot':
+      return l('send a screenshot of the window');
+    case 'requestThemeInstall': {
+      const name = oneLine(request.preview.about.name, PROMPT_SUMMARY_MAX_CHARS);
+      return name === undefined ? l('install a theme') : l('install the theme {0}', name);
+    }
     default:
       return undefined;
   }
@@ -150,8 +166,8 @@ function guardedSummaryOf(id: string, request: ExtensionToWebviewMessage, cwd: s
 /**
  * Describes the raised prompts: each with the agent that raised it and a one-line summary for a
  * notification. The summaries hold file paths, commands and model text, so they are never logged. A
- * prompt's message never changes while it is pending, so each is summarized once and its entry is
- * dropped on the first call it is no longer raised in.
+ * prompt is summarized again only when its request object changes (a theme card's update replaces it),
+ * and its entry is dropped on the first call it is no longer raised in.
  */
 export function pendingPromptDescriber(cwd: string): (raised: readonly RaisedPrompt[]) => PendingPrompt[] {
   const summaries = new Map<string, { readonly request: ExtensionToWebviewMessage; readonly summary: LocalizedText | undefined }>();

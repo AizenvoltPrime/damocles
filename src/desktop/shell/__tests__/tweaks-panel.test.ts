@@ -230,7 +230,7 @@ describe('Tweaks in the preview tab', () => {
   it('zooms the column in, and under reduced motion it appears with no animation', async () => {
     const animated = mountTab(designTab(), true).wrapper;
     await animated.get('[data-testid="design-preview-tweaks"]').trigger('click');
-    expect(animated.get('[data-testid="design-tweaks"]').classes()).toContain('animate-[d-zoom_.26s_var(--ease-out)]');
+    expect(animated.get('[data-testid="design-tweaks"]').classes()).toContain('d-zoom-in');
     animated.unmount();
     mounted.splice(mounted.indexOf(animated), 1);
     dropTweaksSession('d1');
@@ -238,7 +238,7 @@ describe('Tweaks in the preview tab', () => {
     document.documentElement.setAttribute('data-reduced-motion', '');
     const still = mountTab(designTab(), true).wrapper;
     await still.get('[data-testid="design-preview-tweaks"]').trigger('click');
-    expect(still.get('[data-testid="design-tweaks"]').classes().some((name) => name.startsWith('animate-'))).toBe(false);
+    expect(still.get('[data-testid="design-tweaks"]').classes().some((name) => name.startsWith('d-zoom'))).toBe(false);
   });
 
   it('pauses the column while a freeze captures, so no tweak lands in the capture', async () => {

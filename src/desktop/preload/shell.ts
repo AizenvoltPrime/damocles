@@ -258,7 +258,7 @@ const scm: DamoclesScmApi = {
   commitDetails: (request) => ipcRenderer.invoke(SCM_CHANNELS.commitDetails, { repoId: request.repoId, hash: request.hash }) as Promise<ScmCommitDetailsResult>,
 };
 
-// The shell HTML carries the theme from its creation; this keeps it current after a theme change.
+// The shell HTML carries the tokens from its creation; main sends the theme once each document loads (custom CSS arrives only here) and after each change.
 ipcRenderer.on(SHELL_CHANNELS.theme, (_event, theme: PanelTheme) => applyHostTheme(theme));
 
 const review: DamoclesReviewApi = {
@@ -327,6 +327,7 @@ const api: DamoclesShellApi = {
   locateProject: (key) => ipcRenderer.invoke(SHELL_CHANNELS.locateProject, key) as Promise<void>,
   retryRelocation: (key) => ipcRenderer.invoke(SHELL_CHANNELS.retryRelocation, key) as Promise<void>,
   abandonRelocation: (key) => ipcRenderer.invoke(SHELL_CHANNELS.abandonRelocation, key) as Promise<void>,
+  projectLook: (key) => ipcRenderer.invoke(SHELL_CHANNELS.projectLook, key) as ReturnType<DamoclesShellApi['projectLook']>,
   selectProject: (key) => ipcRenderer.invoke(SHELL_CHANNELS.selectProject, key) as Promise<void>,
   grantTrust: (key) => ipcRenderer.invoke(SHELL_CHANNELS.grantTrust, key) as Promise<void>,
   listChats: (projectKey, stateRevision) => ipcRenderer.invoke(SHELL_CHANNELS.chatsList, projectKey, stateRevision) as Promise<ShellChatList | null>,
@@ -373,6 +374,20 @@ const api: DamoclesShellApi = {
   reportContentBounds: (bounds: ContentBounds) => {
     ipcRenderer.send(SHELL_CHANNELS.contentBounds, { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height });
   },
+  reportThemeDockBounds: (bounds) => {
+    ipcRenderer.send(SHELL_CHANNELS.themeDockBounds, bounds === null ? null : { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height });
+  },
+  reportPageMotion: (motion) => {
+    ipcRenderer.send(SHELL_CHANNELS.pageMotion, { visible: motion.visible === true, reducedMotion: motion.reducedMotion === true });
+  },
+  reportTimeZone: (zone) => {
+    ipcRenderer.send(SHELL_CHANNELS.timeZone, String(zone));
+  },
+  endThemeDockPeek: () => ipcRenderer.invoke(SHELL_CHANNELS.themeDockPeek, false) as Promise<void>,
+  useMyTheme: () => ipcRenderer.invoke(SHELL_CHANNELS.useMyTheme, {}) as Promise<void>,
+  keepThemeChanges: () => ipcRenderer.invoke(SHELL_CHANNELS.keepThemeChanges, {}) as Promise<void>,
+  revertThemeChanges: () => ipcRenderer.invoke(SHELL_CHANNELS.revertThemeChanges, {}) as Promise<void>,
+  stopShowingProposal: () => ipcRenderer.invoke(SHELL_CHANNELS.stopShowingProposal, {}) as Promise<void>,
   reportSidebarLayout: (layout) => {
     ipcRenderer.send(SHELL_CHANNELS.sidebarLayout, { sidebarWidth: layout.sidebarWidth, sections: layout.sections, sectionOrder: layout.sectionOrder, search: layout.search, scm: layout.scm, repositories: layout.repositories, graph: layout.graph });
   },

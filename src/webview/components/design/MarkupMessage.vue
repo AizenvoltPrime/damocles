@@ -64,12 +64,12 @@ function open(file: string): void {
     :aria-label="t('design.markup.card', { id: feedbackId })"
     data-testid="markup-message"
     :data-feedback-id="feedbackId"
-    class="@container w-lg max-w-full overflow-hidden rounded-lg border border-[color-mix(in_srgb,var(--d-design)_35%,var(--d-border))] bg-(--d-card)"
+    class="@container w-lg max-w-full overflow-hidden rounded-lg border border-[color-mix(in_srgb,var(--d-design-fill)_35%,var(--d-border))] bg-(--d-card)"
   >
     <div class="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2">
       <span
         aria-hidden="true"
-        class="flex size-5 flex-none items-center justify-center rounded-5 bg-[color-mix(in_srgb,var(--d-design)_15%,transparent)] text-(--d-design-text)"
+        class="flex size-5 flex-none items-center justify-center rounded-5 bg-[color-mix(in_srgb,var(--d-design-fill)_15%,transparent)] text-(--d-design-text)"
       >
         <PencilLine class="size-3" />
       </span>
@@ -87,7 +87,7 @@ function open(file: string): void {
           :disabled="!designId"
           data-testid="markup-message-file"
           :data-file="entry.file"
-          class="h-6 gap-1 rounded-6 px-1.5 font-mono text-11 text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 [&_svg]:size-3"
+          class="h-6 gap-1 rounded-6 px-1.5 font-mono text-11 text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 [&_svg]:size-3"
           @click="open(entry.file)"
         >
           <component
@@ -114,7 +114,7 @@ function open(file: string): void {
       type="button"
       variant="ghost"
       data-testid="markup-message-image"
-      class="block h-auto w-full cursor-zoom-in rounded-none border-y border-(--d-border) bg-(--d-bg) p-0 hover:bg-(--d-bg) focus-visible:ring-2 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0"
+      class="block h-auto w-full cursor-zoom-in rounded-none border-y border-(--d-border) bg-(--d-bg) p-0 hover:bg-(--d-bg) focus-visible:ring-2 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0"
       :title="t('imageThumbnail.clickToPreview')"
       @click="emit('openLightbox', image)"
     >
@@ -130,7 +130,7 @@ function open(file: string): void {
       tabindex="0"
       :aria-label="t('design.markup.marks', { id: feedbackId })"
       data-testid="markup-message-marks"
-      class="flex max-h-48 flex-col gap-1.5 overflow-y-auto px-3 py-2 text-12 outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--d-accent)"
+      class="flex max-h-48 flex-col gap-1.5 overflow-y-auto px-3 py-2 text-12 outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--d-accent-fill)"
     >
       <li
         v-for="(mark, index) in marks"
@@ -142,7 +142,7 @@ function open(file: string): void {
         <template v-if="mark.type === 'pin'">
           <span
             class="flex size-4.5 flex-none items-center justify-center rounded-full text-10 font-semibold tabular-nums"
-            :class="mark.kind === 'change' ? 'bg-(--d-design) text-(--d-on-design)' : 'bg-(--d-bg) text-(--d-design-text) shadow-[inset_0_0_0_1.5px_var(--d-design)]'"
+            :class="mark.kind === 'change' ? 'bg-(--d-design-fill) text-(--d-on-design)' : 'bg-(--d-bg) text-(--d-design-text) shadow-[inset_0_0_0_1.5px_var(--d-design-fill)]'"
           ><span aria-hidden="true">{{ mark.n }}</span><span class="sr-only">{{ t(mark.kind === 'change' ? 'design.markup.pinChange' : 'design.markup.pinNote', { n: mark.n }) }}</span></span>
           <span class="min-w-0 wrap-break-word text-(--d-text)">
             <span

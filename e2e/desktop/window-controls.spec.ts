@@ -1,5 +1,5 @@
 import { activeChat, expect, test } from './support/fixtures';
-import { shellPage, shellState } from './support/shell';
+import { onMainWindow, shellPage, shellState } from './support/shell';
 import { chatInput } from './support/ui';
 
 test('the title bar draws the window controls off macOS, and maximize toggles to restore and back', async ({ launch }) => {
@@ -12,7 +12,7 @@ test('the title bar draws the window controls off macOS, and maximize toggles to
 
   await maximize.click();
   await expect.poll(async () => (await shellState(app)).windowState).toBe('maximized');
-  expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.isMaximized())).toBe(true);
+  expect(await onMainWindow(app, (win) => win.isMaximized())).toBe(true);
   await expect(maximize).toHaveAttribute('aria-label', 'Restore');
 
   await maximize.click();

@@ -17,24 +17,24 @@ const look = computed(() => fileIconLook(props.path, props.directory, props.open
     data-testid="file-icon-link"
     :data-broken="link === 'broken' || undefined"
   >
+    <!-- The icon's corner under the badge is masked out, so whatever is behind the row shows there: a tint, a theme's wallpaper. -->
     <img
       v-if="'src' in look"
       :src="look.src"
       alt=""
       draggable="false"
-      class="size-full"
+      class="size-full mask-[linear-gradient(black,black),linear-gradient(black,black)] mask-position-[0_0,0_100%] mask-[100%_100%,--spacing(2)_--spacing(2)] mask-exclude mask-no-repeat"
     >
     <component
       :is="look.icon"
       v-else
       aria-hidden="true"
-      class="size-full"
+      class="size-full mask-[linear-gradient(black,black),linear-gradient(black,black)] mask-position-[0_0,0_100%] mask-[100%_100%,--spacing(2)_--spacing(2)] mask-exclude mask-no-repeat"
       :style="{ color: look.color }"
     />
-    <!-- Hides the icon's corner in the row's colour: its --row-bg, which may be translucent, over the panel the row sits on. -->
     <span
       aria-hidden="true"
-      class="absolute -bottom-0.5 -left-0.5 flex size-2.25 items-center justify-center rounded-xs bg-(--d-panel) bg-[linear-gradient(var(--row-bg),var(--row-bg))]"
+      class="absolute -bottom-0.5 -left-0.5 flex size-2.25 items-center justify-center"
       :class="link === 'broken' ? 'text-(--d-danger-text)' : 'text-(--d-text)'"
     >
       <ArrowUpRight

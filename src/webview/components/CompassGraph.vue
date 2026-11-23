@@ -566,7 +566,7 @@ function handleFitToView(): void {
     <div class="flex flex-col h-full">
       <div
         v-if="store.hasBlastRadius"
-        class="flex shrink-0 items-center justify-between border-b border-(--d-border) bg-[color-mix(in_srgb,var(--d-danger)_8%,transparent)] px-4 py-2 text-xs text-(--d-danger-text)"
+        class="flex shrink-0 items-center justify-between border-b border-(--d-border) bg-[color-mix(in_srgb,var(--d-danger-fill)_8%,transparent)] px-4 py-2 text-xs text-(--d-danger-text)"
       >
         <span>{{ t('compass.graph.blastRadiusActive', { count: store.blastRadius?.total_impacted ?? 0 }) }}</span>
         <button

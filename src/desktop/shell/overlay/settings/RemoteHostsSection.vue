@@ -183,11 +183,12 @@ let pickerEscaped = false;
 let pickerLeftOutside = false;
 const pickerTransparent = computed(() => pickerDraft.value !== undefined && hexColorParts(pickerDraft.value).alpha === 0);
 
-// None starts from the first tone, and a tone from its palette value in this page's theme (safety-colors.test.ts).
+// None starts from the first tone, and a tone from its built-in safety value of the shown kind, whatever the theme
+// (safety-colors.test.ts).
 function startColor(entry: RemoteHostEntry): HexColor {
   const color = shown(entry, 'color') ?? HOST_TONES[0];
   if (!isHostTone(color)) return color;
-  const start = canonicalHexColor(THEME_PALETTES[hostAppearance().kind][`--d-${color}`] ?? '');
+  const start = canonicalHexColor(THEME_PALETTES[hostAppearance().kind][`--d-safety-${color}`] ?? '');
   if (!start) throw new Error(`The ${color} tone is not a hex color in the palette`);
   return start;
 }
@@ -233,9 +234,9 @@ function onPickerCloseFocus(event: Event): void {
   customSwatch.value?.focus();
 }
 
-const areaValueText = (saturation: number, brightness: number): string => t('remoteHosts.picker.areaValue', { saturation, brightness });
-const hueValueText = (degrees: number): string => t('remoteHosts.picker.hueValue', degrees);
-const opacityValueText = (percent: number): string => t('remoteHosts.picker.opacityValue', { percent });
+const areaValueText = (saturation: number, brightness: number): string => t('colorPicker.areaValue', { saturation, brightness });
+const hueValueText = (degrees: number): string => t('colorPicker.hueValue', degrees);
+const opacityValueText = (percent: number): string => t('colorPicker.opacityValue', { percent });
 
 // Name: saved on Enter and when the field loses focus, through main's validator.
 const nameDraft = ref('');
@@ -461,8 +462,8 @@ watch(() => host.value?.hostId, () => {
         :data-host-id="entry.hostId"
         :aria-checked="entry.hostId === host?.hostId"
         :tabindex="entry.hostId === host?.hostId ? 0 : -1"
-        class="flex h-7 max-w-40 items-center gap-1.5 rounded-full border px-2.5 text-12 font-medium transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent)"
-        :class="entry.hostId === host?.hostId ? 'border-(--d-accent) bg-(--d-accent-soft) text-(--d-text)' : 'border-(--d-border2) text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text)'"
+        class="flex h-7 max-w-40 items-center gap-1.5 rounded-full border px-2.5 text-12 font-medium transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent-fill)"
+        :class="entry.hostId === host?.hostId ? 'border-(--d-accent-fill) bg-(--d-accent-soft) text-(--d-text)' : 'border-(--d-border2) text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text)'"
         @click="selectedId = entry.hostId"
         @keydown="moveRadio($event, entries.length, index, pickHost)"
       >
@@ -642,7 +643,7 @@ watch(() => host.value?.hostId, () => {
           :aria-label="t(`remoteHosts.color.${tone ?? 'none'}`)"
           :title="t(`remoteHosts.color.${tone ?? 'none'}`)"
           :tabindex="index === colorIndex(host) ? 0 : -1"
-          class="grid size-5.5 place-items-center rounded-full transition-transform duration-150 hover:scale-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent)"
+          class="grid size-5.5 place-items-center rounded-full transition-transform duration-150 hover:scale-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent-fill)"
           :class="tone ? [hostColorLook(tone).class, 'bg-(--tone) text-(--tone-on)'] : 'border border-dashed border-(--d-border2) text-(--d-muted)'"
           @click="set(host, { key: 'color', value: tone })"
           @keydown="moveRadio($event, CUSTOM + 1, index, (next) => pickColor(host!, next))"
@@ -650,7 +651,7 @@ watch(() => host.value?.hostId, () => {
           <Check
             v-if="index === colorIndex(host) && tone"
             aria-hidden="true"
-            class="size-3 animate-[d-icon-in_.25s_var(--ease-spring)]"
+            class="size-3 d-icon-in"
           />
           <Ban
             v-else-if="!tone"
@@ -674,7 +675,7 @@ watch(() => host.value?.hostId, () => {
               :aria-describedby="customValue ? `${customHintId}-value ${customHintId}-opens` : `${customHintId}-opens`"
               :title="customValue ? t('remoteHosts.color.customTitle', { value: customValue }) : t('remoteHosts.color.custom')"
               :tabindex="colorIndex(host) === CUSTOM ? 0 : -1"
-              class="grid size-5.5 place-items-center rounded-full transition-transform duration-150 hover:scale-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent)"
+              class="grid size-5.5 place-items-center rounded-full transition-transform duration-150 hover:scale-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent-fill)"
               :class="customLook ? [customLook.class, 'bg-(--tone) text-(--tone-on) ring-1 ring-(--d-border2) ring-inset [--tone-surface:var(--d-bg)]'] : 'border border-dashed border-(--d-border2) text-(--d-muted)'"
               :style="customLook?.style"
               @click="pickerOpen ? closePicker() : openPicker(host!)"
@@ -683,7 +684,7 @@ watch(() => host.value?.hostId, () => {
               <Check
                 v-if="customLook"
                 aria-hidden="true"
-                class="size-3 animate-[d-icon-in_.25s_var(--ease-spring)]"
+                class="size-3 d-icon-in"
               />
               <Pipette
                 v-else
@@ -704,12 +705,12 @@ watch(() => host.value?.hostId, () => {
             <ColorPicker
               v-if="pickerDraft"
               v-model="pickerDraft"
-              :area-label="t('remoteHosts.picker.area')"
-              :area-thumb-label="t('remoteHosts.picker.areaThumb')"
-              :hue-label="t('remoteHosts.picker.hue')"
-              :opacity-label="t('remoteHosts.picker.opacity')"
-              :hex-label="t('remoteHosts.picker.hex')"
-              :preview-label="t('remoteHosts.picker.preview')"
+              :area-label="t('colorPicker.area')"
+              :area-thumb-label="t('colorPicker.areaThumb')"
+              :hue-label="t('colorPicker.hue')"
+              :opacity-label="t('colorPicker.opacity')"
+              :hex-label="t('colorPicker.hex')"
+              :preview-label="t('colorPicker.preview')"
               :area-value-text="areaValueText"
               :hue-value-text="hueValueText"
               :opacity-value-text="opacityValueText"
@@ -723,7 +724,7 @@ watch(() => host.value?.hostId, () => {
               <span
                 v-if="pickerTransparent"
                 data-testid="host-color-transparent"
-                class="block animate-[d-fade_.2s_var(--ease-out)] pt-2.5"
+                class="block d-fade-in pt-2.5"
               >{{ t('remoteHosts.picker.transparent') }}</span>
             </p>
           </PopoverContent>

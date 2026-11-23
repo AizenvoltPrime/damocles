@@ -118,6 +118,13 @@ jobs:
           sudo chown root:root node_modules/electron/dist/chrome-sandbox
           sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
 
+      # The community store's CI runs this validator from a checkout, so its exit codes and verdicts are checked here.
+      - name: Theme validator on its fixtures
+        timeout-minutes: 10
+        run: |
+          npm run build:theme-validator
+          xvfb-run -a node scripts/theme-validator-smoke.ts
+
       # test:desktop builds the webview and the desktop app itself; minimizing needs a window manager.
       - name: Loopback end-to-end specs
         timeout-minutes: 40

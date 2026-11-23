@@ -18,12 +18,12 @@ const forwardedProps = useForwardProps(delegatedProps)
   <RadioGroupItem
     v-bind="definedProps(forwardedProps)"
     :class="cn(
-      'peer aspect-square size-4 shrink-0 cursor-pointer rounded-full border border-(--d-border2) text-(--d-accent) transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--d-accent) disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-(--d-accent)',
+      'peer aspect-square size-4 shrink-0 cursor-pointer rounded-full border border-(--d-border2) transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--d-accent-fill) disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-(--d-accent-fill)',
       props.class,
     )"
   >
     <RadioGroupIndicator class="flex items-center justify-center">
-      <Circle class="size-2 fill-current text-current" />
+      <Circle class="size-2 fill-(--d-accent-fill) stroke-(--d-accent-fill)" />
     </RadioGroupIndicator>
   </RadioGroupItem>
 </template>

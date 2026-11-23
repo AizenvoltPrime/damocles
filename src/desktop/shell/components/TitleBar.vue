@@ -12,6 +12,7 @@ import UpdatePill from './UpdatePill.vue';
 import WindowControls from './WindowControls.vue';
 import { ariaKeyshortcuts } from '../overlay/quick-pick';
 import { hostColorDataTone, hostColorLook } from '@shared/host-colors';
+import { characterState } from '@shared/themes/characters';
 
 const props = defineProps<{ api: DamoclesShellApi; state: ShellState }>();
 const { t } = useI18n();
@@ -109,125 +110,133 @@ async function openCenter(): Promise<void> {
 <template>
   <header
     data-testid="title-bar"
-    class="title-bar relative flex h-10 shrink-0 items-center border-b border-(--d-border) bg-(--d-panel)"
+    data-wallpaper-panel="titlebar"
+    class="title-bar relative flex h-10 shrink-0 items-center border-b border-(--d-border) bg-(--d-pane-titlebar)"
     :class="state.platform === 'darwin' ? 'title-bar-darwin' : ''"
   >
-    <!-- keyed by host, so a selection change cross-fades the stripe; a recolor eases its color in place -->
-    <Transition
-      appear
-      enter-active-class="animate-[d-fade_.3s_var(--ease-out)]"
-      leave-active-class="animate-[o-fade-out_.3s_ease-in_both]"
+    <!-- A trusted root never fades (its opacity is pinned), so the stripe shows at once and eases only its color, between hosts too. -->
+    <div
+      v-if="stripe"
+      aria-hidden="true"
+      data-testid="title-bar-stripe"
+      data-trusted
+      :data-tone="hostColorDataTone(stripe.color)"
+      class="pointer-events-none absolute inset-x-0 top-0 h-0.5 bg-(--tone) transition-[background-color] duration-300 ease-out"
+      :class="stripe.look.class"
+      :style="stripe.look.style"
+    />
+    <!-- The brand and the breadcrumb are titlebar scope roots, each inside an unscoped box that clips it to the bar and bounds
+         its width, so theme padding or margin never pushes the host chip or the window controls out of the window, nor paints over
+         the banners below. The brand's box pads 0.25rem so the button's focus ring stays inside the clip, and it is the box that is
+         exempt from window dragging: a theme can resize the button inside the scope, never this box. -->
+    <div
+      class="title-bar-control flex h-full max-w-40 shrink-0 items-center overflow-clip px-1"
+      data-testid="title-bar-brand"
     >
       <div
-        v-if="stripe"
-        :key="stripe.key"
-        aria-hidden="true"
-        data-testid="title-bar-stripe"
-        :data-tone="hostColorDataTone(stripe.color)"
-        class="pointer-events-none absolute inset-x-0 top-0 h-0.5 bg-(--tone) transition-[background-color] duration-300 ease-out"
-        :class="stripe.look.class"
-        :style="stripe.look.style"
-      />
-    </Transition>
+        data-theme-scope="titlebar"
+        class="flex items-center"
+      >
+        <button
+          ref="logo"
+          type="button"
+          data-testid="app-menu"
+          class="flex h-7.5 shrink-0 items-center gap-2.25 rounded-7 pr-3 pl-3.5 hover:bg-(--d-hover)"
+          :aria-label="t('titleBar.appMenu', { app: APP_NAME })"
+          :title="t('titleBar.appMenu', { app: APP_NAME })"
+          aria-haspopup="menu"
+          @click="openAppMenu"
+        >
+          <img
+            :src="LOGO_URL"
+            alt=""
+            class="size-4.5"
+          >
+          <span class="font-semibold tracking-[-.01em]">{{ APP_NAME }}</span>
+        </button>
+      </div>
+    </div>
+    <!-- A trusted root never fades (its opacity is pinned), so the chip swaps at once; a recolor eases its colors in place.
+         Named by its dot ("prod-1 · 38 ms"), so the visible name is not read twice; on the trusted --d-panel, as WindowControls. -->
     <button
-      ref="logo"
+      v-if="host"
+      ref="hostChip"
       type="button"
-      data-testid="app-menu"
-      class="title-bar-control flex h-7.5 shrink-0 items-center gap-2.25 rounded-7 pr-3 pl-3.5 hover:bg-(--d-hover)"
-      :aria-label="t('titleBar.appMenu', { app: APP_NAME })"
-      :title="t('titleBar.appMenu', { app: APP_NAME })"
-      aria-haspopup="menu"
-      @click="openAppMenu"
+      data-testid="title-bar-host"
+      data-trusted
+      :data-tone="host.color === undefined ? undefined : hostColorDataTone(host.color)"
+      class="title-bar-control mr-1 inline-flex h-7 max-w-52 shrink-0 items-center gap-1.75 rounded-7 bg-(--d-panel) px-2 hover:bg-(--d-hover) aria-expanded:bg-(--d-hover)"
+      :title="host.label"
+      aria-haspopup="dialog"
+      :aria-expanded="hostCardOpen"
+      @click="openHostCard"
     >
-      <img
-        :src="LOGO_URL"
-        alt=""
-        class="size-4.5"
+      <HostStatusDot
+        :connection="host.connection"
+        :reconnect="host.reconnect"
+        :slow="host.latency?.slow"
+        :label="host.label"
+      />
+      <!-- A rename swaps the old name for the new one. -->
+      <Transition
+        name="t-swap"
+        mode="out-in"
       >
-      <span class="font-semibold tracking-[-.01em]">{{ APP_NAME }}</span>
+        <span
+          :key="host.name"
+          aria-hidden="true"
+          data-testid="title-bar-host-name"
+          class="min-w-0 truncate"
+          :class="host.look ? ['rounded px-1.5 py-px text-10 font-bold tracking-[.05em] bg-(--tone) text-(--tone-on) transition-[background-color,color] duration-300 ease-out', host.look.class] : 'text-12 font-medium text-(--d-text)'"
+          :style="host.look?.style"
+        >{{ host.name }}</span>
+      </Transition>
     </button>
-    <!-- out-in: the chip sits in the row, so two at once would push the breadcrumb aside; keyed by host and by whether it is
-         filled, which changes its size, while a recolor eases its colors in place -->
-    <Transition
-      appear
-      mode="out-in"
-      enter-active-class="animate-[d-fade_.3s_var(--ease-out)]"
-      leave-active-class="animate-[o-fade-out_.14s_ease-in_both]"
-    >
-      <!-- named by its dot ("prod-1 · 38 ms"), so the visible name is not read twice -->
-      <button
-        v-if="host"
-        ref="hostChip"
-        :key="`${host.key}:${host.look ? 'filled' : 'plain'}`"
-        type="button"
-        data-testid="title-bar-host"
-        :data-tone="host.color === undefined ? undefined : hostColorDataTone(host.color)"
-        class="title-bar-control mr-1 inline-flex h-7 max-w-52 shrink-0 items-center gap-1.75 rounded-7 px-2 hover:bg-(--d-hover) aria-expanded:bg-(--d-hover)"
-        :title="host.label"
-        aria-haspopup="dialog"
-        :aria-expanded="hostCardOpen"
-        @click="openHostCard"
+    <div class="flex h-full min-w-0 items-center overflow-clip">
+      <nav
+        data-testid="breadcrumb"
+        data-theme-scope="titlebar"
+        :aria-label="t('titleBar.breadcrumb')"
+        class="flex min-w-0 items-center gap-1.5 text-12.5 text-(--d-muted)"
       >
-        <HostStatusDot
-          :connection="host.connection"
-          :reconnect="host.reconnect"
-          :slow="host.latency?.slow"
-          :label="host.label"
-        />
-        <!-- A rename swaps the old name for the new one. -->
-        <Transition
-          name="t-swap"
-          mode="out-in"
-        >
-          <span
-            :key="host.name"
-            aria-hidden="true"
-            data-testid="title-bar-host-name"
-            class="min-w-0 truncate"
-            :class="host.look ? ['rounded px-1.5 py-px text-10 font-bold tracking-[.05em] bg-(--tone) text-(--tone-on) transition-[background-color,color] duration-300 ease-out', host.look.class] : 'text-12 font-medium text-(--d-text)'"
-            :style="host.look?.style"
-          >{{ host.name }}</span>
-        </Transition>
-      </button>
-    </Transition>
-    <nav
-      data-testid="breadcrumb"
-      :aria-label="t('titleBar.breadcrumb')"
-      class="flex min-w-0 items-center gap-1.5 text-12.5 text-(--d-muted)"
-    >
-      <span class="flex min-w-0 items-center gap-1.5 rounded-7 bg-(--d-hover) px-2 py-0.75">
-        <ProjectAvatar
-          :name="projectName"
-          class="size-3.5 rounded text-[0.5625rem]"
-        />
-        <span
-          class="truncate"
-          data-testid="breadcrumb-project"
-        >{{ projectName }}</span>
-      </span>
-      <!-- the chat's crumb waits for its title, then fades in, so no stand-in name shows first -->
-      <Transition enter-active-class="animate-[d-fade_.2s_var(--ease-out)]">
-        <span
-          v-if="chatTitle !== undefined"
-          class="flex min-w-0 items-center gap-1.5"
-        >
-          <ChevronRight
-            aria-hidden="true"
-            class="size-3 shrink-0 text-(--d-faint)"
+        <span class="flex min-w-0 items-center gap-1.5 rounded-7 bg-(--d-hover) px-2 py-0.75">
+          <ProjectAvatar
+            :name="projectName"
+            :project-key="selectedProject?.key"
+            :state="selectedProject ? characterState(selectedProject) : 'idle'"
+            :active="true"
+            decorative
+            class="size-3.5 rounded text-[0.5625rem]"
           />
           <span
-            class="max-w-85 truncate text-(--d-text)"
-            data-testid="breadcrumb-chat"
-            aria-current="page"
-          >{{ chatTitle }}</span>
+            class="truncate"
+            data-testid="breadcrumb-project"
+          >{{ projectName }}</span>
         </span>
-      </Transition>
-    </nav>
+        <!-- the chat's crumb waits for its title, then fades in, so no stand-in name shows first -->
+        <Transition enter-active-class="d-fade-in">
+          <span
+            v-if="chatTitle !== undefined"
+            class="flex min-w-0 items-center gap-1.5"
+          >
+            <ChevronRight
+              aria-hidden="true"
+              class="size-3 shrink-0 text-(--d-faint)"
+            />
+            <span
+              class="max-w-85 truncate text-(--d-text)"
+              data-testid="breadcrumb-chat"
+              aria-current="page"
+            >{{ chatTitle }}</span>
+          </span>
+        </Transition>
+      </nav>
+    </div>
     <div class="@container/quickopen flex h-full min-w-14 flex-1 items-center justify-center px-3">
       <button
         type="button"
         data-testid="quick-open-box"
-        class="title-bar-control flex h-6.5 w-full max-w-90 min-w-0 items-center gap-2 overflow-hidden rounded-7 border border-(--d-border2) bg-(--d-input) px-2.5 text-xs text-(--d-faint) transition-colors duration-150 hover:border-(--d-accent) hover:text-(--d-muted)"
+        class="title-bar-control flex h-6.5 w-full max-w-90 min-w-0 items-center gap-2 overflow-hidden rounded-7 border border-(--d-border2) bg-(--d-input) px-2.5 text-xs text-(--d-faint) transition-colors duration-150 hover:border-(--d-accent-fill) hover:text-(--d-muted)"
         :title="t('titleBar.quickOpenTitle', { shortcut: state.shortcuts.quickOpen })"
         :aria-label="t('titleBar.quickOpen')"
         :aria-keyshortcuts="ariaKeyshortcuts(state.shortcuts.quickOpen)"
@@ -334,7 +343,7 @@ async function openCenter(): Promise<void> {
           :key="badgePops"
           aria-hidden="true"
           data-testid="notification-badge"
-          class="absolute top-0.5 right-0.75 flex h-3.75 min-w-3.75 items-center justify-center rounded-full border-2 border-(--d-panel) bg-(--d-warning) px-0.75 text-[0.5625rem] leading-none font-bold text-(--d-on-warning)"
+          class="absolute top-0.5 right-0.75 flex h-3.75 min-w-3.75 items-center justify-center rounded-full border-2 border-[rgb(from_var(--d-pane-titlebar)_r_g_b)] bg-(--d-warning-fill) px-0.75 text-[0.5625rem] leading-none font-bold text-(--d-on-warning)"
           :class="badgePops > 0 ? 'bell-badge-pop' : ''"
         >{{ bellState.unseen > 99 ? '99+' : bellState.unseen }}</span>
       </button>

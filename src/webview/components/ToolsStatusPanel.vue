@@ -2,7 +2,7 @@
 import { ref, computed, useId, type Component } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
-import { AppWindow, Bot, Brain, ChevronRight, Compass, GitPullRequest, Globe, ImagePlus, Palette, Search, Settings, ShieldAlert, Users, Wrench } from 'lucide-vue-next';
+import { AppWindow, Bot, Brain, ChevronRight, Compass, GitPullRequest, Globe, ImagePlus, Paintbrush, Palette, Search, Settings, ShieldAlert, Users, Wrench } from 'lucide-vue-next';
 import { enabledToolCount, isSwitchableToolGroup, type SwitchableToolGroup, type ToolsSnapshot, type ToolGroup, type ToolStatusInfo, type ToolGroupStatus } from '@shared/types/tools';
 import type { SettingsSectionId } from '@shared/settings-sections';
 import OverlayShell from './OverlayShell.vue';
@@ -28,7 +28,7 @@ const emit = defineEmits<{
   (e: 'trustProject'): void;
 }>();
 
-const GROUP_ORDER: ToolGroup[] = ['memory', 'compass', 'browser', 'web', 'image', 'forge', 'subagents', 'team', 'design', 'core'];
+const GROUP_ORDER: ToolGroup[] = ['memory', 'compass', 'browser', 'web', 'image', 'forge', 'theme', 'subagents', 'team', 'design', 'core'];
 
 const GROUP_ICONS: Record<ToolGroup, Component> = {
   memory: Brain,
@@ -37,6 +37,7 @@ const GROUP_ICONS: Record<ToolGroup, Component> = {
   web: Globe,
   image: ImagePlus,
   forge: GitPullRequest,
+  theme: Paintbrush,
   subagents: Bot,
   team: Users,
   design: Palette,
@@ -55,6 +56,7 @@ const HOST_SETTINGS_SECTIONS: Readonly<Record<SwitchableToolGroup, SettingsSecti
   web: 'integrations',
   image: 'integrations',
   forge: 'accounts',
+  theme: 'appearance',
   team: 'teams',
   design: 'integrations',
 };
@@ -161,7 +163,7 @@ function canSetAll(view: GroupView, enabled: boolean): boolean {
     @close="emit('close')"
   >
     <div class="flex flex-col gap-2.5 px-4 pt-3 pb-4.5 text-13">
-      <label class="flex h-8.5 items-center gap-2 rounded-10 border border-(--d-border2) bg-(--d-input) px-2.75 focus-within:border-(--d-accent)">
+      <label class="flex h-8.5 items-center gap-2 rounded-10 border border-(--d-border2) bg-(--d-input) px-2.75 focus-within:border-(--d-accent-fill)">
         <Search
           class="size-3.25 flex-none text-(--d-faint)"
           aria-hidden="true"
@@ -309,7 +311,7 @@ function canSetAll(view: GroupView, enabled: boolean): boolean {
             </div>
             <div
               v-if="view.group === 'subagents' && !projectTrusted"
-              class="flex items-center gap-2.5 border-t border-(--d-border) bg-[color-mix(in_srgb,var(--d-warning)_10%,transparent)] px-2.5 py-2 text-11.5 text-(--d-warning-text)"
+              class="flex items-center gap-2.5 border-t border-(--d-border) bg-[color-mix(in_srgb,var(--d-warning-fill)_10%,transparent)] px-2.5 py-2 text-11.5 text-(--d-warning-text)"
             >
               <ShieldAlert
                 class="size-3.25 flex-none"

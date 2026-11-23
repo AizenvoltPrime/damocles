@@ -160,6 +160,27 @@ describe('the job log tab', () => {
     expect([...document.querySelectorAll('[data-testid="job-log-fold"]')].map((each) => each.getAttribute('aria-expanded'))).toEqual(['false', 'false', 'false']);
   });
 
+  it('offers Fold section and Unfold section in a section row\'s menu, the fold button\'s equal at full target size', async () => {
+    const { api } = await mountTab();
+    const rowOf = (name: string): HTMLElement => named('button', name)!.closest<HTMLElement>('[data-testid="job-log-row"]')!;
+    const menu = async (row: HTMLElement): Promise<void> => {
+      row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 40, clientY: 60 }));
+      await flushPromises();
+    };
+    api.answerNext({ kind: 'menu', itemId: 'fold' });
+    await menu(rowOf('Fold Executing "step_script" stage of the job script'));
+    expect(api.overlayRequests.at(-1)).toMatchObject({ kind: 'menu', label: 'Actions for Executing "step_script" stage of the job script', anchor: { x: 40, y: 60 }, items: [{ kind: 'item', id: 'fold', label: 'Fold section' }] });
+    expect(renderedLines()).not.toContain('$ npm ci');
+    api.answerNext({ kind: 'menu', itemId: 'fold' });
+    await menu(rowOf('Unfold Executing "step_script" stage of the job script'));
+    expect(api.overlayRequests.at(-1)).toMatchObject({ items: [{ id: 'fold', label: 'Unfold section' }] });
+    expect(renderedLines()).toContain('$ npm ci');
+    // a line that heads no section has no menu
+    const requests = api.overlayRequests.length;
+    await menu([...document.querySelectorAll<HTMLElement>('[data-testid="job-log-row"]')].find((row) => !row.querySelector('[data-testid="job-log-fold"]'))!);
+    expect(api.overlayRequests.length).toBe(requests);
+  });
+
   it('shows the timestamp column until Timestamps is turned off', async () => {
     await mountTab();
     const toggle = named('button', 'Timestamps')!;

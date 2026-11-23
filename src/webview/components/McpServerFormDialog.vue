@@ -195,8 +195,8 @@ const footerNote = computed(() => {
   return { text: t('overlays.mcp.form.writtenTo'), danger: false };
 });
 
-const FIELD = 'h-8 min-w-0 rounded-lg border bg-(--d-input) px-2.5 text-12.5 text-(--d-text) outline-none transition-colors placeholder:text-(--d-faint) focus:border-(--d-accent) disabled:opacity-60';
-const fieldClass = (error: unknown, mono = true): string[] => [FIELD, mono ? 'font-mono' : '', error ? 'border-(--d-danger)' : 'border-(--d-border2)'];
+const FIELD = 'h-8 min-w-0 rounded-lg border bg-(--d-input) px-2.5 text-12.5 text-(--d-text) outline-none transition-colors placeholder:text-(--d-faint) focus:border-(--d-accent-fill) disabled:opacity-60';
+const fieldClass = (error: unknown, mono = true): string[] => [FIELD, mono ? 'font-mono' : '', error ? 'border-(--d-danger-fill)' : 'border-(--d-border2)'];
 const ICON_BUTTON = 'flex size-8 flex-none items-center justify-center rounded-lg text-(--d-faint) transition-colors hover:bg-(--d-hover)';
 const ADD_BUTTON = '-ml-1 flex h-6.5 items-center gap-1.25 self-start rounded-7 px-2.25 text-xs text-(--d-accent) transition-colors hover:bg-(--d-hover) hover:text-(--d-accent-text)';
 </script>
@@ -226,7 +226,7 @@ const ADD_BUTTON = '-ml-1 flex h-6.5 items-center gap-1.25 self-start rounded-7 
           v-if="writeError"
           :id="`${ids}-write-error`"
           role="alert"
-          class="rounded-9 border border-[color-mix(in_srgb,var(--d-danger)_30%,transparent)] bg-[color-mix(in_srgb,var(--d-danger)_8%,transparent)] px-3 py-2 text-xs text-(--d-danger-text)"
+          class="rounded-9 border border-[color-mix(in_srgb,var(--d-danger-fill)_30%,transparent)] bg-[color-mix(in_srgb,var(--d-danger-fill)_8%,transparent)] px-3 py-2 text-xs text-(--d-danger-text)"
         >
           {{ writeErrorText }}
         </p>
@@ -295,12 +295,12 @@ const ADD_BUTTON = '-ml-1 flex h-6.5 items-center gap-1.25 self-start rounded-7 
               :box="modeBox"
               :radius="6"
               :animate="modeAnimate"
-              class="text-(--d-card)"
+              class="[--tone:var(--d-card)]"
             />
             <label
               v-for="mode in MODES"
               :key="mode.value"
-              class="relative z-1 flex h-6.5 cursor-pointer items-center gap-1.5 rounded-md px-3 text-xs font-medium transition-colors has-focus-visible:outline-2 has-focus-visible:outline-(--d-accent) has-focus-visible:outline-solid"
+              class="relative z-1 flex h-6.5 cursor-pointer items-center gap-1.5 rounded-md px-3 text-xs font-medium transition-colors has-focus-visible:outline-2 has-focus-visible:outline-(--d-accent-fill) has-focus-visible:outline-solid"
               :class="state.mode === mode.value ? 'text-(--d-text)' : 'text-(--d-muted) hover:text-(--d-text)'"
             >
               <input
@@ -791,7 +791,7 @@ const ADD_BUTTON = '-ml-1 flex h-6.5 items-center gap-1.25 self-start rounded-7 
         <button
           type="submit"
           :form="`${ids}-form`"
-          class="d-press flex h-8 items-center gap-1.75 rounded-9 bg-(--d-accent) px-4 text-12.5 font-semibold text-(--d-on-accent) disabled:opacity-60"
+          class="d-press flex h-8 items-center gap-1.75 rounded-9 bg-(--d-accent-fill) px-4 text-12.5 font-semibold text-(--d-on-accent) disabled:opacity-60"
           :disabled="submitting"
           :aria-busy="submitting || undefined"
         >

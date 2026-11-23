@@ -93,7 +93,7 @@ describe('notification toasts', () => {
     expect(card.find('.project-avatar').text()).toBe('A');
     const primary = card.get('[data-toast-primary]');
     expect(primary.text()).toBe('Review');
-    expect(primary.classes()).toEqual(expect.arrayContaining(['bg-(--d-warning)/16', 'text-(--d-warning-text)']));
+    expect(primary.classes()).toEqual(expect.arrayContaining(['bg-(--d-warning-fill)/16', 'text-(--d-warning-text)']));
     expect(wrapper.get('[data-testid="overlay-toasts-assertive"]').text()).toContain('Needs your approval to');
 
     await primary.trigger('click');
@@ -113,7 +113,7 @@ describe('notification toasts', () => {
     expect(Number(style.getPropertyValue('--life-from'))).toBeCloseTo(0.5, 1);
     expect(Number.parseFloat(style.animationDuration)).toBeGreaterThan(5_500);
     expect(Number.parseFloat(style.animationDuration)).toBeLessThanOrEqual(6_000);
-    expect(life.classes()).toContain('bg-(--d-success)');
+    expect(life.classes()).toContain('bg-(--d-success-fill)');
 
     await card.trigger('mouseenter');
     expect(api.holdToast).toHaveBeenLastCalledWith('d1', true);
@@ -652,7 +652,7 @@ describe('notification center', () => {
 
     const actions = wrapper.findAll('[data-testid="notification-row-action"]');
     expect(actions.map((action) => action.text())).toEqual(['Restart']);
-    expect(actions[0]!.classes()).toEqual(expect.arrayContaining(['bg-(--d-danger)/16', 'text-(--d-danger-text)']));
+    expect(actions[0]!.classes()).toEqual(expect.arrayContaining(['bg-(--d-danger-fill)/16', 'text-(--d-danger-text)']));
     await actions[0]!.trigger('click');
     await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('c1', { kind: 'notifications', action: 'answer', entryId: 'n2', index: 0 }));
   });
@@ -688,7 +688,7 @@ describe('title bar bell', () => {
     await wrapper.setProps({ state: { ...STATE, notifications: { unseen: 3, doNotDisturb: false, popupsOff: false, attention: 1 } } });
     const badge = wrapper.get('[data-testid="notification-badge"]');
     expect(badge.text()).toBe('3');
-    expect(badge.classes()).toEqual(expect.arrayContaining(['bg-(--d-warning)', 'text-(--d-on-warning)', 'bell-badge-pop']));
+    expect(badge.classes()).toEqual(expect.arrayContaining(['bg-(--d-warning-fill)', 'text-(--d-on-warning)', 'bell-badge-pop']));
     expect(wrapper.get('[data-testid="notification-bell-icon"]').classes()).toContain('bell-ring');
     expect(bell.attributes('aria-label')).toBe('Notifications, 3 new');
 

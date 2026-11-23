@@ -8,6 +8,7 @@ import { createCorePlatform } from '../../../core-host/platform';
 import { createCoreEndpoint, createLoopback, createMainEndpoint, INVALID, parseCoreInit } from '../../../core-protocol';
 import { REMOTE_CHAT_LOCAL_POSTS } from '../../../../shared/remote-user';
 import { REMOTE_CORE_REFUSED_POSTS } from '../../remote/remote-services';
+import { THEME_CARD_POSTS } from '../../remote/theme-relay';
 import { createDesktopKeyValueState } from '../../../local-services/key-value-state';
 import { createHostServices, type RelayView } from '../host-services';
 import { hostExtras } from './host-deps';
@@ -139,7 +140,7 @@ it('drops a post type this core may not send, and relays the rest', () => {
 });
 
 // A core's raw panel envelopes to main, which declare the post's type beside its JSON text as any core may.
-function crafting(refusedPosts: ReadonlySet<string>) {
+function crafting(refusedPosts: ReadonlySet<string>, textOnlyPosts: ReadonlySet<string> = new Set()) {
   const main = createFakePlatform({ chatBrowserPane: true });
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'core-relay-'));
   dirs.push(userData);
@@ -167,6 +168,7 @@ function crafting(refusedPosts: ReadonlySet<string>) {
     e2eHooks: false,
     ...hostExtras(),
     refusedPosts,
+    textOnlyPosts,
     log: () => undefined,
   });
   const core = createCoreEndpoint(loopback.core, () => undefined);
@@ -204,6 +206,15 @@ it("drops a remote core's binary post unless its own type is a string outside th
   postBinary({ frame: new Uint8Array([1]) });
   postBinary({ type: 'browserFrame', frame: new Uint8Array([1, 2]) });
   expect(forwarded).toEqual([{ type: 'browserFrame', frame: new Uint8Array([1, 2]) }]);
+});
+
+it("drops a remote core's theme card sent as a binary post, the path main does not check cards on, and passes it as text", () => {
+  const { post, postBinary, forwarded } = crafting(REMOTE_CORE_REFUSED_POSTS, THEME_CARD_POSTS);
+  for (const type of THEME_CARD_POSTS) postBinary({ type, promptId: 'p', frame: new Uint8Array([1]) });
+  expect([...THEME_CARD_POSTS].sort()).toEqual(['requestThemeChange', 'requestThemeInstall', 'requestThemeScreenshot', 'themeInstallUpdated']);
+  post('requestThemeChange', JSON.stringify({ type: 'requestThemeChange', promptId: 'p' }));
+  postBinary({ type: 'browserFrame', frame: new Uint8Array([1, 2]) });
+  expect(forwarded).toEqual([{ type: 'requestThemeChange', promptId: 'p' }, { type: 'browserFrame', frame: new Uint8Array([1, 2]) }]);
 });
 
 it("passes a local core's posts of this computer's reply types, as text or binary", () => {

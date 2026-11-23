@@ -46,8 +46,7 @@
 @keyframes d-swap-in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
 @keyframes d-swap-out{from{opacity:1;transform:none}to{opacity:0;transform:translateY(-5px)}}
 
-/* A card the user asked to see: it nudges forward while an inset accent ring flashes twice. */
-@keyframes d-attention{0%{transform:none}35%{transform:scale(1.012)}100%{transform:none}}
+/* A card the user asked to see: an inset accent ring flashes twice. */
 @keyframes d-attention-ring{0%,100%{opacity:0}20%,60%{opacity:1}40%{opacity:.25}}
 @keyframes d-zoom-out{from{opacity:1;transform:none}to{opacity:0;transform:scale(.97) translateY(8px)}}
 @keyframes nt-out{from{opacity:1;transform:none}to{opacity:0;transform:translateX(28px) scale(.98)}}
@@ -216,27 +215,28 @@
 .d-press{transition:transform .1s var(--ease-out),color .15s,background-color .15s,border-color .15s,filter .15s,opacity .15s}
 .d-press:active:not(:disabled,[aria-disabled="true"]){transform:scale(.97)}
 
-/* Attention ring around a rounded box; the colour is the box's currentColor. Needs no wrapper. */
+/* Attention ring around a rounded box; the colour is the box's --tone (a tone's -fill token), else its currentColor. Needs no wrapper. */
 .d-ring{position:relative;isolation:isolate}
-.d-ring::after{content:"";position:absolute;inset:0;z-index:-1;border-radius:inherit;background:currentColor;opacity:0;pointer-events:none;animation:d-ring 1.6s var(--ease-out) infinite}
+.d-ring::after{content:"";position:absolute;inset:0;z-index:-1;border-radius:inherit;background:var(--tone,currentColor);opacity:0;pointer-events:none;animation:d-ring 1.6s var(--ease-out) infinite}
 
-/* Played once by `playAttention` (composables/useAttention.ts). The ring sits inside the box, so an overflow-hidden card keeps it; its colour is the card's --attention-ring. */
-.d-attention{position:relative;animation:d-attention .5s var(--ease-spring)}
+/* Played once by `playAttention` (composables/useAttention.ts). The ring sits inside the box, so an overflow-hidden card keeps it; its colour is the card's --attention-ring.
+   The card itself never animates: a scale on a trusted card, up or down, holds its visibility check (docs/invariants.md "Theme CSS and trusted regions"). */
+.d-attention{position:relative}
 .d-attention::after{content:"";position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 2px var(--attention-ring,currentColor);opacity:0;pointer-events:none;animation:d-attention-ring 1.1s var(--ease-out) both}
 
 /* Indeterminate progress: a band that sweeps a track with overflow hidden. */
 .d-sweep-bar{position:relative;overflow:hidden}
-.d-sweep-bar::after{content:"";position:absolute;inset-block:0;inset-inline-start:0;width:40%;border-radius:inherit;background:currentColor;transform:translateX(-100%);animation:o-sweep 1.1s ease-in-out infinite}
+.d-sweep-bar::after{content:"";position:absolute;inset-block:0;inset-inline-start:0;width:40%;border-radius:inherit;background:var(--tone,currentColor);transform:translateX(-100%);animation:o-sweep 1.1s ease-in-out infinite}
 /* Reduced motion stops the sweep, so the band rests across the whole track at half strength rather than off it. */
 @media (prefers-reduced-motion:reduce){.d-sweep-bar::after{width:100%;transform:none;opacity:.5}}
 [data-reduced-motion] .d-sweep-bar::after{width:100%;transform:none;opacity:.5}
 
-/* A box at work (a commit message being generated): an empty child span over it, coloured by currentColor, that a soft band crosses. */
+/* A box at work (a commit message being generated): an empty child span over it, coloured by --tone, else currentColor, that a soft band crosses. */
 .d-sheen{position:absolute;inset:0;overflow:hidden;border-radius:inherit;pointer-events:none}
-.d-sheen::after{content:"";position:absolute;inset-block:0;inset-inline-start:0;width:60%;background:linear-gradient(90deg,transparent,color-mix(in srgb,currentColor 20%,transparent),transparent);transform:translateX(-100%);animation:o-sweep 1.8s ease-in-out infinite}
+.d-sheen::after{content:"";position:absolute;inset-block:0;inset-inline-start:0;width:60%;background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--tone,currentColor) 20%,transparent),transparent);transform:translateX(-100%);animation:o-sweep 1.8s ease-in-out infinite}
 /* Reduced motion rests the band as a soft tint over the whole box, so the busy state still shows. */
-@media (prefers-reduced-motion:reduce){.d-sheen::after{width:100%;transform:none;background:color-mix(in srgb,currentColor 8%,transparent)}}
-[data-reduced-motion] .d-sheen::after{width:100%;transform:none;background:color-mix(in srgb,currentColor 8%,transparent)}
+@media (prefers-reduced-motion:reduce){.d-sheen::after{width:100%;transform:none;background:color-mix(in srgb,var(--tone,currentColor) 8%,transparent)}}
+[data-reduced-motion] .d-sheen::after{width:100%;transform:none;background:color-mix(in srgb,var(--tone,currentColor) 8%,transparent)}
 
 /*
  * Shimmer text by transform: <span class="d-glint">phrase<span class="d-glint-window" aria-hidden="true"><span>phrase</span></span></span>.
@@ -255,9 +255,46 @@
 /* Replayed by removing and re-adding the class on each refusal. */
 .d-shake{animation:d-shake .32s var(--ease-out)}
 
-/* A one-shot fade on mount. */
-.d-fade-in{animation:o-fade .2s var(--ease-out) both}
+/* Registered so it never inherits: a staggered parent does not delay the entrances inside it. */
+@property --enter-delay{syntax:"<time>";inherits:false;initial-value:0s}
+
+/* One-shot entrances for an element as it mounts or is revealed; --enter-delay, set on the element itself, staggers one. */
+.d-fade-in{animation:o-fade .2s var(--ease-out) var(--enter-delay) both}
+.d-rise{animation:d-up .4s var(--ease-out) var(--enter-delay) both}
+.d-pane-in{animation:d-pane-in .2s var(--ease-out) var(--enter-delay) both}
+.d-slide-in{animation:d-slide .2s var(--ease-out) var(--enter-delay) both}
+.d-icon-in{animation:d-icon-in .3s var(--ease-spring) var(--enter-delay) both}
+.d-swap-in{animation:d-swap-in .2s var(--ease-out) both}
+.d-scale-in{animation:d-scale-in .24s var(--ease-spring) both}
+.d-badge-pop{animation:d-badge-pop .34s var(--ease-spring) both}
+.d-pop-in{animation:d-pop .16s var(--ease-out)}
+.d-pop-spring{animation:d-pop .26s var(--ease-spring) both}
+/* A floating panel that zooms in when shown and back out before it is removed. */
+.d-zoom-in{animation:d-zoom .26s var(--ease-out)}
+.d-zoom-out{animation:d-zoom-out .16s ease-in both}
+/* A mark that lights up once and fades: on the element, on its ::after ground, or as a ring that grows from it. */
+.d-flash{animation:d-flash .7s var(--ease-out) both}
+.d-flash-under::after{animation:d-flash .9s var(--ease-out) both}
+.d-ring-once{animation:d-ring .9s var(--ease-out) both}
+/* The attention ring's flash repeated for as long as a step is the active one. Never on a <Transition>'s own child. */
+.d-attention-loop{animation:d-attention-ring 1.1s var(--ease-out) infinite}
+
+/* A loading placeholder bar that a faint band of its text colour crosses; --row delays it, so stacked bars sweep as a wave. */
+.d-skeleton-bar{position:relative;overflow:hidden}
+.d-skeleton-bar::after{content:"";position:absolute;inset-block:0;inset-inline-start:0;width:40%;background:linear-gradient(90deg,transparent,color-mix(in srgb,currentColor 7%,transparent),transparent);transform:translateX(-100%);animation:o-sweep 1.3s ease-in-out calc(var(--row,0) * 90ms) infinite}
 
 /* Meters fill from their start edge on mount. */
 .d-bar{transform-origin:left;animation:o-bar .6s var(--ease-out) both}
 [dir="rtl"] .d-bar{transform-origin:right}
+
+/*
+ * A project character's sprite strip: the frames side by side in an image --sprite-frames times its clipping box's width, stepped
+ * left one frame at a time. With no animation it rests on its first frame, which is what reduce motion, forced colors and a
+ * character that may not move show. data-sprite-hover moves it only under the pointer, over it or its [data-character-host] row.
+ */
+@keyframes d-sprite{from{transform:translateX(0)}to{transform:translateX(-100%)}}
+.d-sprite{animation:d-sprite var(--sprite-duration,1s) steps(var(--sprite-frames,1)) infinite}
+.d-sprite[data-sprite-hover]:not(:hover,[data-character-host]:hover .d-sprite){animation:none}
+@media (prefers-reduced-motion:reduce){.d-sprite{animation:none}}
+@media (forced-colors:active){.d-sprite{animation:none}}
+[data-reduced-motion] .d-sprite{animation:none}

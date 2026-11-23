@@ -2016,6 +2016,30 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     }
   });
 
+  it('gives a design chat whose role entry does not parse a design chat\'s tool list, not a main chat\'s', async () => {
+    const namesOf = async (roleData: Record<string, unknown> | undefined): Promise<string[]> => {
+      H.setSessionManagerFactory(() => {
+        const sm = realPi.SessionManager.inMemory('/cwd');
+        if (roleData) sm.appendCustomEntry('damocles.design', roleData);
+        return sm;
+      });
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      const names = (session as unknown as { fullActiveToolNames(): string[] }).fullActiveToolNames();
+      await session.dispose();
+      return names;
+    };
+    try {
+      expect(await namesOf(undefined)).toEqual(expect.arrayContaining(['EnterPlanMode', 'ExitPlanMode']));
+      const unreadable = await namesOf({ v: 1 });
+      expect(unreadable).not.toContain('EnterPlanMode');
+      expect(unreadable).not.toContain('ExitPlanMode');
+      expect(unreadable).toContain('read');
+    } finally {
+      H.setSessionManagerFactory(null);
+    }
+  });
+
   it('builds a FULL design chat\'s subagent its three verification tools over its own model, and a main chat\'s subagent none (F3)', async () => {
     type ToolsetInput = Parameters<import('../subagents').SubagentEngine['buildAgentToolset']>[0];
     type Engine = { nestedDesign?: () => { designTools: readonly string[] } | undefined; buildAgentToolset: (input: ToolsetInput) => { customTools: Array<{ name: string }> } };
@@ -5148,6 +5172,9 @@ describe('plan-mode active set — exclusion model', () => {
     forgeAvailable: true,
     forgeEnabled: true,
     forgeUnavailable: undefined,
+    themeUnavailable: undefined,
+    themeAvailable: true,
+    themeEnabled: true,
     mcpEnabled: true,
     mcpToolNames: ['mcp__git__status', 'mcp__git__commit'],
     mcpDeferrableToolNames: ['mcp__git__status', 'mcp__git__commit'],
@@ -5191,10 +5218,12 @@ describe('plan-mode active set — exclusion model', () => {
     'FeedRead', 'ForgeComment', 'ForgeIssue', 'ForgeIssues', 'ForgeJobAction', 'ForgeJobLog', 'ForgeJobs', 'ForgeMergeRequest',
     'ForgeMergeRequests', 'ForgeOpenMergeRequest', 'ForgePipelines', 'ForgetMemory', 'GenerateImage', 'GetMemoryDetails', 'GetMemoryHistory', 'GetRelatedMemories',
     'GetSubagentResult', 'ListNotes', 'PowerShell', 'ResetObservationStaleness', 'SaveMemory',
-    'SaveNote', 'SaveObservation', 'SearchMemories', 'SteerSubagent',
+    'SaveNote', 'SaveObservation', 'SearchMemories', 'SteerSubagent', 'ThemeRead', 'ThemeSchedule', 'ThemeSet',
     'ToolSearch', 'UnforgetMemory', 'UpdateMemory', 'WebFetch', 'WebSearch',
     'YouTubeTranscript', 'bash', 'find', 'grep', 'ls', 'read', 'write',
   ];
+  // The theme tools stay eligible in plan mode: their changes reach the window only through the user's card, which an
+  // on-the-fly apply raises in plan mode as well.
   // `ToolSearch` (Slice 2) was added here after answering this block's question deliberately: SHOULD a
   // planning agent be able to call it? Yes — with browser/compass/MCP deferred, ToolSearch is the only
   // route back to them, so excluding it would leave a planner permanently unable to load a tool it needs
@@ -5224,14 +5253,14 @@ describe('plan-mode active set — exclusion model', () => {
   // Slice 2 widened `gained` by exactly one name: `ToolSearch` joined the eligible universe. The delta
   // is still stated as a set difference (not relaxed to a `toContain`), so a later edit that widens plan
   // mode by anything else still fails here even after the pinned list above is updated.
-  it('differs from the pre-inversion set by EXACTLY the browser tools, ToolSearch, GenerateImage and the GitHub and GitLab tools', () => {
+  it('differs from the pre-inversion set by EXACTLY the browser tools, ToolSearch, GenerateImage, the GitHub and GitLab tools and the theme tools', () => {
     const legacyAllowed = new Set([...LEGACY_READONLY, ...LEGACY_INTERACTIVE, ...LEGACY_PLAN_FILE, ...LEGACY_SHELL, ...COMPASS_PI_TOOL_NAMES, ...MEMORY_PI_TOOL_NAMES]);
     const legacy = fullActiveToolNames(fullyEnabled).filter((n) => legacyAllowed.has(n) || n.startsWith('mcp__'));
 
     const gained = planSet().filter((n) => !legacy.includes(n));
     const lost = legacy.filter((n) => !planSet().includes(n));
 
-    expect(gained.sort()).toEqual([...BROWSER_PI_TOOL_NAMES, TOOL_TOOL_SEARCH, TOOL_GENERATE_IMAGE, ...FORGE_PI_TOOL_NAMES].sort());
+    expect(gained.sort()).toEqual([...BROWSER_PI_TOOL_NAMES, TOOL_TOOL_SEARCH, TOOL_GENERATE_IMAGE, ...FORGE_PI_TOOL_NAMES, 'ThemeRead', 'ThemeSchedule', 'ThemeSet'].sort());
     expect(lost).toEqual([]);
   });
 
@@ -6290,6 +6319,25 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
       const { toolNames, customTools } = engine.buildAgentToolset(teamCtx(`agent-${role}`, role));
       expect(toolNames, role).not.toContain(TOOL_GENERATE_IMAGE);
       expect(customTools.map((t) => t.name), role).not.toContain(TOOL_GENERATE_IMAGE);
+    }
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('a team agent never gets the theme tools, by name or by definition, even when the panel has them eligible', async () => {
+    const { session, cfg } = await teamSessionWithMcp();
+    const theme = ['ThemeRead', 'ThemeSet', 'ThemeSchedule'];
+    const panelNames = (session as unknown as { fullActiveToolNames(): string[] }).fullActiveToolNames();
+    vi.spyOn(session as unknown as { fullActiveToolNames(): string[] }, 'fullActiveToolNames').mockReturnValue([...panelNames, ...theme]);
+    const engine = session.buildTeamEngine();
+
+    for (const role of ['lead', 'specialist'] as const) {
+      const { toolNames, customTools } = engine.buildAgentToolset(teamCtx(`agent-${role}`, role));
+      for (const name of theme) {
+        expect(toolNames, role).not.toContain(name);
+        expect(customTools.map((t) => t.name), role).not.toContain(name);
+      }
     }
 
     cfg.mockRestore();

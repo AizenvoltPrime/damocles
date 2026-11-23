@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MenuItemConstructorOptions } from 'electron';
 
@@ -682,10 +683,12 @@ describe('shell commands: the damocles command on PATH', () => {
       installApplicationMenu(PROJECTS, { ...({} as MenuActions), remote, ...(withCli ? { cliCommand } : {}) }, en, CHAT, platform);
       return (electron.template.find((item) => item.id === menu)!.submenu as MenuItemConstructorOptions[]).map((item) => item.id ?? item.type);
     };
-    expect(ids('win32', true, 'damocles.menu.help')).toEqual([MENU_IDS.about, MENU_IDS.releaseNotes, MENU_IDS.checkForUpdates, 'separator', MENU_IDS.installCliCommand, MENU_IDS.uninstallCliCommand]);
+    const restart = ['separator', MENU_IDS.restartWithDefaultTheme];
+    expect(ids('win32', true, 'damocles.menu.help')).toEqual([MENU_IDS.about, MENU_IDS.releaseNotes, MENU_IDS.checkForUpdates, 'separator', MENU_IDS.installCliCommand, MENU_IDS.uninstallCliCommand, ...restart]);
     expect(ids('darwin', true, 'damocles.menu.app').slice(0, 6)).toEqual([MENU_IDS.about, MENU_IDS.releaseNotes, MENU_IDS.checkForUpdates, 'separator', MENU_IDS.installCliCommand, MENU_IDS.uninstallCliCommand]);
-    expect(ids('linux', true, 'damocles.menu.help')).toEqual([MENU_IDS.about, MENU_IDS.releaseNotes, MENU_IDS.checkForUpdates]);
-    expect(ids('win32', false, 'damocles.menu.help')).toEqual([MENU_IDS.about, MENU_IDS.releaseNotes, MENU_IDS.checkForUpdates]);
+    expect(ids('darwin', true, 'damocles.menu.help')).toEqual([MENU_IDS.restartWithDefaultTheme]);
+    expect(ids('linux', true, 'damocles.menu.help')).toEqual([MENU_IDS.about, MENU_IDS.releaseNotes, MENU_IDS.checkForUpdates, ...restart]);
+    expect(ids('win32', false, 'damocles.menu.help')).toEqual([MENU_IDS.about, MENU_IDS.releaseNotes, MENU_IDS.checkForUpdates, ...restart]);
   });
 
   it('runs the install or the removal, each named in Greek too', () => {
@@ -750,5 +753,42 @@ describe('Git hosting links, accounts and the clone picker', () => {
     calls.length = 0;
     palette().run(MENU_IDS.forgeCloneFromAccount, gitOnly);
     expect(calls).toEqual(['cloneFromAccount']);
+  });
+});
+
+// On Windows Ctrl+Alt is AltGr, so a Ctrl+Alt+Shift accelerator would swallow whatever a layout types with AltGr+Shift on its
+// key. altgr-layouts.json is what scripts/altgr-layouts.ps1 read from Windows itself (ToUnicodeEx); run it again to add a layout.
+describe('theme accelerators and AltGr', () => {
+  interface LayoutTable {
+    readonly keys: readonly string[];
+    readonly layouts: Readonly<Record<string, { readonly name: string; readonly ctrlAltShift: Readonly<Record<string, string>> }>>;
+  }
+  const table = JSON.parse(readFileSync(new URL('./altgr-layouts.json', import.meta.url), 'utf8')) as LayoutTable;
+  // the Windows virtual key Chromium matches for an accelerator's key (KeyboardCodeFromCharCode)
+  const OEM_KEYS: Readonly<Record<string, number>> = { ';': 0xba, '=': 0xbb, ',': 0xbc, '-': 0xbd, '.': 0xbe, '/': 0xbf, '`': 0xc0, '[': 0xdb, '\\': 0xdc, ']': 0xdd, "'": 0xde };
+  const virtualKey = (key: string): string => {
+    const code = /^[0-9A-Z]$/i.test(key) ? key.toUpperCase().charCodeAt(0) : OEM_KEYS[key];
+    if (code === undefined) throw new Error(`no virtual key for ${key}`);
+    return `0x${code.toString(16).toUpperCase()}`;
+  };
+  const THEME_COMMANDS: readonly string[] = [MENU_IDS.resetTheme, MENU_IDS.toggleWallpapers, MENU_IDS.nextWallpaper];
+
+  it('reads a table of the en-US, Greek, German, French and Polish (Programmers) layouts that holds their AltGr+Shift letters', () => {
+    expect(Object.keys(table.layouts)).toEqual(['00000409', '00000408', '00000407', '0000040C', '00000415']);
+    expect(table.layouts['00000415']!.ctrlAltShift[virtualKey('A')]).toBe('Ą');
+  });
+
+  it('gives Reset Theme to Default, Toggle Wallpapers and Next Wallpaper keys that type nothing with AltGr+Shift there', () => {
+    const commands = desktopCommands(PROJECTS, actions, 'win32').filter((command) => THEME_COMMANDS.includes(command.id));
+    expect(commands.map((command) => command.id)).toEqual(THEME_COMMANDS);
+    for (const { id, accelerator } of commands) {
+      const parts = accelerator!.split('+');
+      expect(parts.slice(0, -1).sort(), id).toEqual(['Alt', 'CmdOrCtrl', 'Shift']);
+      const key = virtualKey(parts.at(-1)!);
+      expect(table.keys, id).toContain(key);
+      for (const [klid, layout] of Object.entries(table.layouts)) {
+        expect(layout.ctrlAltShift[key], `${accelerator} on ${klid} ${layout.name}`).toBeUndefined();
+      }
+    }
   });
 });

@@ -58,7 +58,7 @@ const unitAttrs = computed(() => Object.fromEntries(Object.entries(attrs).filter
     v-bind="unitAttrs"
     role="none"
     :data-flip="`p:${project.key}`"
-    class="flex shrink-0 flex-col gap-1 rounded-lg data-dragging:relative data-dragging:z-5 data-dragging:cursor-grabbing data-dragging:bg-(--d-card) data-dragging:shadow-(--d-shadow) data-dragging:ring-1 data-dragging:ring-(--d-accent)"
+    class="flex shrink-0 flex-col gap-1 rounded-lg data-dragging:relative data-dragging:z-5 data-dragging:cursor-grabbing data-dragging:bg-(--d-card) data-dragging:shadow-(--d-shadow) data-dragging:ring-1 data-dragging:ring-(--d-accent-fill)"
   >
     <ProjectRow
       v-bind="optionAttrs"

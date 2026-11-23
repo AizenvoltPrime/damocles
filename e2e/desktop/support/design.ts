@@ -6,7 +6,8 @@ import { windowViews, type ViewInfo } from './browser';
 import { editorState } from './editor';
 import { REPO_ROOT, type HermeticHome } from './hermetic';
 import { call, type OpenAIStub, type StubReply } from './openai-stub';
-import { awaitTurnEnd, chatInput } from './ui';
+import { SHELL_URL } from './shell';
+import { awaitTurnEnd, chatInput, promptReady } from './ui';
 
 // What the design mode specs share: the fixture app, the design chat a scripted StartDesign opens, and its preview views.
 
@@ -74,6 +75,7 @@ export function designFolder(damoclesDir: string): string {
 /** Answers the designer's fidelity question. */
 export async function answerFidelity(design: Page, fidelity: Fidelity): Promise<void> {
   const question = design.getByRole('region', { name: 'Question prompt' });
+  await promptReady(question);
   await question.getByRole('option', { name: fidelity }).click();
   await question.getByRole('button', { name: 'Submit', exact: true }).last().click();
 }
@@ -90,6 +92,7 @@ export function designApproval(design: Page): Locator {
 export async function approveDesign(design: Page): Promise<void> {
   const prompt = designApproval(design);
   await expect(prompt).toBeVisible({ timeout: APPROVAL_TIMEOUT });
+  await promptReady(prompt);
   await prompt.getByRole('option', { name: /^Approve/ }).click();
   await expect(prompt).toHaveCount(0);
 }
@@ -136,11 +139,11 @@ export async function designViews(app: ElectronApplication): Promise<ViewInfo[]>
 export async function inShownDesignView<T>(app: ElectronApplication, code: string): Promise<T> {
   let ran: { readonly value: T } | undefined;
   await expect.poll(async () => {
-    ran = await app.evaluate(async ({ BrowserWindow, WebContentsView }, [scheme, script]) => {
-      const win = BrowserWindow.getAllWindows()[0]!;
+    ran = await app.evaluate(async ({ BrowserWindow, WebContentsView }, [scheme, script, shellUrl]) => {
+      const win = BrowserWindow.getAllWindows().find((each) => each.webContents.getURL().startsWith(shellUrl))!;
       const view = win.contentView.children.find((child) => child instanceof WebContentsView && child.getVisible() && child.webContents.getURL().startsWith(scheme)) as Electron.WebContentsView | undefined;
       return view ? { value: await (view.webContents.executeJavaScript(script, true) as Promise<T>) } : undefined;
-    }, [DESIGN_SCHEME, code] as const);
+    }, [DESIGN_SCHEME, code, SHELL_URL] as const);
     return ran !== undefined;
   }, { message: 'a design view is shown' }).toBe(true);
   return ran!.value;
@@ -148,13 +151,13 @@ export async function inShownDesignView<T>(app: ElectronApplication, code: strin
 
 /** The shown design view's zoom as main applied it and as its page lays out at it, and the page's CSS width. */
 async function shownDesignZoom(app: ElectronApplication): Promise<{ applied: number; inPage: number; width: number } | undefined> {
-  return app.evaluate(async ({ BrowserWindow, WebContentsView, screen }, scheme) => {
-    const win = BrowserWindow.getAllWindows()[0]!;
+  return app.evaluate(async ({ BrowserWindow, WebContentsView, screen }, [scheme, shellUrl]) => {
+    const win = BrowserWindow.getAllWindows().find((each) => each.webContents.getURL().startsWith(shellUrl))!;
     const view = win.contentView.children.find((child) => child instanceof WebContentsView && child.getVisible() && child.webContents.getURL().startsWith(scheme)) as Electron.WebContentsView | undefined;
     if (!view) return undefined;
     const [ratio, width] = await (view.webContents.executeJavaScript('[devicePixelRatio, innerWidth]', true) as Promise<[number, number]>);
     return { applied: view.webContents.getZoomFactor(), inPage: ratio / screen.getDisplayMatching(win.getBounds()).scaleFactor, width };
-  }, DESIGN_SCHEME);
+  }, [DESIGN_SCHEME, SHELL_URL] as const);
 }
 
 /**

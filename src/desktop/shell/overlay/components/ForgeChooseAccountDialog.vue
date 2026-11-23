@@ -164,7 +164,7 @@ const ownerWord = computed(() => t(dialog.value.kind === 'github' ? 'forgeAsk.ad
         :aria-label="t('forgeAsk.listLabel', { server: dialog.server })"
         :aria-activedescendant="optionId(active)"
         :aria-busy="rows.checking || undefined"
-        class="mt-1.5 flex flex-col gap-0.5 rounded-9 outline-none focus-visible:ring-1 focus-visible:ring-(--d-accent)"
+        class="mt-1.5 flex flex-col gap-0.5 rounded-9 outline-none focus-visible:ring-1 focus-visible:ring-(--d-accent-fill)"
         @keydown="onKeydown"
       >
         <li
@@ -184,7 +184,7 @@ const ownerWord = computed(() => t(dialog.value.kind === 'github' ? 'forgeAsk.ad
           <span
             aria-hidden="true"
             class="flex size-5 flex-none items-center justify-center rounded-6 border font-mono text-11"
-            :class="index === active ? 'border-(--d-accent)' : 'border-(--d-border2)'"
+            :class="index === active ? 'border-(--d-accent-fill)' : 'border-(--d-border2)'"
           >{{ index < DIGITS ? index + 1 : '' }}</span>
           <ForgeAvatar
             v-if="choice.kind === 'account'"
@@ -238,7 +238,7 @@ const ownerWord = computed(() => t(dialog.value.kind === 'github' ? 'forgeAsk.ad
                 <span
                   v-show="ownerChip(choice.account)"
                   data-testid="forge-ask-owner"
-                  class="rounded-5 bg-[color-mix(in_srgb,var(--d-success)_14%,transparent)] px-1.5 text-10/4 whitespace-nowrap text-(--d-success-text)"
+                  class="rounded-5 bg-[color-mix(in_srgb,var(--d-success-fill)_14%,transparent)] px-1.5 text-10/4 whitespace-nowrap text-(--d-success-text)"
                 >{{ ownerWord }}</span>
               </span>
             </template>

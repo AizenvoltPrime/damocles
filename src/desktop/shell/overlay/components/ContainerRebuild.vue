@@ -94,7 +94,7 @@ const failure = computed(() => {
       <p
         v-if="withoutDataVolume"
         data-testid="rebuild-container-volume"
-        class="flex gap-2 rounded-8 bg-(--d-warning)/12 px-2.5 py-2 text-12 text-(--d-warning-text)"
+        class="flex gap-2 rounded-8 bg-(--d-warning-fill)/12 px-2.5 py-2 text-12 text-(--d-warning-text)"
       >
         <TriangleAlert
           aria-hidden="true"
@@ -117,7 +117,7 @@ const failure = computed(() => {
         tabindex="-1"
         data-testid="rebuild-container-steps"
         :aria-label="t('remote.rebuild.steps', { name: hostName })"
-        class="flex flex-col gap-1.5 rounded-6 focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent)"
+        class="flex flex-col gap-1.5 rounded-6 focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent-fill)"
       >
         <li
           v-for="step in CONTAINER_REBUILD_STEPS"
@@ -139,11 +139,11 @@ const failure = computed(() => {
               />
               <Check
                 v-else-if="run.steps[step] === 'done'"
-                class="size-3.5 animate-[d-icon-in_.3s_var(--ease-spring)] text-(--d-success-text)"
+                class="size-3.5 d-icon-in text-(--d-success-text)"
               />
               <CircleX
                 v-else-if="run.steps[step] === 'failed'"
-                class="size-3.5 animate-[d-icon-in_.3s_var(--ease-spring)] text-(--d-danger-text)"
+                class="size-3.5 d-icon-in text-(--d-danger-text)"
               />
               <span
                 v-else
@@ -187,7 +187,7 @@ const failure = computed(() => {
       role="alert"
       data-testid="rebuild-container-failure"
       :data-code="failure.code"
-      class="timeline-grow flex flex-col gap-1.5 rounded-8 bg-(--d-danger)/12 px-2.5 py-2 text-12 text-(--d-danger-text)"
+      class="timeline-grow flex flex-col gap-1.5 rounded-8 bg-(--d-danger-fill)/12 px-2.5 py-2 text-12 text-(--d-danger-text)"
     >
       <p>{{ failure.text }}</p>
       <pre

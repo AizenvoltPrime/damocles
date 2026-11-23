@@ -70,7 +70,7 @@ describe.each(['htmlPreview', 'designPreview', 'browser'] as const)('the %s tab\
     expect(standIn.attributes('tabindex')).toBe('0');
     expect(standIn.attributes('role')).toBe('button');
     expect(standIn.attributes('aria-label')).toBe('Go to the page');
-    expect(standIn.classes()).toEqual(expect.arrayContaining(['focus-visible:ring-2', 'focus-visible:ring-(--d-accent)']));
+    expect(standIn.classes()).toEqual(expect.arrayContaining(['focus-visible:ring-2', 'focus-visible:ring-(--d-accent-fill)']));
   });
 
   it('is named in Greek', () => {

@@ -38,6 +38,7 @@ window.damoclesBridge = {
   onConnection: () => () => undefined,
   allowYolo: async () => false,
   queueAction: () => undefined,
+  setModalOpen: () => undefined,
 };
 
 const { default: StatsBreakdown } = await import('../StatsBreakdown.vue');
@@ -173,6 +174,6 @@ describe('/stats on this computer\'s core, with remote spend', () => {
     applyLocale('el');
     const wrapper = mountBreakdown();
     expect(rowOf(wrapper, 'credential', 'credential:host:h1').text()).toContain('Περιβάλλον του prod-1');
-    expect(hostChip(rowOf(wrapper, 'project', `project:${GONE}`))?.name).toBe('Διαγραμμένος διακομιστής');
+    expect(hostChip(rowOf(wrapper, 'project', `project:${GONE}`))?.name).toBe('Διαγραμμένος απομακρυσμένος υπολογιστής');
   });
 });

@@ -41,6 +41,7 @@ import 'monaco-editor/languages/definitions/vb/register';
 import 'monaco-editor/languages/definitions/xml/register';
 import 'monaco-editor/languages/definitions/yaml/register';
 import { HOST_THEME_STYLE_ID } from '@shared/host-theme';
+import { TRUSTED_SURFACE_FLOOR } from '@shared/themes/wallpapers';
 
 export type Monaco = typeof monaco;
 export { jsonDefaults };
@@ -61,9 +62,11 @@ const THEME_NAME = 'damocles';
 
 // Monaco color id -> the design token the desktop host injects (palettes in src/desktop/theme-palettes.ts).
 const THEME_COLORS: Readonly<Record<string, `--d-${string}`>> = {
-  'editor.background': '--d-bg',
+  // The editor pane's token: its background at alpha 00 while that pane shows a wallpaper.
+  'editor.background': '--d-pane-editor',
   // An explicit minimap background, so the minimap paints over the text its column overlaps.
-  'minimap.background': '--d-bg',
+  'minimap.background': '--d-pane-editor',
+  'editorGutter.background': '--d-pane-editor',
   'editor.foreground': '--d-text',
   'editorLineNumber.foreground': '--d-faint',
   'editorLineNumber.activeForeground': '--d-muted',
@@ -71,7 +74,7 @@ const THEME_COLORS: Readonly<Record<string, `--d-${string}`>> = {
   'editorWidget.border': '--d-border2',
   'editorHoverWidget.background': '--d-card',
   'editorSuggestWidget.background': '--d-card',
-  'focusBorder': '--d-accent',
+  'focusBorder': '--d-accent-fill',
   'input.background': '--d-input',
   'list.hoverBackground': '--d-hover',
   'diffEditor.insertedTextBackground': '--d-add',
@@ -104,6 +107,16 @@ const SYNTAX_RULES: ReadonlyArray<readonly [string, `--s-${string}` | `--d-${str
 const HEX_COLOR = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
 // A token rule takes six hex digits without the #.
 const RULE_COLOR = /^#([0-9a-f]{6})$/i;
+// Every Monaco color that paints a ground over code or beside it and would otherwise fall back to the see-through editor background.
+const FLOATING = [
+  'editorWidget.background',
+  'editorHoverWidget.background',
+  'editorSuggestWidget.background',
+  'editorStickyScroll.background',
+  'editorStickyScrollHover.background',
+  'editorStickyScrollGutter.background',
+  'editorMarkerNavigation.background',
+];
 
 function applyHostTheme(): void {
   const style = getComputedStyle(document.documentElement);
@@ -111,6 +124,13 @@ function applyHostTheme(): void {
   for (const [id, variable] of Object.entries(THEME_COLORS)) {
     const value = style.getPropertyValue(variable).trim();
     if (HEX_COLOR.test(value)) colors[id] = value;
+  }
+  // what floats over code stays readable over a wallpaper: the card color at the surface alpha, never below the trusted floor
+  const card = style.getPropertyValue('--d-card').trim();
+  if (/^#[0-9a-f]{6}00$/i.test(colors['editor.background'] ?? '') && /^#[0-9a-f]{6}$/i.test(card)) {
+    const alpha = Math.max(TRUSTED_SURFACE_FLOOR, Math.min(1, Number.parseFloat(style.getPropertyValue('--d-surface-alpha')) || 1));
+    const floating = `${card}${Math.round(alpha * 255).toString(16).padStart(2, '0')}`;
+    for (const id of FLOATING) colors[id] = floating;
   }
   const rules = SYNTAX_RULES.flatMap(([token, variable]) => {
     const hex = RULE_COLOR.exec(style.getPropertyValue(variable).trim())?.[1];

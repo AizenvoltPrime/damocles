@@ -21,7 +21,7 @@ const renderedContent = computed(() =>
 
 <template>
   <MarkdownRenderer
-    class="text-13.5 leading-[1.65]"
+    class="text-13.5/prose"
     :content="renderedContent"
   />
 </template>

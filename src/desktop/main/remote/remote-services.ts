@@ -20,6 +20,7 @@ import { linuxToWslUnc } from './wsl/wsl-paths';
 import { OutsideFilesUnsupportedError } from '../workspace/remote-workspace';
 import { l } from '../../../core/l10n';
 import { LocalizedError } from '../../../shared/localized-text';
+import { THEME_CARD_POSTS } from './theme-relay';
 
 export interface RemoteServicesDeps {
   readonly authority: string;
@@ -229,5 +230,6 @@ export function remoteServices(deps: RemoteServicesDeps): Omit<HostServicesDeps,
     ui,
     user: deps.user,
     refusedPosts: REMOTE_CORE_REFUSED_POSTS,
+    textOnlyPosts: THEME_CARD_POSTS,
   };
 }

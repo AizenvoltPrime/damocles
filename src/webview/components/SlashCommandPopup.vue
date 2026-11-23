@@ -231,8 +231,8 @@ function agentStatusText(agent: SteerTargetInfo): string | null {
                 <span
                   class="shrink-0 size-2 rounded-full"
                   :class="isActive(agent)
-                    ? 'bg-(--d-accent) animate-[d-pulse_1.4s_ease-in-out_infinite]'
-                    : 'border border-(--d-warning)'"
+                    ? 'bg-(--d-accent-fill) d-pulsing'
+                    : 'border border-(--d-warning-fill)'"
                   aria-hidden="true"
                 />
 
@@ -322,7 +322,7 @@ function agentStatusText(agent: SteerTargetInfo): string | null {
                     v-if="getSourceBadge(cmd)"
                     class="rounded-5 border px-1.5 text-10.5/4.25"
                     :class="isUntrusted(cmd)
-                      ? 'border-(--d-warning) text-(--d-warning-text)'
+                      ? 'border-(--d-warning-fill) text-(--d-warning-text)'
                       : 'border-(--d-border) bg-(--d-hover) text-(--d-muted)'"
                   >
                     {{ getSourceBadge(cmd) }}

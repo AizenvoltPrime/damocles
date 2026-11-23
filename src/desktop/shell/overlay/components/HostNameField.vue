@@ -121,8 +121,8 @@ defineExpose({ submit, refuse, saveFailed, focus: () => element()?.focus(), sele
       :aria-invalid="refusal ? 'true' : undefined"
       :aria-describedby="message ? errorId : undefined"
       :class="cn(
-        'h-8 rounded-lg border-(--d-border2) bg-(--d-input) px-2.5 text-13 font-semibold text-(--d-text) transition-[border-color,box-shadow] focus-visible:border-(--d-accent) focus-visible:ring-3 focus-visible:ring-(--d-accent-soft) focus-visible:ring-offset-0',
-        refusal && 'border-(--d-danger) ring-3 ring-(--d-danger)/22 focus-visible:border-(--d-danger) focus-visible:ring-(--d-danger)/22',
+        'h-8 rounded-lg border-(--d-border2) bg-(--d-input) px-2.5 text-13 font-semibold text-(--d-text) transition-[border-color,box-shadow] focus-visible:border-(--d-accent-fill) focus-visible:ring-3 focus-visible:ring-(--d-accent-soft) focus-visible:ring-offset-0',
+        refusal && 'border-(--d-danger-fill) ring-3 ring-(--d-danger-fill)/22 focus-visible:border-(--d-danger-fill) focus-visible:ring-(--d-danger-fill)/22',
         props.class,
       )"
       @input="validate(($event.target as HTMLInputElement).value)"
@@ -135,7 +135,7 @@ defineExpose({ submit, refuse, saveFailed, focus: () => element()?.focus(), sele
         :id="errorId"
         role="alert"
         data-testid="host-name-error"
-        class="self-start rounded-6 bg-(--d-danger) px-2 py-1 text-11 font-semibold text-(--d-on-danger)"
+        class="self-start rounded-6 bg-(--d-danger-fill) px-2 py-1 text-11 font-semibold text-(--d-on-danger)"
       >{{ message }}</span>
     </Transition>
   </span>

@@ -4,9 +4,9 @@ import { useI18n } from 'vue-i18n';
 import { useResizeObserver } from '@vueuse/core';
 import { ChevronRight } from 'lucide-vue-next';
 import { MIN_SECTION_SIZE } from '../../preload/shell-channels';
-import { SECTION_HEADER_REM } from '../layout';
+import { SECTION_HEADER_REM, storedMinimum } from '../layout';
 import type { DropEdge } from '../layout/section-order';
-import { remPx } from '@/composables/useRemPx';
+import { remPx, spacedRemPx } from '@/composables/useRemPx';
 import { ALWAYS_SHOW_SECTION_ACTIONS, DOCKED_SECTION_ORDER, SECTION_CHIP_ROOM, SECTION_DRAG_MIME, SECTION_ORDER, SECTION_TITLES, type SidebarPanelId } from './sidebar-section';
 
 const props = defineProps<{
@@ -37,8 +37,8 @@ const sectionStyle = computed(() => {
   if (props.collapsed) return { flex: `0 0 ${SECTION_HEADER_REM}rem`, order };
   // a docked section is as tall as its content, which caps its own height
   if (orderable === undefined) return { flex: '0 0 auto', order };
-  // MIN_SECTION_SIZE is px at the default font.
-  if (props.bodySize === undefined) return { flex: '1 1 0px', minHeight: `${MIN_SECTION_SIZE / 16 + SECTION_HEADER_REM}rem`, order };
+  // the same body minimum the Sidebar sizes sections with
+  if (props.bodySize === undefined) return { flex: '1 1 0px', minHeight: `calc(${storedMinimum(MIN_SECTION_SIZE)}px + ${SECTION_HEADER_REM}rem)`, order };
   return { flex: `0 0 calc(${props.bodySize}px + ${SECTION_HEADER_REM}rem)`, order };
 });
 
@@ -136,24 +136,44 @@ onBeforeUnmount(() => {
   window.removeEventListener('focus', onWindowFocusChange);
 });
 
-// With a chip beside the title, the actions lie over the chip's tail on an opaque ground (the header's own hover tint on top),
-// so the chip keeps its width and never jumps as they come and go. They share the chip's grid cell, whose minimum is theirs
-// plus the chip's head, so they never reach over the title or the chip's head: a header too narrow for all three shortens
-// the title, as VS Code's pane header does. Their ground starts with a 1rem fade, so a chip they cover ends softly rather
-// than cut mid-letter, and the pointer passes through it to the chip, which rises over them when pointed at.
-const CHIP_ACTIONS = 'pointer-events-none *:pointer-events-auto relative isolate z-1 justify-self-end self-stretch col-start-2 row-start-1 bg-[linear-gradient(to_right,transparent,var(--d-panel)_1rem)] ps-5.5 before:pointer-events-none before:absolute before:inset-0 before:-z-1 group-hover/header:before:bg-[linear-gradient(to_right,transparent,var(--d-hover)_1rem)]';
+// With a chip beside the title, the actions lie over the chip's tail, so the chip keeps its width and never jumps as they come
+// and go. They share the chip's grid cell, whose minimum is theirs plus the chip's head, so they never reach over the title or
+// the chip's head: a header too narrow for all three shortens the title, as VS Code's pane header does. Neither paints a
+// ground, which would show as a patch over a wallpapered sidebar: the chip is masked under the actions, ending in a 1rem fade
+// rather than cut mid-letter, and while the chip is pointed at, or focused with the pointer out of the header, the actions
+// over it hide instead.
+const CHIP_ACTIONS = 'pointer-events-none relative z-1 justify-self-end self-stretch col-start-2 row-start-1 ps-5.5';
+// The leading padding of CHIP_ACTIONS (ps-5.5), where the chip's fade runs and no button lies: the two must stay equal.
+const ACTIONS_LEAD_REM = 1.375;
 // A #chip control's head, which the actions never cover: its margin, inset and icon or avatar (AccountChip, FilesBranchChip).
 const CHIP_CELL = 'grid-cols-[1.25rem_1fr]';
-const CHIP_GROUND = 'bg-(--d-panel) before:pointer-events-none before:absolute before:inset-0 before:-z-1 before:rounded-full group-hover/header:before:bg-(--d-hover)';
+// The mask's clear part is the actions' box less its 1rem of leading padding, which is where the fade runs.
+const CHIP_MASK = 'mask-[linear-gradient(to_left,transparent_calc(var(--actions-w)-1rem),black_var(--actions-w))]';
 const chipCell = ref<HTMLElement | null>(null);
+const chip = ref<HTMLElement | null>(null);
+const chipActions = ref<HTMLElement | null>(null);
 const chipRoom = ref(0);
+const chipWidth = ref(0);
+const actionsWidth = ref(0);
 useResizeObserver(chipCell, (entries) => {
   chipRoom.value = entries[0]?.contentRect.width ?? 0;
+});
+useResizeObserver(chip, (entries) => {
+  chipWidth.value = entries[0]?.borderBoxSize[0]?.inlineSize ?? 0;
+});
+useResizeObserver(chipActions, (entries) => {
+  actionsWidth.value = entries[0]?.borderBoxSize[0]?.inlineSize ?? 0;
 });
 provide(SECTION_CHIP_ROOM, chipRoom);
 const chipPointer = ref(false);
 const chipFocus = ref(false);
-const chipRaised = computed(() => chipPointer.value || chipFocus.value);
+const headerPointer = ref(false);
+// Focus stays on a chip after its menu closes, so focus alone raises it only while the pointer is not in the header: a
+// pointer there, off the chip, is on its way to the title or an action, which must stay within its reach.
+const chipRaised = computed(() => chipPointer.value || (chipFocus.value && !headerPointer.value));
+const chipMasked = computed(() => actionsShown.value && !chipRaised.value);
+// Only a chip that reaches under a button: one that ends in the actions' leading padding is whole once its mask is off.
+const actionsHidden = computed(() => chipRaised.value && chipWidth.value + actionsWidth.value - spacedRemPx(ACTIONS_LEAD_REM) > chipRoom.value);
 
 /** Keeps the title actions shown until `popup` (a menu a title action opened) settles. */
 async function holdActions<T>(popup: Promise<T>): Promise<T> {
@@ -194,6 +214,8 @@ defineExpose({ bodyHeight: (): number => body.value?.getBoundingClientRect().hei
       @dragstart="onDragStart"
       @dragend="onDragEnd"
       @contextmenu="onHeaderContextMenu"
+      @pointerenter="headerPointer = true"
+      @pointerleave="headerPointer = false"
     >
       <h2
         :id="headingId"
@@ -235,6 +257,7 @@ defineExpose({ bodyHeight: (): number => body.value?.getBoundingClientRect().hei
       <div
         v-if="$slots.chip"
         ref="chipCell"
+        data-testid="sidebar-section-chip-cell"
         class="grid items-center self-stretch"
         :class="hasChip ? `flex-1 ${CHIP_CELL}` : 'flex-none grid-cols-[1fr]'"
         @click.self="emit('toggle')"
@@ -243,16 +266,17 @@ defineExpose({ bodyHeight: (): number => body.value?.getBoundingClientRect().hei
              an ellipsis and its chevron), which a long title gives up first; past that only the actions and the chip's head
              set the minimum. -->
         <span
+          data-testid="sidebar-section-chip-slot"
           class="col-span-full row-start-1 flex min-w-0 self-stretch"
-          :class="hasChip ? 'w-14 min-w-full' : ''"
+          :class="[hasChip ? 'w-14 min-w-full' : '', hasChip && chipMasked ? CHIP_MASK : '']"
+          :style="{ '--actions-w': `${actionsWidth}px` }"
           @click.self="emit('toggle')"
         >
-          <!-- While pointed at or focused, the chip rises over the title actions on the same opaque ground, so none covers it. -->
           <span
+            ref="chip"
             data-testid="sidebar-section-chip"
             :data-raised="chipRaised || undefined"
-            class="relative isolate flex max-w-full min-w-0 self-center rounded-full"
-            :class="chipRaised ? `z-2 ${CHIP_GROUND}` : ''"
+            class="flex max-w-full min-w-0 self-center"
             @pointerenter="chipPointer = true"
             @pointerleave="chipPointer = false"
             @focusin="chipFocus = true"
@@ -264,9 +288,10 @@ defineExpose({ bodyHeight: (): number => body.value?.getBoundingClientRect().hei
         <div
           v-if="hasChip && $slots.actions"
           v-show="actionsShown"
+          ref="chipActions"
           data-testid="sidebar-section-actions"
           class="d-actions-in flex items-center gap-1.5"
-          :class="CHIP_ACTIONS"
+          :class="[CHIP_ACTIONS, actionsHidden ? 'opacity-0' : '*:pointer-events-auto']"
         >
           <slot name="actions" />
         </div>
@@ -282,10 +307,12 @@ defineExpose({ bodyHeight: (): number => body.value?.getBoundingClientRect().hei
         <slot name="actions" />
       </div>
     </div>
-    <!-- Not a Collapsible: the body stays mounted and clipped while collapsed, so the section height can animate; inert hides it from focus and AT. -->
+    <!-- Not a Collapsible: the body stays mounted and clipped while collapsed, so the section height can animate; inert hides it from focus and AT.
+         The body, not the section with its header, is the sidebar scope root. -->
     <div
       :id="bodyId"
       ref="body"
+      data-theme-scope="sidebar"
       :inert="collapsed"
       class="flex min-h-0 flex-1 flex-col"
     >
@@ -297,14 +324,14 @@ defineExpose({ bodyHeight: (): number => body.value?.getBoundingClientRect().hei
       data-testid="sidebar-section-drop"
       :data-edge="dropEdge"
       aria-hidden="true"
-      class="pointer-events-none absolute inset-x-0 z-4 h-1/2 border-(--d-accent) bg-(--d-accent-soft)"
+      class="pointer-events-none absolute inset-x-0 z-4 h-1/2 border-(--d-accent-fill) bg-(--d-accent-soft)"
       :class="[dropEdge === 'before' ? 'top-0' : 'bottom-0', collapsed ? (dropEdge === 'before' ? 'border-t-2' : 'border-b-2') : '']"
     />
     <div
       v-if="ordering"
       ref="dragImage"
       aria-hidden="true"
-      class="pointer-events-none fixed -top-40 left-0 rounded-7 border border-(--d-accent) bg-(--d-card) px-2 py-1 text-11 font-semibold tracking-[.07em] text-(--d-text) uppercase shadow-(--d-shadow)"
+      class="pointer-events-none fixed -top-40 left-0 rounded-7 border border-(--d-accent-fill) bg-(--d-card) px-2 py-1 text-11 font-semibold tracking-[.07em] text-(--d-text) uppercase shadow-(--d-shadow)"
     >
       {{ title }}
     </div>

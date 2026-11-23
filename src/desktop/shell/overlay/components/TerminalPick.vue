@@ -92,7 +92,8 @@ const spansHosts = new Set(props.request.projects.map((project) => project.autho
 const scope = computed(() => {
   if (skipsProjects || chosen.value === undefined) return undefined;
   const name = chosenProject.value?.name ?? t('terminal.pick.home');
-  return { project: name, label: spansHosts ? `${name} · ${hostName.value}` : name };
+  // null is the home row, which has no project and so no character of its own
+  return { project: name, ...(chosen.value === null ? {} : { projectKey: chosen.value }), label: spansHosts ? `${name} · ${hostName.value}` : name };
 });
 </script>
 

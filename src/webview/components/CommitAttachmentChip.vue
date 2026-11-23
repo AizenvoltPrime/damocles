@@ -31,7 +31,7 @@ const notShown = computed(() =>
 
 <template>
   <div
-    class="commit-attachment-chip group/chip inline-flex h-7 max-w-full min-w-0 items-center rounded-full border border-(--d-border2) bg-(--d-card) text-xs text-(--d-text) transition-colors hover:border-(--d-accent)"
+    class="commit-attachment-chip group/chip inline-flex h-7 max-w-full min-w-0 items-center rounded-full border border-(--d-border2) bg-(--d-card) text-xs text-(--d-text) transition-colors hover:border-(--d-accent-fill)"
     data-testid="commit-attachment-chip"
     :data-attachment-id="attachment.id"
     :data-hash="attachment.hash"
@@ -106,7 +106,7 @@ const notShown = computed(() =>
         <pre
           tabindex="0"
           :aria-label="t('commitAttachment.previewRegion')"
-          class="max-h-60 overflow-auto px-3 py-2 font-mono text-11/normal whitespace-pre text-(--d-text) outline-none focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-inset"
+          class="max-h-60 overflow-auto px-3 py-2 font-mono text-11/normal whitespace-pre text-(--d-text) outline-none focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-inset"
           data-testid="commit-attachment-preview-text"
         >{{ attachment.preview }}</pre>
         <p

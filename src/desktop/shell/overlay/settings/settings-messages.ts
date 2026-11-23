@@ -3,7 +3,7 @@ import { loadShellLocale, shellI18n } from '../../i18n';
 import { ACCOUNT_PROVIDER_IDS } from '@shared/settings-sections';
 
 /** The webview namespaces the settings components the overlay mounts read (the host tab's MCP panel included); only `overlay` is also a shell namespace, whose keys the merge adds beside the shell's. */
-const NAMESPACES = ['settingsModal', 'settings', 'common', 'claudeAuth', 'openai', ...ACCOUNT_PROVIDER_IDS, 'providerAuth', 'providerSignIn', 'jarvisSettings', 'voiceFirstRun', 'extensionUi', 'mcp', 'overlays', 'overlay'] as const;
+const NAMESPACES = ['settingsModal', 'settings', 'common', 'claudeAuth', 'openai', ...ACCOUNT_PROVIDER_IDS, 'providerAuth', 'providerSignIn', 'jarvisSettings', 'voiceFirstRun', 'extensionUi', 'mcp', 'overlays', 'overlay', 'themeInstall', 'themeAgent', 'trusted'] as const;
 
 function pick(bundle: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(NAMESPACES.map((name) => [name, bundle[name]]));

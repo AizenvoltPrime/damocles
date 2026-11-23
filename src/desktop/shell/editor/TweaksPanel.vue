@@ -122,8 +122,8 @@ const noticeText = computed(() => {
   return t('editor.designPreview.tweaks.resetFailed');
 });
 
-const SEGMENT_ITEM = 'h-5.5 min-w-8 flex-auto rounded-5 px-1.5 font-mono text-11 font-normal text-(--d-muted) transition-[color,background-color,box-shadow] duration-150 hover:bg-transparent hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 data-[state=on]:bg-(--d-design) data-[state=on]:text-(--d-on-design) disabled:opacity-100';
-const SWATCH_ITEM = 'size-6.5 min-w-0 rounded-full p-0.75 transition-[box-shadow,transform] duration-150 hover:bg-transparent focus-visible:ring-2 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 data-[state=on]:shadow-[0_0_0_2px_var(--d-design)] disabled:opacity-100';
+const SEGMENT_ITEM = 'h-5.5 min-w-8 flex-auto rounded-5 px-1.5 font-mono text-11 font-normal text-(--d-muted) transition-[color,background-color,box-shadow] duration-150 hover:bg-transparent hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 data-[state=on]:bg-(--d-design-fill) data-[state=on]:text-(--d-on-design) disabled:opacity-100';
+const SWATCH_ITEM = 'size-6.5 min-w-0 rounded-full p-0.75 transition-[box-shadow,transform] duration-150 hover:bg-transparent focus-visible:ring-2 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 data-[state=on]:shadow-[0_0_0_2px_var(--d-design-fill)] disabled:opacity-100';
 const BUTTON = 'd-press h-7 flex-1 gap-1.5 rounded-7 px-2 text-12 aria-disabled:cursor-default aria-disabled:opacity-(--d-opacity-disabled) [&_svg]:size-3.5';
 </script>
 
@@ -137,7 +137,7 @@ const BUTTON = 'd-press h-7 flex-1 gap-1.5 rounded-7 px-2 text-12 aria-disabled:
     <header class="flex flex-none items-center gap-2 border-b border-(--d-border) py-2 ps-3 pe-1.5">
       <span
         aria-hidden="true"
-        class="flex size-6 flex-none items-center justify-center rounded-7 bg-[color-mix(in_srgb,var(--d-design)_16%,transparent)] text-(--d-design)"
+        class="flex size-6 flex-none items-center justify-center rounded-7 bg-[color-mix(in_srgb,var(--d-design-fill)_16%,transparent)] text-(--d-design)"
       >
         <SlidersHorizontal class="size-3.5" />
       </span>
@@ -155,7 +155,7 @@ const BUTTON = 'd-press h-7 flex-1 gap-1.5 rounded-7 px-2 text-12 aria-disabled:
         data-testid="design-tweaks-close"
         :aria-label="t('editor.designPreview.tweaks.close')"
         :title="t('editor.designPreview.tweaks.close')"
-        class="d-press size-6.5 rounded-7 text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 [&_svg]:size-3.5"
+        class="d-press size-6.5 rounded-7 text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 [&_svg]:size-3.5"
         @click="emit('close')"
       >
         <X aria-hidden="true" />
@@ -184,7 +184,7 @@ const BUTTON = 'd-press h-7 flex-1 gap-1.5 rounded-7 px-2 text-12 aria-disabled:
             v-if="control.locked"
             data-testid="design-tweak-lock"
             :title="t('editor.designPreview.tweaks.lockedTitle', { id: control.locked.decisionId })"
-            class="inline-flex h-4.5 flex-none items-center gap-1 rounded-full border border-[color-mix(in_srgb,var(--d-design)_40%,var(--d-border))] bg-[color-mix(in_srgb,var(--d-design)_10%,transparent)] px-1.5 font-mono text-10.5 text-(--d-design-text)"
+            class="inline-flex h-4.5 flex-none items-center gap-1 rounded-full border border-[color-mix(in_srgb,var(--d-design-fill)_40%,var(--d-border))] bg-[color-mix(in_srgb,var(--d-design-fill)_10%,transparent)] px-1.5 font-mono text-10.5 text-(--d-design-text)"
           >
             <Lock
               aria-hidden="true"
@@ -266,7 +266,7 @@ const BUTTON = 'd-press h-7 flex-1 gap-1.5 rounded-7 px-2 text-12 aria-disabled:
         <Button
           variant="ghost"
           data-testid="design-tweaks-reset"
-          :class="cn(BUTTON, 'border border-(--d-border) text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 aria-disabled:hover:bg-transparent aria-disabled:hover:text-(--d-muted)')"
+          :class="cn(BUTTON, 'border border-(--d-border) text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 aria-disabled:hover:bg-transparent aria-disabled:hover:text-(--d-muted)')"
           :title="t('editor.designPreview.tweaks.resetTitle')"
           :aria-disabled="busy || paused || appliedCount === 0 || undefined"
           :aria-busy="resetting || undefined"
@@ -284,7 +284,7 @@ const BUTTON = 'd-press h-7 flex-1 gap-1.5 rounded-7 px-2 text-12 aria-disabled:
         </Button>
         <Button
           data-testid="design-tweaks-keep"
-          :class="cn(BUTTON, 'bg-(--d-design) font-medium text-(--d-on-design) hover:bg-[color-mix(in_srgb,var(--d-design)_88%,var(--d-text))] focus-visible:ring-2 focus-visible:ring-(--d-accent) focus-visible:ring-offset-1 focus-visible:ring-offset-(--d-panel) aria-disabled:hover:bg-(--d-design)')"
+          :class="cn(BUTTON, 'bg-(--d-design-fill) font-medium text-(--d-on-design) hover:bg-[color-mix(in_srgb,var(--d-design-fill)_88%,var(--d-text))] focus-visible:ring-2 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-1 focus-visible:ring-offset-(--d-panel) aria-disabled:hover:bg-(--d-design-fill)')"
           :title="keepTitle"
           :aria-disabled="busy || paused || changed.length === 0 || undefined"
           :aria-busy="keeping || undefined"

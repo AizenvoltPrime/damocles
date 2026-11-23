@@ -244,7 +244,7 @@ describe('grouped Projects view', () => {
     api.answerNext({ kind: 'menu', itemId: 'openFolder' });
     await wrapper.get('[data-project-key="y"]').trigger('contextmenu');
     await flushPromises();
-    expect(menuLabels(api)).toEqual(['Details for prod-1', 'Open another folder on prod-1...', 'Rename prod-1...', '-', 'Move up', 'Move down (disabled)', '-', 'Remove project']);
+    expect(menuLabels(api)).toEqual(['Details for prod-1', 'Open another folder on prod-1...', 'Rename prod-1...', '-', 'Move up', 'Move down (disabled)', '-', 'Project look…', '-', 'Remove project']);
     expect(api.openHostFolder).toHaveBeenCalledTimes(2);
     expect(api.openConnect).not.toHaveBeenCalled();
   });

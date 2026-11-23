@@ -20,6 +20,7 @@ import DesignSupersededCard from "./components/design/DesignSupersededCard.vue";
 import DesignVersionPrompt from "./components/design/DesignVersionPrompt.vue";
 import DesignApprovalPrompt from "./components/design/DesignApprovalPrompt.vue";
 import { useDesignStore } from "./stores/useDesignStore";
+import { useThemePromptStore } from "./stores/useThemePromptStore";
 import { provideSendPrompt } from "./composables/useSendPrompt";
 import { useConnectionStore } from "./stores/useConnectionStore";
 import { chatOffline, useChatHost } from "./composables/useChatHost";
@@ -78,6 +79,10 @@ const ContextUsageOverlay = defineAsyncComponent(() => import("./components/Cont
 const SubscriptionUsageOverlay = defineAsyncComponent(() => import("./components/SubscriptionUsageOverlay.vue"));
 const UsageStatsOverlay = defineAsyncComponent(() => import("./components/usage-stats/UsageStatsOverlay.vue"));
 const SkillApprovalPrompt = defineAsyncComponent(() => import("./components/SkillApprovalPrompt.vue"));
+// Desktop only: rendered while core holds a theme prompt, which VS Code never raises, so its webview never fetches them.
+const ThemeChangePrompt = defineAsyncComponent(() => import("./components/theme/ThemeChangePrompt.vue"));
+const ThemeScreenshotPrompt = defineAsyncComponent(() => import("./components/theme/ThemeScreenshotPrompt.vue"));
+const ThemeInstallPrompt = defineAsyncComponent(() => import("./components/theme/ThemeInstallPrompt.vue"));
 const MemoryPanel = defineAsyncComponent(() => import("./components/MemoryPanel.vue"));
 const MemoryAuditOverlay = defineAsyncComponent(() => import("./components/memory-audit/MemoryAuditOverlay.vue"));
 const ConsolidationOverlay = defineAsyncComponent(() => import("./components/ConsolidationOverlay.vue"));
@@ -107,7 +112,7 @@ import { useMessageHandler } from "./composables/message-handler";
 import { useDoubleKeyStroke } from "./composables/useDoubleKeyStroke";
 import { useStickToBottom } from "./composables/useStickToBottom";
 import { useExpandedTool } from "./composables/useExpandedTool";
-import { hasOpenOverlay } from "./composables/useOverlayEscape";
+import { hasOpenOverlay, reportOverlayOpen } from "./composables/useOverlayEscape";
 import { useUserScopeMemory, type MemoryCreate } from "./composables/useUserScopeMemory";
 import {
   useUIStore,
@@ -154,6 +159,9 @@ const { postMessage, getState, setState } = usePlatformBridge();
 const { t } = useI18n();
 
 initLocaleMessaging(postMessage);
+
+const desktopBridge = window.damoclesBridge;
+if (desktopBridge) reportOverlayOpen((open) => desktopBridge.setModalOpen(open));
 
 const uiStore = useUIStore();
 const connectionStore = useConnectionStore();
@@ -313,6 +321,7 @@ provide("messageScrollContainer", messageContainerRef);
 const messageListRef = ref<InstanceType<typeof VirtualizedMessageList> | null>(null);
 provideMessageListRef(messageListRef);
 const designStore = useDesignStore();
+const themePromptStore = useThemePromptStore();
 const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null);
 
 const navigatorStore = usePromptNavigatorStore();
@@ -511,7 +520,8 @@ const extensionUiStore = useExtensionUiStore();
 const hasPendingPrompt = computed(() => Boolean(
   currentPermission.value || pendingQuestion.value || pendingFormSchema.value || pendingSkillApproval.value
   || permissionStore.pendingSignIns.length > 0 || elicitationStore.pendingElicitations.length > 0 || extensionUiStore.current
-  || designStore.versionPrompts.length > 0 || designStore.approvalPrompts.length > 0,
+  || designStore.versionPrompts.length > 0 || designStore.approvalPrompts.length > 0
+  || themePromptStore.changePrompts.length > 0 || themePromptStore.screenshotPrompts.length > 0 || themePromptStore.installPrompts.length > 0,
 ));
 // On desktop a resuming chat's composer waits for core to say where the chat works, so the wrong one never shows.
 const composerAwaitsPlace = computed(() => uiStore.placePending && offline === undefined);
@@ -1001,7 +1011,9 @@ provideSendPrompt(handleSuggestion);
 </script>
 
 <template>
-  <div class="flex min-h-0 flex-1 flex-col bg-(--d-bg) text-(--d-text)">
+  <!-- Scrolls when the dock outgrows the page: a dock card is at most 70dvh, so each one can always be brought whole into view.
+       Its scrollbar takes no room: the narrowest host panel (170px) has no width to give one. -->
+  <div class="flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto bg-(--d-pane-chat) text-(--d-text) [scrollbar-width:none]">
     <ChatHeader
       :pinned-prompt="messageListRef?.hiddenPin ?? null"
       @action="(action: HeaderAction) => HEADER_ACTIONS[action]()"
@@ -1033,8 +1045,11 @@ provideSendPrompt(handleSuggestion);
     />
     <ConnectionBanner />
 
-    <!-- The message area is the scroll-to-bottom button's positioning context. -->
-    <div class="relative min-h-0 flex-1">
+    <!-- Positions and clips the scroll-to-bottom button and the toaster, shadows included: paint over a docked trusted card holds it. -->
+    <div
+      class="relative min-h-0 flex-1 overflow-clip"
+      data-testid="transcript-frame"
+    >
       <Toaster
         position="top-right"
         :duration="4000"
@@ -1078,8 +1093,9 @@ provideSendPrompt(handleSuggestion);
     </div>
 
     <!-- The bottom dock, top to bottom as in Chat Panel.dc.html: banners, prompts, plan banner, status row, status strip, composer. -->
+    <!-- Isolated: the stacking context that keeps every item's shadow (.d-dock-shadow) under every item's body. -->
     <div
-      class="shrink-0 pb-3.5 pt-2"
+      class="isolate shrink-0 pb-3.5 pt-2"
       data-testid="chat-dock"
     >
       <div class="chat-column flex flex-col gap-2">
@@ -1219,6 +1235,7 @@ provideSendPrompt(handleSuggestion);
             <SkillApprovalPrompt
               v-if="pendingSkillApproval"
               :visible="true"
+              :request-id="pendingSkillApproval.toolUseId"
               :skill-name="pendingSkillApproval.skillName"
               :skill-description="pendingSkillApproval.skillDescription"
               @approve="handleSkillApprove"
@@ -1233,6 +1250,21 @@ provideSendPrompt(handleSuggestion);
           <DesignVersionPrompt />
 
           <DesignApprovalPrompt @release-focus="focusComposer" />
+
+          <ThemeChangePrompt
+            v-if="themePromptStore.changePrompts.length > 0"
+            @release-focus="focusComposer"
+          />
+
+          <ThemeScreenshotPrompt
+            v-if="themePromptStore.screenshotPrompts.length > 0"
+            @release-focus="focusComposer"
+          />
+
+          <ThemeInstallPrompt
+            v-if="themePromptStore.installPrompts.length > 0"
+            @release-focus="focusComposer"
+          />
         </div>
 
         <PlanReadyBanner />
@@ -1571,6 +1603,7 @@ provideSendPrompt(handleSuggestion);
     >
       <PlanApprovalOverlay
         v-if="pendingPlanApproval && isPlanOverlayVisible"
+        :request-id="`${pendingPlanApproval.toolUseId}:${pendingPlanApproval.planVersion ?? 0}`"
         :plan-content="pendingPlanApproval.planContent"
         :design-link="pendingPlanApproval.designLink"
         @approve="handlePlanApprove"

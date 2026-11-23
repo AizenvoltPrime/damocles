@@ -3,6 +3,7 @@ import { COMPASS_PI_TOOL_NAMES } from './compass-tools';
 import { WEB_PI_TOOL_NAMES } from '../web-access/web-tool-specs';
 import { IMAGE_PI_TOOL_NAMES } from './image-tool-specs';
 import { FORGE_PI_TOOL_NAMES, FORGE_TOOL_GUIDANCE } from './forge-tool-specs';
+import { THEME_PI_TOOL_NAMES, THEME_TOOL_GUIDANCE } from './theme-tool-specs';
 import { MCP_RESOURCE_TOOL_NAMES } from '../../../shared/tool-names';
 import { relayedToolNames, relayedToolOf, type RelayedTool } from '../mcp/relayed-tool-names';
 
@@ -18,14 +19,14 @@ import { relayedToolNames, relayedToolOf, type RelayedTool } from '../mcp/relaye
  * import is fine", retiring the guard for every group at once.
  */
 
-export type BuiltinDeferredGroup = 'browser' | 'compass' | 'web' | 'image' | 'forge' | 'mcp_resources';
+export type BuiltinDeferredGroup = 'browser' | 'compass' | 'web' | 'image' | 'forge' | 'theme' | 'mcp_resources';
 
 export const MCP_RESOURCES_GROUP: BuiltinDeferredGroup = 'mcp_resources';
 
 /**
  * The built-in deferrable groups, in the order the ToolSearch inventory lists them — what the model
  * reads, so it is pinned by test rather than left to import order. The pin encodes exactly one claim:
- * `web` comes after `browser`, `image` after `web`, `forge` after `image`, and `mcp_resources` comes last. It is NOT "mirrors
+ * `web` comes after `browser`, `image` after `web`, `forge` after `image`, `theme` after `forge`, and `mcp_resources` comes last. It is NOT "mirrors
  * `FULL_TOOL_CATALOG`", which runs compass → browser → web → image and so already disagrees. A new group
  * needs a deliberate position and a pin edit.
  */
@@ -36,6 +37,7 @@ export const BUILTIN_DEFERRED_GROUPS: readonly { group: BuiltinDeferredGroup; na
   { group: 'image', names: IMAGE_PI_TOOL_NAMES },
   // the group line is the tools' only guidance; no prompt names them
   { group: 'forge', names: FORGE_PI_TOOL_NAMES, guidance: FORGE_TOOL_GUIDANCE },
+  { group: 'theme', names: THEME_PI_TOOL_NAMES, guidance: THEME_TOOL_GUIDANCE },
   { group: MCP_RESOURCES_GROUP, names: MCP_RESOURCE_TOOL_NAMES },
 ];
 
@@ -81,14 +83,15 @@ export function deferredToolNames(eligible: Iterable<string>, mcpNames: Iterable
 /**
  * Groups whose service is the user's own: the client's browser, which a daemon's core reaches only while a client is
  * attached, and the GitHub and GitLab accounts of the computer the chat's turn is pinned to (this computer's own core: its
- * own accounts), loadable only while one exists.
+ * own accounts), loadable only while one exists, and the desktop app's look, which only this computer's desktop core changes.
  */
-const USER_SCOPE_GROUPS = ['browser', 'forge'] as const satisfies readonly BuiltinDeferredGroup[];
+const USER_SCOPE_GROUPS = ['browser', 'forge', 'theme'] as const satisfies readonly BuiltinDeferredGroup[];
 
 /** What a core reaches of its client's user scope now (user-scope.ts userScopeReach). */
 export interface UserScopeReach {
   readonly browser: boolean;
   readonly forge: boolean;
+  readonly theme: boolean;
   readonly relayedTool: (relayed: RelayedTool) => boolean;
 }
 
@@ -100,15 +103,21 @@ export function userScopeToolNames(reach: UserScopeReach): ReadonlySet<string> {
 }
 
 const FORGE_NAMES: ReadonlySet<string> = new Set(FORGE_PI_TOOL_NAMES);
+const THEME_NAMES: ReadonlySet<string> = new Set(THEME_PI_TOOL_NAMES);
 
 /**
  * The loadable snapshot: the deferred tools ToolSearch may list and load, those with an unavailable service left out, and in
- * a design chat or an agent it started (`design`) every browser tool that is not a read (PD-25) and every GitHub and GitLab
- * tool.
+ * a design chat or an agent it started (`design`) every browser tool that is not a read (PD-25), every GitHub and GitLab
+ * tool and every theme tool.
  */
 export function loadableToolNames(deferred: readonly string[], reach: UserScopeReach, design: boolean): string[] {
   const unavailable = userScopeToolNames(reach);
-  return deferred.filter((name) => !unavailable.has(name) && (!design || (designBrowserAllows(name) && !FORGE_NAMES.has(name))));
+  return deferred.filter((name) => !unavailable.has(name) && (!design || (designBrowserAllows(name) && !FORGE_NAMES.has(name) && !THEME_NAMES.has(name))));
+}
+
+/** A nested agent's loadable snapshot: the theme tools change the app's look for the main chat alone. */
+export function nestedLoadableToolNames(loadable: readonly string[]): string[] {
+  return loadable.filter((name) => !THEME_NAMES.has(name));
 }
 
 /**

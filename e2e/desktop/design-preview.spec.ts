@@ -11,7 +11,7 @@ import { seedStubModel, type HermeticHome } from './support/hermetic';
 import { call, startOpenAIStub, type OpenAIStub } from './support/openai-stub';
 import { menuItem, overlayMenu, overlayViewState, readyOverlay } from './support/overlay';
 import { openProjectChat } from './support/screenshots';
-import { shellPage } from './support/shell';
+import { SHELL_URL, shellPage } from './support/shell';
 import { awaitTurnEnd, chatInput } from './support/ui';
 
 // A screen the designer writes opens in a preview tab of the design chat, a sandboxed view laid over the tab's frame at
@@ -229,14 +229,14 @@ test('a static design switches states with scripts off, and the page reaches no 
     await shell.getByTestId('design-preview-provenance').click();
     await expect.poll(() => inShownDesignView<string>(app, `getComputedStyle(document.querySelector('[data-ds-component="Button"]')).outlineStyle`)).not.toBe('none');
     // Hovering a grounded element labels it with its data-ds attributes.
-    await app.evaluate(async ({ BrowserWindow, WebContentsView }, scheme) => {
-      const win = BrowserWindow.getAllWindows()[0]!;
+    await app.evaluate(async ({ BrowserWindow, WebContentsView }, [scheme, shellUrl]) => {
+      const win = BrowserWindow.getAllWindows().find((each) => each.webContents.getURL().startsWith(shellUrl))!;
       const view = win.contentView.children.find((child) => child instanceof WebContentsView && child.getVisible() && child.webContents.getURL().startsWith(scheme)) as Electron.WebContentsView;
       const contents = view.webContents;
       const center = await contents.executeJavaScript(`(() => { const r = document.querySelector('[data-ds-component="Button"]').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`) as [number, number];
       const zoom = contents.getZoomFactor();
       for (const [x, y] of [[1, 1], center]) contents.sendInputEvent({ type: 'mouseMove', x: Math.round(x! * zoom), y: Math.round(y! * zoom) });
-    }, DESIGN_SCHEME);
+    }, [DESIGN_SCHEME, SHELL_URL] as const);
     await expect.poll(() => inShownDesignView<boolean>(app, `[...document.querySelectorAll('div[aria-hidden="true"]')].some((label) => label.textContent.includes('component Button') && label.textContent.includes('decision D1'))`)).toBe(true);
 
     // Nothing reaches the network or the app: fetch, an http image and a WebSocket to a server that would answer them, the
@@ -260,11 +260,11 @@ test('a static design switches states with scripts off, and the page reaches no 
     await expectToStay(opened, [], 2_000);
 
     // The session's request cancellation, below CSP: a load main itself starts in the view is refused before it leaves.
-    const refused = await app.evaluate(async ({ BrowserWindow, WebContentsView }, scheme) => {
-      const win = BrowserWindow.getAllWindows()[0]!;
+    const refused = await app.evaluate(async ({ BrowserWindow, WebContentsView }, [scheme, shellUrl]) => {
+      const win = BrowserWindow.getAllWindows().find((each) => each.webContents.getURL().startsWith(shellUrl))!;
       const view = win.contentView.children.find((child) => child instanceof WebContentsView && child.getVisible() && child.webContents.getURL().startsWith(scheme)) as Electron.WebContentsView;
       return view.webContents.loadURL('https://example.com/').then(() => 'loaded', (error: { errno?: number; code?: string }) => `${error.code ?? ''} ${error.errno ?? ''}`.trim());
-    }, DESIGN_SCHEME);
+    }, [DESIGN_SCHEME, SHELL_URL] as const);
     expect(refused).toBe('ERR_BLOCKED_BY_CLIENT -20');
   } finally {
     await witness.close();
@@ -417,12 +417,13 @@ test("a link to another screen moves the tab there, Back and Forward walk the vi
 
     // Forward from the keyboard while focus is in the page, as a browser takes it.
     await shell.getByTestId('design-preview-frame').click();
-    await app.evaluate(({ BrowserWindow, WebContentsView }, scheme) => {
-      const view = BrowserWindow.getAllWindows()[0]!.contentView.children.find((child) => child instanceof WebContentsView && child.getVisible() && child.webContents.getURL().startsWith(scheme)) as Electron.WebContentsView;
+    await app.evaluate(({ BrowserWindow, WebContentsView }, [scheme, shellUrl]) => {
+      const win = BrowserWindow.getAllWindows().find((each) => each.webContents.getURL().startsWith(shellUrl))!;
+      const view = win.contentView.children.find((child) => child instanceof WebContentsView && child.getVisible() && child.webContents.getURL().startsWith(scheme)) as Electron.WebContentsView;
       const mac = process.platform === 'darwin';
       view.webContents.focus();
       view.webContents.sendInputEvent({ type: 'keyDown', keyCode: mac ? ']' : 'Right', modifiers: [mac ? 'meta' : 'alt'] });
-    }, DESIGN_SCHEME);
+    }, [DESIGN_SCHEME, SHELL_URL] as const);
     await expect(shell.getByTestId('design-preview-path')).toHaveText('screens/S2-detail.html');
     await expect.poll(() => inShownDesignView<string>(app, 'document.title'), { timeout: 30_000 }).toBe('Detail');
 

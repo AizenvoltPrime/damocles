@@ -274,8 +274,8 @@ describe('GitHub and GitLab tools: agents and loadability', () => {
   it('the group is loadable only with an account, and never in a design chat or an agent it started', () => {
     const deferred = deferredToolNames(['read', ...FORGE_PI_TOOL_NAMES], []);
     expect(deferred).toEqual([...FORGE_PI_TOOL_NAMES]);
-    expect(loadableToolNames(deferred, { browser: true, forge: true, relayedTool: () => true }, false)).toEqual([...FORGE_PI_TOOL_NAMES]);
-    expect(loadableToolNames(deferred, { browser: true, forge: false, relayedTool: () => true }, false)).toEqual([]);
-    expect(loadableToolNames(deferred, { browser: true, forge: true, relayedTool: () => true }, true)).toEqual([]);
+    expect(loadableToolNames(deferred, { browser: true, forge: true, theme: true, relayedTool: () => true }, false)).toEqual([...FORGE_PI_TOOL_NAMES]);
+    expect(loadableToolNames(deferred, { browser: true, forge: false, theme: true, relayedTool: () => true }, false)).toEqual([]);
+    expect(loadableToolNames(deferred, { browser: true, forge: true, theme: true, relayedTool: () => true }, true)).toEqual([]);
   });
 });

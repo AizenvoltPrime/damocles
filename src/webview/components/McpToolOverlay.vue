@@ -157,7 +157,7 @@ function closeLightbox(): void {
       <div
         v-if="isFailed && tool.errorMessage"
         role="alert"
-        class="flex items-start gap-2.25 rounded-10 border border-[color-mix(in_srgb,var(--d-danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--d-danger)_8%,transparent)] px-3 py-2.25 text-(--d-danger-text)"
+        class="flex items-start gap-2.25 rounded-10 border border-[color-mix(in_srgb,var(--d-danger-fill)_35%,transparent)] bg-[color-mix(in_srgb,var(--d-danger-fill)_8%,transparent)] px-3 py-2.25 text-(--d-danger-text)"
       >
         <CircleX
           class="size-3.5 mt-0.5 flex-none"

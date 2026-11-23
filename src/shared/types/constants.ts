@@ -16,6 +16,12 @@ export const FEEDBACK_MARKER = "The user provided the following reason for the r
 export const POLICY_BLOCK_MARKER = "Blocked by Damocles policy:";
 
 /**
+ * The longest free text one prompt answer carries, in UTF-16 code units: an approval's feedback, a design approval's note and a
+ * theme card's note. Their inputs hold it as `maxlength` and the message router refuses a longer one, so the two must stay equal.
+ */
+export const MAX_PROMPT_ANSWER_CHARS = 10_000;
+
+/**
  * Prompt-cache TTL (ms): idle gaps at or beyond this are worth mentioning as the likely cause of a
  * cache miss. Mirrors pi's `core/cache-stats.ts` CACHE_TTL_MS (Anthropic default 5-min prompt-cache
  * TTL). Single source of truth shared by the extension detector (`cache-stats.ts`) and the webview

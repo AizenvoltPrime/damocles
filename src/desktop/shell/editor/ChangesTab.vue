@@ -432,7 +432,7 @@ defineExpose({ scrollTo, addComment });
           class="relative"
         >
           <SlidingIndicator
-            class="text-(--d-accent-soft)"
+            class="[--tone:var(--d-accent-soft)]"
             :box="box"
             :radius="6"
             :animate="animate"
@@ -450,7 +450,7 @@ defineExpose({ scrollTo, addComment });
             :aria-setsize="entries.length"
             :tabindex="index === Math.max(0, selectedIndex) ? 0 : -1"
             :title="`${visibleText(entry.path)} • ${entry.status}${entry.note ? ` • ${entry.note}` : ''}`"
-            class="relative flex cursor-pointer items-center gap-1.75 rounded-6 px-2 text-xs outline-none select-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
+            class="relative flex cursor-pointer items-center gap-1.75 rounded-6 px-2 text-xs outline-none select-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent-fill)]"
             :class="index === selectedIndex ? '' : 'hover:bg-(--d-hover)'"
             :style="{ height: `${remPx(ENTRY_REM)}px` }"
             @click="select(index, false)"
@@ -582,7 +582,7 @@ defineExpose({ scrollTo, addComment });
             :aria-label="t('changesTab.loading')"
             class="absolute inset-x-0 -bottom-px h-0.5"
           >
-            <div class="d-sweep-bar size-full text-(--d-accent)" />
+            <div class="d-sweep-bar size-full [--tone:var(--d-accent-fill)]" />
           </div>
         </div>
         <div
@@ -640,7 +640,7 @@ defineExpose({ scrollTo, addComment });
                     :data-line="row.at?.line"
                     :tabindex="comments ? (index === tabStop ? 0 : -1) : undefined"
                     :aria-label="comments ? lineLabel(row) : undefined"
-                    class="flex items-center whitespace-pre outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
+                    class="flex items-center whitespace-pre outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent-fill)]"
                     :class="lineClass(row.line)"
                     :style="{ height: `${remPx(LINE_REM)}px` }"
                     @keydown="onLineKeydown($event, row, index)"
@@ -694,7 +694,7 @@ defineExpose({ scrollTo, addComment });
                   >
                     <div
                       class="mt-1 flex h-[calc(100%-0.5rem)] w-full max-w-160 flex-col rounded-9 border bg-(--d-card) px-2.5 py-2 font-sans text-12.5 whitespace-normal"
-                      :class="[row.note === 'stale' ? 'border-(--d-warning)' : 'border-(--d-border2)', leaving === row.key ? 'review-comment-out' : arrived === row.key ? 'review-comment-in' : '']"
+                      :class="[row.note === 'stale' ? 'border-(--d-warning-fill)' : 'border-(--d-border2)', leaving === row.key ? 'review-comment-out' : arrived === row.key ? 'review-comment-in' : '']"
                       :data-stale="row.note === 'stale' || undefined"
                       @animationend="onCardAnimationEnd(row.key)"
                     >
@@ -749,7 +749,7 @@ defineExpose({ scrollTo, addComment });
                     :style="{ height: `${rowHeight(index)}px` }"
                   >
                     <div
-                      class="mt-1 flex h-[calc(100%-0.5rem)] w-full max-w-160 flex-col rounded-9 border border-(--d-accent) bg-(--d-input) p-2 font-sans whitespace-normal"
+                      class="mt-1 flex h-[calc(100%-0.5rem)] w-full max-w-160 flex-col rounded-9 border border-(--d-accent-fill) bg-(--d-input) p-2 font-sans whitespace-normal"
                       :class="leaving === row.key ? 'review-comment-out' : arrived === row.key ? 'review-comment-in' : ''"
                       @animationend="onCardAnimationEnd(row.key)"
                     >
@@ -791,7 +791,7 @@ defineExpose({ scrollTo, addComment });
                           type="button"
                           size="sm"
                           data-testid="review-comment-add"
-                          class="d-press h-6 gap-1.5 rounded-7 bg-(--d-accent) px-2.5 text-12 font-semibold text-(--d-on-accent) hover:bg-(--d-accent) hover:brightness-110"
+                          class="d-press h-6 gap-1.5 rounded-7 bg-(--d-accent-fill) px-2.5 text-12 font-semibold text-(--d-on-accent) hover:bg-(--d-accent-fill) hover:brightness-110"
                           :disabled="editing.text.trim() === ''"
                           @click="addComment"
                         >

@@ -24,8 +24,8 @@ type RelayedCall = RelayedForgeRequest & { readonly viewId?: string };
 
 const failed = (text: string): ForgeToolAnswer => ({ text, isError: true });
 
-/** The host project holding folder: the project itself, or the one a folder below it is in. */
-function projectOf(deps: ForgeRelayDeps, folder: string): RemoteProject | undefined {
+/** The host project holding folder: the project itself, or the one a folder below it is in; never another host's. */
+export function hostProjectOf(deps: Pick<ForgeRelayDeps, 'authority' | 'projects' | 'os'>, folder: string): RemoteProject | undefined {
   const os = deps.os();
   if (os === undefined) return undefined;
   const at = folderKeyOn(os, folder);
@@ -42,7 +42,7 @@ async function prepare(deps: ForgeRelayDeps, call: RelayedCall): Promise<{ reado
     return { answer: failed('This is not a GitHub or GitLab tool.') };
   }
   if (!deps.enabled()) return { answer: failed(FORGE_TOOLS_OFF_HERE) };
-  const project = projectOf(deps, call.folder);
+  const project = hostProjectOf(deps, call.folder);
   if (!project) {
     deps.log(`[remote] user.forge refused for ${deps.authority}: the folder is none of the host's projects`);
     return { answer: failed("This chat's folder is not one of this host's projects on the computer that shows the chat, so the GitHub and GitLab tools do not run for it.") };

@@ -11,6 +11,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { useExtensionUiStore, type ExtensionUiRequest } from '@/stores/useExtensionUiStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { MODAL_Z_INDEX, useOverlayEscape } from '@/composables/useOverlayEscape';
+import { useTrustedVisibility } from '@/composables/useTrustedVisibility';
+import { useSettingsStore } from '@/stores/useSettingsStore';
+import TrustedCheckingNote from './TrustedCheckingNote.vue';
 
 const { t } = useI18n();
 const store = useExtensionUiStore();
@@ -30,6 +33,9 @@ const zIndex = MODAL_Z_INDEX;
 const textValue = ref('');
 const inputRef = ref<{ $el?: HTMLElement } | HTMLElement | null>(null);
 const dialogRef = ref<HTMLElement | null>(null);
+// An extension's question is answered here, so the dialog is trusted UI with the gate; its body is keyed by the request.
+const settingsStore = useSettingsStore();
+const { isVisible, explain, refuse } = useTrustedVisibility(dialogRef, () => settingsStore.hostCapabilities.damoclesTheme);
 
 /**
  * The request this dialog is RENDERED against — both the markup and the answer handlers read it, so a
@@ -91,7 +97,9 @@ function onSelect(value: unknown): void {
   if (typeof value === 'string') respond(value);
 }
 
+// Escape reaches this from the overlay stack's document listener, past the body's hold.
 function cancel(): void {
+  if (refuse()) return;
   respond(displayed.value?.kind === 'confirm' ? false : null);
 }
 
@@ -118,16 +126,20 @@ function onOpenChange(open: boolean): void {
       />
       <DialogContent
         data-overlay-layer
+        data-trusted
         data-testid="extension-ui-dialog"
-        class="d-dialog fixed left-1/2 top-1/2 w-[calc(100%-2rem)] max-w-md -translate-1/2 rounded-2xl border border-(--d-border2) bg-(--d-card) p-4 text-(--d-text) shadow-(--d-shadow) outline-none"
+        class="d-dialog fixed left-1/2 top-1/2 flex max-h-[calc(100dvh-1rem)] w-[calc(100%-2rem)] max-w-md -translate-1/2 flex-col overflow-hidden rounded-2xl border border-(--d-border2) bg-(--d-card) text-(--d-text) shadow-(--d-shadow) outline-none"
         :style="{ zIndex }"
         :aria-describedby="undefined"
         @pointer-down-outside="(e: Event) => e.preventDefault()"
       >
+        <!-- The gate's target: bounded by the dialog, it scrolls inside itself, and each request is a new element. -->
         <div
           ref="dialogRef"
+          :key="shown.requestId"
           tabindex="-1"
-          class="outline-none"
+          class="relative min-h-0 overflow-y-auto p-4 outline-none"
+          data-testid="extension-ui-body"
         >
           <!-- `agentName` is untrusted (model- or user-authored) and is sanitized extension-side at capture;
                it stays TEXT here — never v-html.
@@ -146,7 +158,7 @@ function onOpenChange(open: boolean): void {
             <Badge
               v-if="shown.agentName"
               variant="secondary"
-              class="max-w-[16rem] truncate"
+              class="max-w-3xs truncate"
             >
               <span class="mr-1 text-muted-foreground">{{ t('extensionUi.agent') }}</span>
               <span
@@ -185,6 +197,7 @@ function onOpenChange(open: boolean): void {
             :key="shown.requestId"
             highlight-on-hover
             class="rounded-md border border-border bg-background"
+            :aria-disabled="!isVisible || undefined"
             @update:model-value="onSelect"
           >
             <CommandInput :placeholder="shown.placeholder ?? t('extensionUi.filterPlaceholder')" />
@@ -216,6 +229,8 @@ function onOpenChange(open: boolean): void {
           <div
             v-else-if="shown.kind === 'confirm'"
             class="flex justify-end gap-2"
+            role="group"
+            :aria-disabled="!isVisible || undefined"
           >
             <Button
               variant="outline"
@@ -242,7 +257,11 @@ function onOpenChange(open: boolean): void {
               :placeholder="shown.placeholder ?? ''"
               @keydown.enter="respond(textValue)"
             />
-            <div class="flex justify-end gap-2">
+            <div
+              class="flex justify-end gap-2"
+              role="group"
+              :aria-disabled="!isVisible || undefined"
+            >
               <Button
                 variant="outline"
                 @click="cancel"
@@ -265,7 +284,11 @@ function onOpenChange(open: boolean): void {
               rows="8"
               class="font-mono text-xs"
             />
-            <div class="flex justify-end gap-2">
+            <div
+              class="flex justify-end gap-2"
+              role="group"
+              :aria-disabled="!isVisible || undefined"
+            >
               <Button
                 variant="outline"
                 @click="cancel"
@@ -281,6 +304,8 @@ function onOpenChange(open: boolean): void {
           <div
             v-if="shown.kind === 'select'"
             class="mt-3 flex justify-end"
+            role="group"
+            :aria-disabled="!isVisible || undefined"
           >
             <Button
               variant="ghost"
@@ -290,6 +315,12 @@ function onOpenChange(open: boolean): void {
               {{ t('common.cancel') }}
             </Button>
           </div>
+          <TrustedCheckingNote
+            overlay
+            class="bottom-0"
+            :shown="explain"
+            :text="t('trusted.checkingVisible')"
+          />
         </div>
       </DialogContent>
     </DialogPortal>

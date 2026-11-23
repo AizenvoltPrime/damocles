@@ -30,7 +30,7 @@ defineEmits<{
   >
     <span
       class="size-1.5 rounded-full"
-      :class="activeCount > 0 ? 'bg-(--d-accent) animate-[d-pulse_1.6s_ease-in-out_infinite]' : 'bg-(--d-faint)'"
+      :class="activeCount > 0 ? 'bg-(--d-accent-fill) d-pulsing' : 'bg-(--d-faint)'"
       aria-hidden="true"
     />
     <span class="tabular-nums @max-[43rem]:sr-only">{{ label }}</span>

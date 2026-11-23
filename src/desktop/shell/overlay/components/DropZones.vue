@@ -72,7 +72,7 @@ onBeforeUnmount(() => stop?.());
     <!-- The ghost: the dragged pane's name rides beside the pointer. -->
     <div
       data-testid="drop-zones-ghost"
-      class="drop-zones-ghost pointer-events-none fixed top-0 left-0 flex items-center gap-1.5 rounded-lg border border-(--d-accent) bg-(--d-card) py-1 pr-2.5 pl-1.5 text-12 font-medium text-(--d-text) shadow-(--d-shadow)"
+      class="drop-zones-ghost pointer-events-none fixed top-0 left-0 flex items-center gap-1.5 rounded-lg border border-(--d-accent-fill) bg-(--d-card) py-1 pr-2.5 pl-1.5 text-12 font-medium text-(--d-text) shadow-(--d-shadow)"
       :style="{ transform: ghostTransform }"
     >
       <GripVertical

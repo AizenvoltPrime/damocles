@@ -1,0 +1,3 @@
+The Aurora theme ships with Damocles under the repository's MIT License (see LICENSE at the repository root).
+Its two wallpapers are drawn procedurally by scripts/generate-theme-art.ts, with no third-party image or asset;
+run npm run generate:theme-art to draw them again. It uses Damocles' built-in fonts.

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { expect, test } from './support/fixtures';
-import { overlayPage, pressKeys, PRIMARY, recordedToasts, recordToasts, selectedProjectKey, shellPage, shellState } from './support/shell';
+import { onMainWindow, overlayPage, pressKeys, PRIMARY, recordedToasts, recordToasts, selectedProjectKey, shellPage, shellState } from './support/shell';
 import { menuItem, overlayMenu, readyOverlay } from './support/overlay';
 import { commitMessage, gitLog, ledgerPath, moreActions, openScmProject, scmSection } from './support/scm';
 import { openProjectChat, settled } from './support/screenshots';
@@ -316,7 +316,7 @@ test('an untrusted project runs no git, and granting trust activates Source cont
   await addProject(app, home.project, false);
   const shell = await shellPage(app);
   // The minimum window, where the card is taller than its section: its action must still scroll into reach.
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setContentSize(900, 600));
+  await onMainWindow(app, (win) => win.setContentSize(900, 600));
   await expect(state(shell)).toHaveAttribute('data-state', 'untrusted');
   await expect(state(shell)).toContainText('Trust this folder to use source control');
   expect(await gitLog(app)).toBe('');

@@ -6,7 +6,7 @@ const SRC = path.resolve(__dirname, '..', '..');
 const GUARDED_ROOTS = [path.join(SRC, 'webview'), path.join(SRC, 'desktop')];
 // an animation that never ends: on a <Transition>'s own child it replaces the enter or leave animation, and Vue then waits
 // out one iteration of it (motion.css `.d-spinning`)
-const ENDLESS = /\bd-spinning\b|\banimate-spin\b|\bd-pulsing\b|_infinite\]/;
+const ENDLESS = /\bd-spinning\b|\bd-pulsing\b|\bd-attention-loop\b/;
 
 function vueFiles(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {

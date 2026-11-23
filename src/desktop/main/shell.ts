@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { ipcMain, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent, type Rectangle, type WebContents } from 'electron';
-import { HOST_THEME_STYLE_ID } from '../../shared/host-theme';
+import { HOST_THEME_STYLE_ID, HOST_TRUSTED_STYLE_ID } from '../../shared/host-theme';
 import { isSettingsSectionId, type SettingsSectionId } from '../../shared/settings-sections';
 import { MAX_BROWSER_URL_LENGTH } from '../../shared/typed-address';
+import { isTimeZone } from '../../shared/themes/schedule';
 import { HOST_ID } from '../daemon/control-messages';
 import { MAX_HOST_NAME_LENGTH, type NameCheck, type OverlayAnswer, type OverlayRect, type OverlayRequest, type WslDistroInfo } from '../preload/overlay-channels';
 import { isWslDistroName } from './remote/wsl/distro-name';
@@ -37,6 +38,7 @@ import {
   MAX_SHELL_COORDINATE,
   MAX_REORDER_KEYS,
   MAX_TAG_LENGTH,
+  parsePageMotion,
   SHELL_CHANNELS,
   SHELL_FOCUS_PARTS,
   WINDOW_CONTROLS,
@@ -88,6 +90,7 @@ import {
   type ReopenInContainerResult,
   type ProjectsView,
   type RemoveProjectResult,
+  type ProjectLookResult,
   type SelectChatResult,
   type ShellChatList,
   type ShellFocusPart,
@@ -218,6 +221,7 @@ export interface ShellActions {
   locateProject(key: string): Promise<void>;
   retryRelocation(key: string): Promise<void>;
   abandonRelocation(key: string): Promise<void>;
+  projectLook(key: string): Promise<ProjectLookResult>;
   selectProject(key: string): Promise<void>;
   grantTrust(key: string): Promise<void>;
   // undefined: projectKey is not a project of main's list
@@ -274,6 +278,20 @@ export interface ShellActions {
   windowControl(control: WindowControl): void;
   openSettings(section: SettingsSectionId | undefined): void;
   setContentBounds(bounds: Rectangle): void;
+  // the theme editor dock's slot in window DIPs; undefined while the shell shows none
+  setThemeDockBounds(bounds: Rectangle | undefined): void;
+  // the page's visibility (hidden while the window is covered or minimized) and the OS's reduced motion, which pause moving wallpapers
+  setPageMotion(motion: { readonly visible: boolean; readonly reducedMotion: boolean }): void;
+  // the IANA zone the page's Intl resolves, which follows the OS; main evaluates theme schedules in it
+  setTimeZone(zone: string): void;
+  endThemeDockPeek(): void;
+  useMyTheme(): void;
+  // the keep-changes banner's Keep and Revert, and the Show in window strip's Stop showing
+  keepThemeChanges(): Promise<void>;
+  revertThemeChanges(): Promise<void>;
+  stopShowingProposal(): Promise<void>;
+  // the shell's renderer went away other than by a clean exit (the theme crash loop counts it)
+  rendererGone(): void;
   setSidebarLayout(layout: ShellSidebarLayout): void;
   setGridSizes(sizes: ShellGridSizes): void;
   setFocusedPart(part: ShellFocusPart | null): void;
@@ -1316,7 +1334,10 @@ export function reportFailure<A extends unknown[], R>(action: (...args: A) => Pr
 // Monaco's editor, JSON and TypeScript module workers; a worker carries no nonce, and its script response has its own CSP.
 export const SHELL_WORKER_SRC: string = `${APP_ORIGIN}/desktop-shell/assets/`;
 
-/** The shell page main serves at SHELL_PAGE_URL: the built shell app under a fresh script nonce, the current theme and the UI language. */
+/**
+ * The shell page main serves at SHELL_PAGE_URL: the built shell app under a fresh script nonce, the current theme and the UI
+ * language. media-src lets the wallpaper layer play a video blob; the chat pages play none.
+ */
 export function shellHtml(theme: PanelTheme, lang: ShellLocale): string {
   const nonce = randomBytes(16).toString('base64');
   const assets = `${APP_ORIGIN}/desktop-shell/assets`;
@@ -1325,9 +1346,10 @@ export function shellHtml(theme: PanelTheme, lang: ShellLocale): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${APP_ORIGIN} 'unsafe-inline'; script-src 'nonce-${nonce}'; worker-src ${SHELL_WORKER_SRC}; font-src ${APP_ORIGIN}; img-src ${APP_ORIGIN} data:; base-uri 'none'; form-action 'none';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${APP_ORIGIN} 'unsafe-inline'; script-src 'nonce-${nonce}'; worker-src ${SHELL_WORKER_SRC}; font-src ${APP_ORIGIN}; img-src ${APP_ORIGIN} data:; media-src ${APP_ORIGIN}; base-uri 'none'; form-action 'none';">
   <link href="${assets}/index.css" rel="stylesheet">
   <style id="${HOST_THEME_STYLE_ID}">${theme.css}</style>
+  <style id="${HOST_TRUSTED_STYLE_ID}">${theme.trustedCss}</style>
   <title>Damocles</title>
 </head>
 <body class="vscode-${theme.kind}" data-vscode-theme-kind="vscode-${theme.kind}">
@@ -1362,6 +1384,8 @@ export class ShellHost {
   // given since the page last started loading, the ones a request of its can name.
   private projectKeysFrom: Array<{ readonly revision: number; readonly keys: ReadonlySet<string> }> = [];
   private loaded = false;
+  // the latest theme, which each loaded document gets again: its custom CSS reaches the page only over this channel
+  private theme: PanelTheme | undefined;
   // the main frame's load failed; the did-finish-load Electron emits after it shows no page
   private loadFailed = false;
   private reportedBadBounds = false;
@@ -1382,6 +1406,7 @@ export class ShellHost {
     this.handle(SHELL_CHANNELS.locateProject, (key) => this.actions.locateProject(this.id(key)));
     this.handle(SHELL_CHANNELS.retryRelocation, (key) => this.actions.retryRelocation(this.id(key)));
     this.handle(SHELL_CHANNELS.abandonRelocation, (key) => this.actions.abandonRelocation(this.id(key)));
+    this.handle(SHELL_CHANNELS.projectLook, (key) => this.actions.projectLook(this.id(key)));
     this.handle(SHELL_CHANNELS.selectProject, (key) => this.actions.selectProject(this.id(key)));
     this.handle(SHELL_CHANNELS.grantTrust, (key) => this.actions.grantTrust(this.id(key)));
     this.handle(SHELL_CHANNELS.chatsList, (key, revision) => this.chatList(this.id(key), revision, (projectKey) => this.actions.listChats(projectKey)));
@@ -1570,6 +1595,32 @@ export class ShellHost {
       }
       this.actions.setContentBounds(bounds);
     });
+    this.on(SHELL_CHANNELS.themeDockBounds, (raw) => {
+      if (raw === null) {
+        this.actions.setThemeDockBounds(undefined);
+        return;
+      }
+      const bounds = contentBoundsToDip(raw, this.window.webContents.getZoomFactor());
+      if (bounds) this.actions.setThemeDockBounds(bounds);
+      else this.log('[shell] ignoring malformed theme dock bounds');
+    });
+    this.on(SHELL_CHANNELS.pageMotion, (raw) => {
+      const motion = parsePageMotion(raw);
+      if (motion) this.actions.setPageMotion(motion);
+      else this.log('[shell] ignoring a malformed page motion report');
+    });
+    this.on(SHELL_CHANNELS.timeZone, (raw) => {
+      if (isTimeZone(raw)) this.actions.setTimeZone(raw);
+      else this.log('[shell] ignoring a time zone Intl does not know');
+    });
+    this.handle(SHELL_CHANNELS.themeDockPeek, (raw) => {
+      if (raw !== false) throw new Error('Malformed peek from the shell');
+      this.actions.endThemeDockPeek();
+    });
+    this.handle(SHELL_CHANNELS.useMyTheme, () => this.actions.useMyTheme());
+    this.handle(SHELL_CHANNELS.keepThemeChanges, () => this.actions.keepThemeChanges());
+    this.handle(SHELL_CHANNELS.revertThemeChanges, () => this.actions.revertThemeChanges());
+    this.handle(SHELL_CHANNELS.stopShowingProposal, () => this.actions.stopShowingProposal());
     this.on(SHELL_CHANNELS.sidebarLayout, (raw) => {
       const layout = parseSidebarLayout(raw);
       if (!layout) {
@@ -1640,6 +1691,7 @@ export class ShellHost {
       this.loaded = true;
       this.actions.terminal.setInputFocused(null);
       this.actions.editor.setFocusOverlay(false);
+      if (this.theme) this.send(SHELL_CHANNELS.theme, this.theme);
       this.sendState();
       this.actions.terminal.shellLoaded();
       this.actions.design.shellLoaded();
@@ -1651,6 +1703,7 @@ export class ShellHost {
       this.actions.terminal.setInputFocused(null);
       this.actions.editor.setFocusOverlay(false);
       if (this.disposed || details.reason === 'clean-exit') return;
+      this.actions.rendererGone();
       const now = Date.now();
       this.crashes = [...this.crashes.filter((at) => now - at < CRASH_WINDOW_MS), now];
       if (this.crashes.length > MAX_CRASHES_IN_WINDOW) {
@@ -2338,6 +2391,7 @@ export class ShellHost {
   }
 
   sendTheme(theme: PanelTheme): void {
+    this.theme = theme;
     this.send(SHELL_CHANNELS.theme, theme);
   }
 

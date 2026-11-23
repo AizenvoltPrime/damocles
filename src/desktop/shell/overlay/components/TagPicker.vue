@@ -70,7 +70,7 @@ onMounted(() => {
     aria-modal="true"
     data-testid="overlay-tag-picker"
     :aria-label="t('overlay.tagPicker')"
-    class="fixed flex w-65 animate-[d-pop_.14s_ease-out] flex-col gap-1.5 rounded-11 border border-(--d-border2) bg-(--d-card) p-1.5 text-(--d-text) shadow-(--d-shadow)"
+    class="fixed flex w-65 d-pop-in flex-col gap-1.5 rounded-11 border border-(--d-border2) bg-(--d-card) p-1.5 text-(--d-text) shadow-(--d-shadow)"
     :style="{ left: `${position.left}px`, top: `${position.top}px` }"
     @keydown="onKeydown"
   >
@@ -92,7 +92,7 @@ onMounted(() => {
         aria-autocomplete="list"
         :aria-activedescendant="activeIndex >= 0 && activeIndex < suggestions.length ? optionId(activeIndex) : undefined"
         :placeholder="request.placeholder"
-        class="h-6 min-w-0 flex-1 rounded-md border border-(--d-accent) bg-(--d-input) px-2 text-xs text-(--d-text) outline-none placeholder:text-(--d-faint)"
+        class="h-6 min-w-0 flex-1 rounded-md border border-(--d-accent-fill) bg-(--d-input) px-2 text-xs text-(--d-text) outline-none placeholder:text-(--d-faint)"
         @input="activeIndex = -1"
         @keydown="onInputKeydown"
       >

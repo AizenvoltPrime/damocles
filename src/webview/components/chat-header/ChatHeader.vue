@@ -70,8 +70,8 @@ onBeforeUnmount(() => observer?.disconnect());
 
 const title = computed(() => selectedSessionDisplayName.value || t('chatHeader.newChat'));
 const status = computed(() => {
-  if (isAwaitingUserAction.value) return { dot: 'bg-(--d-warning)', label: t('chatHeader.statusWaiting') };
-  if (isProcessing.value) return { dot: 'bg-(--d-accent)', label: t('chatHeader.statusWorking') };
+  if (isAwaitingUserAction.value) return { dot: 'bg-(--d-warning-fill)', label: t('chatHeader.statusWaiting') };
+  if (isProcessing.value) return { dot: 'bg-(--d-accent-fill)', label: t('chatHeader.statusWorking') };
   return null;
 });
 
@@ -129,7 +129,7 @@ const terminalTitle = computed(() => (toggleTerminalShortcut.value ? t('chatHead
             class="flex shrink-0"
           >
             <span
-              class="size-1.75 rounded-full animate-[d-pulse_1.6s_ease-in-out_infinite]"
+              class="size-1.75 rounded-full d-pulsing"
               :class="status.dot"
               role="img"
               :aria-label="status.label"
@@ -233,7 +233,7 @@ const terminalTitle = computed(() => (toggleTerminalShortcut.value ? t('chatHead
         />
         <span
           v-if="btwStore.aside?.isStreaming"
-          class="pointer-events-none absolute inset-0.75 rounded-lg border-2 border-transparent border-t-(--d-accent) animate-[d-spin_.9s_linear_infinite]"
+          class="pointer-events-none absolute inset-0.75 rounded-lg border-2 border-transparent border-t-(--d-accent-fill) d-spinning"
           aria-hidden="true"
         />
       </button>
@@ -310,7 +310,7 @@ const terminalTitle = computed(() => (toggleTerminalShortcut.value ? t('chatHead
           :model-value="terminalShown"
           size="sm"
           data-testid="chat-header-terminal"
-          class="d-press ms-1 h-7 min-w-7 gap-1.5 rounded-7 border border-(--d-border2) px-2 text-xs font-medium text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 data-[state=on]:border-(--d-accent) data-[state=on]:bg-(--d-accent-soft) data-[state=on]:text-(--d-accent-text) data-[state=on]:hover:bg-(--d-accent-soft) [&_svg]:size-3.5"
+          class="d-press ms-1 h-7 min-w-7 gap-1.5 rounded-7 border border-(--d-border2) px-2 text-xs font-medium text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 data-[state=on]:border-(--d-accent-fill) data-[state=on]:bg-(--d-accent-soft) data-[state=on]:text-(--d-accent-text) data-[state=on]:hover:bg-(--d-accent-soft) [&_svg]:size-3.5"
           :title="terminalTitle"
           :aria-label="t('chatHeader.terminal')"
           @update:model-value="run('terminal')"

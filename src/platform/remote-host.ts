@@ -3,11 +3,13 @@ import type { BrokerAnswer, BrowserToolAnswer, ClientGlobalProfile, ClientPendin
 import type { RelayedServedFile } from '../shared/served-file-url';
 import type { ClientForges } from '../shared/git-credential';
 import type { ForgeDescribeAnswer, ForgeToolAnswer, RelayedForgeRequest } from '../shared/forge/tools';
+import type { ThemeShowEnded, UserThemeCalls, UserThemeMethod } from '../shared/themes/relay';
+import type { ThemeInstallPreview, ThemeInstallProgress } from '../shared/themes/install';
 import type { Disposable } from './disposable';
 import type { ActiveEditorContext } from './editor-service';
 import type { PanelHost, TerminalToggle } from './window-service';
 
-export type ClientTopic = 'clientAuth' | 'clientUser' | 'clientPolicy' | 'clientEditor' | 'clientTerminal' | 'clientLanguage' | 'clientMcp' | 'clientForges' | 'actingClient';
+export type ClientTopic = 'clientAuth' | 'clientUser' | 'clientPolicy' | 'clientEditor' | 'clientTerminal' | 'clientLanguage' | 'clientMcp' | 'clientForges' | 'clientFeatures' | 'actingClient';
 
 /** The per-client mirrors of a daemon's core, by the daemon's id for each attached client. */
 export interface ClientSnapshots {
@@ -41,6 +43,8 @@ export interface ClientSnapshots {
   // the client's managed git servers (clientForges), whose takeover this core's spawns apply; undefined while detached or
   // from a client without the feature
   forges(clientId: string): ClientForges | undefined;
+  // the names of FEATURES the client's attach listed that core reads (clientFeatures); undefined while it is detached
+  features(clientId: string): readonly string[] | undefined;
   // before: a per-client topic's previous value for that client; detached: the topic's delta had no value, as the client detached
   onDidChange(cb: (change: { readonly topic: ClientTopic; readonly clientId?: string; readonly before?: unknown; readonly detached?: true }) => void): Disposable;
 }
@@ -100,4 +104,16 @@ export interface RemoteHost {
   // views show the refused notice
   forgeTool(clientId: string, host: PanelHost, request: RelayedForgeRequest, signal: AbortSignal): Promise<ForgeToolAnswer>;
   forgeDescribe(clientId: string, host: PanelHost, request: RelayedForgeRequest & { readonly approval: boolean }, signal: AbortSignal): Promise<ForgeDescribeAnswer>;
+  // exactly that client's theme store and window (user.theme.*), refused as forgeTool is
+  themeCall<M extends UserThemeMethod>(clientId: string, method: M, params: UserThemeCalls[M]['params'], signal?: AbortSignal): Promise<UserThemeCalls[M]['result']>;
+  // a client's window ended a card's Show in window (user.theme.showEnded); clientId: the client that sent it
+  onThemeShowEnded(listener: (ended: ThemeShowEnded & { readonly clientId: string }) => void): Disposable;
+  // a client's window let go of a screenshot it took (user.theme.screenshotGone); clientId: the client that sent it
+  onThemeScreenshotGone(listener: (gone: { readonly clientId: string; readonly shotId: string }) => void): Disposable;
+  // a client updated an install it staged (user.theme.installUpdated), and how far one of its flash checks is
+  // (user.theme.installProgress); clientId: the client that sent it
+  onThemeInstallUpdated(listener: (updated: { readonly clientId: string; readonly preview: ThemeInstallPreview }) => void): Disposable;
+  onThemeInstallProgress(listener: (progress: ThemeInstallProgress & { readonly clientId: string }) => void): Disposable;
+  // a client dropped an install it staged, which waited too long there (user.theme.installExpired); clientId: the client that sent it
+  onThemeInstallExpired(listener: (expired: { readonly clientId: string; readonly installId: string }) => void): Disposable;
 }

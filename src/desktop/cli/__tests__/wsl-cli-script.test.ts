@@ -119,20 +119,21 @@ describe('resources/bin/damocles in a WSL shell', () => {
     expect(result.stdout.split('\n')).toEqual([`${resources}/app.asar.unpacked/dist/cli.js`, 'README.md', 'ELECTRON_RUN_AS_NODE=1', 'WSLENV=', '']);
   });
 
-  it('runs Damocles.exe with cli.js\'s Windows path from Git Bash, MSYS2 or Cygwin, as VS Code\'s code.sh does', async () => {
-    for (const s of ['MINGW64_NT-10.0-26100', 'MSYS_NT-10.0-26100', 'CYGWIN_NT-10.0-26100']) {
-      const { app, cwd, env } = await layout({ r: '3.5.4-0bc1222b.x86_64', s });
-      const result = run(app, cwd, env, ['README.md', '--wait']);
-      expect(result.stderr).toBe('');
-      expect(result.status).toBe(0);
-      const resources = execFileSync(sh, ['-c', 'cd "$1" && pwd -P', 'sh', path.join(app, 'resources')], { env, encoding: 'utf8' }).trim();
-      const cli = process.platform === 'win32' ? execFileSync(path.join(path.dirname(sh), 'cygpath.exe'), ['-m', `${resources}/app.asar.unpacked/dist/cli.js`], { env, encoding: 'utf8' }).trim() : `C:${resources}/app.asar.unpacked/dist/cli.js`;
-      expect(cli).toMatch(/^[A-Za-z]:\//);
-      // Damocles.exe is the stand-in that prints, where the Linux binary would print the same lines
-      await fs.rm(path.join(app, 'damocles'));
-      expect(run(app, cwd, env, ['README.md', '--wait']).stdout.split('\n')).toEqual([cli, 'README.md', '--wait', 'ELECTRON_RUN_AS_NODE=1', 'WSLENV=', '']);
-    }
-  });
+  // Each script run starts 8 processes (sh, the resources subshell and its dirname, dirname, the uname stand-ins for -r and -s,
+  // cygpath, the Damocles.exe stand-in), so a case's two runs, its sh -c and its cygpath start 18, each synchronously; 1 s is
+  // a process start under a loaded machine's Cygwin fork emulation, so 18 s.
+  it.each(['MINGW64_NT-10.0-26100', 'MSYS_NT-10.0-26100', 'CYGWIN_NT-10.0-26100'])('runs Damocles.exe with cli.js\'s Windows path from %s, as VS Code\'s code.sh does', async (s) => {
+    const { app, cwd, env } = await layout({ r: '3.5.4-0bc1222b.x86_64', s });
+    const result = run(app, cwd, env, ['README.md', '--wait']);
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(0);
+    const resources = execFileSync(sh, ['-c', 'cd "$1" && pwd -P', 'sh', path.join(app, 'resources')], { env, encoding: 'utf8' }).trim();
+    const cli = process.platform === 'win32' ? execFileSync(path.join(path.dirname(sh), 'cygpath.exe'), ['-m', `${resources}/app.asar.unpacked/dist/cli.js`], { env, encoding: 'utf8' }).trim() : `C:${resources}/app.asar.unpacked/dist/cli.js`;
+    expect(cli).toMatch(/^[A-Za-z]:\//);
+    // Damocles.exe is the stand-in that prints, where the Linux binary would print the same lines
+    await fs.rm(path.join(app, 'damocles'));
+    expect(run(app, cwd, env, ['README.md', '--wait']).stdout.split('\n')).toEqual([cli, 'README.md', '--wait', 'ELECTRON_RUN_AS_NODE=1', 'WSLENV=', '']);
+  }, 18 * 1_000);
 
   it('runs the app\'s own binary with cli.js and the arguments as given outside WSL', async () => {
     const { app, cwd, env } = await layout({ r: '6.8.0-45-generic', s: 'Linux' });

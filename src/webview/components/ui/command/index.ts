@@ -17,6 +17,8 @@ export const [useCommand, provideCommandContext] = createContext<{
   allGroups: Ref<Map<string, Set<string>>>
   filterState: {
     search: string
+    external: boolean
+    query: string
     filtered: { count: number, items: Map<string, number>, groups: Set<string> }
   }
   /** The rows the keys move between, in list order, disabled ones left out. */

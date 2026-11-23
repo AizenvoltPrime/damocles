@@ -141,7 +141,7 @@ const providerList = (providers: readonly string[]): string => new Intl.ListForm
       v-for="[hostId, hostLabel] in lingerHosts"
       :key="hostId"
       data-testid="close-remote-linger"
-      class="flex flex-col gap-1.5 rounded-9 bg-(--d-warning)/12 px-3 py-2 text-11.5 text-(--d-warning-text)"
+      class="flex flex-col gap-1.5 rounded-9 bg-(--d-warning-fill)/12 px-3 py-2 text-11.5 text-(--d-warning-text)"
     >
       <span>{{ t('closeRemote.linger', { name: hostLabel }) }}</span>
       <AllowBackgroundWork
@@ -154,7 +154,7 @@ const providerList = (providers: readonly string[]): string => new Intl.ListForm
         :id="checkboxId"
         :checked="dontAskAgain"
         data-testid="close-remote-dont-ask"
-        class="size-3.75 shrink-0 rounded-xs border-(--d-border2) data-[state=checked]:border-(--d-accent) data-[state=checked]:bg-(--d-accent) data-[state=checked]:text-(--d-on-accent) [&_svg]:size-2.75"
+        class="size-3.75 shrink-0 rounded-xs border-(--d-border2) data-[state=checked]:border-(--d-accent-fill) data-[state=checked]:bg-(--d-accent-fill) data-[state=checked]:text-(--d-on-accent) [&_svg]:size-2.75"
         @update:checked="dontAskAgain = $event"
       />
       <label

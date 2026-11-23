@@ -176,7 +176,7 @@ watch(() => choice.value?.state, (state) => {
       <Button
         v-if="org"
         type="button"
-        class="h-7 rounded-8 bg-(--d-accent) px-2.75 text-xs font-semibold text-(--d-on-accent) hover:bg-(--d-accent) hover:brightness-110"
+        class="h-7 rounded-8 bg-(--d-accent-fill) px-2.75 text-xs font-semibold text-(--d-on-accent) hover:bg-(--d-accent-fill) hover:brightness-110"
         :aria-describedby="titleId"
         data-testid="forge-refused-org"
         @click="orgAction"
@@ -190,7 +190,7 @@ watch(() => choice.value?.state, (state) => {
         <DropdownMenuTrigger as-child>
           <Button
             type="button"
-            class="h-7 rounded-8 bg-(--d-accent) px-2.75 text-xs font-semibold text-(--d-on-accent) hover:bg-(--d-accent) hover:brightness-110"
+            class="h-7 rounded-8 bg-(--d-accent-fill) px-2.75 text-xs font-semibold text-(--d-on-accent) hover:bg-(--d-accent-fill) hover:brightness-110"
             :aria-describedby="titleId"
             data-testid="forge-refused-choose"
           >

@@ -82,6 +82,16 @@ The extension reads VS Code's own settings, as VS Code's search does. The deskto
 
 Settings mentioned elsewhere in these docs that this table does not list include `damocles.compass.enabled`, `damocles.browser.enabled`, `damocles.browser.devToolsPort`, `damocles.design.enabled`, `damocles.showCacheMissNotices`, `damocles.tools.disabled`, `damocles.mcp.disabledServers`, `damocles.mcp.disabledProjectServers`, `damocles.openai.preferApiKey`, `damocles.<provider>.preferApiKey`, `damocles.maxBudgetUsd` and the desktop app's `damocles.desktop.*` settings; each is described on the page that mentions it.
 
+The desktop app's themes add two user-only settings: `damocles.desktop.themes.dark` and `damocles.desktop.themes.light`, the theme whose dark or light look shows (`damocles`, the built-in theme, by default, or a theme id under `~/.damocles/themes/themes/`). Settings › Appearance and Reset Theme to Default write them; a missing or broken theme shows the Damocles look. See docs/themes.md.
+
+`damocles.desktop.themes.agentTools` (user-only, default on) gives a main chat the agent's theme tools, on this computer and in a chat on a remote host whose turn came from this computer, and `damocles.desktop.themes.applyMode` (user-only, `preview` by default, or `onTheFly`) decides how their changes reach the window: a card to answer first, or at once with a 15 second Keep or Revert banner. The tools never change either setting. See docs/tools.md.
+
+`damocles.desktop.themes.showWallpapers` (default on) shows the shown look's wallpapers; Toggle Wallpapers (Ctrl+Alt+Shift+W, Cmd+Alt+Shift+W on macOS) writes it, and the agent's ThemeSet may turn it off, never on. `damocles.desktop.themes.wallpaperContrast` (user-only, `raiseDim` by default, or `warn`; no off) decides how text stays readable over a wallpaper: dimmed until muted text reads at 4.5:1, or a warning in the theme editor. See docs/themes.md "Wallpapers". `damocles.desktop.themes.characterMotion` (user-only, `always` by default, `hover` or `active`) decides when a theme's project characters move: always, only under the pointer, or only the selected project's; reduce motion and a Windows contrast theme hold them still. See docs/themes.md "Characters".
+
+`damocles.desktop.themes.store` (user-only, default on) is Settings › Appearance › Community store: Browse lists the community theme store's signed list from GitHub, and while a store theme is installed the list is also checked beside the app's own update check. Off, Damocles makes no store request at all; a theme from a file or a link still installs. See docs/themes.md "When Damocles fetches the list".
+
+`damocles.desktop.textSize` (user-only, 11 to 20, default 13) is the desktop app's text size in pixels, from Settings › Appearance › Text size. Every renderer's rem scale follows it, so spacing and layout grow with the text. No theme sets it: a theme changes fonts, line spacing, corners, density and the chat column, never the size of text.
+
 ## Localization
 
 The UI is in English and Greek.

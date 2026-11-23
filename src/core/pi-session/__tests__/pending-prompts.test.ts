@@ -62,6 +62,7 @@ describe('pending prompt summaries', () => {
   it('names a shell command by its first line, an image by its path, a skill and any other tool by name', () => {
     expect(summaryOf(permission({ toolName: 'Bash', command: '  npm test  \nnpm run lint' }))).toBe('run `npm test`');
     expect(summaryOf(permission({ toolName: 'GenerateImage', filePath: 'art/logo.png' }))).toBe(`generate image ${path.join('art', 'logo.png')}`);
+    expect(summaryOf(permission({ toolName: 'GenerateImage' }))).toBe('generate an image for a theme');
     expect(summaryOf(permission({ toolName: 'mcp__github__get_issue' }))).toBe('use mcp__github__get_issue');
     expect(summaryOf({ type: 'requestSkillApproval', toolUseId: 'p1', skillName: 'review-pr', owner: MAIN })).toBe('use skill review-pr');
   });

@@ -13,7 +13,7 @@ import { i18n } from '@/i18n';
 
 const mounted: VueWrapper[] = [];
 
-function prompt(props: { filePath: string; prompt: string; imageModel?: string }): VueWrapper {
+function prompt(props: { filePath?: string; prompt: string; imageModel?: string }): VueWrapper {
   const wrapper = mount(PermissionPrompt, {
     props: { visible: true, toolUseId: 'g-1', toolName: TOOL_GENERATE_IMAGE, ...props },
     global: { plugins: [i18n, createPinia()], stubs: { PermissionDestinationPicker: true } },
@@ -36,6 +36,16 @@ describe('PermissionPrompt for GenerateImage', () => {
     expect(wrapper.text()).toContain(i18n.global.t('permission.generateImage'));
     expect(wrapper.text()).not.toContain(i18n.global.t('prompts.permission.allowCreate'));
     expect(wrapper.findComponent({ name: 'DiffView' }).exists()).toBe(false);
+  });
+
+  it('says an image for a theme writes no file, with no path, and still shows the prompt and the model it is billed to', () => {
+    const wrapper = prompt({ prompt: 'Warm dunes\n\nAspect ratio 16:9 (width:height).', imageModel: 'openai/gpt-image-1' });
+
+    expect(wrapper.find('[data-testid="image-permission-path"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="image-permission-theme"]').text()).toBe(i18n.global.t('permission.imageForTheme'));
+    expect(wrapper.text()).toContain(i18n.global.t('permission.generateThemeImage'));
+    expect(wrapper.get('[data-testid="image-permission-prompt"]').text()).toBe('Warm dunes\n\nAspect ratio 16:9 (width:height).');
+    expect(wrapper.get('[data-testid="image-permission-model"]').text()).toContain('openai/gpt-image-1');
   });
 
   it('names the model the call is billed for and says it is billed to the OpenRouter key', () => {
@@ -66,10 +76,10 @@ describe('PermissionPrompt for GenerateImage', () => {
 
   it('approves and denies through the existing shortcuts', async () => {
     const wrapper = prompt({ filePath: 'a.png', prompt: 'p' });
-    const listbox = wrapper.get('[role="listbox"]');
-
-    await listbox.trigger('keydown', { key: '1' });
-    await listbox.trigger('keydown', { key: '3' });
+    await wrapper.get('[role="listbox"]').trigger('keydown', { key: '1' });
+    // the page shows the next request once the first is answered, as a new card element
+    await wrapper.setProps({ toolUseId: 'next-request' });
+    await wrapper.get('[role="listbox"]').trigger('keydown', { key: '3' });
 
     expect(wrapper.emitted('approve')).toEqual([[true], [false]]);
   });

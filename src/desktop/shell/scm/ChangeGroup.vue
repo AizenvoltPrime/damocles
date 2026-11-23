@@ -53,7 +53,7 @@ function endBump(event: AnimationEvent): void {
     :aria-expanded="row.expanded"
     :aria-label="row.count === null ? name : t('scm.groupAria', { name, count: row.count })"
     :tabindex="current ? 0 : -1"
-    class="flex cursor-pointer items-center gap-1.5 rounded-6 pr-1 pl-0.5 outline-none select-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent)]"
+    class="flex cursor-pointer items-center gap-1.5 rounded-6 pr-1 pl-0.5 outline-none select-none focus-visible:shadow-[inset_0_0_0_1px_var(--d-accent-fill)]"
     :style="{ height: `${height}px` }"
     @click="emit('toggle')"
     @focus="emit('focus')"

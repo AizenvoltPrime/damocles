@@ -64,6 +64,35 @@ describe.each(FOLDERS)('rem lint in %s', (dir) => {
     expect(await stylelintRules(dir, '.probe {\n  font-size: 0.8125rem;\n}\n')).toEqual([]);
   }, 60_000);
 
+  // A corner follows the theme's radius scale: the ramp, or a value scaled by --d-radius-scale.
+  it('rejects a raw radius class and accepts the ramp, a scaled value and a value built on the ramp', async () => {
+    for (const raw of ['rounded-[0.1875rem]', 'rounded-t-[0.25rem]', 'hover:rounded-[0.3125rem_0.875rem]']) {
+      expect(await eslintErrors(dir, raw), raw).toContain('better-tailwindcss/no-restricted-classes');
+    }
+    for (const scaled of ['rounded-md', 'rounded-5', 'rounded-[calc(0.1875rem*var(--d-radius-scale,1))]', 'rounded-[calc(var(--radius-2xl)+var(--spacing)*1.25)]', 'rounded-[inherit]', 'rounded-[50%]']) {
+      expect(await eslintErrors(dir, scaled), scaled).toEqual([]);
+    }
+  }, 60_000);
+
+  // Motion is a class of motion.css or a renderer stylesheet, which the reduced-motion rules and the keyframe guard cover.
+  it('rejects a Tailwind animation utility, arbitrary or built in, and accepts a motion class', async () => {
+    for (const utility of ['animate-[d-fade_.2s]', 'animate-spin', 'after:animate-[o-sweep_1.3s_infinite]', 'in-[.leaving]:animate-[d-pop-out_.12s_both]']) {
+      expect(await eslintErrors(dir, utility), utility).toContain('better-tailwindcss/no-restricted-classes');
+    }
+    for (const motion of ['d-fade-in', 'd-pulsing', 'd-pop-in [--enter-delay:60ms]']) {
+      expect(await eslintErrors(dir, motion), motion).toEqual([]);
+    }
+  }, 60_000);
+
+  it('rejects a raw radius in CSS and accepts the ramp, a scaled value, 0, a percentage and the pill', async () => {
+    for (const raw of ['border-radius: 0.375rem', 'border-radius: 0 0.25rem 0.25rem 0', 'border-top-left-radius: 0.5rem', 'border-radius: 0.375rem !important']) {
+      expect(await stylelintRules(dir, `.probe {\n  ${raw};\n}\n`), raw).toContain('declaration-property-value-disallowed-list');
+    }
+    for (const scaled of ['border-radius: var(--radius-6)', 'border-radius: 0 var(--radius-md) var(--radius-md) 0', 'border-radius: calc(0.0625rem * var(--d-radius-scale, 1))', 'border-radius: 0', 'border-radius: 50%', 'border-radius: 999rem', 'border-radius: inherit']) {
+      expect(await stylelintRules(dir, `.probe {\n  ${scaled};\n}\n`), scaled).toEqual([]);
+    }
+  }, 60_000);
+
   it("is covered by the lint script's stylelint globs", () => {
     const files = new Set(globSync(stylelintGlobs(LINT_SCRIPT), { cwd: ROOT }).map((file) => file.replaceAll('\\', '/')));
     const own = globSync(`${dir}/**/*.{vue,css}`, { cwd: ROOT }).map((file) => file.replaceAll('\\', '/')).filter((file) => !file.includes('/__tests__/'));

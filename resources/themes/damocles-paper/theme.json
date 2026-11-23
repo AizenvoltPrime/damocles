@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "damocles-paper",
+  "name": "Paper",
+  "description": "A warm light look with square corners, tighter spacing and a narrow chat column.",
+  "author": "Damocles",
+  "license": "MIT",
+  "looks": {
+    "light": {
+      "colors": {
+        "background": "#f6f1e7",
+        "panel": "#ede5d6",
+        "text": "#2a241c",
+        "accent": "#a34a1b",
+        "success": "#3d7536",
+        "warning": "#99600a",
+        "danger": "#b23a2e",
+        "info": "#3b5c93"
+      }
+    }
+  },
+  "style": {
+    "radius": 0,
+    "density": 0.9,
+    "chatColumn": 40
+  }
+}

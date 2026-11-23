@@ -65,8 +65,8 @@ async function commit(folder: string | null): Promise<void> {
         :aria-invalid="problem === 'invalid' ? 'true' : undefined"
         :aria-describedby="problem ? errorId : undefined"
         :placeholder="t('remote.installFolder.placeholder')"
-        class="h-7.5 w-72 max-w-full rounded-lg border-(--d-border2) bg-(--d-input) px-2.5 font-mono text-12 text-(--d-text) focus-visible:border-(--d-accent) focus-visible:ring-3 focus-visible:ring-(--d-accent-soft) focus-visible:ring-offset-0"
-        :class="problem === 'invalid' && 'border-(--d-danger)'"
+        class="h-7.5 w-72 max-w-full rounded-lg border-(--d-border2) bg-(--d-input) px-2.5 font-mono text-12 text-(--d-text) focus-visible:border-(--d-accent-fill) focus-visible:ring-3 focus-visible:ring-(--d-accent-soft) focus-visible:ring-offset-0"
+        :class="problem === 'invalid' && 'border-(--d-danger-fill)'"
       />
       <Button
         type="submit"

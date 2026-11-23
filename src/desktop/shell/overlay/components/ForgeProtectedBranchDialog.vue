@@ -303,7 +303,7 @@ const statusText = computed(() => {
           data-testid="forge-protected-name-box"
           :data-invalid="problem ? '' : undefined"
           class="flex h-8 min-w-0 items-center rounded-9 border bg-(--d-input) px-2.5"
-          :class="problem ? 'border-(--d-danger)' : 'border-(--d-border2) focus-within:border-(--d-accent)'"
+          :class="problem ? 'border-(--d-danger-fill)' : 'border-(--d-border2) focus-within:border-(--d-accent-fill)'"
           @animationend="nameBox?.classList.remove('d-shake')"
         >
           <!-- A bare field in the box the shake moves: the shadcn Input part brings its own border and ring, which the box draws here. -->

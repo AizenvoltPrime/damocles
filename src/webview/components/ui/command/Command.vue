@@ -54,6 +54,9 @@ const allGroups = ref<Map<string, Set<string>>>(new Map())
 const { contains } = useFilter({ sensitivity: "base" })
 const filterState = reactive({
   search: "",
+  /** The caller filters: CommandInput has a bound model, whose text is `query`, and `search` stays empty. */
+  external: false,
+  query: "",
   filtered: {
     /** The count of all visible items. */
     count: 0,

@@ -23,7 +23,7 @@ const replacedBy = computed(() => decisionReplacements(props.decisions));
       :data-replaced-by="replacedBy.get(decision.id)"
     >
       <span
-        class="mt-1.25 size-1.5 flex-none rotate-45 bg-(--d-design)"
+        class="mt-1.25 size-1.5 flex-none rotate-45 bg-(--d-design-fill)"
         aria-hidden="true"
       />
       <span class="min-w-0 text-pretty">

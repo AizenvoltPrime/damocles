@@ -17,6 +17,8 @@ export interface RemoteRelocationDeps {
   readonly mirror: (hostId: string) => Pick<SessionMirror, 'relocateProject'>;
   // this computer's core: forge.relocateProject on the remote project keys, and projects.addHostAlias
   readonly relocateBindings: (fromKey: string, toKey: string) => Promise<void>;
+  // this computer's core: themes.relocateProject, the project's own look and character pins
+  readonly relocateLooks: (fromKey: string, toKey: string) => Promise<void>;
   readonly addHostAlias: (alias: { readonly hostId: string; readonly from: string; readonly to: string; readonly startedAt?: number }) => Promise<void>;
 }
 
@@ -28,6 +30,7 @@ export function remoteRelocation(deps: RemoteRelocationDeps): Pick<RelocateState
     applied: (id) => deps.store.relocated(deps.authorityKey, id),
     applyHostState: async (view, from, to) => {
       await deps.relocateBindings(from.key, to.key);
+      await deps.relocateLooks(from.key, to.key);
       if (deps.hostId === undefined) return;
       await deps.mirror(deps.hostId).relocateProject(folderKeyOf(from.fsPath), folderKeyOf(to.fsPath));
       await deps.addHostAlias({ hostId: deps.hostId, from: from.fsPath, to: to.fsPath, ...(view.startedAt !== undefined ? { startedAt: view.startedAt } : {}) });

@@ -9,7 +9,7 @@ import type { PanelOptions } from '../../../../platform/window-service';
 import { createCorePlatform, type CorePlatform } from '../../../core-host/platform';
 import { createLoopback, createMainEndpoint, INVALID, parseCoreInit } from '../../../core-protocol';
 import { createDesktopKeyValueState, type DesktopKeyValueState } from '../../../local-services/key-value-state';
-import { createHostServices, NO_USER_RELAYS, type HostServices, type HostTrust, type HostUi, type HostUser, type RelayView } from '../host-services';
+import { createHostServices, NO_USER_RELAYS, type HostServices, type HostServicesDeps, type HostTrust, type HostUi, type HostUser, type RelayView } from '../host-services';
 import type { PageSpec } from '../../../../shared/panel-html';
 import { folderKey } from '../../../../core/workspace-folders/folder-key';
 import { hostExtras } from './host-deps';
@@ -63,7 +63,7 @@ afterEach(() => {
 });
 
 // editor: main's editor service in place of the fake's, built before the core's init reads it
-function connect(options: { readonly trusted?: readonly string[]; readonly trust?: HostTrust; readonly globalState?: Record<string, unknown>; readonly ui?: Partial<HostUi>; readonly language?: 'en' | 'el'; readonly user?: Partial<HostUser>; readonly editor?: (main: FakePlatform) => Partial<FakePlatform['editor']> } = {}): Harness {
+function connect(options: { readonly trusted?: readonly string[]; readonly trust?: HostTrust; readonly globalState?: Record<string, unknown>; readonly ui?: Partial<HostUi>; readonly language?: 'en' | 'el'; readonly user?: Partial<HostUser>; readonly editor?: (main: FakePlatform) => Partial<FakePlatform['editor']>; readonly e2e?: Pick<HostServicesDeps, 'e2eHooks' | 'e2eThemeDownloads' | 'e2eThemeStore'> } = {}): Harness {
   let language = options.language ?? 'en';
   const languageListeners = new Set<() => void>();
   const main = createFakePlatform({ chatBrowserPane: true, secrets: { stored: 'one' }, folders: [{ fsPath: path.resolve('/projects/a'), name: 'a' }] });
@@ -111,6 +111,7 @@ function connect(options: { readonly trusted?: readonly string[]; readonly trust
     createView: (panelId, create) => relayView(main.window.createPanel(create) as FakePanelHost, panelId, relayed),
     git: { available: true },
     e2eHooks: false,
+    ...options.e2e,
     ...hostExtras(options.ui ? { ui: options.ui } : {}),
     user: { ...NO_USER_RELAYS, ...options.user },
     language: {
@@ -212,6 +213,15 @@ describe('mirrored services', () => {
   it('app info comes from init', () => {
     const { main, core } = connect();
     expect(core.appInfo).toEqual({ version: main.appInfo.version, host: 'desktop' });
+  });
+
+  it('the e2e hooks\' theme download folder and store list reach core\'s init, and nothing of them without', () => {
+    const e2eThemeStore = { listUrl: 'https://e2e.test/community.signed.json', publicKeyPem: '-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA\n-----END PUBLIC KEY-----\n' };
+    const hooked = connect({ e2e: { e2eHooks: true, e2eThemeDownloads: path.resolve('/e2e/downloads'), e2eThemeStore } });
+    expect(hooked.core.init).toEqual(expect.objectContaining({ e2eHooks: true, e2eThemeDownloads: path.resolve('/e2e/downloads'), e2eThemeStore }));
+    const plain = connect();
+    expect(plain.core.init.e2eThemeDownloads).toBeUndefined();
+    expect(plain.core.init.e2eThemeStore).toBeUndefined();
   });
 
   it('trust reads the mirror; requestTrust is answered after the grant reached core', async () => {

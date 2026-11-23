@@ -525,7 +525,7 @@ function handleFilePathClick(filePath: string): void {
           </div>
           <div class="h-1 overflow-hidden rounded-full bg-(--d-hover)">
             <div
-              class="d-bar h-full origin-left rounded-full bg-(--d-accent) opacity-75"
+              class="d-bar h-full origin-left rounded-full bg-(--d-accent-fill) opacity-75"
               :style="{ transform: `scaleX(${readMeta.percentage / 100})`, animation: 'none' }"
             />
           </div>
@@ -644,7 +644,7 @@ function handleFilePathClick(filePath: string): void {
       >
         <p class="flex items-center gap-1.5 text-10 tracking-[.06em] text-(--d-faint) uppercase">
           <span
-            class="d-pulsing size-1.5 rounded-full bg-(--d-accent)"
+            class="d-pulsing size-1.5 rounded-full bg-(--d-accent-fill)"
             aria-hidden="true"
           />{{ t('toolOverlay.liveOutput') }}
         </p>
@@ -667,7 +667,7 @@ function handleFilePathClick(filePath: string): void {
       <div
         v-if="isFailed && tool.errorMessage"
         role="alert"
-        class="flex items-start gap-2.25 rounded-10 border border-[color-mix(in_srgb,var(--d-danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--d-danger)_8%,transparent)] px-3 py-2.25 text-(--d-danger-text)"
+        class="flex items-start gap-2.25 rounded-10 border border-[color-mix(in_srgb,var(--d-danger-fill)_35%,transparent)] bg-[color-mix(in_srgb,var(--d-danger-fill)_8%,transparent)] px-3 py-2.25 text-(--d-danger-text)"
       >
         <CircleX
           class="size-3.5 mt-0.5 flex-none"

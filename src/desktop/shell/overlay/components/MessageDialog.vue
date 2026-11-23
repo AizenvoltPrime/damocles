@@ -60,7 +60,7 @@ const previewLines = computed(() => (props.request.preview ?? []).map((line) => 
         <span
           v-for="(part, partIndex) in line"
           :key="partIndex"
-          :class="part.control ? 'mx-px rounded-xs bg-(--d-warning)/15 px-0.5 text-13 leading-none text-(--d-warning-text)' : ''"
+          :class="part.control ? 'mx-px rounded-xs bg-(--d-warning-fill)/15 px-0.5 text-13 leading-none text-(--d-warning-text)' : ''"
           :data-control="part.control ? '' : undefined"
           v-text="part.text"
         />
@@ -74,7 +74,7 @@ const previewLines = computed(() => (props.request.preview ?? []).map((line) => 
         :id="checkboxId"
         :checked="checked"
         data-testid="overlay-message-checkbox"
-        class="size-3.75 shrink-0 rounded-xs border-(--d-border2) data-[state=checked]:border-(--d-accent) data-[state=checked]:bg-(--d-accent) data-[state=checked]:text-(--d-on-accent) [&_svg]:size-2.75"
+        class="size-3.75 shrink-0 rounded-xs border-(--d-border2) data-[state=checked]:border-(--d-accent-fill) data-[state=checked]:bg-(--d-accent-fill) data-[state=checked]:text-(--d-on-accent) [&_svg]:size-2.75"
         @update:checked="checked = $event"
       />
       <label

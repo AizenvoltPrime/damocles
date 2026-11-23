@@ -7,7 +7,7 @@ import { activeChat, nextChat } from './fixtures';
 import { captureWindow, pageFramesShown } from './browser';
 import { REPO_ROOT } from './hermetic';
 import { overlayViewState } from './overlay';
-import { overlayPage, shellPage, shellState } from './shell';
+import { overlayPage, shellPage, shellState, THEME_RENDER_URL } from './shell';
 import { addProject, chatInput, clickMenu, setThemeSource } from './ui';
 
 export const THEMES = ['dark', 'light'] as const;
@@ -145,6 +145,8 @@ export async function rest(shell: Page): Promise<void> {
  */
 export async function windowSettled(app: ElectronApplication, theme?: Theme): Promise<void> {
   for (const page of app.windows()) {
+    // the theme renderer's page is no page of the window, and main closes it after each job
+    if (page.isClosed() || page.url() === THEME_RENDER_URL) continue;
     if (!page.url().startsWith('app://') || await page.evaluate(() => document.visibilityState) !== 'visible') continue;
     if (theme) await expect(page.locator('body')).toHaveAttribute('data-vscode-theme-kind', `vscode-${theme}`);
     await settled(page);

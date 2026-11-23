@@ -78,17 +78,17 @@ function continueDesign(): void {
 
 <template>
   <article
-    class="rounded-xl bg-linear-135 from-(--d-design) via-[color-mix(in_srgb,var(--d-design)_30%,var(--d-border2))] to-[color-mix(in_srgb,var(--d-design)_70%,var(--d-accent))] p-px shadow-[0_0.5rem_1.75rem_-0.75rem_color-mix(in_srgb,var(--d-design)_55%,transparent),0_0_0_1px_color-mix(in_srgb,var(--d-design)_10%,transparent)]"
+    class="rounded-xl bg-linear-135 from-(--d-design-fill) via-[color-mix(in_srgb,var(--d-design-fill)_30%,var(--d-border2))] to-[color-mix(in_srgb,var(--d-design-fill)_70%,var(--d-accent-fill))] p-px shadow-[0_0.5rem_1.75rem_-0.75rem_color-mix(in_srgb,var(--d-design-fill)_55%,transparent),0_0_0_1px_color-mix(in_srgb,var(--d-design-fill)_10%,transparent)]"
     :aria-label="title"
     data-testid="design-result-card"
     :data-design-id="result.designId"
     :data-version="result.version"
     :data-version-pause="result.versionPause ? 'true' : undefined"
   >
-    <div class="overflow-hidden rounded-11 bg-[linear-gradient(180deg,color-mix(in_srgb,var(--d-design)_7%,var(--d-card)),var(--d-card)_4.5rem)]">
+    <div class="overflow-hidden rounded-11 bg-[linear-gradient(180deg,color-mix(in_srgb,var(--d-design-fill)_7%,var(--d-card)),var(--d-card)_4.5rem)]">
       <header class="flex items-center gap-3 px-3.5 pt-3 pb-2.5">
         <span
-          class="flex size-8.5 flex-none items-center justify-center rounded-10 bg-linear-135 from-(--d-design) to-[color-mix(in_srgb,var(--d-design)_55%,var(--d-accent))] text-(--d-on-design) shadow-[0_0.25rem_0.75rem_-0.25rem_color-mix(in_srgb,var(--d-design)_70%,transparent)]"
+          class="flex size-8.5 flex-none items-center justify-center rounded-10 bg-linear-135 from-(--d-design-fill) to-[color-mix(in_srgb,var(--d-design-fill)_55%,var(--d-accent-fill))] text-(--d-on-design) shadow-[0_0.25rem_0.75rem_-0.25rem_color-mix(in_srgb,var(--d-design-fill)_70%,transparent)]"
           aria-hidden="true"
         >
           <GitCompareArrows
@@ -155,11 +155,11 @@ function continueDesign(): void {
         </section>
       </div>
 
-      <footer class="flex flex-wrap items-center gap-1.5 border-t border-[color-mix(in_srgb,var(--d-design)_18%,var(--d-border))] px-3 py-2">
+      <footer class="flex flex-wrap items-center gap-1.5 border-t border-[color-mix(in_srgb,var(--d-design-fill)_18%,var(--d-border))] px-3 py-2">
         <Button
           type="button"
           variant="ghost"
-          class="d-press d-tone-design h-7 gap-1.5 rounded-7 bg-(--tone)/12 px-2.5 text-xs font-semibold hover:bg-(--tone)/20 hover:text-(--d-design-text) focus-visible:ring-1 focus-visible:ring-(--d-design) focus-visible:ring-offset-0 [&_svg]:size-3"
+          class="d-press d-tone-design h-7 gap-1.5 rounded-7 bg-(--tone)/12 px-2.5 text-xs font-semibold hover:bg-(--tone)/20 hover:text-(--d-design-text) focus-visible:ring-1 focus-visible:ring-(--d-design-fill) focus-visible:ring-offset-0 [&_svg]:size-3"
           data-testid="design-result-open-chat"
           @click="openDesignChat"
         >
@@ -168,7 +168,7 @@ function continueDesign(): void {
         <Button
           type="button"
           variant="ghost"
-          class="d-press h-7 gap-1.5 rounded-7 px-2.5 font-mono text-11.5 text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 [&_svg]:size-3"
+          class="d-press h-7 gap-1.5 rounded-7 px-2.5 font-mono text-11.5 text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 [&_svg]:size-3"
           data-testid="design-result-open-md"
           @click="openDesignMd"
         >
@@ -182,7 +182,7 @@ function continueDesign(): void {
           <Button
             type="button"
             variant="ghost"
-            class="d-press h-7 gap-1.5 rounded-7 px-2.5 text-xs text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 [&_svg]:size-3"
+            class="d-press h-7 gap-1.5 rounded-7 px-2.5 text-xs text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 [&_svg]:size-3"
             data-testid="design-result-open-preview"
           >
             <Monitor aria-hidden="true" />{{ t('design.preview.open') }}
@@ -196,7 +196,7 @@ function continueDesign(): void {
           <Button
             type="button"
             variant="ghost"
-            class="d-press h-7 gap-1.5 rounded-7 px-2.5 text-xs text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent) focus-visible:ring-offset-0 [&_svg]:size-3"
+            class="d-press h-7 gap-1.5 rounded-7 px-2.5 text-xs text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:ring-1 focus-visible:ring-(--d-accent-fill) focus-visible:ring-offset-0 [&_svg]:size-3"
             data-testid="design-result-open-browser"
           >
             <Globe aria-hidden="true" />{{ t('design.browser.open') }}
@@ -207,7 +207,7 @@ function continueDesign(): void {
           <Button
             v-if="showContinue"
             type="button"
-            class="d-press h-7 gap-1.5 rounded-7 bg-(--d-design) px-3 text-xs font-semibold text-(--d-on-design) hover:bg-(--d-design) hover:brightness-110 focus-visible:ring-1 focus-visible:ring-(--d-design) focus-visible:ring-offset-1 focus-visible:ring-offset-(--d-card) [&_svg]:size-3"
+            class="d-press h-7 gap-1.5 rounded-7 bg-(--d-design-fill) px-3 text-xs font-semibold text-(--d-on-design) hover:bg-(--d-design-fill) hover:brightness-110 focus-visible:ring-1 focus-visible:ring-(--d-design-fill) focus-visible:ring-offset-1 focus-visible:ring-offset-(--d-card) [&_svg]:size-3"
             :aria-label="t('design.result.continueAria', { version: result.version })"
             :disabled="continueSent"
             data-testid="design-result-continue"
