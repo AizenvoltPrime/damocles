@@ -76,8 +76,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # npm test, so pretest fetches the grammars and wake models; test homes leave the slow OS disk C: (docs/release.md
+      # "Desktop end-to-end suite").
       - name: Windows unit tests
-        run: npx vitest run src/core src/desktop src/remote src/vscode scripts
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: npm test -- src/core src/desktop src/remote src/vscode scripts
 
   # The @loopback specs, with the release workflow's Linux e2e setup (release.yml, e2e-desktop).
   loopback:

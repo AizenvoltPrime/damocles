@@ -58,8 +58,8 @@ describe('pr.yml windows-unit', () => {
     const workflow = parse(readFileSync(join(ROOT, '.github', 'workflows', 'pr.yml'), 'utf8')) as { jobs: Record<string, { 'runs-on': string; steps: { run?: string }[] }> };
     const job = workflow.jobs['windows-unit']!;
     expect(job['runs-on']).toMatch(/^windows-/);
-    const command = job.steps.map((step) => step.run?.trim()).find((run) => run?.startsWith('npx vitest run '));
-    const folders = command!.slice('npx vitest run '.length).split(/\s+/);
+    const command = job.steps.map((step) => step.run?.trim()).find((run) => run?.startsWith('npm test -- '));
+    const folders = command!.slice('npm test -- '.length).split(/\s+/);
     const windowsOnly = [...testFiles(join(ROOT, 'src')), ...testFiles(join(ROOT, 'scripts'))].filter((file) => hasWindowsOnlyBlock(readFileSync(join(ROOT, file), 'utf8')));
     expect(windowsOnly.length).toBeGreaterThan(0);
     expect(windowsOnly.filter((file) => !folders.some((folder) => file.startsWith(`${folder}/`)))).toEqual([]);

@@ -38,7 +38,15 @@ describe("nvidiaSmiCandidates", () => {
       fs.mkdirSync(dir);
       fs.writeFileSync(path.join(dir, name), "");
     }
-    const candidates = nvidiaSmiCandidates(process.platform, { PATH: [path.relative(process.cwd(), planted), bin].join(path.delimiter) });
+    // run from root, so the relative entry 'planted' reaches a planted nvidia-smi; a path.relative from another drive is absolute
+    const cwd = process.cwd();
+    process.chdir(root);
+    let candidates: string[];
+    try {
+      candidates = nvidiaSmiCandidates(process.platform, { PATH: ["planted", bin].join(path.delimiter) });
+    } finally {
+      process.chdir(cwd);
+    }
     expect(candidates[0]).toBe(path.join(bin, name));
     expect(candidates.every((candidate) => path.isAbsolute(candidate))).toBe(true);
   });

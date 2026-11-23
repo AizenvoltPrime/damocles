@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vites
 import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { constants as osConstants, tmpdir } from 'node:os';
-import { delimiter, dirname, isAbsolute, join, relative } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join } from 'node:path';
 // The REAL pi shell definition, because every status string asserted below is pi's and a stub would
 // pin nothing but the stub. Test files may value-import the ESM pi package; extension source may not.
 import { createPowerShellToolDefinition, getAgentDir } from '@earendil-works/pi-coding-agent';
@@ -304,18 +304,21 @@ describe('createTrackedPowerShellOperations', () => {
     };
     // An empty Program Files, so an installed PowerShell 7 on this machine is not the one found.
     const programFiles = mkdtempSync(join(tmpdir(), 'damocles-pf-'));
+    // run from pwshDir's parent, so the relative entry reaches the planted pwsh; a path.relative from another drive is absolute
+    const cwd = process.cwd();
+    process.chdir(dirname(pwshDir));
     try {
       const env = {
         ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== 'PATH')),
-        PATH: relative(process.cwd(), pwshDir),
+        PATH: basename(pwshDir),
         ProgramFiles: programFiles,
       };
-      expect(isAbsolute(env.PATH)).toBe(false);
 
       await messageOf(ops.exec('Write-Output ok', CWD, { onData: () => undefined, env }));
 
       expect(spawnControl.calls.map((call) => call.exe)).toEqual(process.platform === 'win32' ? [windowsPowerShell()] : []);
     } finally {
+      process.chdir(cwd);
       rmSync(programFiles, { recursive: true, force: true });
     }
   });
