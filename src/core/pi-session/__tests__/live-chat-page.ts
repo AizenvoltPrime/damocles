@@ -1,5 +1,6 @@
 // A chat page fed through the real webview dispatcher and Pinia stores, and a pi session whose turn a real PiStreamAdapter
 // maps: what a test compares a joining or reloaded view against a view that watched the whole turn.
+import { onTestFinished } from 'vitest';
 import { createApp, ref } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
@@ -309,8 +310,10 @@ function rowOf(m: ChatMessage, toCard: (tool: ToolCall) => Card): Row {
   };
 }
 
-/** A chat page: its own Pinia stores, fed through the real message dispatcher and handlers. */
+/** A chat page: its own Pinia stores, fed through the real message dispatcher and handlers. Call it inside a test. */
 export function chatPage() {
+  // A replay's painted mark (`endReplayIngest`) logs a frame and a task after it; a log after the file ends fails the run.
+  onTestFinished(() => new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0))));
   const pinia = createPinia();
   setActivePinia(pinia);
   const stores: StoreContext = {
