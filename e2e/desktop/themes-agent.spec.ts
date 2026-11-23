@@ -7,7 +7,7 @@ import { killTree, mainLog } from './support/app';
 import { startDesignChat } from './support/design';
 import { readUserSettings, seedStubModel, writeAuth, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { agentRequests, call, chatRequests, startOpenAIStub, type OpenAIStub, type StubReply } from './support/openai-stub';
-import { hostMessage, setPageSize } from './support/screenshots';
+import { hostMessage, setPageSize, settled } from './support/screenshots';
 import { closeSettingsModal, setContentSize } from './support/settings';
 import { pressKeys, SHELL_URL, shellPage, shellState, viewFocused } from './support/shell';
 import { cssToken, HOOKS, loadThemeTools, openAppearance, readTheme, themeHooks, windowBackground, writeTheme } from './support/themes';
@@ -27,6 +27,8 @@ const AMBER_BG = '#2a1a10';
 const AMBER = { theme: 'damocles', saveAs: 'new', name: 'Amber Night', look: 'dark', colors: { background: AMBER_BG, accent: '#e0a030' } } as const;
 const NIGHT = '0f8fad5b-d9cb-469f-a165-70867728950e';
 const NIGHT_COLORS = { background: '#1a1033', panel: '#22163f', text: '#f0e8ff', accent: '#ff7ad9', success: '#5be3a0', warning: '#ffc857', danger: '#ff6b6b', info: '#8fb8ff' };
+// The sidebar takes at most what the grid's two 300 px columns leave, 419 px in the 1024 px windows of the macOS and Windows runners.
+const NIGHT_SIDEBAR_WIDTH = 360;
 const NOTE = 'Less orange, keep the panels darker.';
 // session-title.ts TITLE_OUTPUT_TOOL: the sub-call that names a chat after its first exchange
 const TITLE_TOOL = 'set_session_title';
@@ -535,7 +537,7 @@ test('two chats keep their own drafts of one theme, and the later Apply turns Ou
 
 test("the agent's pick of a theme with a window arrangement puts it in place as a manual pick does, and the chat's undo gives the window back", async ({ home, launch }) => {
   test.setTimeout(240_000);
-  writeTheme(home, NIGHT, { schemaVersion: 1, id: NIGHT, name: 'Night', looks: { dark: { colors: NIGHT_COLORS } }, layout: { sidebarWidth: 420 }, origin: { kind: 'created', installedAt: 1 } });
+  writeTheme(home, NIGHT, { schemaVersion: 1, id: NIGHT, name: 'Night', looks: { dark: { colors: NIGHT_COLORS } }, layout: { sidebarWidth: NIGHT_SIDEBAR_WIDTH }, origin: { kind: 'created', installedAt: 1 } });
   const run = await start(launch, home);
   const { tab, app } = run;
   const shell = await shellPage(app);
@@ -545,7 +547,7 @@ test("the agent's pick of a theme with a window arrangement puts it in place as 
     return fs.existsSync(file) ? (JSON.parse(fs.readFileSync(file, 'utf8')) as { sidebar: { sidebarWidth: number } }).sidebar.sidebarWidth : undefined;
   };
   const before = await sidebarWidth();
-  expect(before).not.toBe(420);
+  expect(before).not.toBe(NIGHT_SIDEBAR_WIDTH);
   await loadThemeTools(run.openai, tab);
 
   ask(run, 'ThemeSet', { theme: NIGHT, look: 'dark', colors: { accent: '#ff4040' } }, 'Picked Night.');
@@ -554,8 +556,8 @@ test("the agent's pick of a theme with a window arrangement puts it in place as 
   await answers(tab).getByRole('option', { name: 'Apply', exact: true }).click();
   await expect(tab.getByText('Picked Night.', { exact: true })).toBeVisible(CHECKED);
   await awaitTurnEnd(tab);
-  await expect.poll(sidebarWidth).toBe(420);
-  await expect.poll(savedWidth).toBe(420);
+  await expect.poll(sidebarWidth).toBe(NIGHT_SIDEBAR_WIDTH);
+  await expect.poll(savedWidth).toBe(NIGHT_SIDEBAR_WIDTH);
 
   ask(run, 'ThemeSet', { undo: true }, 'Undone.');
   await send(tab, 'undo that');
@@ -570,7 +572,7 @@ test("the agent's pick of a theme with a window arrangement puts it in place as 
 for (const [label, layout] of [['a new theme', false], ['a pick of a theme with a window arrangement', true]] as const) {
   test(`killing the app during the countdown of ${label} relaunches with the previous look${layout ? ' and window arrangement' : ''} and the change reverted`, async ({ home, launch }) => {
     test.setTimeout(300_000);
-    if (layout) writeTheme(home, NIGHT, { schemaVersion: 1, id: NIGHT, name: 'Night', looks: { dark: { colors: NIGHT_COLORS } }, layout: { sidebarWidth: 420 }, origin: { kind: 'created', installedAt: 1 } });
+    if (layout) writeTheme(home, NIGHT, { schemaVersion: 1, id: NIGHT, name: 'Night', looks: { dark: { colors: NIGHT_COLORS } }, layout: { sidebarWidth: NIGHT_SIDEBAR_WIDTH }, origin: { kind: 'created', installedAt: 1 } });
     const run = await start(launch, home, { 'damocles.desktop.themes.applyMode': 'onTheFly' });
     const shell = await shellPage(run.app);
     const sidebarWidth = (page: Page): Promise<number> => page.getByTestId('sidebar').evaluate((element) => Math.round(element.getBoundingClientRect().width));
@@ -583,7 +585,7 @@ for (const [label, layout] of [['a new theme', false], ['a pick of a theme with 
     await send(run.tab, 'apply a warmer theme');
     await expect(keepBanner(shell)).toBeVisible(CHECKED);
     await expect.poll(() => windowBackground(run.app)).toBe(layout ? NIGHT_COLORS.background : AMBER_BG);
-    if (layout) await expect.poll(() => sidebarWidth(shell)).toBe(420);
+    if (layout) await expect.poll(() => sidebarWidth(shell)).toBe(NIGHT_SIDEBAR_WIDTH);
     await expect.poll(() => 'pendingConfirm' in readAppearance(home)).toBe(true);
 
     await killTree(run.app.process());
@@ -635,6 +637,8 @@ for (const [label, shadow] of [['the built-in shadow', undefined], ['a theme\'s 
     const permission = genericCard(tab);
     await expect(permission).toBeVisible();
     if (shadow !== undefined) expect(await permission.evaluate((card) => getComputedStyle(card).getPropertyValue('--d-shadow').trim())).toBe(shadow);
+    // the permission card enters 10 px low, over the gap
+    await settled(tab);
     const [upper, lower] = await Promise.all([permission.boundingBox(), themeCard.boundingBox()]);
     expect(upper!.y + upper!.height).toBeLessThan(lower!.y);
     for (const card of [permission, themeCard]) expect(await card.evaluate((element) => getComputedStyle(element).backgroundColor)).toMatch(/^rgb\(/);

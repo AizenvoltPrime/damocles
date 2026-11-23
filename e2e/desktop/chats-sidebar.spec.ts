@@ -3,7 +3,8 @@ import * as path from 'node:path';
 import type { ElectronApplication, Page } from '@playwright/test';
 import { activeChat, expect, test } from './support/fixtures';
 import { git } from './support/git';
-import { seedStubModel } from './support/hermetic';
+import { DEFAULT_GRID_LAYOUT } from '../../src/desktop/preload/shell-channels';
+import { seedStubModel, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { onMainWindow, selectedProjectKey, shellState } from './support/shell';
 import { addProject, chatInput, hostMessages, postFromWebview, recordHostMessages, sendAndAwaitEcho } from './support/ui';
@@ -29,6 +30,15 @@ function sessionFiles(root: string, sessionId: string): string[] {
 function sessionText(root: string, sessionId: string): string {
   const [file] = sessionFiles(root, sessionId);
   return file ? fs.readFileSync(file, 'utf8') : '';
+}
+
+// The default open Files, Source control and Graph leave Chats one row on the 1024x768 screens of the macOS and Windows
+// runners, where the list scrolls a row away from the pointer that hovers it.
+function seedSidebarWithRoomForChats(home: HermeticHome): void {
+  fs.writeFileSync(path.join(home.userData, 'window-layout.json'), JSON.stringify({
+    version: 2,
+    sidebar: { sidebarVisible: true, sidebarWidth: 264, sections: { projects: { collapsed: false, size: 180 }, chats: { collapsed: false }, files: { collapsed: true, size: 230 }, scm: { collapsed: true, size: 300 }, graph: { collapsed: true, size: 190 } }, grid: DEFAULT_GRID_LAYOUT },
+  }));
 }
 
 const selectedChatId = async (app: ElectronApplication): Promise<string | undefined> => (await shellState(app)).selected.chatId;
@@ -125,6 +135,7 @@ test('sidebar edits: rename, tag and delete change the session files for loaded 
   const stub = await startOpenAIStub();
   try {
     seedStubModel(home, stub.baseUrl);
+    seedSidebarWithRoomForChats(home);
     const { app } = await launch();
     const shell = await openProject(app, home.project);
     const ids: string[] = [];

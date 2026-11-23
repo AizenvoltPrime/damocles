@@ -293,7 +293,11 @@ test('a row drag held at the bottom edge of Files scrolls the tree at its own pa
 
   await frames.start();
   await shell.mouse.move(x, nearEdge, { steps: 4 });
-  await hold(nearEdge, 700);
+  // The tree scrolls a step a frame, so how long dir00 takes to scroll away follows the frame rate (software GL on linux-x64).
+  await expect.poll(async () => {
+    await hold(nearEdge, 100);
+    return source!.evaluate((row) => row.isConnected);
+  }, { intervals: [0] }).toBe(false);
   await shell.mouse.move(x, middle, { steps: 4 });
   await hold(middle, 200);
   const edge = await frames.stop();
