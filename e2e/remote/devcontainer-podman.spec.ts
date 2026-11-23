@@ -1,11 +1,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { filesRow } from '../desktop/support/editor';
-import { writeUserSettings } from '../desktop/support/hermetic';
+import { hermeticEnv, writeUserSettings } from '../desktop/support/hermetic';
 import { overlayPage, shellPage, shellState } from '../desktop/support/shell';
 import { projectRow } from '../desktop/support/shell-ui';
 import { connectDialog } from './support/connect-ui';
-import { CONTAINER_ENV, containerHosts, containerServerProcesses, copyFixture, dataVolume, DEVCONTAINER_TAG, editConfig, inContainer, leftovers, removeLeftovers, shutdownContainerDaemon } from './support/devcontainer';
+import { CONTAINER_ENV, containerHosts, containerServerProcesses, copyFixture, dataVolume, DEVCONTAINER_TAG, editConfig, type Engine, inContainer, leftovers, pruneHermeticStore, removeLeftovers, shutdownContainerDaemon } from './support/devcontainer';
 import { expect, lastConnectStep, test } from './support/remote';
 import { runProgram } from './support/sshd';
 
@@ -27,6 +27,8 @@ test.describe('Dev Containers with Podman', () => {
     fs.writeFileSync(path.join(home.userData, 'trusted-folders.json'), JSON.stringify({ version: 1, folders: [folder] }));
     writeUserSettings(home, { 'damocles.desktop.remote.containerEngine': 'podman' });
     const keys: string[] = [];
+    // the launch's own store, which its hermetic HOME selects
+    const podman: Engine = { program: 'podman', env: hermeticEnv(home) };
     const { app } = await launch({ env: CONTAINER_ENV });
     try {
       const local = (await shellState(app)).projects.find((project) => project.fsPath === folder)!;
@@ -40,18 +42,25 @@ test.describe('Dev Containers with Podman', () => {
       let record: Awaited<ReturnType<typeof containerHosts>>[number] | undefined;
       await expect.poll(async () => (record = (await containerHosts(app))[0])).toBeDefined();
       keys.push(record!.container);
-      await expect.poll(async () => (await shellState(app)).projects.find((project) => project.key.startsWith(`${record!.authorityKey}|`))?.connection, { timeout: 600_000 }).toBe('connected');
+      // a failed attempt ends the wait with its build log, which the error dialog shows only the end of
+      await expect.poll(async () => {
+        const attempt = await lastConnectStep(app, record!.hostId);
+        if (attempt?.step === 'failed') throw new Error(`the container attempt failed: ${JSON.stringify(attempt.failure)}\n${attempt.buildLog?.lines.join('\n') ?? 'no build log'}`);
+        return attempt?.step;
+      }, { timeout: 600_000 }).toBe('connected');
+      await expect.poll(async () => (await shellState(app)).projects.find((project) => project.key.startsWith(`${record!.authorityKey}|`))?.connection).toBe('connected');
       await expect(connectDialog(overlay)).toBeHidden();
       expect((await lastConnectStep(app, record!.hostId))?.visited).toEqual(['building', 'connecting', 'checking', 'installing', 'starting']);
       await expect(filesRow(shell, 'README.md')).toBeVisible({ timeout: 60_000 });
       const containerId = (await containerHosts(app))[0]!.containerId!;
-      expect(await containerServerProcesses(containerId, 'podman')).not.toEqual([]);
+      expect(await containerServerProcesses(containerId, podman)).not.toEqual([]);
       // the container's own data volume, which ~/.damocles links to
-      expect((await leftovers(keys, 'podman')).volumes).toEqual([dataVolume(record!.container)]);
-      expect(await inContainer(containerId, 'readlink ~/.damocles', 'node', 'podman')).toBe('/var/lib/damocles-data\n');
-      await shutdownContainerDaemon(app, record!.hostId, containerId, 'podman');
+      expect((await leftovers(keys, podman)).volumes).toEqual([dataVolume(record!.container)]);
+      expect(await inContainer(containerId, 'readlink ~/.damocles', 'node', podman)).toBe('/var/lib/damocles-data\n');
+      await shutdownContainerDaemon(app, record!.hostId, containerId, podman);
     } finally {
-      await removeLeftovers(keys, 'podman');
+      await removeLeftovers(keys, podman);
+      await pruneHermeticStore(podman);
     }
   });
 });

@@ -13,7 +13,7 @@ import { shutdownHostDaemon } from './support/daemon-teardown';
 import { daemonVersions, installOlderServer, versionFolder } from './support/older-server';
 import { APP_VERSION, LINUX_TARGET, SERVER_PACKAGES_DIR, serverPackage, serverVersionOf } from './support/release-mirror';
 import { addHost, control, expect, lastConnectStep, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test } from './support/remote';
-import { allowSleep, chatShowing, closeRemoteDialog, exited, requestQuit, sleeping, SLEEP, targetSessions } from './support/remote-runs';
+import { allowSleep, chatShowing, closeRemoteDialog, exited, requestQuit, sleeping, SLEEP } from './support/remote-runs';
 import type { SshdFixture } from './support/sshd';
 import { newRemoteChat, startTargetStub } from './support/target-agent';
 
@@ -23,7 +23,6 @@ const OLD = '3.6.9';
 const OTHER_PROTOCOL = 2;
 const APP = '/srv/app';
 const CURRENT_PACKAGE = path.join(SERVER_PACKAGES_DIR, serverPackage(LINUX_TARGET));
-const TURN_STOPPED = '"customType":"damocles-turn-stopped"';
 
 async function connect(app: ElectronApplication): Promise<{ hostId: string; key: string }> {
   const hostId = await addHost(app, { alias: 'prod-1', name: 'prod-1' });
@@ -217,7 +216,7 @@ test('a busy daemon of another protocol shows its running chats read-only from t
   }
 });
 
-test('Switch now confirms with the old daemon\'s running agents and terminals, stops them through the Stop path and runs the new version', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
+test('Switch now confirms with the old daemon\'s running agents and terminals, stops them and runs the new version, which replays the cut call stopped', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
   test.setTimeout(600_000);
   const fixture = await sshd('prod-1');
   await installOlderServer(fixture, CURRENT_PACKAGE, { version: OLD, protocolVersion: OTHER_PROTOCOL });
@@ -247,11 +246,13 @@ test('Switch now confirms with the old daemon\'s running agents and terminals, s
     await confirm.getByRole('button', { name: 'Switch now' }).click();
 
     await expect.poll(() => daemonVersions(fixture), { timeout: 120_000 }).toEqual([serverVersionOf(LINUX_TARGET)]);
-    expect(await targetSessions(fixture)).toContain(TURN_STOPPED);
     expect(await sleeping(fixture)).toBe(false);
     expect(await terminalSleeping(fixture)).toBe(false);
     await remoteProjectKey(app, { authorityKey: `ssh+${hostId}` }, APP);
-    await expect(chatInput(await chatShowing(app, 'Stopped by the switch'))).toBeVisible({ timeout: 60_000 });
+    const resumed = await chatShowing(app, 'Stopped by the switch');
+    await expect(chatInput(resumed)).toBeVisible({ timeout: 60_000 });
+    // the new version's core replays the chat from its session file, where the stopped-result marker names the call stopped
+    await expect(resumed.getByTestId('tool-card').filter({ hasText: SLEEP })).toContainText('Stopped');
     await shutdownHostDaemon(app, hostId, fixture);
   } finally {
     await stub.close();

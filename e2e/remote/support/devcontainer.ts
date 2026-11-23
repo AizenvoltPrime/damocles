@@ -23,10 +23,21 @@ export const CONTAINER_ENV = { DAMOCLES_E2E_HOOKS: '1' };
 
 const ENGINE_TIMEOUT_MS = 10 * 60_000;
 
+/**
+ * The engine the specs' own commands reach. Rootless Podman keeps a store per HOME, so a spec reaching the store of a launch
+ * passes the launch's hermetic environment.
+ */
+export interface Engine {
+  readonly program: 'docker' | 'podman';
+  readonly env?: NodeJS.ProcessEnv;
+}
+
+const DOCKER: Engine = { program: 'docker' };
+
 /** `<engine> args` on this computer, rejecting with its output on a non-zero exit. */
-export async function engine(args: readonly string[], name: 'docker' | 'podman' = 'docker'): Promise<string> {
-  const result = await runProgram(name, args, undefined, ENGINE_TIMEOUT_MS);
-  if (result.code !== 0) throw new Error(`${name} ${args.join(' ')} exited with ${result.code}: ${result.stderr}${result.stdout}`);
+export async function engine(args: readonly string[], on: Engine = DOCKER): Promise<string> {
+  const result = await runProgram(on.program, args, undefined, ENGINE_TIMEOUT_MS, on.env);
+  if (result.code !== 0) throw new Error(`${on.program} ${args.join(' ')} exited with ${result.code}: ${result.stderr}${result.stdout}`);
   return result.stdout;
 }
 
@@ -70,33 +81,41 @@ export interface Leftovers {
 const lines = (text: string): string[] => text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 
 /** What carries the e2e label on the engine, and the data volumes of keys. */
-export async function leftovers(keys: readonly string[], name: 'docker' | 'podman' = 'docker'): Promise<Leftovers> {
-  const containers = lines(await engine(['ps', '-a', '-q', '--filter', `label=${E2E_LABEL}`], name));
-  const images = lines(await engine(['images', '-q', '--filter', `label=${E2E_LABEL}`], name));
-  const volumes = lines(await engine(['volume', 'ls', '-q'], name)).filter((volume) => keys.some((key) => volume === dataVolume(key)));
+export async function leftovers(keys: readonly string[], on: Engine = DOCKER): Promise<Leftovers> {
+  const containers = lines(await engine(['ps', '-a', '-q', '--filter', `label=${E2E_LABEL}`], on));
+  const images = lines(await engine(['images', '-q', '--filter', `label=${E2E_LABEL}`], on));
+  const volumes = lines(await engine(['volume', 'ls', '-q'], on)).filter((volume) => keys.some((key) => volume === dataVolume(key)));
   return { containers, images, volumes };
 }
 
 /** Removes what the specs made: labelled containers and images, and the data volumes of keys; then checks that none is left. */
-export async function removeLeftovers(keys: readonly string[], name: 'docker' | 'podman' = 'docker'): Promise<void> {
-  const found = await leftovers(keys, name);
-  if (found.containers.length) await engine(['rm', '-f', '-v', ...found.containers], name);
-  if (found.images.length) await engine(['rmi', '-f', ...new Set(found.images)], name);
-  if (found.volumes.length) await engine(['volume', 'rm', ...found.volumes], name);
-  expect(await leftovers(keys, name)).toEqual({ containers: [], images: [], volumes: [] });
+export async function removeLeftovers(keys: readonly string[], on: Engine = DOCKER): Promise<void> {
+  const found = await leftovers(keys, on);
+  if (found.containers.length) await engine(['rm', '-f', '-v', ...found.containers], on);
+  if (found.images.length) await engine(['rmi', '-f', ...new Set(found.images)], on);
+  if (found.volumes.length) await engine(['volume', 'rm', ...found.volumes], on);
+  expect(await leftovers(keys, on)).toEqual({ containers: [], images: [], volumes: [] });
+}
+
+/**
+ * Empties a hermetic home's rootless Podman store (`on.env` must select it), base images included: their layers hold files of
+ * subordinate ids, which the home's own removal cannot delete.
+ */
+export async function pruneHermeticStore(on: Engine): Promise<void> {
+  await engine(['system', 'prune', '--all', '--force', '--volumes'], on);
 }
 
 /** A /bin/sh script in the container as user. */
-export async function inContainer(id: string, script: string, user = 'root', name: 'docker' | 'podman' = 'docker'): Promise<string> {
-  return engine(['exec', '-u', user, id, '/bin/sh', '-c', script], name);
+export async function inContainer(id: string, script: string, user = 'root', on: Engine = DOCKER): Promise<string> {
+  return engine(['exec', '-u', user, id, '/bin/sh', '-c', script], on);
 }
 
 // The argv of every process a server package starts: <install>/<version>-<target>/node/node <same>/dist/<entry>.js
 const SERVER_PROCESS = /\/node\/node .*\/dist\/(daemon|core-host|pty-host|formatter-host)\.js\b/;
 
 /** The server package's processes in the container: the daemon and its bridge, core, the pty and formatter hosts. */
-export async function containerServerProcesses(id: string, name: 'docker' | 'podman' = 'docker'): Promise<string[]> {
-  const listed = await inContainer(id, 'for p in /proc/[0-9]*; do tr "\\0" " " < "$p/cmdline" 2>/dev/null; echo; done', 'root', name);
+export async function containerServerProcesses(id: string, on: Engine = DOCKER): Promise<string[]> {
+  const listed = await inContainer(id, 'for p in /proc/[0-9]*; do tr "\\0" " " < "$p/cmdline" 2>/dev/null; echo; done', 'root', on);
   return listed.split('\n').filter((line) => SERVER_PROCESS.test(line));
 }
 
@@ -127,12 +146,12 @@ export interface AgentListing {
  * Runs `ssh-add -l` in the active terminal's shell, so with that terminal's environment: the script lands in /tmp/<marker>.sh
  * through the engine's exec, the terminal is typed only `sh` and its path, and its report is read back once it is whole.
  */
-export async function agentInTerminal(app: ElectronApplication, containerId: string, marker: string, user = 'node', name: 'docker' | 'podman' = 'docker'): Promise<AgentListing> {
+export async function agentInTerminal(app: ElectronApplication, containerId: string, marker: string, user = 'node', on: Engine = DOCKER): Promise<AgentListing> {
   const script = `{ echo "sock=\${SSH_AUTH_SOCK-unset}"; ssh-add -l; echo "code=$?"; } > /tmp/${marker}.part 2>&1; mv /tmp/${marker}.part /tmp/${marker}.out\n`;
-  await inContainer(containerId, `printf '%s' '${Buffer.from(script).toString('base64')}' | base64 -d > /tmp/${marker}.sh`, user, name);
+  await inContainer(containerId, `printf '%s' '${Buffer.from(script).toString('base64')}' | base64 -d > /tmp/${marker}.sh`, user, on);
   await runInTerminal(await shellPage(app), `sh /tmp/${marker}.sh`);
   let report = '';
-  await expect.poll(async () => (report = await inContainer(containerId, `cat /tmp/${marker}.out 2>/dev/null || true`, user, name)), { timeout: 60_000 }).not.toBe('');
+  await expect.poll(async () => (report = await inContainer(containerId, `cat /tmp/${marker}.out 2>/dev/null || true`, user, on)), { timeout: 60_000 }).not.toBe('');
   const lines = report.trimEnd().split('\n');
   const sock = /^sock=(.*)$/.exec(lines[0] ?? '')?.[1];
   const code = /^code=(\d+)$/.exec(lines.at(-1) ?? '')?.[1];
@@ -141,13 +160,13 @@ export async function agentInTerminal(app: ElectronApplication, containerId: str
 }
 
 /** The container's agent proxy sockets (agent-<hex>.sock) for the remote user, as `<mode> <owner> <path>` lines. */
-export async function agentSockets(containerId: string, name: 'docker' | 'podman' = 'docker'): Promise<string[]> {
-  const found = await inContainer(containerId, "find /tmp -maxdepth 2 -name 'agent-*.sock' -type s -exec stat -c '%a %U %n' {} + 2> /dev/null; true", 'root', name);
+export async function agentSockets(containerId: string, on: Engine = DOCKER): Promise<string[]> {
+  const found = await inContainer(containerId, "find /tmp -maxdepth 2 -name 'agent-*.sock' -type s -exec stat -c '%a %U %n' {} + 2> /dev/null; true", 'root', on);
   return found.split('\n').filter(Boolean);
 }
 
 /** Ends the container's daemon with control.shutdownNow and waits until none of its processes is left in the container. */
-export async function shutdownContainerDaemon(app: ElectronApplication, hostId: string, containerId: string, name: 'docker' | 'podman' = 'docker'): Promise<void> {
+export async function shutdownContainerDaemon(app: ElectronApplication, hostId: string, containerId: string, on: Engine = DOCKER): Promise<void> {
   await control(app, hostId, 'shutdownNow');
-  await expect.poll(() => containerServerProcesses(containerId, name), { timeout: 60_000 }).toEqual([]);
+  await expect.poll(() => containerServerProcesses(containerId, on), { timeout: 60_000 }).toEqual([]);
 }

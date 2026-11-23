@@ -40,9 +40,9 @@ export interface RunResult {
 }
 
 /** Runs a program with `input` on stdin; never a synchronous child, which would stall the worker's lock refreshes. */
-export function runProgram(command: string, args: readonly string[], input?: string | Buffer, timeoutMs = DOCKER_TIMEOUT_MS): Promise<RunResult> {
+export function runProgram(command: string, args: readonly string[], input?: string | Buffer, timeoutMs = DOCKER_TIMEOUT_MS, env?: NodeJS.ProcessEnv): Promise<RunResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], timeout: timeoutMs });
+    const child = spawn(command, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], timeout: timeoutMs, ...(env ? { env } : {}) });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8').on('data', (d: string) => (stdout += d));
