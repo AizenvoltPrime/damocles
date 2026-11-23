@@ -516,6 +516,7 @@ describe('blob collection', () => {
     await stored();
     const temp = path.join(root, `appearance.json.${OTHER}.tmp`);
     fs.writeFileSync(temp, 'half');
+    fs.utimesSync(temp, new Date(now - 1000), new Date(now - 1000));
     await themes.collectBlobs();
     expect(fs.existsSync(temp)).toBe(true);
     now += day;
