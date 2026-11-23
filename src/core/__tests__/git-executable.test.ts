@@ -27,18 +27,28 @@ function folder(name: string, withGit: boolean): string {
 
 const pathEnv = (...entries: string[]): Record<string, string> => ({ PATH: entries.join(path.delimiter) });
 
+// Run from root, so the relative entry 'planted' reaches a planted git; a path.relative from another drive is absolute.
+function inRoot<T>(run: () => T): T {
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    return run();
+  } finally {
+    process.chdir(cwd);
+  }
+}
+
 describe('resolveGitExecutable', () => {
   it('never takes a git from a relative PATH entry, which resolves against the spawn folder', () => {
-    const relative = path.relative(process.cwd(), folder('planted', true));
-    expect(path.isAbsolute(relative)).toBe(false);
+    folder('planted', true);
     const empty = folder('empty', false);
-    expect(resolveGitExecutable(process.platform, pathEnv(relative, '.', empty))).toBeUndefined();
+    expect(inRoot(() => resolveGitExecutable(process.platform, pathEnv('planted', '.', empty)))).toBeUndefined();
   });
 
   it('finds git in an absolute PATH entry after relative ones', () => {
-    const relative = path.relative(process.cwd(), folder('planted', true));
+    folder('planted', true);
     const bin = folder('bin', true);
-    expect(resolveGitExecutable(process.platform, pathEnv(relative, '.', bin))).toBe(path.join(bin, gitName));
+    expect(inRoot(() => resolveGitExecutable(process.platform, pathEnv('planted', '.', bin)))).toBe(path.join(bin, gitName));
   });
 
   it('searches again when PATH changes, as when desktop merges the login-shell PATH', () => {

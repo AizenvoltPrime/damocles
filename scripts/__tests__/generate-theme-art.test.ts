@@ -5,7 +5,8 @@ import { join } from 'path';
 import { ARCADE_DIR, AURORA_DIR, renderArcade, renderAurora } from '../generate-theme-art.ts';
 
 describe('built-in theme art', () => {
-  // resources/themes/** is -text, so the generator alone decides these bytes on every platform
+  // resources/themes/** is -text, so the generator alone decides these bytes on every platform.
+  // Aurora's full render takes about 4 s on a fast machine, near the default 5 s timeout.
   it.each([
     ['Aurora', AURORA_DIR, renderAurora],
     ['Arcade', ARCADE_DIR, renderArcade],
@@ -13,7 +14,7 @@ describe('built-in theme art', () => {
     const { files } = render();
     expect(readdirSync(dir).sort()).toEqual([...files.keys()].sort());
     for (const [file, bytes] of files) expect(readFileSync(join(dir, file)).equals(bytes), file).toBe(true);
-  });
+  }, 30_000);
 
   it('names every image by the SHA-256 of its bytes', () => {
     for (const dir of [AURORA_DIR, ARCADE_DIR]) {

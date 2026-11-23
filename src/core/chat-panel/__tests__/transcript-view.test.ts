@@ -104,7 +104,14 @@ describe("mirroredSessionFile", () => {
     // another host's mirror, a relative path, a bad host id, an unsafe id, a file outside every mirror
     fs.mkdirSync(path.join(userData, "remote", "host2", "mirror"), { recursive: true });
     expect(await mirroredSessionFile(userData, "host2", file)).toBeUndefined();
-    expect(await mirroredSessionFile(userData, "host1", path.relative(process.cwd(), file))).toBeUndefined();
+    // from userData, so the relative path reaches the file; a path.relative from another drive is absolute
+    const cwd = process.cwd();
+    process.chdir(userData);
+    try {
+      expect(await mirroredSessionFile(userData, "host1", path.relative(userData, file))).toBeUndefined();
+    } finally {
+      process.chdir(cwd);
+    }
     expect(await mirroredSessionFile(userData, "../host1", file)).toBeUndefined();
     const plain = path.join(mirror, `${SESSION_ID}.jsonl`);
     fs.writeFileSync(plain, SESSION_TEXT);

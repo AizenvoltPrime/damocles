@@ -112,6 +112,12 @@ function symlink(ctx: TestContext, at: string, target: string): void {
   }
 }
 
+// fs.symlinkSync spells a root-relative target as an absolute one on the working folder's drive; mklink keeps it as given.
+function rootRelativeSymlink(at: string, target: string): void {
+  fs.mkdirSync(path.dirname(at), { recursive: true });
+  execFileSync(path.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'cmd.exe'), ['/d', '/c', 'mklink', '/D', at, target], { stdio: 'pipe' });
+}
+
 // A link the walk reads as one to \\attacker\share, which really leads to marker so Windows can be asked where it goes.
 function evil(at: string): void {
   junction(at, marker);
@@ -198,10 +204,13 @@ describe.runIf(process.platform === 'win32')('the names Windows resolves a relat
     expect(await followsLocalLinksOnly(app, ['lib'])).toBe(true);
   });
 
-  it('follows a root-relative target that stays local', async (ctx) => {
+  it('follows a root-relative target that stays local', async () => {
     const project = folder('p');
     const shared = folder('shared');
-    symlink(ctx, path.join(project, 'top'), shared.slice(2));
+    const top = path.join(project, 'top');
+    rootRelativeSymlink(top, shared.slice(2));
+    expect(actualFs.readlinkSync(top)).toBe(shared.slice(2));
+    expect(windowsOpens(top)).toBe(shared);
     expect(await followsLocalLinksOnly(project, ['top'])).toBe(true);
   });
 
@@ -239,6 +248,8 @@ describe.runIf(process.platform === 'win32')('the names Windows resolves a relat
       ctx.skip();
     }
     folder('cs', 'a', 'x');
+    // fsutil exits 0 even when it is denied the attribute
+    if (fs.existsSync(path.join(project, 'A'))) ctx.skip();
     evil(path.join(project, 'A'));
     symlink(ctx, path.join(project, 'a', 'l'), '..\\A\\x');
     expect(windowsOpens(path.join(project, 'a', 'l'))).toBe(path.join(marker, 'x'));
