@@ -92,7 +92,8 @@ export async function leftovers(keys: readonly string[], on: Engine = DOCKER): P
 export async function removeLeftovers(keys: readonly string[], on: Engine = DOCKER): Promise<void> {
   const found = await leftovers(keys, on);
   if (found.containers.length) await engine(['rm', '-f', '-v', ...found.containers], on);
-  if (found.images.length) await engine(['rmi', '-f', ...new Set(found.images)], on);
+  // a prune removes children before their parents: on a Linux host the CLI's -uid image is built on the labelled one
+  if (found.images.length) await engine(['image', 'prune', '--all', '--force', '--filter', `label=${E2E_LABEL}`], on);
   if (found.volumes.length) await engine(['volume', 'rm', ...found.volumes], on);
   expect(await leftovers(keys, on)).toEqual({ containers: [], images: [], volumes: [] });
 }
