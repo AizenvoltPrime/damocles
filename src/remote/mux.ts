@@ -1,6 +1,7 @@
 // Channels over one PersistentProtocol. Each regular message body is one frame (frozen): channel id (VQL), kind u8, flags
 // u8, body. A message over FRAGMENT_BYTES goes out as data frames with MORE, joined per channel; a sender sends only within
-// the credit its receiver granted, and the scheduler writes round-robin over the channels with a frame and credit.
+// the credit its receiver granted, and the scheduler writes round-robin over the channels with a frame and credit. A stream's
+// close goes only after every message queued before its end.
 import { listeners, type Listeners } from './listeners';
 import type { Disposable, PersistentProtocol } from './persistent-protocol';
 
@@ -79,6 +80,8 @@ interface Queued {
   readonly bytes: Uint8Array;
   offset: number;
   readonly end?: true;
+  // a stream's end: each message channel with the count it had enqueued at end(), which it must have sent first
+  readonly after?: ReadonlyArray<readonly [Outgoing, number]>;
 }
 
 interface Outgoing {
@@ -220,6 +223,8 @@ export function createMux(options: MuxOptions): Mux {
     const head = channel.queue[0];
     if (!head) return undefined;
     if (head.end) {
+      // the request naming the stream goes first, or the peer drops the stream as ended unclaimed (streamClaims)
+      if (head.after?.some(([earlier, queued]) => earlier.sent < queued)) return undefined;
       channel.queue.shift();
       channel.sent++;
       outgoing.delete(channel.id);
@@ -332,7 +337,8 @@ export function createMux(options: MuxOptions): Mux {
     },
     end: () => {
       if (disposed || !outgoing.has(id) || out.queue.some((item) => item.end)) return;
-      out.queue.push({ bytes: new Uint8Array(0), offset: 0, end: true });
+      const after = [...outgoing.values()].filter((channel) => !channel.stream).map((channel) => [channel, channel.enqueued] as const);
+      out.queue.push({ bytes: new Uint8Array(0), offset: 0, end: true, after });
       out.enqueued++;
       scheduleFlush();
     },

@@ -1,6 +1,6 @@
 import * as net from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createMux, MAX_FRAME_BYTES, STREAM_WINDOW_BYTES, type MessageChannel, type Mux } from '../mux';
+import { createMux, FRAGMENT_BYTES, MAX_FRAME_BYTES, STREAM_WINDOW_BYTES, type MessageChannel, type Mux } from '../mux';
 import { createPersistentProtocol } from '../persistent-protocol';
 import type { StreamChannel } from '../mux';
 import { holdStream, MAX_UNCLAIMED_STREAM_BYTES, pipeTunnel, streamBytes, streamClaims, writeBytes } from '../tunnel-pipe';
@@ -188,6 +188,35 @@ describe('a stream the peer opened, held until its owner claims it', () => {
     client.openStream().write(new Uint8Array(STREAM_WINDOW_BYTES));
     await vi.waitFor(() => expect(closed).toEqual(['the peer sent more stream bytes than were asked for']));
   }, 30_000);
+
+  // files.receiveFile of a small file: the request, the bytes and the end are queued in one tick, behind another message's
+  // frames on the request's channel
+  it('is still held for the request naming it when the client ended it right after queuing that request', async () => {
+    const { client, daemon } = pair();
+    const claims = streamClaims(daemon, refuse);
+    cleanups.push(() => claims.dispose());
+    const requests = client.messageChannel(2, 8 << 20);
+    const served = daemon.messageChannel(2, 8 << 20);
+    const claimed: boolean[] = [];
+    const read: number[] = [];
+    let ended = false;
+    served.onMessage((message) => {
+      if (message.length !== 1) return;
+      const owner = claims.claim(message[0]!);
+      claimed.push(owner !== undefined);
+      owner?.onData((bytes) => read.push(...bytes));
+      owner?.onEnd(() => { ended = true; });
+    });
+    requests.send(new Uint8Array(2 * FRAGMENT_BYTES));
+    const stream = client.openStream();
+    requests.send(Uint8Array.from([stream.id]));
+    stream.write(Uint8Array.from([1, 2, 3]));
+    stream.end();
+    await vi.waitFor(() => expect(claimed).toHaveLength(1));
+    expect(claimed).toEqual([true]);
+    await vi.waitFor(() => expect(ended).toBe(true));
+    expect(read).toEqual([1, 2, 3]);
+  });
 });
 
 describe('a socket piped over a stream', () => {
