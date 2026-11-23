@@ -16,7 +16,7 @@ import { overlayPage, shellPage, shellState } from '../desktop/support/shell';
 import { listChats, projectRow } from '../desktop/support/shell-ui';
 import { connectDialog, openConnect } from './support/connect-ui';
 import { shootThemes } from './support/review-shots';
-import { agentInTerminal, agentSockets, CONTAINER_ENV, containerHosts, engine, containerServerProcesses, copyFixture, DEVCONTAINER_TAG, editConfig, inContainer, leftovers, removeLeftovers, shutdownContainerDaemon, upOutsideDamocles, type ContainerHost } from './support/devcontainer';
+import { agentInTerminal, agentSockets, awaitContainerConnected, CONTAINER_ENV, containerHosts, engine, containerServerProcesses, copyFixture, DEVCONTAINER_TAG, editConfig, inContainer, leftovers, removeLeftovers, shutdownContainerDaemon, upOutsideDamocles, type ContainerHost } from './support/devcontainer';
 import { exited, requestQuit, closeRemoteDialog } from './support/remote-runs';
 import { expect, lastConnectStep, test } from './support/remote';
 import { containerReachableAddress, HOST_FROM_CONTAINER, runProgram, type SshdFixture } from './support/sshd';
@@ -125,7 +125,7 @@ test.describe('Dev Containers on this computer', () => {
       expect(fs.existsSync(path.join(folder, 'init-ran.txt'))).toBe(false);
       await trust.getByTestId('devcontainer-trust-accept').click();
       await expect(overlay.getByTestId('build-log')).toBeVisible({ timeout: 300_000 });
-      await expect.poll(async () => (await containerProject(app, record!.authorityKey))?.connection, { timeout: 600_000 }).toBe('connected');
+      await awaitContainerConnected(app, record!);
       const step = await lastConnectStep(app, record.hostId);
       expect(step?.visited).toEqual(['building', 'connecting', 'checking', 'installing', 'starting']);
       expect(fs.existsSync(path.join(folder, 'init-ran.txt'))).toBe(true);
@@ -163,7 +163,7 @@ test.describe('Dev Containers on this computer', () => {
       expect(rebuilt.containerId).not.toBe(first);
       expect(rebuilt.authorityKey).toBe(record.authorityKey);
       // trust and layout by the same project key, and the chats from the data volume and the mirror
-      await expect.poll(async () => (await containerProject(app, record!.authorityKey))?.connection, { timeout: 120_000 }).toBe('connected');
+      await awaitContainerConnected(app, record!, 120_000);
       expect((await containerProject(app, record.authorityKey))?.key).toBe(project.key);
       expect((await containerProject(app, record.authorityKey))?.trusted).toBe(true);
       await expect.poll(async () => (await listChats(app, project.key)).chats.map((chat) => chat.id), { timeout: 60_000 }).toEqual(expect.arrayContaining(chats));
@@ -193,7 +193,7 @@ test.describe('Dev Containers on this computer', () => {
       await overlay.getByTestId('devcontainer-trust').getByTestId('devcontainer-trust-accept').click({ timeout: 300_000 });
       const record = await recordOf(app);
       keys.push(record.container);
-      await expect.poll(async () => (await containerProject(app, record.authorityKey))?.connection, { timeout: 600_000 }).toBe('connected');
+      await awaitContainerConnected(app, record);
       // up reused the CLI's container, which has no data volume: no volume was made, and ~/.damocles is a folder in it
       expect((await recordOf(app)).containerId).toBe(made);
       expect((await leftovers(keys)).volumes).toEqual([]);
@@ -245,7 +245,7 @@ test.describe('Dev Containers on this computer', () => {
       await overlay.getByTestId('devcontainer-trust').getByTestId('devcontainer-trust-accept').click({ timeout: 300_000 });
       const record = await recordOf(app);
       keys.push(record.container);
-      await expect.poll(async () => (await containerProject(app, record.authorityKey))?.connection, { timeout: 600_000 }).toBe('connected');
+      await awaitContainerConnected(app, record);
       const project = (await containerProject(app, record.authorityKey))!;
       containerId = (await recordOf(app)).containerId!;
 
@@ -290,7 +290,7 @@ test.describe('Dev Containers on this computer', () => {
       expect(await containerServerProcesses(containerId)).not.toEqual([]);
       desktop = await launch({ env: CONTAINER_ENV });
       ({ app } = desktop);
-      await expect.poll(async () => (await containerProject(app, record.authorityKey))?.connection, { timeout: 300_000 }).toBe('connected');
+      await awaitContainerConnected(app, record, 300_000);
     } finally {
       const last = (await containerHosts(app).catch(() => []))[0];
       if (last?.containerId !== undefined && (await containerServerProcesses(last.containerId).catch(() => [])).length > 0) await shutdownContainerDaemon(app, last.hostId, last.containerId);
@@ -334,7 +334,7 @@ test.describe('Dev Containers on this computer', () => {
       await overlay.getByTestId('devcontainer-trust').getByTestId('devcontainer-trust-accept').click({ timeout: 300_000 });
       const record = await recordOf(app);
       keys.push(record.container);
-      await expect.poll(async () => (await containerProject(app, record.authorityKey))?.connection, { timeout: 600_000 }).toBe('connected');
+      await awaitContainerConnected(app, record);
       const containerId = (await recordOf(app)).containerId!;
       const attempt = (await lastConnectStep(app, record.hostId))?.attemptId;
 
