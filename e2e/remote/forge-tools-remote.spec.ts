@@ -10,7 +10,7 @@ import { writeUserSettings } from '../desktop/support/hermetic';
 import { call, chatRequests, type OpenAIStub } from '../desktop/support/openai-stub';
 import { closeSettingsModal, openSettingsModal } from '../desktop/support/settings';
 import type { ToolsSnapshot } from '../../src/shared/types/tools';
-import { awaitTurnEnd, chatInput, hostMessages, postFromWebview, recordHostMessages } from '../desktop/support/ui';
+import { awaitTurnEnd, chatInput, hostMessages, postFromWebview, promptReady, recordHostMessages } from '../desktop/support/ui';
 import { trustCa } from './support/credentials';
 import { daemonPids, shutdownHostDaemon } from './support/daemon-teardown';
 import { addHost, expect, hostLogs, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test } from './support/remote';
@@ -137,6 +137,7 @@ test('forge tools in a remote chat run through the relay on this computer\'s acc
     await expect(options).toBeVisible(CHECKED);
     await expect(tab.getByTestId('permission-title').getByTestId('host-name-badge')).toHaveText('prod-1');
     await expect(tab.getByRole('region', { name: 'Comment text', exact: true })).toHaveText('from prod-1');
+    await promptReady(tab.getByTestId('permission-card'));
     await options.press('Enter');
     await expect(tab.getByText(`Allowed once. Posting the comment to !${MR.number} as work-alexios on ${GITLAB}.`, { exact: true })).toBeVisible();
     await expect(tab.getByText('Commented from prod-1.', { exact: true })).toBeVisible(CHECKED);
