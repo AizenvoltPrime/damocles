@@ -378,6 +378,36 @@ describe('package archive readers', () => {
     await expect(findInToolOutput(process.execPath, ['-e', junk], (stream) => findCpioEntry(stream, LINUX_DESKTOP_ENTRY))).rejects.toThrow('not a newc cpio archive at offset 0');
   }, 20_000);
 
+  // dpkg-deb forks the processes that write its output; they outlive a kill of dpkg-deb itself and hold the pipe open.
+  it('ends a tool\'s own child that still writes once the entry is found', async () => {
+    const placeholder = 'PIDPIDPIDP';
+    const archive = cpioEntry(`./${LINUX_DESKTOP_ENTRY}`, placeholder).toString('base64');
+    const writer = [
+      `const bytes = Buffer.from('${archive}', 'base64');`,
+      `bytes.write(String(process.pid).padStart(${placeholder.length}), bytes.indexOf('${placeholder}'));`,
+      'process.stdout.write(bytes);',
+      'const fill = () => { while (process.stdout.write(Buffer.alloc(65536))); process.stdout.once(\'drain\', fill); };',
+      'fill();',
+    ].join('');
+    const tool = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(writer)}], { stdio: ['ignore', 'inherit', 'ignore'] }); setInterval(() => {}, 1000);`;
+    const found = await findInToolOutput(process.execPath, ['-e', tool], (stream) => findCpioEntry(stream, LINUX_DESKTOP_ENTRY));
+    const pid = Number(found?.toString());
+    const alive = (): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    try {
+      expect(pid).toBeGreaterThan(0);
+      await expect.poll(alive, { timeout: 10_000 }).toBe(false);
+    } finally {
+      if (alive()) process.kill(pid);
+    }
+  }, 20_000);
+
   it('reads a tool\'s output to its end before it reports the entry absent or the tool failed', async () => {
     const archive = Buffer.concat([cpioEntry('./opt/Damocles/damocles', 'elf'), cpioEntry('TRAILER!!!', '')]).toString('base64');
     const write = (code: number): string[] => ['-e', `process.stdout.write(Buffer.concat([Buffer.from('${archive}', 'base64'), Buffer.alloc(4 * 1024 * 1024)]), () => process.exit(${code}))`];

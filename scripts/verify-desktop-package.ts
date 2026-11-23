@@ -544,6 +544,9 @@ export async function findInToolOutput(command: string, args: string[], find: (s
     if (code !== 0) throw new Error(`${command} exited with ${code}: ${stderr.trim()}`);
     return undefined;
   } finally {
+    // A tool's own children (dpkg-deb forks its writers) outlive kill() and hold the pipes: closing this end ends them, and an open pipe keeps this process from exiting.
+    child.stdout.destroy();
+    child.stderr.destroy();
     child.kill();
   }
 }
