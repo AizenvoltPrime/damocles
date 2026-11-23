@@ -86,7 +86,7 @@ describe('deleteSession — detaches the owning writer before removing the file'
         return { key: sessionFolder, fsPath: sessionFolder };
       },
       invalidateSessionsCache: () => undefined,
-      markSessionsChanged: () => undefined,
+      removeSessionRow: () => undefined,
       getStoredSessions: async () => ({ sessions: [], hasMore: false, nextOffset: 0 }),
     };
     const deps = {

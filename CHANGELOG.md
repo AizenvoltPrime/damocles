@@ -178,6 +178,7 @@ All notable changes to Damocles will be documented in this file.
 
 ### Fixed
 
+- **Desktop: renaming or deleting a chat no longer moves another open chat to the top of the list as "New chat".** For a moment after the change, an open chat whose conversation had been written since the list last read it showed as an untitled new chat in the first row and pushed the other rows down, so a click could land on the wrong chat; the other rows now stay where they are.
 - **Desktop: a remote project selected when you quit stays selected after a relaunch.** When the launch also restored a local chat in the background, unloading that chat moved the selection to a new local chat while the host was still connecting, and the next launch did not connect the host; the remote project now stays selected.
 - **Desktop: turning the theme tools off reaches a remote chat's next turn.** A theme tool the chat had loaded before you turned the group off in Settings › Appearance stayed in the chat's tools when the change arrived during a turn, so the agent could still call it, and Damocles refused it; the next turn now runs without it.
 - **Desktop: a small file pasted or dropped onto a remote host always lands.** While other traffic to the host was queued, a small file's transfer could stop with "Stream … is not open" and leave nothing on the host; the file now always arrives.

@@ -243,6 +243,21 @@ describe('SessionCatalog rename and tag', () => {
     expect(deletePiSession).not.toHaveBeenCalled();
   });
 
+  // A list read again answers first without the files written since the index read them, so the shell would show a loaded chat among them as a new one.
+  it('a rename and a delete of one conversation keep the rows of the others, one written since the index read it included', async () => {
+    await catalog.list(ALPHA.key);
+    const at = '2026-01-02T10:00:00.000Z';
+    fs.appendFileSync(newFile, line({ type: 'message', id: 'u2', parentId: 'a1', timestamp: at, message: { role: 'user', content: [{ type: 'text', text: 'and another' }], timestamp: Date.parse(at) } }));
+
+    expect(await catalog.rename(ID_OLD, 'Old work')).toEqual({ ok: true });
+    expect((await catalog.list(ALPHA.key)).map((s) => s.id)).toEqual([ID_NEW, ID_OLD]);
+    expect(await row(ID_OLD)).toMatchObject({ customTitle: 'Old work' });
+
+    expect(await catalog.delete(ID_OLD)).toEqual({ ok: true });
+    expect((await catalog.list(ALPHA.key)).map((s) => s.id)).toEqual([ID_NEW]);
+    expect(changes).toEqual([{ projectKey: ALPHA.key }, { projectKey: ALPHA.key }]);
+  });
+
   it('still finds the folder of a stored conversation the index cannot read, so rename and delete reach its file', async () => {
     vi.spyOn(storage.metaIndex, 'meta').mockRejectedValue(new Error('the index worker stopped'));
 

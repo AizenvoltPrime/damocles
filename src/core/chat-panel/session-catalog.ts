@@ -39,7 +39,7 @@ export interface SessionCatalog {
 }
 
 export interface SessionCatalogDeps {
-  storage: Pick<StorageManager, "sessionsOf" | "completeSessionsOf" | "indexSessionRow" | "folderOf" | "markSessionsChanged" | "updateSessionTag" | "onDidChangeSessions" | "metaIndex">;
+  storage: Pick<StorageManager, "sessionsOf" | "completeSessionsOf" | "indexSessionRow" | "folderOf" | "refreshSessionRow" | "removeSessionRow" | "updateSessionTag" | "onDidChangeSessions" | "metaIndex">;
   getPanels: () => Map<string, HostInstance>;
   notifications: NotificationService;
   memoryService?: Pick<MemoryService, "deleteSessionMemories">;
@@ -116,10 +116,7 @@ export function createSessionCatalog(deps: SessionCatalogDeps): SessionCatalog {
           (cwd) => renamePiSession(cwd, sessionId, newName),
         );
         if (!result.ok) return result;
-        if (folderKey !== undefined) {
-          await storage.indexSessionRow(sessionId, folderKey);
-          storage.markSessionsChanged(folderKey);
-        }
+        if (folderKey !== undefined) await storage.refreshSessionRow(sessionId, folderKey);
         return OK;
       } catch (err) {
         return failed("rename", sessionId, err);
@@ -176,7 +173,7 @@ export function createSessionCatalog(deps: SessionCatalogDeps): SessionCatalog {
         } catch (err) {
           log("[SessionCatalog] session %s deleted but its memory cleanup failed: %O", sessionId, err);
         }
-        storage.markSessionsChanged(folder.key);
+        storage.removeSessionRow(sessionId, folder.key);
         return OK;
       } catch (err) {
         return failed("delete", sessionId, err);

@@ -229,10 +229,35 @@ export class StorageManager {
     }
   }
 
-  /** Drop the cached list after a write the watcher reports late, and announce the folder's change now. */
-  markSessionsChanged(folderKey: string): void {
+  /**
+   * After a write to one stored session, which the watcher reports late: reads its row again into the loaded list and
+   * announces its folder's change now. The other rows stay as loaded, since a list read again answers first without the
+   * files written since the index read them.
+   */
+  async refreshSessionRow(sessionId: string, folderKey: string): Promise<void> {
+    if (await this.upsertSession(sessionId, folderKey, { announce: true })) return;
+    // No row was placed (the file yields none, or the list was dropped meanwhile), so the next list reads the folder again.
     this.invalidateSessionsCache();
     this.emitChange({ projectKey: folderKey });
+  }
+
+  /** Takes a deleted session's row out of the loaded list and announces its folder's change now; the other rows stay as loaded. */
+  removeSessionRow(sessionId: string, folderKey: string): void {
+    this.dropSessionRow(sessionId);
+    this.pushSessionsToAllPanels();
+    this.emitChange({ projectKey: folderKey });
+  }
+
+  private dropSessionRow(sessionId: string): void {
+    this.readSinceList.add(sessionId);
+    this.sessionFolder.delete(sessionId);
+    this.promptHistoryCache = null;
+    if (this.allSessionsCache) {
+      this.allSessionsCache = this.allSessionsCache.filter((s) => s.id !== sessionId);
+    } else if (this.sessionsLoad) {
+      // The load in flight may have listed the file before it went.
+      this.invalidateSessionsCache();
+    }
   }
 
   /** One open folder's stored sessions, newest first; empty for a key that is not open. Rows still being parsed arrive later, announced by `onDidChangeSessions`. */
@@ -582,19 +607,25 @@ export class StorageManager {
 
   /** A chat announces its session under its working folder; the file's directory and the session's entry decide its list. */
   async addOrUpdateSession(sessionId: string, workingFolderKey: string): Promise<void> {
+    await this.upsertSession(sessionId, workingFolderKey);
+  }
+
+  /** Whether the session's row, read from its live session or its file, was placed in the loaded list. */
+  private async upsertSession(sessionId: string, workingFolderKey: string, options?: { announce?: boolean }): Promise<boolean> {
     const named = this.listedDirOfFolder(workingFolderKey);
     const workingFolder = named?.folders.get(workingFolderKey);
-    if (!named || workingFolder === undefined) return;
+    if (!named || workingFolder === undefined) return false;
     const span = perfSpan("sessions.upsert", { minMs: UPSERT_LOG_MIN_MS });
     const generation = this.sessionsGeneration;
     const file = this.liveSession(sessionId)?.liveSessionFile() ?? (await resolvePiSessionFile(workingFolder, sessionId)) ?? undefined;
     const dir = file !== undefined ? this.listedDirOf(path.dirname(file)) : named;
-    if (!dir) return;
+    if (!dir) return false;
     const live = this.liveMetadata(sessionId);
     const source = live !== undefined ? "live" : "file";
     const metadata = live !== undefined ? live : await getPiSessionMetadata(this.metaIndex, dir.folder, sessionId);
-    const applied = metadata ? await this.upsertSessionsInCache([metadata], dir.key, generation) : false;
+    const applied = metadata ? await this.upsertSessionsInCache([metadata], dir.key, generation, options) : false;
     span.end({ source, applied });
+    return applied;
   }
 
   async getPromptHistory(
@@ -714,13 +745,14 @@ export class StorageManager {
    * when the list was invalidated after `generation` (the list loaded since then read the file after the
    * metadata was) or no list reads the dir any more; a row whose project is not open is not listed. `fromList`
    * marks rows the list parsed after it loaded, read when it listed: one never replaces a row read since, nor
-   * one listed from another dir (`listedFrom`, a registry folder's session dir). Returns whether any row was applied.
+   * one listed from another dir (`listedFrom`, a registry folder's session dir). `announce` announces an applied row's
+   * folder even when a list shows the row unchanged. Returns whether any row was applied.
    */
   private async upsertSessionsInCache(
     rows: readonly IndexedSession[],
     dirKey: string,
     generation: number,
-    options?: { ifChanged?: boolean; fromList?: boolean },
+    options?: { ifChanged?: boolean; fromList?: boolean; announce?: boolean },
   ): Promise<boolean> {
     if (rows.length === 0 || generation !== this.sessionsGeneration) return false;
     const standing = await withDesignStanding(rows);
@@ -749,7 +781,7 @@ export class StorageManager {
         all.push(row);
       }
       applied = true;
-      if (!existing || !sameListing(existing, row) || existing.workspaceFolder?.key !== row.workspaceFolder?.key) {
+      if (options?.announce || !existing || !sameListing(existing, row) || existing.workspaceFolder?.key !== row.workspaceFolder?.key) {
         changedProjects.add(listing.folder.key);
         if (existing?.workspaceFolder && existing.workspaceFolder.key !== listing.folder.key) changedProjects.add(existing.workspaceFolder.key);
       }
@@ -838,15 +870,8 @@ export class StorageManager {
     // Another window's delete, too, leaves the index.
     forgetSessionMetadata(this.metaIndex, filePath);
     const sessionId = piSessionIdFromFile(filePath);
-    this.readSinceList.add(sessionId);
     const folderKey = this.sessionFolder.get(sessionId);
-    this.sessionFolder.delete(sessionId);
-    if (this.allSessionsCache) {
-      this.allSessionsCache = this.allSessionsCache.filter((s) => s.id !== sessionId);
-    } else if (this.sessionsLoad) {
-      // The load in flight may have listed the file before it went.
-      this.invalidateSessionsCache();
-    }
+    this.dropSessionRow(sessionId);
     this.pushSessionsToAllPanels();
     if (folderKey !== undefined) this.emitChange({ projectKey: folderKey });
   }

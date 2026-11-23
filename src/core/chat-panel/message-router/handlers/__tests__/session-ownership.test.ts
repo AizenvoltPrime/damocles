@@ -113,7 +113,8 @@ function harness(...panels: Panel[]) {
     getPromptHistory: async () => ({ history: [], hasMore: false }),
     broadcastPromptHistoryEntry: vi.fn(),
     invalidateSessionsCache: vi.fn(),
-    markSessionsChanged: vi.fn(),
+    refreshSessionRow: vi.fn(async () => undefined),
+    removeSessionRow: vi.fn(),
     updateSessionTag: vi.fn(),
   };
   const deps = {
