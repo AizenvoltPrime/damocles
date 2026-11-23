@@ -12,7 +12,8 @@ import { awaitTurnEnd, postFromWebview } from './support/ui';
 
 const PLAN_NAME = 'ship-the-release-0123abcd.md';
 // the shown card: one that answered leaves through a transition while the next one enters
-const permissionCard = (tab: Page): Locator => tab.locator('section[role="region"][aria-label="Permission request"]:not([class*="-leave-"])');
+// A retired card stays in the page, inert, while its leave plays on the wrapper (useTrustedVisibility).
+const permissionCard = (tab: Page): Locator => tab.locator('section[role="region"][aria-label="Permission request"]:not([inert])');
 
 // A folder outside the hermetic project, so the loopback project and the local one are told apart in every list.
 function remoteFolder(home: HermeticHome): string {

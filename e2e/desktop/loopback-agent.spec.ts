@@ -32,7 +32,8 @@ const BROWSER_CLOSED = 'The browser runs on your computer and Damocles is closed
 const MEMORY_CLOSED = 'Your global memories live on your computer and Damocles is closed.';
 
 // the shown card: one that answered leaves through a transition while the next one enters
-const prompt = (tab: Page): Locator => tab.locator(`section[role="region"][aria-label="${PROMPT_REGION}"]:not([class*="-leave-"])`);
+// A retired card stays in the page, inert, while its leave plays on the wrapper (useTrustedVisibility).
+const prompt = (tab: Page): Locator => tab.locator(`section[role="region"][aria-label="${PROMPT_REGION}"]:not([inert])`);
 // Answers the shown card; the next prompt may enter while it leaves, so this waits for that card's own element to go.
 const yes = async (tab: Page): Promise<void> => {
   const card = prompt(tab);
