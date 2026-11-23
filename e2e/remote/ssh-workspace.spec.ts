@@ -154,7 +154,7 @@ test('on an SSH project, Files, the editor, a terminal with shell integration, s
   }
 });
 
-test('on an SSH project added through a symlinked folder, Source control opens its changes as the project\'s files and the editor shows their quick diff, while a link inside it that leads outside stays refused', { tag: SSH_TAG }, async ({ foreground: _foreground, launch, mirror, ssh, sshd }) => {
+test('on an SSH project added through a symlinked folder, Source control opens its changes as the project\'s files and the editor shows their quick diff, and a link inside it that leads outside opens through its link root', { tag: SSH_TAG }, async ({ foreground: _foreground, launch, mirror, ssh, sshd }) => {
   test.setTimeout(600_000);
   const fixture = await sshd('prod-1');
   const real = '/srv/real-app';
@@ -190,8 +190,11 @@ test('on an SSH project added through a symlinked folder, Source control opens i
   await editorShows(shell, 'TWO');
   await expect.poll(() => codeEditor(shell).getAttribute('data-quick-diff'), { timeout: 60_000 }).toBe('2-2');
 
-  // the target confines the file again: a link inside the project that leads to /etc opens nothing
-  expect(await openInEditor(app, { projectKey: key, relativePath: 'out/hostname' })).toEqual({ ok: false, reason: 'outside' });
+  // the target follows a link inside the project that leads to /etc through its link root (D3), editable
+  expect(await openInEditor(app, { projectKey: key, relativePath: 'out/hostname' })).toMatchObject({ ok: true });
+  expect(await activeTab(app)).toMatchObject({ kind: 'code', projectKey: key, relativePath: 'out/hostname' });
+  await editorShows(shell, 'prod-1');
+  await expect.poll(async () => (await activeTab(app))?.readOnly).toBe(false);
   await setSection(shell, 'scm-section', false);
 
   await shutdownHostDaemon(app, hostId, fixture);

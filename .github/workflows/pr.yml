@@ -279,6 +279,11 @@ jobs:
           sudo chown root:root node_modules/electron/dist/chrome-sandbox
           sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
 
+      # The forge stubs are reached as host.docker.internal by the containers (--add-host host-gateway) and by this computer's
+      # core, which on Linux resolves the name only through this entry (docs/invariants.md "Servers a fixture container reaches").
+      - name: Resolve host.docker.internal to the Docker bridge's gateway
+        run: echo "$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}') host.docker.internal" | sudo tee -a /etc/hosts
+
       # test:remote builds the app and the fixture images this shard's specs need, then runs them; its Playwright globalTimeout
       # lies inside this limit, so a hung run still writes its report (docs/release.md "Time limits").
       - name: Remote end-to-end specs (shard ${{ matrix.shard }} of ${{ matrix.shards }})

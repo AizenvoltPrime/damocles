@@ -159,9 +159,9 @@ test('an earlier build of this version, idle on the host, gives way to this buil
   const build = serverVersionOf(LINUX_TARGET);
   await expect.poll(() => daemonVersions(fixture), { timeout: 120_000 }).toEqual([build]);
   expect(await fixture.sh(`test -x '${versionFolder(build)}/bin/damocles-server' && test -x '${versionFolder(APP_VERSION)}/bin/damocles-server' && echo both`, 'dev')).toContain('both');
-  // the connect after the replacement found this build installed
+  // one connect installs this build, stops the earlier build's daemon and attaches again (Authorities adopt)
   await expect.poll(async () => (await lastConnectStep(current.app, hostId))?.step, { timeout: 60_000 }).toBe('connected');
-  expect((await lastConnectStep(current.app, hostId))?.visited).not.toContain('installing');
+  expect((await lastConnectStep(current.app, hostId))?.visited).toContain('installing');
   const downloads = mirror.downloads.length;
   await current.close();
 

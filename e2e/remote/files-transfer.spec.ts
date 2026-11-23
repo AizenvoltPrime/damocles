@@ -55,7 +55,7 @@ test('a dropped folder lands on the target with its tree, script and link; a cla
   await expect(filesRow(shell, 'src')).toBeVisible({ timeout: 60_000 });
 
   expect(await dropOnRow(shell, 'src', [source])).toBe(true);
-  await expect.poll(() => onTarget(host.fixture, `readlink ${APP}/src/assets/latest.svg`), { timeout: 60_000 }).toBe('img/icons/logo.svg\n');
+  await expect.poll(() => onTarget(host.fixture, `readlink ${APP}/src/assets/latest.svg 2>/dev/null || true`), { timeout: 60_000 }).toBe('img/icons/logo.svg\n');
   expect(await onTarget(host.fixture, `cat ${APP}/src/assets/img/icons/logo.svg`)).toBe('<svg/>');
   // the target creates the file with the mode bits the client sends (a Windows client's are 0o666) under its own umask, so
   // a script from POSIX stays executable and nothing from Windows lands world-writable
@@ -69,7 +69,7 @@ test('a dropped folder lands on the target with its tree, script and link; a cla
   // a clash on the target asks, and Keep both names the copy
   expect(await dropOnRow(shell, 'src', [path.join(home.root, 'readme.txt')])).toBe(true);
   await answerMessage(app, '\'readme.txt\' already exists in \'src\'', 'Keep both');
-  await expect.poll(() => onTarget(host.fixture, `cat '${APP}/src/readme copy.txt'`)).toBe('new');
+  await expect.poll(() => onTarget(host.fixture, `cat '${APP}/src/readme copy.txt' 2>/dev/null || true`)).toBe('new');
   expect(await onTarget(host.fixture, `cat ${APP}/src/readme.txt`)).toBe('old');
 
   // Download of a folder holding a link to /etc/passwd and names this computer refuses
