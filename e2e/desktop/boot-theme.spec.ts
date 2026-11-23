@@ -5,7 +5,8 @@ import { startOpenAIStub } from './support/openai-stub';
 import { hermeticEnv } from './support/hermetic';
 import { SecondProcess } from './support/second-process';
 import { onMainWindow, shellPage } from './support/shell';
-import { chatInput, listedSessionIds, setThemeSource } from './support/ui';
+import { HOOKS, themeHooks } from './support/themes';
+import { chatInput, listedSessionIds } from './support/ui';
 
 // Rendered --d-bg of each palette in src/desktop/theme-palettes.ts.
 const DARK_BG = 'rgb(11, 15, 20)';
@@ -51,24 +52,24 @@ test('window opens themed, follows a live OS theme switch, completes the handsha
     const sessionId = await other.chat('seed a session');
     await other.dispose();
 
-    const { app } = await launch();
+    const { app } = await launch(HOOKS);
     const tab = await activeChat(app);
     const shell = await shellPage(app);
     await expect(chatInput(tab)).toBeVisible();
-    // Only once the chat exists: main applies damocles.desktop.theme to themeSource while it starts, which undoes an earlier switch.
-    await setThemeSource(app, 'dark');
+    const os = themeHooks(app);
+    await os.osKind('dark');
     await expectBackground([tab, shell], DARK_BG);
     await expect(tab.locator('body')).toHaveClass(/vscode-dark/);
 
     await expect.poll(() => listedSessionIds(tab)).toContain(sessionId);
 
-    await setThemeSource(app, 'light');
+    await os.osKind('light');
     await expectBackground([tab, shell], LIGHT_BG);
     await expect(tab.locator('body')).toHaveClass(/vscode-light/);
     const bg = await tab.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--d-bg').trim());
     expect(bg).toBe('#f7f9fb');
 
-    await setThemeSource(app, 'dark');
+    await os.osKind('dark');
     await expectBackground([tab, shell], DARK_BG);
   } finally {
     await other.dispose();
@@ -77,7 +78,7 @@ test('window opens themed, follows a live OS theme switch, completes the handsha
 });
 
 test('damocles.desktop.theme switches every renderer live, system follows the OS, and the pages render in Geist', async ({ home, launch }) => {
-  const { app } = await launch();
+  const { app } = await launch(HOOKS);
   const tab = await activeChat(app);
   const shell = await shellPage(app);
   await expect(chatInput(tab)).toBeVisible();
@@ -98,8 +99,8 @@ test('damocles.desktop.theme switches every renderer live, system follows the OS
   await expect.poll(() => themeSource(app)).toBe('system');
   const osDark = await app.evaluate(({ nativeTheme }) => nativeTheme.shouldUseDarkColors);
   await expectBackground([tab, shell], osDark ? DARK_BG : LIGHT_BG);
-  // An OS switch, which themeSource stands in for: the app follows it while the setting is system.
-  await setThemeSource(app, osDark ? 'light' : 'dark');
+  // the app follows an OS switch while the setting is system
+  await themeHooks(app).osKind(osDark ? 'light' : 'dark');
   await expectBackground([tab, shell], osDark ? LIGHT_BG : DARK_BG);
 });
 

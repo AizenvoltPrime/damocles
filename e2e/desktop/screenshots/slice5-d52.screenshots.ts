@@ -8,7 +8,7 @@ import { activeChat, expect, test } from '../support/fixtures';
 import { readyOverlay } from '../support/overlay';
 import { saveScreenshot, settled, THEMES } from '../support/screenshots';
 import { NOTIFIER_URL, OVERLAY_URL, popupPage, popupWindowState, SHELL_URL } from '../support/shell';
-import { chatInput, postFromWebview, setThemeSource } from '../support/ui';
+import { chatInput, postFromWebview, setLook } from '../support/ui';
 
 // Sends main's art to the overlay page on main's own channel and catches the PNG it answers with (main ignores an id it
 // did not issue), so the capture is exactly what the running app's rasterizer draws.
@@ -170,7 +170,7 @@ test('D52 desktop popups in Dark and Light, and the taskbar badges 1, 4 and 9+',
   });
   await expect(popup.getByTestId('overlay-toasts-more')).toBeVisible();
   for (const theme of THEMES) {
-    await setThemeSource(app, theme);
+    await setLook(app, theme);
     await expect(popup.locator('body')).toHaveAttribute('data-vscode-theme-kind', `vscode-${theme}`);
     // The window is transparent over the desktop; the capture paints a desktop-like backdrop behind it.
     await popup.evaluate((dark) => {

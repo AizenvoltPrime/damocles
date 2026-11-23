@@ -32,6 +32,7 @@ interface ThemeHooks {
   keepChanges: { hold(): void; expire(): boolean };
   themeClock(now: number | null): void;
   themeTick(): void;
+  themeOsKind(kind: 'dark' | 'light' | null): void;
   themeSystemLocale(locale: string | null): void;
   themeShown(): ShownLook;
   pinMotion(pinned: MotionPins): void;
@@ -59,6 +60,11 @@ export const themeHooks = (app: ElectronApplication) => ({
   tick: async (): Promise<void> => {
     await hooksReady(app);
     await app.evaluate(() => (globalThis as unknown as Required<HookGlobals>).__damoclesE2e.themeTick());
+  },
+  /** Switches the computer's light or dark mode as main reads it, which a test cannot switch on the OS; null gives the OS's back. */
+  osKind: async (kind: 'dark' | 'light' | null): Promise<void> => {
+    await hooksReady(app);
+    await app.evaluate((_electron, given) => (globalThis as unknown as Required<HookGlobals>).__damoclesE2e.themeOsKind(given), kind);
   },
   /** The regional format the schedule screen is told, in place of the machine's. */
   region: async (locale: string | null): Promise<void> => {

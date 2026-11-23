@@ -148,6 +148,15 @@ export interface LaunchOptions {
 // SwiftShader as the GL driver (DAMOCLES_E2E_SOFTWARE_GL=1): a host without a GPU then composites as one with a GPU does.
 const SOFTWARE_GL_ARGS: readonly string[] = process.env['DAMOCLES_E2E_SOFTWARE_GL'] === '1' ? ['--use-gl=angle', '--use-angle=swiftshader'] : [];
 
+const homes = new WeakMap<ElectronApplication, HermeticHome>();
+
+/** The hermetic home `app` runs on, for a helper handed only the launch's app. */
+export function homeOf(app: ElectronApplication): HermeticHome {
+  const h = homes.get(app);
+  if (!h) throw new Error('the app was not started by launchDesktop');
+  return h;
+}
+
 /**
  * Launches the desktop app on the hermetic home (the packaged executable when PACKAGED_APP_ENV names one), with its output
  * captured for artifacts. With `mainProcess` false, a dev launch refuses main-process calls as a packaged one does.
@@ -172,8 +181,10 @@ export async function launchDesktop(h: HermeticHome, options: LaunchOptions = {}
   const exit = new Promise<void>((resolve) => proc.once('exit', () => resolve()));
   proc.stdout?.on('data', (d: Buffer) => (output += d.toString()));
   proc.stderr?.on('data', (d: Buffer) => (output += d.toString()));
+  const handed = mainProcess ? app : withoutMainProcess(app);
+  homes.set(handed, h);
   return {
-    app: mainProcess ? app : withoutMainProcess(app),
+    app: handed,
     output: () => output,
     crashDumps,
     startTracing: async () => {

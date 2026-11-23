@@ -6,7 +6,7 @@ import { REPO_ROOT, writeUserSettings } from './support/hermetic';
 import { activePageTab, browserTabs, captureWindow, chromeEnv, openPage, PAGE_TIMEOUT, setWindowContentSize, startSite, systemChrome, type Site } from './support/browser';
 import { windowSettled } from './support/screenshots';
 import { shellPage } from './support/shell';
-import { clickMenu, setThemeSource } from './support/ui';
+import { clickMenu, setLook } from './support/ui';
 
 // Visual record of every browser tab state, for people to look at; the behaviour is asserted in browser-tabs.spec.ts.
 const SCREENS = path.join(REPO_ROOT, 'dist', 'e2e-screens', 'browser-tabs');
@@ -40,7 +40,7 @@ async function start(launch: (options?: LaunchOptions) => Promise<DesktopApp>, t
   const tab = await activeChat(app);
   const composer = tab.locator('textarea').first();
   await expect(composer).toBeVisible();
-  await setThemeSource(app, theme);
+  await setLook(app, theme);
   await setWindowContentSize(app, 1280, 780);
   await composer.fill(args.length > 0 ? 'Σύγκρινε τις δύο σελίδες' : 'Compare the two pages and summarise the differences');
   return { app, tab };
@@ -108,6 +108,6 @@ test('screens: Greek', async ({ home, launch }) => {
   const shell = await shellPage(app);
   await expect(shell.getByRole('textbox', { name: 'Διεύθυνση' })).toBeVisible();
   await shoot(app, 'greek-01-two-page-tabs');
-  await setThemeSource(app, 'light');
+  await setLook(app, 'light');
   await shoot(app, 'greek-02-two-page-tabs-light');
 });

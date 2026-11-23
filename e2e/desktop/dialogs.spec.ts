@@ -11,7 +11,7 @@ import { killRenderer } from './support/renderer-kill';
 import { settingsRow, openSettingsModal, settingsModal } from './support/settings';
 import { OVERLAY_URL, shellState } from './support/shell';
 import { projectKeyOf, projectRow, readyShell } from './support/shell-ui';
-import { addProject, answerMessageBoxes, answerOpenDialog, askedDialogs, chatInput, clickMenu, messageBoxes, sendAndAwaitEcho, setThemeSource, TRUST_PROMPT } from './support/ui';
+import { addProject, answerMessageBoxes, answerOpenDialog, askedDialogs, chatInput, clickMenu, messageBoxes, sendAndAwaitEcho, setLook, TRUST_PROMPT } from './support/ui';
 
 const SWITCH_PROMPT = 'Switch this panel to beta?';
 
@@ -93,7 +93,7 @@ test('every question renders as the overlay dialog: the trust question and a fol
 
     for (const theme of ['dark', 'light'] as const) {
       await expect.poll(() => overlayCoversWindow(app)).toBe(false);
-      await setThemeSource(app, theme);
+      await setLook(app, theme);
       await expect(overlay.locator('body')).toHaveClass(new RegExp(`vscode-${theme}`));
       const modal = await openSettingsModal(app, 'chat');
       const folder = settingsRow(modal, 'workspace-folder').getByRole('combobox');

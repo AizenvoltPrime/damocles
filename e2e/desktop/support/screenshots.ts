@@ -8,7 +8,7 @@ import { captureWindow, pageFramesShown } from './browser';
 import { REPO_ROOT } from './hermetic';
 import { overlayViewState } from './overlay';
 import { overlayPage, shellPage, shellState, THEME_RENDER_URL } from './shell';
-import { addProject, chatInput, clickMenu, setThemeSource } from './ui';
+import { addProject, chatInput, clickMenu, setLook } from './ui';
 
 export const THEMES = ['dark', 'light'] as const;
 export type Theme = (typeof THEMES)[number];
@@ -85,7 +85,7 @@ export async function settled(page: Page): Promise<void> {
 
 /** Switches the app to `theme` and waits until `page` shows it. */
 export async function showTheme(app: ElectronApplication, page: Page, theme: Theme): Promise<void> {
-  await setThemeSource(app, theme);
+  await setLook(app, theme);
   await expect(page.locator('body')).toHaveAttribute('data-vscode-theme-kind', `vscode-${theme}`);
   await settled(page);
 }
@@ -113,7 +113,7 @@ export async function setFont(app: ElectronApplication, px: number): Promise<voi
 
 /** Switches the app theme and waits until the shell page wears it; a chat page may be unloaded by a project switch. */
 export async function showShellTheme(app: ElectronApplication, theme: Theme): Promise<void> {
-  await setThemeSource(app, theme);
+  await setLook(app, theme);
   const shell = await shellPage(app);
   await expect(shell.locator('body')).toHaveClass(new RegExp(`(^| )vscode-${theme}( |$)`));
   await settled(shell);
@@ -157,7 +157,7 @@ export async function windowSettled(app: ElectronApplication, theme?: Theme): Pr
 /** Captures the whole window to `<dir>/<name>-<theme>.png` in each theme, once every visible page has settled in it. */
 export async function captureThemes(app: ElectronApplication, dir: string, name: string): Promise<void> {
   for (const theme of THEMES) {
-    await setThemeSource(app, theme);
+    await setLook(app, theme);
     await windowSettled(app, theme);
     await captureWindow(app, path.join(dir, `${name}-${theme}.png`));
   }

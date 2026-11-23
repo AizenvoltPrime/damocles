@@ -1,4 +1,6 @@
 import { expect, type ElectronApplication, type Locator, type Page } from '@playwright/test';
+import { homeOf } from './app';
+import { writeUserSettings } from './hermetic';
 import { readyOverlay } from './overlay';
 import { SHELL_URL, shellState } from './shell';
 
@@ -24,10 +26,13 @@ export function chatInput(tab: Page): Locator {
   return tab.getByPlaceholder(CHAT_PLACEHOLDER);
 }
 
-export async function setThemeSource(app: ElectronApplication, source: 'dark' | 'light' | 'system'): Promise<void> {
-  await app.evaluate(({ nativeTheme }, s) => {
-    nativeTheme.themeSource = s;
-  }, source);
+/**
+ * Picks the dark or light look through damocles.desktop.theme, as Settings does, and waits until main applied it. Main owns
+ * nativeTheme.themeSource and writes it again on any theme change, so a test never writes it.
+ */
+export async function setLook(app: ElectronApplication, kind: 'dark' | 'light'): Promise<void> {
+  writeUserSettings(homeOf(app), { 'damocles.desktop.theme': kind });
+  await expect.poll(() => app.evaluate(({ nativeTheme }) => nativeTheme.themeSource)).toBe(kind);
 }
 
 export interface RecordedBox {

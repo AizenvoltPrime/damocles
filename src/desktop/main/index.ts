@@ -254,7 +254,7 @@ import {
   setWallpaperFlashReader, setWallpaperStatsReader, shownBackground, trustedBackground, wallpaperCycleChanged, currentCharacters, namedSpriteBlob, setProjectPins,
   projectLookOf, setProjectLooks, setSelectedProject,
   currentScheduleView, reevaluateTheme, setAppearanceSchedule, setReportedTimeZone, setThemeClock, themeNow, themePreference,
-  heldLookSettled, onThemeInputsChange,
+  heldLookSettled, onThemeInputsChange, setOsKindStandIn,
 } from './theme';
 import { APPEARANCE_FILE, parseAppearanceSchedule, THEME_TICK_MS } from '../../shared/themes/schedule';
 import { openThemeBlob, readStoreThumb, readThemeBlob, readThemeThumb, readWallpaperFlash, readWallpaperPalette, readWallpaperStats, type NamedBlob } from './themes/theme-blobs';
@@ -6386,6 +6386,8 @@ class DesktopApp {
           setThemeClock(now === null ? undefined : () => now + (Date.now() - setAt));
         },
         themeTick: () => reevaluateTheme(),
+        // stands in for the computer's light or dark mode; null gives the OS's back
+        themeOsKind: (kind: 'dark' | 'light' | null) => setOsKindStandIn(kind ?? undefined),
         // the GPU compositing status once the GPU process has reported
         gpuCompositing: async () => {
           await E2E_GPU_REPORTED;

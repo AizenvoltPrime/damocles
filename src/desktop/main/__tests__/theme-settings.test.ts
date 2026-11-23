@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 const H = vi.hoisted(() => ({ native: { themeSource: 'system', shouldUseDarkColors: true, on: vi.fn(), off: vi.fn() } }));
 vi.mock('electron', () => ({ nativeTheme: H.native }));
 
-import { currentTheme, followThemeSettings, onThemeChange, themePreference } from '../theme';
+import { currentTheme, currentThemeKind, followThemeSettings, onThemeChange, reevaluateTheme, setOsKindStandIn, themePreference } from '../theme';
 
 function fakeSettings(values: Record<string, unknown>) {
   let listener: (() => void) | undefined;
@@ -68,5 +68,30 @@ describe('desktop theme settings', () => {
     expect(icons).toEqual(['minimal', 'material']);
     following.dispose();
     listening.dispose();
+  });
+
+  it('follows a stand-in for the OS kind where the OS decides, through every evaluation, until the OS is given back', () => {
+    H.native.shouldUseDarkColors = false;
+    const settings = fakeSettings({ 'damocles.desktop.theme': 'system' });
+    const following = followThemeSettings(settings);
+    expect([currentThemeKind(), H.native.themeSource]).toEqual(['light', 'system']);
+
+    setOsKindStandIn('dark');
+    expect([currentThemeKind(), H.native.themeSource]).toEqual(['dark', 'dark']);
+    reevaluateTheme();
+    settings.fire();
+    expect([currentThemeKind(), H.native.themeSource]).toEqual(['dark', 'dark']);
+
+    settings.values['damocles.desktop.theme'] = 'light';
+    settings.fire();
+    expect([currentThemeKind(), H.native.themeSource]).toEqual(['light', 'light']);
+    settings.values['damocles.desktop.theme'] = 'system';
+    settings.fire();
+    expect([currentThemeKind(), H.native.themeSource]).toEqual(['dark', 'dark']);
+
+    setOsKindStandIn(undefined);
+    expect([currentThemeKind(), H.native.themeSource]).toEqual(['light', 'system']);
+    following.dispose();
+    H.native.shouldUseDarkColors = true;
   });
 });

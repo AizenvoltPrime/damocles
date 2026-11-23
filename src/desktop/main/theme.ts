@@ -104,13 +104,21 @@ let appearanceSchedule: AppearanceSchedule = NO_APPEARANCE_SCHEDULE;
 let timeZone: string = Intl.DateTimeFormat().resolvedOptions().timeZone;
 let zoneReported = false;
 let clock: () => number = Date.now;
-// the OS kind as last read while themeSource was 'system'; nativeTheme reports the forced kind otherwise
+// the OS kind as last read while themeSource was 'system' (nativeTheme reports the forced kind otherwise), or the stand-in's
 let knownOsKind: ThemeKind | undefined;
+// e2e's stand-in for the computer's light or dark mode, which no test can switch
+let osStandIn: ThemeKind | undefined;
 
 function osKind(): ThemeKind {
-  const kind: ThemeKind = nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
-  if (nativeTheme.themeSource === 'system') knownOsKind = kind;
+  const kind: ThemeKind = osStandIn ?? (nativeTheme.shouldUseDarkColors ? 'dark' : 'light');
+  if (osStandIn !== undefined || nativeTheme.themeSource === 'system') knownOsKind = kind;
   return kind;
+}
+
+/** Stands in for the computer's light or dark mode (e2e); undefined gives the OS's back. The look follows it as it does an OS switch. */
+export function setOsKindStandIn(kind: ThemeKind | undefined): void {
+  osStandIn = kind;
+  refresh();
 }
 
 function appearanceInputs(): AppearanceInputs {
@@ -541,7 +549,8 @@ function refresh(notify = true, writeSource = true): void {
 // chose the look (the settings, the schedule, forced colors); an `updated` that reports an OS switch never calls it.
 function writeThemeSource(base: ShownTheme): ThemePreference | undefined {
   if (!followed) return undefined;
-  const source = themeSourceFor(base);
+  // Electron cannot be told the OS's kind, so under a stand-in native menus and scrollbars follow its kind set directly
+  const source = osStandIn === undefined ? themeSourceFor(base) : base.kind;
   if (nativeTheme.themeSource === source) return undefined;
   nativeTheme.themeSource = source;
   return source;
