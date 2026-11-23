@@ -28,9 +28,12 @@ const AWAY_NOTE = 'Zorblax rollbacks need two approvals.';
 /** A webview message a chat page posts, as its own components do. */
 const post = (tab: Page, message: Record<string, unknown>): Promise<void> => tab.evaluate((m) => window.damoclesBridge!.postMessage(m), message);
 
+// The app's core writes the store while a spec reads it, so a read waits out its write lock as the core's own readers do.
+const BUSY_TIMEOUT_MS = 5000;
+
 /** Global rows of this computer's memory store whose content is `content`. */
 function localGlobals(damoclesDir: string, content: string): number {
-  const db = new DatabaseSync(path.join(damoclesDir, 'memory.v3.db'), { readOnly: true });
+  const db = new DatabaseSync(path.join(damoclesDir, 'memory.v3.db'), { readOnly: true, timeout: BUSY_TIMEOUT_MS });
   try {
     return (db.prepare("SELECT count(*) AS n FROM memories WHERE scope = 'global' AND content = ?").get(content) as { n: number }).n;
   } finally {
@@ -40,7 +43,7 @@ function localGlobals(damoclesDir: string, content: string): number {
 
 /** This computer's global rows whose content is `content`: how many, and whether any is pinned or forgotten. */
 function localGlobal(damoclesDir: string, content: string): { n: number; pinned: boolean; forgotten: boolean } {
-  const db = new DatabaseSync(path.join(damoclesDir, 'memory.v3.db'), { readOnly: true });
+  const db = new DatabaseSync(path.join(damoclesDir, 'memory.v3.db'), { readOnly: true, timeout: BUSY_TIMEOUT_MS });
   try {
     const row = db.prepare("SELECT count(*) AS n, coalesce(max(pinned), 0) AS pinned, coalesce(max(forgotten), 0) AS forgotten FROM memories WHERE scope = 'global' AND content = ?").get(content) as { n: number; pinned: number; forgotten: number };
     return { n: row.n, pinned: row.pinned === 1, forgotten: row.forgotten === 1 };
@@ -62,7 +65,7 @@ async function targetMemories(fixture: Pick<SshdFixture, 'sh'>): Promise<string>
   const script = [
     "const file = process.env.HOME + '/.damocles/memory.v3.db';",
     "if (!require('node:fs').existsSync(file)) { console.log('[]'); process.exit(0); }",
-    "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(file);",
+    `const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(file, { timeout: ${BUSY_TIMEOUT_MS} });`,
     "const created = db.prepare(\"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memories'\").get() !== undefined;",
     "console.log(JSON.stringify(created ? db.prepare('SELECT scope, content FROM memories').all() : []));",
   ].join(' ');
