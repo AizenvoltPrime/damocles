@@ -175,6 +175,9 @@ All notable changes to Damocles will be documented in this file.
 
 ### Fixed
 
+- **Desktop: a remote project selected when you quit stays selected after a relaunch.** When the launch also restored a local chat in the background, unloading that chat moved the selection to a new local chat while the host was still connecting, and the next launch did not connect the host; the remote project now stays selected.
+- **Desktop: turning the theme tools off reaches a remote chat's next turn.** A theme tool the chat had loaded before you turned the group off in Settings › Appearance stayed in the chat's tools when the change arrived during a turn, so the agent could still call it, and Damocles refused it; the next turn now runs without it.
+- **Desktop: /stats counts every remote host's chats.** A host whose id starts or ends with `-` or `_`, about one host in sixteen, had its mirrored chats left out of /stats; they are now counted.
 - **The first chat in a folder lists your custom agents.** Its Agent tool was built before the folder's custom agents finished loading, so the model saw only general-purpose, Explore and Plan; a new chat or a cleared one now waits for that load.
 - **A subagent no longer starts after you press Esc.** An Agent call still waiting for the custom agents to load started its agent and recorded it in the chat after Esc, a reset or closing the panel; it now stops there and nothing is recorded. Taking trust back from a project removes its agents at once, before the reload, so a queued agent cannot start as one.
 - **One custom agent template whose frontmatter does not parse no longer unloads the rest.** It left every custom agent unloaded; it is now skipped and logged, and the others load.

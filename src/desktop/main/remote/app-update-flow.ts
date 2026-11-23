@@ -44,7 +44,7 @@ export interface CompatibleDaemon {
   // the other devices attached to it, this one excluded; undefined from a daemon that does not list its clients
   otherDevices(): number | undefined;
   shutdownWhenIdle(): Promise<void>;
-  // answers, then the daemon ends every run through its Stop path, every terminal, and exits
+  // answers, then the daemon's core disposes every chat, which aborts its run, ends every terminal, and exits
   shutdownNow(): Promise<void>;
 }
 

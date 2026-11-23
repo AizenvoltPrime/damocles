@@ -26,7 +26,7 @@ const MEASUREMENT_MS = 60_000 + 5 * 2000;
 const DROP_MS = 120_000;
 
 interface DropHooks {
-  __damoclesE2e: { remote: { dropConnection(hostId: string): void } };
+  __damoclesE2e: { remote: { dropConnection(hostId: string): void; cutTransport(hostId: string, options: { hold: boolean }): void; releaseTransport(hostId: string): void; reconnectNow(authorityKey: string): void } };
 }
 
 const banner = (shell: Page): Locator => shell.locator('[data-testid="connection-banner"], [data-testid="connection-banner-edge"]').first();
@@ -278,10 +278,20 @@ test("a fresh attach that meets an unknown host key while Settings shows the hos
   await expect(overlay.getByTestId('settings-scope-loading')).toHaveCount(0);
 
   // the client forgets the host's key, and the connection closes for good, so the tab waits for its core while the next
-  // ssh, with no master connection to reuse, meets the key as unknown
+  // ssh, with no master connection to reuse, meets the key as unknown. The close comes first, in one evaluate with the
+  // hold: an exited master ends the transport riding it (macOS and Linux), which leaves a resume, not a fresh attach.
   fs.writeFileSync(ssh.knownHosts, '');
+  await app.evaluate((_electron, id) => {
+    const remote = (globalThis as unknown as DropHooks).__damoclesE2e.remote;
+    remote.dropConnection(id);
+    remote.cutTransport(id, { hold: true });
+  }, hostId);
   await exitControlMaster(app, hostId);
-  await app.evaluate((_electron, id) => (globalThis as unknown as DropHooks).__damoclesE2e.remote.dropConnection(id), hostId);
+  await app.evaluate((_electron, id) => {
+    const remote = (globalThis as unknown as DropHooks).__damoclesE2e.remote;
+    remote.releaseTransport(id);
+    remote.reconnectNow(`ssh+${id}`);
+  }, hostId);
   const away = overlay.getByTestId('settings-scope-away');
   await expect(away).toHaveAttribute('data-state', 'signIn', { timeout: 120_000 });
   await expect(overlay.getByTestId('settings-scope-away-text')).toHaveText('prod-1 is waiting for you to sign in');

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { StatementSync } from 'node:sqlite';
-import { isSafeAgentPathId } from '../../shared/agent-path-id';
+import { isHostId } from '../../shared/host-id';
 import { MIRROR_CLOCK_FILE, MIRROR_SUBCALLS_FILE, isMirrorWorktreeFolder, parseMirrorClock } from '../../shared/remote-mirror';
 import { hostNoProjectKey, hostProjectKey, NO_PROJECT_KEY } from '../../shared/types/usage-stats';
 import type { UsageDatabase } from './database';
@@ -153,7 +153,7 @@ function listMirrorFiles(remoteMirrorsDir: string, log: (message: string) => voi
     return failed('the hosts\' mirrors', err);
   }
   return hosts
-    .filter((entry) => entry.isDirectory() && isSafeAgentPathId(entry.name))
+    .filter((entry) => entry.isDirectory() && isHostId(entry.name))
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     .flatMap((entry) => {
       const mirror = path.join(remoteMirrorsDir, entry.name, 'mirror');

@@ -58,8 +58,9 @@ export async function installOlderServer(fixture: SshdFixture, archive: string, 
     await fixture.sh(`${node} -e "${script}" '${folder}/dist/daemon.js' '${options.protocolVersion}'`, 'dev');
   }
   if (options.withoutFeature !== undefined) {
-    // the bundle's one `FEATURES = [...]` list loses its `, "<name>"` entry; String.fromCharCode(34) keeps quotes out of sh -c
-    const script = "const fs=require('fs');const f=process.argv[1];const q=String.fromCharCode(34);const t=fs.readFileSync(f,'utf8');const lists=t.split('FEATURES = [').length-1;if(lists!==1)throw new Error('FEATURES = [ occurs '+lists+' times');const at=t.indexOf('FEATURES = [');const end=t.indexOf(']',at);const list=t.slice(at,end)+']';const entry=', '+q+process.argv[2]+q;const left=list.split(entry+',').join(',').split(entry+']').join(']');if(list.length-left.length!==entry.length)throw new Error(process.argv[2]+' is not one entry of FEATURES');fs.writeFileSync(f,t.slice(0,at)+left+t.slice(end+1))";
+    // the bundle's one `FEATURES = [...]` list (not CORE_READ_FEATURES) loses its `, "<name>"` entry; String.fromCharCode(34)
+    // keeps quotes out of sh -c
+    const script = `const fs=require('fs');const f=process.argv[1];const q=String.fromCharCode(34);const t=fs.readFileSync(f,'utf8');const lists=[...t.matchAll(/\\bFEATURES = \\[/g)];if(lists.length!==1)throw new Error('FEATURES = [ occurs '+lists.length+' times');const at=lists[0].index;const end=t.indexOf(']',at);const list=t.slice(at,end)+']';const entry=', '+q+process.argv[2]+q;const left=list.split(entry+',').join(',').split(entry+']').join(']');if(list.length-left.length!==entry.length)throw new Error(process.argv[2]+' is not one entry of FEATURES');fs.writeFileSync(f,t.slice(0,at)+left+t.slice(end+1))`;
     await fixture.sh(`${node} -e "${script}" '${folder}/dist/daemon.js' '${options.withoutFeature}'`, 'dev');
   }
   return version;

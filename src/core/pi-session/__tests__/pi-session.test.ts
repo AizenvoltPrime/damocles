@@ -7,7 +7,7 @@ import { processLauncher, type LaunchedProcess } from '../../process-launcher';
 import type { ShellCredentialLease } from '../tools/shell-credentials';
 import type { GitCredentialOrigin } from '../../../shared/git-credential';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
-import { CREDENTIAL_CLIENT_ABSENT, type HeldAuth } from '../../../shared/remote-user';
+import { CREDENTIAL_CLIENT_ABSENT, type ClientUser, type HeldAuth } from '../../../shared/remote-user';
 import { MAX_IMAGE_BASE64_LENGTH, type UserContentBlock } from '../../../shared/types/content';
 import { formatUserSteerPrefix, type UserSteerNote } from '../../../shared/steer';
 import type { ForkSpawnArgs } from '../../../shared/types/session';
@@ -531,7 +531,8 @@ import { createHarness, folderEntry, makeFakeHost } from '../../chat-panel/__tes
 import { folderKey } from '../../workspace-folders/folder-key';
 import { piSessionDir } from '../session-store/session-dir';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
-import { runPin, runPinnedTurn, type ClientPin } from '../../client-snapshots';
+import { currentPin, runPin, runPinnedTurn, type ClientPin } from '../../client-snapshots';
+import { TOOL_GROUP_SETTINGS } from '../../../shared/types/tools';
 import { installPlatform } from '../../platform-host';
 import { installCredentialRelay } from '../../scm/askpass/credential-relay';
 import { asConfigParams, installCredentialHelper, managedEntries } from '../../scm/askpass/credential-config';
@@ -665,6 +666,26 @@ describe('a daemon\'s core pins every run a panel\'s pi session starts', () => {
     seen.length = 0;
     await nested.prompt('a steer to an idle subagent');
     expect(seen).toEqual([expect.objectContaining({ kind: 'turn', clientId: 'client-a', run: 'panel-1' })]);
+    await panel.dispose();
+  });
+
+  // A daemon's core reads a tool group's switch from the turn's pinned device settings (core-host/local.ts remoteSettings).
+  it('drops a deferred tool that an earlier turn loaded and the device then switched off, before the next turn runs', async () => {
+    const host = createFakeRemoteHost();
+    const THEME_SWITCH = TOOL_GROUP_SETTINGS.theme;
+    const deviceSwitch = (on: boolean): ClientUser => ({ settings: { [THEME_SWITCH]: on }, permissionRules: [] });
+    host.set('clientUser', 'client-a', deviceSwitch(true));
+    const get = ((key: string, fallback?: unknown) => (key === THEME_SWITCH ? (currentPin(host.remote).user?.settings[key] ?? fallback) : testPlatform.settings.get(key, fallback))) as typeof testPlatform.settings.get;
+    const settings = Object.assign(Object.create(testPlatform.settings) as typeof testPlatform.settings, { get });
+    const panel = new PiSession(makeOptions([], { platform: { ...testPlatform, settings, remote: host.remote }, panelId: 'panel-1', themeTools: { relayed: host.remote } }));
+    await panel.initializeEarly();
+    const setActive = H.getLastSession()!.setActiveToolsByName as ReturnType<typeof vi.fn>;
+    runPinnedTurn(host.remote, 'panel-1', () => panel.activateDeferredTools(['ThemeSet']));
+    expect(setActive.mock.calls.at(-1)?.[0]).toContain('ThemeSet');
+
+    host.set('clientUser', 'client-a', deviceSwitch(false));
+    await panel.sendMessage('try a theme', undefined, 'c1', { content: 'try a theme' });
+    expect(setActive.mock.calls.at(-1)?.[0]).not.toContain('ThemeSet');
     await panel.dispose();
   });
 

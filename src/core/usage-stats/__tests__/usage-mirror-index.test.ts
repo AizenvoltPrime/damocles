@@ -123,6 +123,20 @@ describe('the session mirror in the usage index', () => {
     expect(report().byProject!.map((row) => [row.hostId, row.cost])).toEqual([['staging', 2], ['prod-1', 1]]);
   });
 
+  // host ids are 9 random bytes in base64url, so one may start or end with - or _
+  it('counts the mirror of a host whose id starts or ends with - or _', async () => {
+    write(mirrorFile('-Z5hQbFC4lg5', '2025_s1.jsonl'), [header('s1', TARGET_CWD), assistant('a1', 1, 1)]);
+    write(mirrorFile('HjndONx1JUG_', '2025_s2.jsonl'), [header('s2', TARGET_CWD), assistant('a2', 1, 2)]);
+    await scan();
+    expect(report().byProject!.map((row) => [row.hostId, row.cost])).toEqual([['HjndONx1JUG_', 2], ['-Z5hQbFC4lg5', 1]]);
+  });
+
+  it('skips a host folder whose name is no host id', async () => {
+    write(mirrorFile('a.b', '2025_s1.jsonl'), [header('s1', TARGET_CWD), assistant('a1', 1, 1)]);
+    await scan();
+    expect(report().byProject).toEqual([]);
+  });
+
   it('keeps the spend of a mirrored session after the mirror drops its file', async () => {
     const file = mirrorFile('prod-1', '2025_remote-1.jsonl');
     write(file, [header('remote-1', TARGET_CWD), assistant('r1', 2, 1.5)]);

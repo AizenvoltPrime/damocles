@@ -11,7 +11,7 @@ import type { IndicatorBox } from '@/composables/useSlidingIndicator';
 // `soft`: the ring's pieces filled with --tone and no border; --tone may be translucent, as those pieces never overlap.
 const props = withDefaults(defineProps<{
   box: IndicatorBox | null;
-  /** px at the default font, scaled with the root font size like the rem radii it matches; `pill` is half the box height. */
+  /** px at the default font, scaled with the root font size and --d-radius-scale like the rem radii it matches; `pill` is half the box height. */
   radius: number | 'pill';
   animate: boolean;
   variant?: 'solid' | 'ring' | 'soft';
@@ -25,7 +25,9 @@ const middleBase = computed(() => Math.round(MIDDLE_BASE * pixelRatio.value) / p
 
 function radiusPx(box: IndicatorBox): number {
   if (props.radius === 'pill') return box.height / 2;
-  return (props.radius * Number.parseFloat(getComputedStyle(document.documentElement).fontSize)) / 16;
+  const root = getComputedStyle(document.documentElement);
+  const scale = Number.parseFloat(root.getPropertyValue('--d-radius-scale'));
+  return (props.radius * (Number.isFinite(scale) ? scale : 1) * Number.parseFloat(root.fontSize)) / 16;
 }
 
 const pieces = computed(() => {

@@ -2,6 +2,7 @@
 FROM node:24.22.0-alpine3.24@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f
 # every image the specs build carries the label their teardown removes by
 LABEL damocles.e2e=devcontainer
-# git for the credential relay case, ssh-add and ssh for the agent relay case; the build log shows its output. The workspace
-# is a bind mount the container user does not own, which git refuses without safe.directory.
+# git for the credential relay case, ssh-add and ssh for the agent relay case; the build log shows its output. git needs
+# safe.directory where the workspace bind mount is not the container user's (Docker Desktop). devcontainer.json leaves
+# updateRemoteUserUID on: on Linux it gives node the host user's uid, without which node cannot enter the 0700 workspace.
 RUN apk add --no-cache git openssh-client && git config --system --add safe.directory '*'

@@ -5,6 +5,7 @@ import type { PanelHost } from "../../platform/window-service";
 import type { ExtensionToWebviewMessage, HostCapabilities } from "../../shared/types/messages";
 import type { StoredSession } from "../../shared/types/session";
 import { isSafeAgentPathId } from "../../shared/agent-path-id";
+import { isHostId } from "../../shared/host-id";
 import { isMirrorWorktreeFolder, mirrorWorktreeKind, type MirrorWorktreeKind } from "../../shared/remote-mirror";
 import { piSessionIdFromFile } from "../pi-session/session-store/meta-index/protocol";
 import { listRow, sessionFileMeta } from "../pi-session/session-store/metadata";
@@ -16,8 +17,6 @@ import { initPiLoader } from "../pi-session/pi-loader";
 import { sessionMatchesQuery } from "./storage-manager";
 import { log } from "../logger";
 
-// A host id the desktop host store drew: one safe path segment.
-const HOST_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const SESSION_SUFFIX = ".jsonl";
 
 /**
@@ -30,7 +29,7 @@ export async function mirroredSessionFile(userDataDir: string, hostId: string, f
   const name = path.basename(file);
   const base = name.endsWith(SESSION_SUFFIX) ? name.slice(0, -SESSION_SUFFIX.length) : "";
   const sessionId = piSessionIdFromFile(name);
-  if (!HOST_ID.test(hostId) || !path.isAbsolute(file) || !isSafeAgentPathId(base) || !isSafeAgentPathId(sessionId)) return undefined;
+  if (!isHostId(hostId) || !path.isAbsolute(file) || !isSafeAgentPathId(base) || !isSafeAgentPathId(sessionId)) return undefined;
   let real: string;
   let root: string;
   try {
@@ -61,7 +60,7 @@ async function realOrMissing(target: string): Promise<string | null> {
  * null when the mirror holds nothing for it yet, undefined for any other path, which the caller refuses.
  */
 export async function mirroredProjectFolder(userDataDir: string, hostId: string, folder: string): Promise<string | null | undefined> {
-  if (!HOST_ID.test(hostId) || !path.isAbsolute(folder)) return undefined;
+  if (!isHostId(hostId) || !path.isAbsolute(folder)) return undefined;
   const lexicalRoot = path.join(userDataDir, "remote", hostId, "mirror");
   if (path.dirname(path.resolve(folder)) !== lexicalRoot || !isSafeAgentPathId(path.basename(folder))) return undefined;
   const [root, real] = await Promise.all([realOrMissing(lexicalRoot), realOrMissing(folder)]);

@@ -38,6 +38,8 @@ export interface ConnectStepEvent {
   readonly progress?: number;
   readonly prompt?: { readonly promptId: string; readonly kind: string };
   readonly failure?: { readonly code: string; readonly params: Record<string, string | number> };
+  /** A container attempt's `devcontainer up` log, newest line last. */
+  readonly buildLog?: { readonly lines: readonly string[] };
 }
 
 // main's e2e hooks for SSH hosts (globalThis.__damoclesE2e.remote, DAMOCLES_E2E_HOOKS=1 in an unpackaged app only)

@@ -53,12 +53,19 @@ const outbox = (fixture: Pick<SshdFixture, 'sh'>): Promise<string> =>
   fixture.sh(`d=${TARGET_HOME}/.damocles/outbox; [ -d "$d" ] || exit 0; for f in "$d"/*.jsonl; do [ -e "$f" ] && { echo "== $f $(stat -c %a "$f")"; cat "$f"; }; done; true`, TARGET_USER);
 
 /**
- * Every memory row of the target account's store, read with the installed server's node. Opened read-write: a read-only open of
- * a WAL database fails while no connection holds its -shm file, as after the daemon's core closed it.
+ * Every memory row of the target account's store, read with the installed server's node; none before the daemon's core created
+ * the store. Opened read-write: a read-only open of a WAL database fails while no connection holds its -shm file, as after the
+ * daemon's core closed it. A read-write open creates a missing file, so a missing one is never opened.
  */
 async function targetMemories(fixture: Pick<SshdFixture, 'sh'>): Promise<string> {
   const node = (await fixture.sh(`ls -d ${TARGET_HOME}/.damocles/server/*/node/node | head -n 1`, TARGET_USER)).trim();
-  const script = "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(process.env.HOME + '/.damocles/memory.v3.db'); console.log(JSON.stringify(db.prepare('SELECT scope, content FROM memories').all()));";
+  const script = [
+    "const file = process.env.HOME + '/.damocles/memory.v3.db';",
+    "if (!require('node:fs').existsSync(file)) { console.log('[]'); process.exit(0); }",
+    "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(file);",
+    "const created = db.prepare(\"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memories'\").get() !== undefined;",
+    "console.log(JSON.stringify(created ? db.prepare('SELECT scope, content FROM memories').all() : []));",
+  ].join(' ');
   return fixture.sh(`${node} -e "${script.replaceAll('"', '\\"')}"`, TARGET_USER);
 }
 

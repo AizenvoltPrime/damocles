@@ -1211,6 +1211,7 @@ export class PiSession implements ChatSession {
         customTools,
         thinkingLevel: built ? this.resolveThinkingLevel(built.value, built.thinkingLevel) : this.resolveThinkingLevel(),
       });
+      this.applyToolsAtRunStarts(result.session);
       this.pinRunStarts(result.session);
       if (built) this.builtSelections.set(result.session, built);
       if (describedAgentTypes) this.describedAgentTypes.set(result.session, describedAgentTypes);
@@ -4398,6 +4399,27 @@ export class PiSession implements ChatSession {
     raise: (provider, actions, reason) => this.options.permissionHandler.raiseSignIn(provider, actions, reason),
     stopSignal: () => this.pinStop.signal,
   };
+
+  /**
+   * On a daemon's core the tool switches read the pinned device's settings, so each run start applies the active set inside
+   * its pin, before pi declares the run's tools (agent-loop.js:49, pi-agent-core 1.5.2). Install before `pinRunStarts`.
+   */
+  private applyToolsAtRunStarts(session: AgentSession): void {
+    if (!this.options.platform.remote) return;
+    const startsRun = (): void => {
+      if (this.runtime?.session === session && this.runLifecycle?.streaming !== true) this.applyActiveToolsForMode(this.permissionMode);
+    };
+    const prompt = session.prompt.bind(session);
+    const sendCustomMessage = session.sendCustomMessage.bind(session);
+    session.prompt = (text, options) => {
+      startsRun();
+      return prompt(text, options);
+    };
+    session.sendCustomMessage = (message, options) => {
+      startsRun();
+      return sendCustomMessage(message, options);
+    };
+  }
 
   /** Every pi session this panel builds: on a daemon's core, a run it starts outside every pin is pinned at its start and records whose credentials it bills. */
   private pinRunStarts(session: AgentSession): AgentSession {

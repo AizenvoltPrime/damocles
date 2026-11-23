@@ -4203,10 +4203,10 @@ class DesktopApp {
     const views = this.views;
     if (this.closingForWorktree.has(panel) || (projectKey !== undefined && this.removingProjects.has(projectKey))) return;
     if (!views || views.retaining(panel) || this.lifecycle.phase !== 'running' || views.selected() !== undefined) return;
-    // the selected chat closed with its core (a restart, a halt) and reopens selected (reselectRemote, kept until its core
-    // reopened its chats); another chat closing meanwhile (a hidden local chat unloading) never moves the selection
+    // a chat of another authority than the selected project's was never the selected chat: a hidden local chat unloading while
+    // the selected remote project's chat reopens (reselectRemote) or its host connects at launch never moves the selection
     const selectedAuthority = this.selectedProjectKey === undefined ? undefined : authorityKeyOfProject(this.selectedProjectKey);
-    if (selectedAuthority !== undefined && selectedAuthority !== panel.authority && (views.retainingAuthority(selectedAuthority) || this.reselectRemote.has(selectedAuthority))) return;
+    if (selectedAuthority !== undefined && selectedAuthority !== panel.authority) return;
     const key = projectKey ?? this.client()?.defaultTarget()?.key;
     if (key !== undefined) this.selectProject(key).catch(this.report('Selecting a chat after a close'));
   }

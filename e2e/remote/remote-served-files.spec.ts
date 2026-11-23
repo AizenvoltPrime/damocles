@@ -37,9 +37,11 @@ async function selectProject(app: ElectronApplication, projectKey: string): Prom
   await expect.poll(async () => (await shellState(app)).selected.projectKey).toBe(projectKey);
 }
 
+// The system resolver may not answer `*.localhost` (Windows' never does), so the request goes to loopback with the grant's Host.
 function get(url: string): Promise<{ readonly status: number; readonly body: string }> {
+  const { host, port, pathname } = new URL(url);
   return new Promise((resolve, reject) => {
-    http.get(url, { agent: false }, (response) => {
+    http.get({ host: '127.0.0.1', port, path: pathname, headers: { host }, agent: false }, (response) => {
       const chunks: Buffer[] = [];
       response.on('data', (chunk: Buffer) => chunks.push(chunk));
       response.on('end', () => resolve({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString() }));
@@ -79,7 +81,8 @@ test('a remote chat\'s BrowserOpen of a project file runs its module script and 
     await expect.poll(async () => (await browserTabs(app)).map((page) => page.title), { timeout: PAGE_TIMEOUT }).toContain(SERVED_TITLE);
     const served = (await browserTabs(app)).find((page) => page.title === SERVED_TITLE)!;
     const origin = new URL(served.browser.url).origin;
-    expect(origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    // the chat view's grant answers on a host of its own (docs/invariants.md "Browser", "Each chat view's grant ...")
+    expect(origin).toMatch(/^http:\/\/[0-9a-f]{32}\.localhost:\d+$/);
 
     // the agent reads the file:// address only: no loopback port, open path or token
     const answer = lastToolResult(stub);

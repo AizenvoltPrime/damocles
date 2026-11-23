@@ -1,5 +1,5 @@
 import type { ElectronApplication, Locator, Page, TestInfo } from '@playwright/test';
-import type { DesktopApp } from '../../desktop/support/app';
+import { corePid, type DesktopApp } from '../../desktop/support/app';
 import { overlayPage } from '../../desktop/support/shell';
 import { expect } from './remote';
 import { TARGET_HOME, TARGET_USER, type SshdFixture } from './sshd';
@@ -10,6 +10,8 @@ import { TARGET_HOME, TARGET_USER, type SshdFixture } from './sshd';
 export async function stubOAuth(app: ElectronApplication, account: string, expiresInMs: number, offline = false): Promise<void> {
   // main installs its e2e hooks during startup
   await expect.poll(() => app.evaluate(() => typeof (globalThis as unknown as { __damoclesE2e?: { stubOAuth?: unknown } }).__damoclesE2e?.stubOAuth), { timeout: 60_000 }).toBe('function');
+  // the hook refuses with CoreNotRunningError until main starts the engine later in its startup, then waits for it to be ready
+  await expect.poll(() => corePid(app), { timeout: 60_000 }).toBeDefined();
   await app.evaluate((_electron, args) => (globalThis as unknown as { __damoclesE2e: { stubOAuth(account: string, expiresInMs: number, offline: boolean): Promise<void> } }).__damoclesE2e.stubOAuth(...args), [account, expiresInMs, offline] as const);
 }
 
