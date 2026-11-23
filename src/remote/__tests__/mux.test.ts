@@ -201,21 +201,31 @@ describe('mux', () => {
     daemon.dispose();
   });
 
-  it('keeps terminal output flowing during a sustained 100 MiB read, with no gap over 100 ms', async () => {
+  it('keeps terminal output flowing through a sustained read of at least 100 MiB, with no gap over 100 ms from its start to its end', async () => {
     const { client, daemon } = connected();
     const terminal = daemon.mux.messageChannel(2, 1 << 20);
     const arrivals: number[] = [];
     client.mux.messageChannel(2, 1 << 20).onMessage(() => arrivals.push(performance.now()));
     let received = 0;
-    const total = 100 * 1024 * 1024;
-    client.mux.onStream((stream) => stream.onData((bytes) => {
-      received += bytes.length;
-    }));
+    let readEnd: number | undefined;
+    client.mux.onStream((stream) => {
+      stream.onData((bytes) => {
+        received += bytes.length;
+      });
+      stream.onEnd(() => {
+        readEnd = performance.now();
+      });
+    });
     const file = daemon.mux.openStream();
     const chunk = new Uint8Array(1024 * 1024);
+    // the read lasts long enough on any machine for a starved terminal channel to leave a gap
+    const minBytes = 100 * 1024 * 1024;
+    const minReadMs = 1000;
     let written = 0;
+    const ticker = setInterval(() => terminal.send(Uint8Array.from([1, 2, 3])), 10);
+    const readStart = performance.now();
     const pump = (): void => {
-      while (written < total) {
+      while (written < minBytes || performance.now() - readStart < minReadMs) {
         written += chunk.length;
         if (!file.write(chunk)) return;
       }
@@ -223,11 +233,11 @@ describe('mux', () => {
     };
     file.onDrain(pump);
     pump();
-    const ticker = setInterval(() => terminal.send(Uint8Array.from([1, 2, 3])), 10);
-    await vi.waitFor(() => expect(received).toBe(total), { timeout: 60_000, interval: 50 });
+    await vi.waitFor(() => expect(readEnd).toBeDefined(), { timeout: 60_000, interval: 50 });
     clearInterval(ticker);
-    const gaps = arrivals.slice(1).map((at, index) => at - arrivals[index]!);
-    expect(arrivals.length).toBeGreaterThan(10);
+    expect(received).toBe(written);
+    const points = [readStart, ...arrivals.filter((at) => at <= readEnd!), readEnd!];
+    const gaps = points.slice(1).map((at, index) => at - points[index]!);
     expect(Math.max(...gaps)).toBeLessThan(100);
   }, 90_000);
 
