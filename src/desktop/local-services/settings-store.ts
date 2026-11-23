@@ -278,6 +278,11 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
     return written;
   }
 
+  /** Reads every file again now, for a writer in another process that says it wrote: a file watch can miss the write. */
+  reload(): void {
+    this.reloadAll(false);
+  }
+
   /** Settles once every write to the files the store serves or wrote, one queued meanwhile included, has landed or failed; a quit awaits it. */
   flush(): Promise<void> {
     return jsonConfigWritesSettled(() => [

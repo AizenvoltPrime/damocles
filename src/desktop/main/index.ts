@@ -1861,6 +1861,12 @@ class DesktopApp {
     const gpuChanged = (): void => setWallpaperEnvironment({ gpuCompositing: gpuCompositing(), reducedTransparency: nativeTheme.prefersReducedTransparency === true });
     app.on('gpu-info-update', gpuChanged);
     this.disposables.push({ dispose: () => app.removeListener('gpu-info-update', gpuChanged) });
+    // a capture or a repaint that fails while Chromium restarts its GPU process leaves no other line in the log
+    const processGone = (_event: Electron.Event, details: Electron.Details): void => {
+      if (details.type === 'GPU') log(`[gpu] the GPU process is gone: ${details.reason}, exit code ${details.exitCode}`);
+    };
+    app.on('child-process-gone', processGone);
+    this.disposables.push({ dispose: () => app.removeListener('child-process-gone', processGone) });
     this.disposables.push(this.systemColors);
     // before the first paint and before CoreInit takes the mirror of System colors, so both have this computer's colors
     await this.systemColors.load();
@@ -1889,7 +1895,7 @@ class DesktopApp {
         const system = themeLibrary.entry(SYSTEM_THEME_ID);
         if (system?.status === 'ok') this.themeDock?.systemChanged(system.theme);
       }),
-      // core writes a pick into the settings file, which this process reads after it; a pick of the kind that does not show
+      // core writes a pick into the settings file, which this process reads when core says so; a pick of the kind that does not show
       // changes no palette, so Settings hears of it here
       this.platform.settings.onDidChange('damocles.desktop.themes', () => {
         this.overlaySettings?.themesChanged();
@@ -2436,6 +2442,8 @@ class DesktopApp {
       client.onDesignChanged((designId, paths) => this.designPreviews?.designChanged('local', designId, paths)),
       // a pick or an undo changes the history and the settings, not only theme files, so Settings lists again either way
       client.onThemesChanged(() => {
+        // core wrote the picked looks into the user settings before it said so, and a file watch can miss that write
+        this.platform?.settings.reload();
         this.themeLibrary?.coreChanged().then(() => this.agentThemes.themesChanged()).catch(this.report('Reading the theme files'));
         const reads = [
           this.readProjectPins().catch(this.report('Reading the project characters')),

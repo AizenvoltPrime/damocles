@@ -209,6 +209,20 @@ describe('DesktopSettingsStore user scope', () => {
     expect(store.get('damocles.voice.mode')).toBe('wake-word');
   });
 
+  // A file watch is best effort (macOS can drop an event while a process's watches change), so a writer that says it wrote is read at once.
+  it('reads an edit of the user file by another process on reload, with no watch event, and reports the changed keys', () => {
+    const { store } = harness();
+    const listener = vi.fn();
+    store.onDidChange('damocles.voice', listener);
+    writeJson(userFile, { 'damocles.voice.mode': 'wake-word' });
+    store.reload();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener.mock.calls[0]?.[0].affects('damocles.voice.mode')).toBe(true);
+    expect(store.get('damocles.voice.mode')).toBe('wake-word');
+    store.reload();
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
   it('tells every listener of a change when one throws, and still resolves the write', async () => {
     const { store } = harness();
     const second = vi.fn();
