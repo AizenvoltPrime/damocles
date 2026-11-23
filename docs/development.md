@@ -30,6 +30,8 @@ npm test
 
 `scripts/smoke-desktop/` drives the dev desktop app with a real model, one step at a time, for manual smoke tests; its README covers the setup.
 
+The Vite builds (`build:webview`, `build:shell`, `watch:webview`) run Vite under `node --max-old-space-size=4096`. Rollup holds every module's syntax tree until the bundle is written, and both graphs, Monaco among them, need more than 2 GB of heap (`build:shell` failed at 2048 MB and passed at 2304 MB on 23 November 2026). Node's default heap limit scales with the machine's memory and is about 2 GB on the 7 GB macOS runners, so an unpinned build aborts there with "JavaScript heap out of memory".
+
 ## Packaging the extension
 
 To create a distributable `.vsix` file:
