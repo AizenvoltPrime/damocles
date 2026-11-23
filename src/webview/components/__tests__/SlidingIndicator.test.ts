@@ -74,6 +74,17 @@ describe('SlidingIndicator', () => {
     }
   });
 
+  it("scales a radius with the theme's --d-radius-scale, as the rounded-* utilities of the items it marks do", () => {
+    document.documentElement.style.setProperty('--d-radius-scale', '0.5');
+    try {
+      const [top, middle] = pieces({ x: 0, y: 0, width: 200, height: 50 }, 11, 'ring');
+      expect(top!.height).toBe('5.5px');
+      expect(middle!.transform).toBe('translate(0px, 5.5px) scaleY(0.39)');
+    } finally {
+      document.documentElement.style.removeProperty('--d-radius-scale');
+    }
+  });
+
   it('takes half the box height for a pill', () => {
     const wrapper = mount(SlidingIndicator, { props: { box: { x: 0, y: 0, width: 80, height: 26 }, radius: 'pill', animate: false } });
     mounted.push(wrapper);
