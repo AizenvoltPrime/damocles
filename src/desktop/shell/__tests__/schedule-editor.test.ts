@@ -284,7 +284,8 @@ describe('adding and deleting rules', () => {
     expect(sent()).toEqual([{ action: 'schedule', rules: [rule(7, DAY_ID, EVERY, 'light'), rule(19, NIGHT_ID, EVERY, 'dark')] }]);
   });
 
-  it('stops at the number of rules a schedule holds: the button says why and sends nothing', async () => {
+  // mounts the full 48 rules, about 2.5 s in happy-dom on an idle machine, so the 5 s default fails on a loaded runner
+  it('stops at the number of rules a schedule holds: the button says why and sends nothing', { timeout: 30_000 }, async () => {
     await editor({ rules: Array.from({ length: MAX_SCHEDULE_RULES }, (_, at) => rule(at % 24, NIGHT_ID)) });
     const add = byTestId('schedule-add')!;
     expect(add.getAttribute('aria-disabled')).toBe('true');
