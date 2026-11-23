@@ -5,7 +5,7 @@ import { hermeticEnv, writeUserSettings } from '../desktop/support/hermetic';
 import { overlayPage, shellPage, shellState } from '../desktop/support/shell';
 import { projectRow } from '../desktop/support/shell-ui';
 import { connectDialog } from './support/connect-ui';
-import { CONTAINER_ENV, containerHosts, containerServerProcesses, copyFixture, dataVolume, DEVCONTAINER_TAG, editConfig, type Engine, inContainer, leftovers, pruneHermeticStore, removeLeftovers, shutdownContainerDaemon } from './support/devcontainer';
+import { configureHermeticPodman, CONTAINER_ENV, containerHosts, containerServerProcesses, copyFixture, dataVolume, DEVCONTAINER_TAG, editConfig, type Engine, inContainer, leftovers, pruneHermeticStore, removeLeftovers, shutdownContainerDaemon } from './support/devcontainer';
 import { expect, lastConnectStep, test } from './support/remote';
 import { runProgram } from './support/sshd';
 
@@ -28,7 +28,9 @@ test.describe('Dev Containers with Podman', () => {
     writeUserSettings(home, { 'damocles.desktop.remote.containerEngine': 'podman' });
     const keys: string[] = [];
     // the launch's own store, which its hermetic HOME selects
-    const podman: Engine = { program: 'podman', env: hermeticEnv(home) };
+    const env = hermeticEnv(home);
+    configureHermeticPodman(env);
+    const podman: Engine = { program: 'podman', env };
     const { app } = await launch({ env: CONTAINER_ENV });
     try {
       const local = (await shellState(app)).projects.find((project) => project.fsPath === folder)!;

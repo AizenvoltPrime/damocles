@@ -98,6 +98,16 @@ export async function removeLeftovers(keys: readonly string[], on: Engine = DOCK
 }
 
 /**
+ * A hermetic home's Podman configuration. Its environment disables the session bus (`hermeticEnv`, which keeps safeStorage
+ * off the real keyring), so rootless Podman cannot create cgroups through the user's systemd and manages them itself.
+ */
+export function configureHermeticPodman(env: Readonly<Record<string, string>>): void {
+  const folder = path.join(env['XDG_CONFIG_HOME']!, 'containers');
+  fs.mkdirSync(folder, { recursive: true });
+  fs.writeFileSync(path.join(folder, 'containers.conf'), '[engine]\ncgroup_manager = "cgroupfs"\n');
+}
+
+/**
  * Empties a hermetic home's rootless Podman store (`on.env` must select it), base images included: their layers hold files of
  * subordinate ids, which the home's own removal cannot delete.
  */
