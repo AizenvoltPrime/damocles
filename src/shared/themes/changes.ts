@@ -4,16 +4,18 @@ import type { LookKind } from './tokens';
 // damocles.desktop.theme's values
 export type ThemeModeValue = 'system' | 'dark' | 'light';
 
-// Theme names as they were when the change was made, so an entry still reads right after a rename or a delete.
+// Theme names as they were when the change was made, so an entry still reads right after a rename or a delete. themeId and
+// wasId name the themes of a pick and a hold, so a view shows a built-in's name in its own language; an older entry has none.
+// A pick has no was when the theme the look had is no longer installed.
 export type ThemeChange =
-  | { readonly kind: 'pick'; readonly look: LookKind; readonly theme: string; readonly was: string }
+  | { readonly kind: 'pick'; readonly look: LookKind; readonly theme: string; readonly themeId?: string; readonly was?: string; readonly wasId?: string }
   // picked: the looks an agent's apply also made the preferred ones
   | { readonly kind: 'save'; readonly theme: string; readonly picked?: readonly LookKind[] }
   | { readonly kind: 'create'; readonly theme: string; readonly picked?: readonly LookKind[] }
   // mode: damocles.desktop.theme when the same change set it
   | { readonly kind: 'schedule'; readonly enabled: boolean; readonly rules: number; readonly mode?: ThemeModeValue }
   // a look shown over a running schedule until its next rule start (Toggle Theme)
-  | { readonly kind: 'hold'; readonly theme: string; readonly look: LookKind }
+  | { readonly kind: 'hold'; readonly theme: string; readonly themeId?: string; readonly look: LookKind }
   // a pick that held over the schedule ended early
   | { readonly kind: 'resume' }
   | { readonly kind: 'rename'; readonly theme: string; readonly was: string }
@@ -65,6 +67,7 @@ const isName = (raw: unknown): raw is string => typeof raw === 'string' && raw.l
 const isLabel = (raw: unknown): raw is string => typeof raw === 'string' && raw.length <= MAX_CHANGE_LABEL_CHARS;
 const isLook = (raw: unknown): raw is LookKind => raw === 'dark' || raw === 'light';
 const isMode = (raw: unknown): raw is ThemeModeValue => raw === 'system' || raw === 'dark' || raw === 'light';
+const isOptionalId = (raw: unknown): raw is string | undefined => raw === undefined || (typeof raw === 'string' && raw.length > 0 && raw.length <= MAX_CHANGE_ID_CHARS);
 
 /** Whether `kind` is a change kind this Damocles records; a history entry of any other kind was written by a newer one. */
 export const isChangeKind = (kind: unknown): boolean => kind === 'restore' || (CHANGE_KINDS as readonly unknown[]).includes(kind);
@@ -72,10 +75,12 @@ export const isChangeKind = (kind: unknown): boolean => kind === 'restore' || (C
 /** A change with exactly the fields of its kind; undefined for anything else. */
 export function parseThemeChange(raw: unknown): ThemeChange | undefined {
   if (!isRecord(raw)) return undefined;
-  const { theme, was, look } = raw;
+  const { theme, themeId, was, wasId, look } = raw;
   switch (raw['kind']) {
     case 'pick':
-      return isLook(look) && isName(theme) && isName(was) ? { kind: 'pick', look, theme, was } : undefined;
+      return isLook(look) && isName(theme) && (was === undefined || isName(was)) && isOptionalId(themeId) && isOptionalId(wasId)
+        ? { kind: 'pick', look, theme, ...(themeId !== undefined ? { themeId } : {}), ...(was !== undefined ? { was } : {}), ...(wasId !== undefined ? { wasId } : {}) }
+        : undefined;
     case 'save':
     case 'create': {
       const { picked } = raw;
@@ -88,7 +93,7 @@ export function parseThemeChange(raw: unknown): ThemeChange | undefined {
       return { kind: 'schedule', enabled, rules: rules as number, ...(mode !== undefined ? { mode } : {}) };
     }
     case 'hold':
-      return isName(theme) && isLook(look) ? { kind: 'hold', theme, look } : undefined;
+      return isName(theme) && isOptionalId(themeId) && isLook(look) ? { kind: 'hold', theme, ...(themeId !== undefined ? { themeId } : {}), look } : undefined;
     case 'rename':
       return isName(theme) && isName(was) ? { kind: 'rename', theme, was } : undefined;
     case 'delete':

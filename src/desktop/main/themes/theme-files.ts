@@ -7,11 +7,13 @@ import type { FileWatcherFactory } from '../../../platform/file-watcher';
 import { readFile as readResource } from '../../../core/resource-fs';
 import type { ConfigNotices } from '../../../core/config/local-config-path';
 import { createThemePathRule, type ThemePathRule } from '../../../core/themes/network-rule';
-import { BUILTIN_EXAMPLE_IDS, BUILTIN_THEME, BUILTIN_THEME_ID, isBuiltinThemeId } from '../../../shared/themes/builtin';
+import { BUILTIN_EXAMPLE_IDS, BUILTIN_THEME, BUILTIN_THEME_ID, BUILTIN_THEME_NAMES, isBuiltinThemeId, SYSTEM_THEME_ID } from '../../../shared/themes/builtin';
+import { checkedSystemTheme, systemTheme, type SystemLooks } from '../../../shared/themes/system-theme';
 import { eachLimited } from '../../../shared/each-limited';
-import { READ_CONCURRENCY, USER_THEME_ID } from '../../../shared/themes/limits';
+import { MAX_THEME_NAME_CHARS, READ_CONCURRENCY, USER_THEME_ID } from '../../../shared/themes/limits';
 import { checkSchemaVersion, validateTheme, type ThemeFile, themeErrorEnglish, themeErrorText } from '../../../shared/themes/schema';
 import { parseStoredJson } from '../../../shared/themes/stored-json';
+import type { ThemeChange, ThemeHistoryChange } from '../../../shared/themes/changes';
 import { sanitizeThemeCss, themeCssFamilies, type CssDroppedPart } from '../../../shared/themes/css-sanitizer';
 import { l, type LocalizedText } from '../../../shared/localized-text';
 import type { ThemeListing } from '../../core-protocol';
@@ -85,7 +87,7 @@ export function overlayThemeEntry(listing: ThemeListing, localization: { t(messa
   const result = validateTheme(listing.theme, builtin ? { builtin: true, ...(listing.id !== BUILTIN_THEME_ID ? { folder: listing.id } : {}) } : { folder: listing.id });
   const refused = result.ok ? cssRefusalText(result.theme) : themeErrorText(result.errors);
   if (!result.ok || refused !== undefined) return { status: 'broken', id: listing.id, name: listing.name, reason: localization.render(l('theme.json is not a valid theme: {0}', refused!)) };
-  const name = builtin ? builtinName(listing.id, localization) ?? result.theme.name : result.theme.name;
+  const name = shownThemeName({ id: listing.id, builtin, theme: result.theme }, localization);
   const removed = result.theme.origin?.kind === 'store' ? result.theme.origin.removedFromStore : undefined;
   return {
     status: 'ok', id: listing.id, name, builtin, theme: result.theme,
@@ -94,14 +96,37 @@ export function overlayThemeEntry(listing: ThemeListing, localization: { t(messa
   };
 }
 
-// A built-in example's name is Damocles' own text, so it shows in the UI's language; one case per BUILTIN_EXAMPLE_IDS entry.
-export function builtinName(id: string, localization: { t(message: string): string }): string | undefined {
-  switch (id) {
-    case 'damocles-aurora': return localization.t('Aurora');
-    case 'damocles-paper': return localization.t('Paper');
-    case 'damocles-arcade': return localization.t('Arcade');
-    default: return undefined;
-  }
+/** A theme's name as the UI shows it: a built-in's in the UI's language, any other theme's as its file says it. */
+export function shownThemeName(entry: { readonly id: string; readonly builtin: boolean; readonly theme: Pick<ThemeFile, 'name'> }, localization: { t(message: string): string }): string {
+  return (entry.builtin ? builtinName(entry.id, localization) : undefined) ?? entry.theme.name;
+}
+
+/** A theme name stored beside its id, as the UI shows it: a built-in's in the UI's language, any other as it was stored. */
+export function shownStoredName(id: string | undefined, name: string, localization: { t(message: string): string }): string {
+  return (id !== undefined ? builtinName(id, localization) : undefined) ?? name;
+}
+
+/** The name of a copy, Duplicate's and the agent's unnamed one alike: the theme's shown name, cut so the whole fits a theme name. */
+export function themeCopyName(id: string, name: string, localization: { t(message: string, ...args: string[]): string }): string {
+  const fixed = [...localization.t('{0} copy', '')].length;
+  return localization.t('{0} copy', [...shownStoredName(id, name, localization)].slice(0, MAX_THEME_NAME_CHARS - fixed).join('').trimEnd());
+}
+
+/** A history change as the UI words it: the names stored beside a built-in's id in the UI's language. */
+export function shownChange(change: ThemeHistoryChange, localization: { t(message: string): string }): ThemeHistoryChange {
+  const shown = (plain: ThemeChange): ThemeChange => {
+    if (plain.kind === 'pick') {
+      return { ...plain, theme: shownStoredName(plain.themeId, plain.theme, localization), ...(plain.was !== undefined ? { was: shownStoredName(plain.wasId, plain.was, localization) } : {}) };
+    }
+    if (plain.kind === 'hold') return { ...plain, theme: shownStoredName(plain.themeId, plain.theme, localization) };
+    return plain;
+  };
+  return change.kind === 'restore' ? { kind: 'restore', before: shown(change.before) } : shown(change);
+}
+
+// A built-in's name is Damocles' own text, so it shows in the UI's language.
+function builtinName(id: string, localization: { t(message: string): string }): string | undefined {
+  return isBuiltinThemeId(id) ? localization.t(BUILTIN_THEME_NAMES[id]) : undefined;
 }
 
 /** The file a theme's folder holds, for Show file. */
@@ -200,14 +225,21 @@ export interface ThemeLibraryOptions {
   readonly log: (line: string) => void;
   // where a theme file the network rule refuses to read is told, once per file
   readonly notifications?: ConfigNotices;
+  // the System colors theme and its changes; absent: Damocles' own colors for the whole run
+  readonly system?: { looks(): SystemLooks; onDidChange(listener: () => void): Disposable };
 }
 
 /**
  * The theme files main paints from, read again WATCH_DEBOUNCE_MS after the last change its watcher saw, or at once when core
  * says it wrote one (`coreChanged`), which also cancels the debounce, since core's write is the change the watcher reports.
+ * System colors has no file: its entry comes from `system`, whose change tells the listeners with no read.
  */
 export class ThemeLibrary implements Disposable {
+  // the files as last listed, which each listing replaces whole; System colors is merged into `merged`
   private current: ReadonlyMap<string, LibraryEntry> = new Map([[BUILTIN_THEME_ID, BUILTIN_ENTRY]]);
+  private systemEntry: LibraryEntry;
+  private merged: ReadonlyMap<string, LibraryEntry>;
+  private readonly systemSubscription: Disposable | undefined;
   private builtins: Promise<LibraryEntry[]> | undefined;
   private readonly memory: ListingMemory;
   private listed = false;
@@ -230,14 +262,40 @@ export class ThemeLibrary implements Disposable {
     watcher.onDidChange(schedule);
     watcher.onDidDelete(schedule);
     this.watcher = watcher;
+    const { system } = options;
+    const systemEntry = (): LibraryEntry => ({ status: 'ok', id: SYSTEM_THEME_ID, builtin: true, theme: system ? checkedSystemTheme(system.looks(), options.log) : systemTheme({}) });
+    this.systemEntry = systemEntry();
+    this.merged = this.merge();
+    this.systemSubscription = system?.onDidChange(() => {
+      if (this.disposed) return;
+      this.systemEntry = systemEntry();
+      this.merged = this.merge();
+      this.fire();
+    });
   }
 
   entry(id: string): LibraryEntry | undefined {
-    return this.current.get(id);
+    return this.merged.get(id);
   }
 
   entries(): ReadonlyMap<string, LibraryEntry> {
-    return this.current;
+    return this.merged;
+  }
+
+  // Damocles, System colors, then the files as listed.
+  private merge(): ReadonlyMap<string, LibraryEntry> {
+    const [first, ...rest] = [...this.current];
+    return new Map([...(first ? [first] : []), [SYSTEM_THEME_ID, this.systemEntry], ...rest]);
+  }
+
+  private fire(): void {
+    for (const listener of [...this.listeners]) {
+      try {
+        listener();
+      } catch (err) {
+        this.options.log(`[themes] a listener of the theme files failed: ${errorText(err)}`);
+      }
+    }
   }
 
   /** The packed file of a wallpaper or sprite a built-in example ships, `<sha256>.<ext>` beside its theme.json; undefined for any other. */
@@ -284,6 +342,7 @@ export class ThemeLibrary implements Disposable {
     this.disposed = true;
     clearTimeout(this.timer);
     this.watcher.dispose();
+    this.systemSubscription?.dispose();
     this.listeners.clear();
   }
 
@@ -310,12 +369,7 @@ export class ThemeLibrary implements Disposable {
     if (this.listed && next.unchanged) return;
     this.listed = true;
     this.current = next.entries;
-    for (const listener of [...this.listeners]) {
-      try {
-        listener();
-      } catch (err) {
-        this.options.log(`[themes] a listener of the theme files failed: ${errorText(err)}`);
-      }
-    }
+    this.merged = this.merge();
+    this.fire();
   }
 }

@@ -1,7 +1,7 @@
 // The window arrangement's parsers, shared by main's window-layout.json and a theme's `layout`, and when a pick applies one,
 // shared by main and core. Pure: no Node, no Electron.
 import { MAX_ARRANGEMENT_COORDINATE, MIN_ARRANGEMENT_SECTION } from './limits';
-import { ARRANGEMENT_PANES, ARRANGEMENT_SECTIONS, parseSectionOrder, type Arrangement, type ArrangementSection, type Origin, type ThemeFile } from './schema';
+import { ARRANGEMENT_PANES, ARRANGEMENT_SECTIONS, OUTSIDE_ORIGIN_KINDS, parseSectionOrder, type Arrangement, type ArrangementSection, type Origin, type ThemeFile } from './schema';
 
 export { MAX_ARRANGEMENT_COORDINATE, MIN_ARRANGEMENT_SECTION } from './limits';
 export { parseSectionOrder, type ArrangementSection } from './schema';
@@ -20,21 +20,18 @@ export interface ArrangementGridLayout extends ArrangementGridSizes {
   readonly maximized: ArrangementPane | null;
 }
 
-// Themes from outside this computer: their arrangement applies only when the user opted in at install.
-const OUTSIDE_ORIGINS: ReadonlySet<string> = new Set(['import', 'vscode', 'link', 'store']);
-
-/** Whether a manual pick of `theme`, the user's or an agent's, applies its window arrangement. */
+/** Whether a manual pick of `theme`, the user's or an agent's, applies its window arrangement; an outside theme's only when the user opted in at install. */
 export function arrangementApplies(theme: Pick<ThemeFile, 'layout' | 'origin'>): boolean {
   if (theme.layout === undefined) return false;
   const origin = theme.origin;
   if (origin === undefined) return true;
-  return OUTSIDE_ORIGINS.has(origin.kind) ? origin.layoutOptIn === true : origin.layoutOptIn !== false;
+  return OUTSIDE_ORIGIN_KINDS.has(origin.kind) ? origin.layoutOptIn === true : origin.layoutOptIn !== false;
 }
 
 /** What a copy's origin keeps of `source`'s: a copy of an outside theme the user did not opt into stays opted out. */
 export function copiedLayoutOptIn(source: Origin | undefined): { readonly layoutOptIn?: false } {
   if (source === undefined) return {};
-  const optedOut = OUTSIDE_ORIGINS.has(source.kind) ? source.layoutOptIn !== true : source.layoutOptIn === false;
+  const optedOut = OUTSIDE_ORIGIN_KINDS.has(source.kind) ? source.layoutOptIn !== true : source.layoutOptIn === false;
   return optedOut ? { layoutOptIn: false } : {};
 }
 

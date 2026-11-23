@@ -1,5 +1,6 @@
 // The words Settings › Appearance's themes use for history entries, origins and pick names; core stores only data.
 import { isolated } from '@shared/bidi-isolate';
+import { SYSTEM_THEME_ID } from '@shared/themes/builtin';
 import { restoredChange, type ThemeChange, type ThemeHistoryChange, type ThemeHistoryEntry } from '@shared/themes/changes';
 import type { ThemeFile } from '@shared/themes/schema';
 import type { LookKind } from '@shared/themes/tokens';
@@ -34,7 +35,9 @@ export function failureText(t: Translate, err: unknown, what: 'load' | 'action' 
 function plainChange(t: Translate, change: ThemeChange): string {
   switch (change.kind) {
     case 'pick':
-      return t(`${T}.change.pick.${change.look}`, { theme: isolated(change.theme), was: isolated(change.was) });
+      return change.was === undefined
+        ? t(`${T}.change.pickNoPrevious.${change.look}`, { theme: isolated(change.theme) })
+        : t(`${T}.change.pick.${change.look}`, { theme: isolated(change.theme), was: isolated(change.was) });
     case 'rename':
       return t(`${T}.change.rename`, { theme: isolated(change.theme), was: isolated(change.was) });
     case 'reset':
@@ -77,6 +80,8 @@ export function whoAndWhen(t: Translate, entry: ThemeHistoryEntry, locale: strin
 
 /** Where a theme came from, as its card's origin line says it; fromName is the source's name while it is installed. */
 export function originText(t: Translate, theme: ThemeFile, builtin: boolean, fromName: string | undefined): string {
+  // System colors' description is Damocles' own text, which its card says in the UI's language
+  if (theme.id === SYSTEM_THEME_ID) return t(`${T}.system.description`);
   if (builtin) return t(`${T}.origin.builtin`);
   const origin = theme.origin;
   if (!origin || origin.kind === 'created') return t(`${T}.origin.created`);

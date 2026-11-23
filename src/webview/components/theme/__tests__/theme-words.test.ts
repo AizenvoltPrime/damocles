@@ -3,7 +3,8 @@ import { createI18n } from 'vue-i18n';
 import { CSS_DROP_REASONS, CSS_MAX_RULES, CSS_MAX_SELECTOR_CHARS, CSS_MIN_TEXT_ALPHA, CSS_REGION_LIMIT_BYTES, type CssDropReason, type CssDroppedPart } from '@shared/themes/css-types';
 import en from '../../../i18n/locales/en.json' with { type: 'json' };
 import el from '../../../i18n/locales/el.json' with { type: 'json' };
-import { changeItemText, contrastText, droppedCssText, historyChangeText, listText, looksText, numberText, ratioText, type Words } from '../theme-words';
+import { SYSTEM_THEME_ID } from '@shared/themes/builtin';
+import { changeItemText, contrastText, droppedCssText, historyChangeText, listText, looksText, numberText, ratioText, themeNameText, type Words } from '../theme-words';
 
 // the key and what it was given, so a test reads exactly what a locale would be handed
 const t = (key: string, named?: Record<string, unknown>): string => (named ? `${key} ${JSON.stringify(named)}` : key);
@@ -59,5 +60,29 @@ describe('a removed part of a theme\'s CSS', () => {
 
   it('types no limit into a reason\'s message, in either language', () => {
     for (const catalog of [en, el]) for (const reason of CSS_DROP_REASONS) expect(catalog.themeAgent.dropped.reason[reason], reason).not.toMatch(/\d/);
+  });
+});
+
+describe('a theme\'s name on a card', () => {
+  const i18n = createI18n({ legacy: false, locale: 'el', messages: { en, el } });
+  const greek: Words = { t: i18n.global.t as Words['t'], locale: 'el' };
+
+  it('is a built-in\'s own text in the UI\'s language, and any other theme\'s name as it is', () => {
+    expect(themeNameText(greek.t, { id: SYSTEM_THEME_ID }, 'System colors')).toBe('Χρώματα συστήματος');
+    expect(themeNameText(greek.t, { id: 'damocles-aurora' }, 'Aurora')).toBe('Σέλας');
+    expect(themeNameText(greek.t, { id: 'damocles-paper' }, 'Paper')).toBe('Χαρτί');
+    expect(themeNameText(greek.t, { id: 'damocles' }, 'Damocles')).toBe('Damocles');
+    // an id that is no built-in's, an Object property's name included
+    expect(themeNameText(greek.t, { id: 'constructor' }, 'Mine')).toBe('Mine');
+    expect(themeNameText(greek.t, { id: '0b7c5a52-3a8e-4c56-9a43-2f1d8e6b9c10' }, 'System colors')).toBe('System colors');
+    expect(themeNameText(greek.t, undefined, 'Night')).toBe('Night');
+  });
+
+  it('names System colors in an undone pick or hold by its id, and keeps the name of an entry stored without one', () => {
+    expect(historyChangeText(greek, { kind: 'pick', look: 'dark', theme: 'System colors', themeId: SYSTEM_THEME_ID, was: 'Damocles', wasId: 'damocles' }))
+      .toBe('επέλεξε το \u2068Χρώματα συστήματος\u2069 για την σκούρα εμφάνιση');
+    expect(historyChangeText(greek, { kind: 'restore', before: { kind: 'hold', theme: 'System colors', themeId: SYSTEM_THEME_ID, look: 'light' } }))
+      .toContain('\u2068Χρώματα συστήματος\u2069');
+    expect(historyChangeText(greek, { kind: 'pick', look: 'dark', theme: 'System colors', was: 'Damocles' })).toBe('επέλεξε το \u2068System colors\u2069 για την σκούρα εμφάνιση');
   });
 });

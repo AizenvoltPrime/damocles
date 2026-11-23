@@ -4,7 +4,9 @@ import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { copiedLayoutOptIn } from '../../shared/themes/arrangement';
-import { BUILTIN_THEME, BUILTIN_THEME_ID, isBuiltinThemeId } from '../../shared/themes/builtin';
+import { BUILTIN_THEME, BUILTIN_THEME_ID, BUILTIN_THEME_NAMES, isBuiltinThemeId, SYSTEM_THEME_ID } from '../../shared/themes/builtin';
+import { portableBuiltinTheme } from '../../shared/themes/portable-builtin';
+import { checkedSystemTheme, systemTheme, type SystemLooks } from '../../shared/themes/system-theme';
 import { eachLimited } from '../../shared/each-limited';
 import { READ_CONCURRENCY, USER_THEME_ID } from '../../shared/themes/limits';
 import { checkSchemaVersion, pointerSegments, validateTheme, type Origin, type ThemeFile, themeErrorText } from '../../shared/themes/schema';
@@ -47,6 +49,8 @@ export interface ThemeStoreOptions {
   readonly now?: () => number;
   // the built-in example themes; none when absent
   readonly examples?: () => Promise<readonly BuiltinExample[]>;
+  // the looks of System colors as the app last read them off this computer; absent: the Damocles seeds
+  readonly system?: () => SystemLooks;
   readonly log?: (line: string) => void;
 }
 
@@ -54,7 +58,7 @@ export interface ThemeStoreOptions {
 export interface ThemeWrites {
   // replaces a user theme with `theme`, validated; keys the file has that this format does not know and its origin are kept
   saveTheme(id: string, theme: unknown): Promise<string>;
-  // an editable copy of a theme, built-in or user, under `copyId`; the built-in's copy keeps only its 8 colors per look
+  // an editable copy of a theme, built-in or user, under `copyId`; Damocles' and System colors' copy is portableBuiltinTheme's
   duplicate(id: string, name: string, copyId: string): Promise<string>;
   // a new user theme, validated, under its own id, which no folder holds yet; core gives it `origin`
   create(theme: unknown, origin: Origin): Promise<string>;
@@ -70,7 +74,7 @@ export interface ThemeWrites {
 
 // It offers no write of its own: every change goes through the theme service, which records its history entry.
 export interface ThemeStore {
-  // the built-in theme first, then the built-in examples, then every theme folder under themes/, broken ones included, by name
+  // the built-in theme first, then System colors, the built-in examples, and every theme folder under themes/, broken ones included, by name
   list(): Promise<ThemeListEntry[]>;
   readonly lane: WriteLane;
   readonly unlocked: ThemeWrites;
@@ -217,7 +221,16 @@ export function createThemeStore(options: ThemeStoreOptions): ThemeStore {
     examples ??= options.examples ? options.examples() : Promise.resolve([]);
     return examples;
   };
-  const builtinName = (id: string): string => (id === BUILTIN_THEME_ID ? BUILTIN_THEME.name : id);
+  const systemLooks = options.system ?? ((): SystemLooks => systemTheme({}).looks);
+  // checked once per value `system` gives, so a value that fails is logged once
+  let systemFile: { readonly looks: SystemLooks; readonly theme: ThemeFile } | undefined;
+  const system = (): ThemeFile => {
+    const looks = systemLooks();
+    if (systemFile?.looks !== looks) systemFile = { looks, theme: checkedSystemTheme(looks, options.log) };
+    return systemFile.theme;
+  };
+  // the text each view words in its own language
+  const builtinName = (id: string): string | LocalizedText => (isBuiltinThemeId(id) ? l(BUILTIN_THEME_NAMES[id]) : id);
   // the folders told once per run as no theme's
   const skipped = new Set<string>();
 
@@ -305,10 +318,9 @@ export function createThemeStore(options: ThemeStoreOptions): ThemeStore {
     async duplicate(id, name, copyId) {
       const origin = { kind: 'duplicate', from: id, installedAt: now() };
       let copy: Record<string, unknown>;
-      if (id === BUILTIN_THEME_ID) {
-        // the built-in's token overrides pin every derived token, so a copy carrying them would ignore its own colors
-        const looks = Object.fromEntries(Object.entries(BUILTIN_THEME.looks).map(([kind, look]) => [kind, { colors: { ...look!.colors } }]));
-        copy = { schemaVersion: 1, id: copyId, name, looks, origin };
+      const portable = id === BUILTIN_THEME_ID ? portableBuiltinTheme(BUILTIN_THEME) : id === SYSTEM_THEME_ID ? portableBuiltinTheme(system()) : undefined;
+      if (portable) {
+        copy = { ...portable, id: copyId, name, origin };
       } else if (!isUserThemeId(id)) {
         const example = (await readExamples()).find((candidate) => candidate.id === id);
         if (!example || !('theme' in example)) throw new LocalizedError(l('The theme {0} is missing, broken or needs a newer Damocles.', id));
@@ -387,7 +399,13 @@ export function createThemeStore(options: ThemeStoreOptions): ThemeStore {
       const builtins = (await readExamples()).map((example): ThemeListEntry => ('theme' in example
         ? { status: 'ok', id: example.id, builtin: true, name: example.theme.name, theme: example.theme }
         : { status: 'broken', id: example.id, reason: l('theme.json is not a valid theme: {0}', verbatim(example.error)) }));
-      return [{ status: 'ok', id: BUILTIN_THEME_ID, builtin: true, name: BUILTIN_THEME.name, theme: BUILTIN_THEME }, ...builtins, ...user];
+      const systemColors = system();
+      return [
+        { status: 'ok', id: BUILTIN_THEME_ID, builtin: true, name: BUILTIN_THEME.name, theme: BUILTIN_THEME },
+        { status: 'ok', id: SYSTEM_THEME_ID, builtin: true, name: systemColors.name, theme: systemColors },
+        ...builtins,
+        ...user,
+      ];
     },
     onDidChange(listener) {
       listeners.add(listener);

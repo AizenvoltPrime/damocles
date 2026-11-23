@@ -107,13 +107,14 @@ function mixUntil(from: Rgba, to: Rgba, start: number, constraints: readonly Con
 }
 
 /**
- * `seed` as a solid fill and the label of `labels` that contrasts most with it; when no label reaches AA on the seed, the
- * fill's lightness moves to the nearest value where one does.
+ * `seed` as a solid fill and the label of `labels` that contrasts most with it; when no label reaches AA on the seed, or the
+ * seed misses `constraints`, the fill's lightness moves to the nearest value where both hold, else where a label reaches AA.
  */
-function labeledFill(seed: Rgba, labels: readonly Rgba[]): { readonly fill: Rgba; readonly label: Rgba } {
+function labeledFill(seed: Rgba, labels: readonly Rgba[], constraints: readonly Constraint[]): { readonly fill: Rgba; readonly label: Rgba } {
   const best = (fill: Rgba): Rgba => labels.reduce((a, b) => (contrast(b, fill) > contrast(a, fill) ? b : a));
-  // white reaches AA on any fill dark enough and a near-black on any light enough, so the search always ends
-  const fill = moveLightness(seed, (c) => contrast(best(c), c) >= AA)!;
+  const labeled = (c: Rgba): boolean => contrast(best(c), c) >= AA;
+  // white reaches AA on any fill dark enough and a near-black on any light enough, so the last search always ends
+  const fill = moveLightness(seed, (c) => labeled(c) && passes(c, constraints)) ?? moveLightness(seed, labeled)!;
   return { fill, label: best(fill) };
 }
 
@@ -144,8 +145,14 @@ function seedColor(hex: string): Rgba {
   return c;
 }
 
+/** How the derivation treats a look's fills. */
+export interface DeriveOptions {
+  // every fill reaches NON_TEXT on bg and panel where some lightness also gives its label AA; else only the label rule holds
+  readonly nonTextFills?: boolean;
+}
+
 /** Every color token of a `kind` palette from a look's 8 colors; `refused` names, per on-tone token, the hex of a label it may not take. */
-function deriveColors(colors: LookColors, kind: LookKind, pairs: readonly ContrastPair[], refused: ReadonlyMap<TokenName, string>): Palette {
+function deriveColors(colors: LookColors, kind: LookKind, pairs: readonly ContrastPair[], refused: ReadonlyMap<TokenName, string>, options: DeriveOptions): Palette {
   const ref = REFERENCES[kind];
   const palette: Palette = new Map();
   const set = (token: TokenName, c: Rgba): Rgba => {
@@ -163,10 +170,11 @@ function deriveColors(colors: LookColors, kind: LookKind, pairs: readonly Contra
   // White or the near-black, whichever contrasts more with the fill; the fill moves only when neither reaches AA.
   const dark = nearBlack(bg);
   const fillSeeds = new Map<Tone, Rgba>(SEED_TONES.map((tone) => [tone, seedColor(colors[tone])]));
-  fillSeeds.set('design', adjustLightness(builtinColor(kind, '--d-design-fill'), [bg, panel].map((against) => ({ against, min: NON_TEXT }))));
+  const nonText = [bg, panel].map((against) => ({ against, min: NON_TEXT }));
+  fillSeeds.set('design', adjustLightness(builtinColor(kind, '--d-design-fill'), nonText));
   for (const tone of TONES) {
     const labels = [WHITE, dark].filter((label) => formatHex(label) !== refused.get(onToken(tone)));
-    const { fill, label } = labeledFill(fillSeeds.get(tone)!, labels);
+    const { fill, label } = labeledFill(fillSeeds.get(tone)!, labels, options.nonTextFills ? nonText : []);
     set(fillToken(tone), fill);
     set(onToken(tone), label);
   }
@@ -222,12 +230,12 @@ export interface LookDerivation {
 }
 
 /** deriveLook's palette with the palette before overrides and the seed colors it moved. */
-export function deriveLookDetails(colors: LookColors, kind: LookKind, tokens?: Readonly<Partial<Record<TokenName, string>>>): LookDerivation {
+export function deriveLookDetails(colors: LookColors, kind: LookKind, tokens?: Readonly<Partial<Record<TokenName, string>>>, options: DeriveOptions = {}): LookDerivation {
   const pairs = contrastPairs(kind);
-  const first = deriveColors(colors, kind, pairs, new Map());
+  const first = deriveColors(colors, kind, pairs, new Map(), options);
   // A knob that fails on its faint track takes the other label, which sits across the surfaces from faint and so passes.
   const refused = failedKnobs(first, pairs);
-  const colorsOut = refused.size === 0 ? first : deriveColors(colors, kind, pairs, refused);
+  const colorsOut = refused.size === 0 ? first : deriveColors(colors, kind, pairs, refused, options);
 
   const derived: Record<TokenName, string> = Object.fromEntries([...colorsOut].map(([token, c]) => [token, formatHex(c)]));
   derived[SHADOW_TOKEN] = `${REFERENCES[kind].shadowGeometry} ${formatHex(withAlpha(stepped(toOklch(colorsOut.get('--d-bg')!), REFERENCES[kind].shadow), REFERENCES[kind].shadowAlpha))}`;

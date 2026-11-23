@@ -499,6 +499,39 @@ test('undo in Preview first: the chat\'s own change comes back through the card,
   await expect.poll(() => windowBackground(app)).toBe(BUILTIN_DARK_BG);
 });
 
+test('a ThemeSet that names System colors and changes nothing picks it as it is: no copy is made, and the look keeps following the computer', async ({ home, launch }) => {
+  test.setTimeout(240_000);
+  const run = await start(launch, home);
+  const { tab, app } = run;
+  const hooks = themeHooks(app);
+  await hooks.systemColors({ accent: '#3060c0' });
+  await loadThemeTools(run.openai, tab);
+  ask(run, 'ThemeSet', { theme: 'damocles-system', look: 'dark' }, 'Switched.');
+  await send(tab, 'switch my dark look to System colors');
+  const card = previewCard(tab, 'Preview a theme change');
+  await expect(card).toBeVisible(CHECKED);
+  await expect(card).toContainText('System colors');
+  // main paints a preview only of a user theme, so a built-in's card offers none
+  await expect(tab.getByRole('button', { name: 'Show in window', exact: true })).toHaveCount(0);
+  await card.getByRole('option', { name: 'Apply', exact: true }).click();
+  await expect(tab.getByText('Switched.', { exact: true })).toBeVisible(CHECKED);
+  await awaitTurnEnd(tab);
+  await expect(lastToolCard(tab)).toHaveAttribute('data-outcome', 'applied');
+  expect(toolResults(run.openai).at(-1)).toContain('No theme was made or changed');
+
+  expect(readUserSettings(home)['damocles.desktop.themes.dark']).toBe('damocles-system');
+  expect(readUserSettings(home)['damocles.desktop.themes.light']).toBeUndefined();
+  const installed = path.join(home.damoclesDir, 'themes', 'themes');
+  expect(fs.existsSync(installed) ? fs.readdirSync(installed) : []).toEqual([]);
+  await expect.poll(async () => (await hooks.shown()).themeId).toBe('damocles-system');
+
+  // the picked look is System colors itself, so an accent change of the computer repaints it
+  const before = await cssToken(tab, '--d-accent');
+  await hooks.systemColors({ accent: '#c03030' });
+  await expect.poll(() => cssToken(tab, '--d-accent')).not.toBe(before);
+  expect((await hooks.shown()).themeId).toBe('damocles-system');
+});
+
 test('two chats keep their own drafts of one theme, and the later Apply turns Outdated with Discard only', async ({ home, launch }) => {
   test.setTimeout(300_000);
   writeTheme(home, NIGHT, { schemaVersion: 1, id: NIGHT, name: 'Night', looks: { dark: { colors: NIGHT_COLORS } } });
@@ -828,7 +861,7 @@ test('the keep-changes banner under the safe-start banner: both report visible, 
   ask(run, 'ThemeSet', AMBER, 'It stays.');
   await send(tab, 'apply a warmer theme');
 
-  const safeStart = shell.getByRole('region', { name: 'Started with the default theme.', exact: true });
+  const safeStart = shell.getByRole('region', { name: 'Started with the Damocles theme.', exact: true });
   await expect(keepBanner(shell)).toBeVisible(CHECKED);
   await expect(safeStart).toBeVisible();
   for (const strip of [safeStart, keepBanner(shell)]) {

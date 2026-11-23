@@ -388,7 +388,6 @@
       "system": "System"
     },
     "themes": {
-      "copyName": "{name} copy",
       "newName": "New theme",
       "installed": "Installed",
       "newTheme": "New theme",
@@ -396,6 +395,9 @@
       "undoBlocked": "A newer Damocles made the last theme change, so this one cannot undo it.",
       "reset": "Reset to default",
       "builtIn": "Built-in",
+      "system": {
+        "description": "Follows this computer's colors"
+      },
       "showing": "Showing",
       "delete": "Delete",
       "cancel": "Cancel",
@@ -494,6 +496,10 @@
         "copy": "Copy",
         "import": "Imported file",
         "vscode": "Imported from VS Code",
+        "base16": "Imported from a base16 or base24 scheme",
+        "gtk": "Imported from GTK colors",
+        "kde": "Imported from a KDE color scheme",
+        "qt": "Imported from a Qt palette",
         "link": "From a link",
         "store": "From the store",
         "storeVersion": "From the store · {version}"
@@ -634,11 +640,15 @@
           "dark": "Dark look: {theme} (was {was})",
           "light": "Light look: {theme} (was {was})"
         },
+        "pickNoPrevious": {
+          "dark": "Dark look: {theme}",
+          "light": "Light look: {theme}"
+        },
         "save": "Edited {theme}",
         "create": "Created {theme}",
         "rename": "Renamed {was} to {theme}",
         "delete": "Deleted {theme}",
-        "reset": "Reset to Damocles, dark and light",
+        "reset": "Reset to the default theme, dark and light",
         "scheduleOn": "Theme schedule on, rules: {n}",
         "scheduleOff": "Theme schedule off",
         "withMode": {
@@ -686,7 +696,7 @@
         "deleted": "Deleted {name}.",
         "undid": "Undid: {change}",
         "nothingToUndo": "There is no theme change to undo.",
-        "reset": "Reset to Damocles, dark and light.",
+        "reset": "Reset to the default theme, dark and light.",
         "restored": "Restored to before: {change}",
         "undo": "Undo",
         "installed": "Installed {name}. Pick it as your dark or light look on Installed.",
@@ -699,7 +709,7 @@
       "import": {
         "open": "Import…",
         "title": "Import a theme",
-        "body": "Choose a Damocles theme file (.damocles-theme) or a VS Code color theme (.json or .vsix). A VS Code theme becomes a Damocles theme: its colors map onto Damocles' tokens and its syntax colors onto the six code colors; anything missing comes from Damocles' own look of that kind. Nothing installs until you confirm on the install card.",
+        "body": "Choose a Damocles theme file (.damocles-theme), a VS Code color theme (.json or .vsix), a base16 or base24 scheme (.yaml or .yml), a KDE color scheme (.colors or kdeglobals), a qt5ct or qt6ct palette (.conf) or a GTK color file (.css). A VS Code theme or a scheme becomes a Damocles theme: its colors map onto Damocles' tokens and its syntax colors onto the six code colors; anything missing comes from Damocles' own look of that kind, or for GTK from libadwaita. Nothing installs until you confirm on the install card.",
         "choose": "Choose file…"
       },
       "link": {
@@ -4356,9 +4366,9 @@
   },
   "themes": {
     "safeStart": {
-      "title": "Started with the default theme.",
-      "crashTitle": "Damocles switched to the default theme because the window kept crashing.",
-      "resetTitle": "Showing the default theme for this run. The engine is not running, so the schedule and project looks were not reset.",
+      "title": "Started with the Damocles theme.",
+      "crashTitle": "The window kept crashing, so this run shows the Damocles theme.",
+      "resetTitle": "Showing the Damocles theme for this run. The engine is not running, so the schedule and project looks were not reset.",
       "body": "Your theme is paused for this run until you turn it back on.",
       "useMine": "Use my theme",
       "openSettings": "Open theme settings"
@@ -4799,7 +4809,7 @@
       "compare": "Show my current theme",
       "invalid": "Not previewing: fix the error first.",
       "forcedColors": "Not previewing: Windows contrast themes are on, so the window shows Damocles' own look.",
-      "safeStart": "Not previewing: this run shows the default theme."
+      "safeStart": "Not previewing: this run shows the Damocles theme."
     },
     "colorsNote": "Edits paint the window as you make them. Save keeps them; Cancel puts your theme back.",
     "warnings": "Contrast warnings",

@@ -176,6 +176,7 @@ export interface KeepChangesState {
   readonly change: ThemeHistoryChange;
   // the theme that showed before the first change, when it picked one look
   readonly previousName?: string;
+  readonly previousId?: string;
   // the changes the countdown covers, 1 or more
   readonly changeCount: number;
   // the changes came from more than one chat, or from a chat and the user; chatTitle is then absent

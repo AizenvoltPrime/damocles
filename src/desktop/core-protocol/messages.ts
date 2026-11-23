@@ -67,7 +67,8 @@ import { EDITOR_HARD_MAX_DOCUMENT_BYTES, WORKTREE_PHASES, type ChatPlace, type C
 import { MAX_CALL_ARGS, REPOSITORY_CALLS, SCM_CALLS, WORKTREE_CALLS, type RepositoryCall, type ScmCall, type WorktreeCall } from './scm-calls';
 import { arr, bool, bytes, data, dict, either, finite, int, INVALID, localized, maybe, nonEmpty, none, num, obj, oneOf, opt, str, type Parser } from './schema';
 import type { LocalizedText } from '../../shared/localized-text';
-import { LOOK_SEEDS, PANELS, type Arrangement, type AssetMeta, type LookColors } from '../../shared/themes/schema';
+import { LOOK_SEEDS, MAX_TOKEN_VALUE_CHARS, PANELS, type Arrangement, type AssetMeta, type LookColors } from '../../shared/themes/schema';
+import type { SystemLook, SystemLooks } from '../../shared/themes/system-theme';
 import { parseArrangement } from '../../shared/themes/arrangement';
 import { MAX_FONT_BYTES, type FontImport } from '../../shared/themes/fonts';
 import { MAX_EXPORT_FONTS } from '../../shared/themes/install';
@@ -84,7 +85,7 @@ import { MAX_STRIP_FRAMES, THEME_ID } from '../../shared/themes/limits';
 import { COUNTDOWN_OWNER, THEME_SHOW_END_REASONS, THEME_SHOW_REFUSALS, type ThemeShowEndReason, type ThemeShowRefusal } from '../../shared/themes/agent';
 import { MAX_PINNED_PROJECTS, MAX_SPRITE_BYTES, MAX_SPRITE_FPS, MAX_SPRITE_SIDE, type CharacterStrip, type PinEdit, type SpriteImport } from '../../shared/themes/characters';
 import { checkProjectLook, MAX_PROJECT_KEY_CHARS, MAX_PROJECT_LOOKS, type ProjectLook } from '../../shared/themes/project-looks';
-import type { LookKind } from '../../shared/themes/tokens';
+import { OVERRIDABLE_TOKENS, type LookKind } from '../../shared/themes/tokens';
 import { MAX_CERTIFICATE_FIELD_CHARS, type ClientCertificateFilter } from '../../shared/client-certificate';
 import { MAX_IMAGE_BASE64_LENGTH } from '../../shared/types/content';
 
@@ -334,7 +335,7 @@ export interface CoreRequests {
   'themes.screenshotDrop': Call<{ readonly shotId: string }, void>;
   // an on-the-fly change core applied and marked pendingConfirm: answers once the keep-changes banner ends. entryId names the
   // countdown (the mark's entry); chatId (feature themes) the chat that changed
-  'themes.applied': Call<{ readonly entryId: string; readonly chatId?: string; readonly chatTitle?: string; readonly change: ThemeHistoryChange; readonly previousName?: string }, { readonly outcome: 'kept' | 'reverted' }>;
+  'themes.applied': Call<{ readonly entryId: string; readonly chatId?: string; readonly chatTitle?: string; readonly change: ThemeHistoryChange; readonly previousName?: string; readonly previousId?: string }, { readonly outcome: 'kept' | 'reverted' }>;
   // a change the banner did not make ended it, and core already cleared the mark; atStart: core's start did, which reverts
   // a countdown no running app counts, and otherwise reverted is the user's Undo of the countdown's first change
   'themes.pendingSettled': Call<{ readonly entryId: string; readonly outcome: 'kept' | 'reverted'; readonly arrangement?: unknown; readonly atStart?: boolean }, void>;
@@ -349,6 +350,8 @@ export interface CoreRequests {
   // an arrangement put in place as a manual pick puts it (feature themes), which main checks again; density, the
   // theme's, scales its minimums, and absent the shown look's does
   'themes.applyArrangement': Call<{ readonly arrangement: unknown; readonly density?: number }, void>;
+  // the name of a copy ThemeSet makes without a given name, which main words as Duplicate does; name: the theme's stored name
+  'themes.copyName': Call<{ readonly themeId: string; readonly name: string }, { readonly name: string }>;
   // a card's Show in window: main paints `theme`, which it validates, as the one transient preview; the newest one wins
   // refused: the window cannot paint the proposal now, so nothing shows and the card's toggle stays off
   'themes.showInWindow': Call<{ readonly promptId: string; readonly chatTitle?: string; readonly theme: unknown }, { readonly refused?: ThemeShowRefusal }>;
@@ -611,7 +614,7 @@ export interface MainRequests {
   // Toggle Theme while the schedule runs (feature themes): `kind` of `themeId` holds over it from `at` until the next
   // rule start; the preferred looks stay
   'themes.hold': Call<{ readonly themeId: string; readonly kind: LookKind; readonly at: number }, void>;
-  // both preferred looks back to the built-in theme, in one write; projectKey (feature themes): the selected
+  // both preferred looks back to the default theme (DEFAULT_THEME_ID), in one write; projectKey (feature themes): the selected
   // project, whose own look turns off in the same history entry
   'themes.reset': Call<{ readonly projectKey?: string }, void>;
   // every project look by project key (feature themes), a pending relocation's also under where the aliases lead;
@@ -979,6 +982,9 @@ export interface MirrorTopics {
   // this computer's core: a remote authority's forwarded local ports and its local-network switch, which its browser
   // context's client-network proxy applies; a daemon drops a client's
   clientNetwork: { readonly authority: string; readonly allowedPorts: readonly number[]; readonly allowLocalNetwork: boolean };
+  // this computer's core: the looks of System colors as main read them off the OS, whole on every change; core checks them
+  // again and emits no themes.changed for one, and a daemon drops a client's
+  systemTheme: { readonly looks: SystemLooks };
 }
 
 /** The focused text editor's context; undefined when none has focus. */
@@ -1086,6 +1092,8 @@ export interface CoreInit {
     readonly clientFeatures?: Readonly<Record<string, MirrorTopics['clientFeatures']['value'] & object>>;
     // this computer's core: each remote authority's, by authority
     readonly clientNetwork?: Readonly<Record<string, { readonly allowedPorts: readonly number[]; readonly allowLocalNetwork: boolean }>>;
+    // this computer's core: System colors at core's start
+    readonly systemTheme?: MirrorTopics['systemTheme'];
   };
 }
 
@@ -1186,6 +1194,10 @@ const trustedKeys = arr(filePath, MAX_ITEMS);
 // an index into at most MAX_ACTIONS actions
 const actionIndex = int(0, MAX_ACTIONS - 1);
 const clientNetworkShape = { allowedPorts: arr(int(1, 65535), 65535), allowLocalNetwork: bool };
+// core's validateTheme checks the token names and values
+const MAX_TOKEN_NAME_CHARS = Math.max(...OVERRIDABLE_TOKENS.map((token) => token.length));
+const systemLook = obj({ colors: lookColors, tokens: opt(dict(str(MAX_TOKEN_VALUE_CHARS), MAX_TOKEN_NAME_CHARS, OVERRIDABLE_TOKENS.length)) }) as Parser<SystemLook>;
+const systemThemeMirror: Parser<MirrorTopics['systemTheme']> = obj({ looks: obj({ dark: systemLook, light: systemLook }) });
 const browserToolAnswer: Parser<BrowserToolAnswer> = obj({
   content: arr(either(obj({ type: oneOf(['text'] as const), text }), obj({ type: oneOf(['image'] as const), data: text, mimeType: id })), MAX_ACTIONS),
   isError: opt(bool),
@@ -2031,12 +2043,13 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'themes.screenshotTake': method(obj({}), obj({ shotId: id, url: nonEmpty(MAX_ID_CHARS * 2), width: int(1, MAX_SHOT_SIDE), height: int(1, MAX_SHOT_SIDE) })),
   'themes.screenshotRead': method(obj({ shotId: id }), obj({ png: bytes(MAX_DATA_CHARS) })),
   'themes.screenshotDrop': method(obj({ shotId: id }), done),
-  'themes.applied': method(obj({ entryId: nonEmpty(MAX_ID_CHARS), chatId: opt(nonEmpty(MAX_ID_CHARS)), chatTitle: opt(str(MAX_LABEL_CHARS)), change: themeHistoryChange, previousName: opt(themeName) }), obj({ outcome: oneOf(['kept', 'reverted'] as const) })),
+  'themes.applied': method(obj({ entryId: nonEmpty(MAX_ID_CHARS), chatId: opt(nonEmpty(MAX_ID_CHARS)), chatTitle: opt(str(MAX_LABEL_CHARS)), change: themeHistoryChange, previousName: opt(themeName), previousId: opt(nonEmpty(MAX_ID_CHARS)) }), obj({ outcome: oneOf(['kept', 'reverted'] as const) })),
   'themes.pendingSettled': method(obj({ entryId: nonEmpty(MAX_ID_CHARS), outcome: oneOf(['kept', 'reverted'] as const), arrangement: opt(value), atStart: opt(bool) }), done),
   'themes.pendingElsewhere': method(obj({ entryId: nonEmpty(MAX_ID_CHARS) }), done),
   'themes.pendingExtended': method(obj({ entryId: nonEmpty(MAX_ID_CHARS), change: themeHistoryChange, chatId: opt(nonEmpty(MAX_ID_CHARS)), chatTitle: opt(str(MAX_LABEL_CHARS)) }), done),
   'themes.currentArrangement': method(obj({}), obj({ arrangement: arrangementParser })),
   'themes.applyArrangement': method(obj({ arrangement: value, density: opt(finite) }), done),
+  'themes.copyName': method(obj({ themeId, name: themeName }), obj({ name: themeName })),
   'themes.showInWindow': method(obj({ promptId: id, chatTitle: opt(str(MAX_LABEL_CHARS)), theme: themeData }), obj({ refused: opt(oneOf(THEME_SHOW_REFUSALS)) })),
   'themes.stopShowing': method(obj({ promptId: id }), done),
   'themes.state': method(obj({}), obj({ kind: lookKind, themeId, decidedBy: id })),
@@ -2070,6 +2083,7 @@ const MIRROR_TOPICS: Tables<MainToCore>['mirrors'] = {
   clientForges: clientDelta(clientForges),
   clientFeatures: clientDelta(clientFeatures),
   clientNetwork: obj({ authority: filePath, ...clientNetworkShape }),
+  systemTheme: systemThemeMirror,
 };
 
 const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
@@ -2474,6 +2488,7 @@ export const parseCoreInit: Parser<CoreInit> = obj({
     clientForges: opt(dict(clientForges, MAX_ID_CHARS, MAX_ITEMS)),
     clientFeatures: opt(dict(clientFeatures, MAX_ID_CHARS, MAX_ITEMS)),
     clientNetwork: opt(dict(obj(clientNetworkShape), MAX_PATH_CHARS, MAX_ITEMS)),
+    systemTheme: opt(systemThemeMirror),
   }),
 });
 

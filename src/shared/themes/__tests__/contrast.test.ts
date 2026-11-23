@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { BUILTIN_PALETTES } from '../builtin';
 import { colorMix, deltaE, formatHex, fromOklch, parseHex, toOklch } from '../color';
-import { backdropColor, checkPalette, contrast, contrastPairs, describeIssue, type ColorReader } from '../contrast';
+import { backdropColor, checkPalette, contrast, contrastPairs, describeIssue, kindOfBackground, type ColorReader } from '../contrast';
 import { LOOK_KINDS, type ThemePalette, type TokenName } from '../tokens';
 
 describe('color', () => {
@@ -30,6 +30,16 @@ describe('color', () => {
   it('measures OKLab deltaE on the 0 to 100 scale', () => {
     expect(deltaE(parseHex('#000000')!, parseHex('#ffffff')!)).toBeCloseTo(100, 0);
     expect(deltaE(parseHex('#4cc2ff')!, parseHex('#4cc2ff')!)).toBe(0);
+  });
+});
+
+describe('kindOfBackground', () => {
+  it('is light above luminance 0.4, ignoring alpha', () => {
+    // #a9a9a9 has luminance 0.397 and #aaaaaa 0.402
+    expect(kindOfBackground('#a9a9a9')).toBe('dark');
+    expect(kindOfBackground('#aaaaaa')).toBe('light');
+    expect(kindOfBackground('#aaaaaa00')).toBe('light');
+    expect(kindOfBackground([0xaa / 255, 0xaa / 255, 0xaa / 255, 1])).toBe('light');
   });
 });
 

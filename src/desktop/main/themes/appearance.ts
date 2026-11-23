@@ -11,11 +11,11 @@ import type { LibraryEntry } from './theme-files';
 
 type ThemeAssets = NonNullable<ThemeFile['assets']>;
 
-// The launch flag of safe start, and of Help › Restart with Default Theme's relaunch.
+// The launch flag of safe start, and of Help › Restart with Damocles Theme's relaunch.
 export const SAFE_THEME_FLAG = '--damocles-safe-theme';
 
-// launch: the flag; crashLoop: the window kept crashing while a custom theme showed; reset: Reset Theme to Default while the
-// engine was down and a look only the engine writes still decided
+// launch: the flag; crashLoop: the window kept crashing while a theme other than Damocles showed; reset: Reset Theme to
+// Default while the engine was down and a look only the engine writes still decided
 export type SafeStartReason = 'launch' | 'crashLoop' | 'reset';
 
 // A look painted on the window without being saved: the theme editor's draft or a card's Show in window.

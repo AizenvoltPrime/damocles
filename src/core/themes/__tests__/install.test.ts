@@ -15,10 +15,10 @@ import type { SettingsStore } from '../../../platform/settings-store';
 import { createThemeService, type ThemeService } from '../index';
 import { writeThemeArchive } from '../archive';
 import { sha256Of } from '../blobs';
-import { createThemeInstalls, DownloadRefusedError, downloadTheme, keepBothName, MAX_STAGED_INSTALLS, STAGED_INSTALL_TTL_MS, type StageInput, type ThemeInstallDeps } from '../install';
+import { createThemeInstalls, DownloadRefusedError, downloadTheme, keepBothName, MAX_STAGED_INSTALLS, originKind, STAGED_INSTALL_TTL_MS, type StagedInstall, type StageInput, type ThemeInstallDeps } from '../install';
 import { gif } from '../../../shared/themes/testing/image-fixtures';
 import { CACHE_FOLDER, FLASH_CHECK_VERSION, FLASH_FILE } from '../../../shared/themes/wallpapers';
-import type { ThemeInstallPreview } from '../../../shared/themes/install';
+import type { ThemeInstallFormat, ThemeInstallPreview, ThemeInstallSourceKind } from '../../../shared/themes/install';
 import { failWrites, named, recolor } from './service-fixtures';
 
 const COLORS = { background: '#101418', panel: '#151a20', text: '#e6edf3', accent: '#4cc2ff', success: '#3fcf8e', warning: '#f0b429', danger: '#f2555a', info: '#8ab4ff' };
@@ -638,5 +638,17 @@ describe('the blobs of a staged install', () => {
     }
     expect(fs.existsSync(path.join(root, 'blobs', SHA))).toBe(false);
     expect(fs.existsSync(path.join(root, 'blobs', sha2))).toBe(false);
+  });
+});
+
+describe('originKind', () => {
+  const staged = (format: ThemeInstallFormat, kind: ThemeInstallSourceKind): StagedInstall => ({ source: { kind }, imported: { format } }) as unknown as StagedInstall;
+
+  it('gives a converted format its own kind, picked or downloaded, and a Damocles theme import or link', () => {
+    for (const format of ['vscode', 'base16', 'gtk', 'kde', 'qt'] as const) {
+      for (const kind of ['file', 'url', 'link', 'agent'] as const) expect(originKind(staged(format, kind))).toBe(format);
+    }
+    expect(originKind(staged('damocles', 'file'))).toBe('import');
+    expect(originKind(staged('damocles', 'url'))).toBe('link');
   });
 });

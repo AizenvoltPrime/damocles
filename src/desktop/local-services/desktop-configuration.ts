@@ -266,13 +266,13 @@ export const DESKTOP_CONFIGURATION: Readonly<Record<string, DesktopSettingProper
     type: 'string',
     default: 'damocles',
     scope: 'application',
-    description: 'The theme whose dark look shows when the desktop app is dark: damocles, or the id of a theme in ~/.damocles/themes/themes. A missing or broken theme shows the Damocles look.',
+    description: "The theme whose dark look shows when the desktop app is dark: damocles, damocles-system (System colors, which follows this computer's colors and is what a new install and Reset Theme to Default set), or the id of a theme in ~/.damocles/themes/themes. Unset, or naming a missing or broken theme, it shows the Damocles look.",
   },
   [THEMES_LIGHT_SETTING]: {
     type: 'string',
     default: 'damocles',
     scope: 'application',
-    description: 'The theme whose light look shows when the desktop app is light: damocles, or the id of a theme in ~/.damocles/themes/themes. A missing or broken theme shows the Damocles look.',
+    description: "The theme whose light look shows when the desktop app is light: damocles, damocles-system (System colors, which follows this computer's colors and is what a new install and Reset Theme to Default set), or the id of a theme in ~/.damocles/themes/themes. Unset, or naming a missing or broken theme, it shows the Damocles look.",
   },
   [THEMES_AGENT_TOOLS_SETTING]: {
     type: 'boolean',

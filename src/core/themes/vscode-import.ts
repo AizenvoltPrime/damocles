@@ -4,9 +4,11 @@ import * as path from 'node:path';
 // The ESM build: the package's main is a UMD wrapper whose dynamic requires a bundle cannot follow.
 import { createScanner, parse as parseJsonc, printParseErrorCode, type ParseError } from 'jsonc-parser/lib/esm/main.js';
 import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
-import { formatHex, over, parseHex, type Rgba } from '../../shared/themes/color';
-import { luminance } from '../../shared/themes/contrast';
+import { formatHex, parseHex, type Rgba } from '../../shared/themes/color';
+import { kindOfBackground } from '../../shared/themes/contrast';
+import { MAX_THEME_AUTHOR_CHARS, MAX_THEME_DESCRIPTION_CHARS, MAX_THEME_LICENSE_CHARS, MAX_THEME_NAME_CHARS, MAX_THEME_VERSION_CHARS } from '../../shared/themes/limits';
 import type { Look, LookColors } from '../../shared/themes/schema';
+import { opaqueOver } from '../../shared/themes/schemes';
 import { SEMANTIC_SCOPES, SYNTAX_SCOPES, type SyntaxToken } from '../../shared/themes/syntax-scopes';
 import { ANSI_TOKENS, SYNTAX_TOKENS, type LookKind, type TokenName } from '../../shared/themes/tokens';
 import { oneLine } from '../pi-session/untrusted-text';
@@ -119,11 +121,7 @@ function colorOf(value: unknown): Rgba | undefined {
 }
 
 /** A VS Code color as Damocles' opaque lowercase hex, a translucent one painted over `under`. */
-function opaque(value: unknown, under: string): string | undefined {
-  const color = colorOf(value);
-  if (!color) return undefined;
-  return formatHex(color[3] < 1 ? over(color, parseHex(under) ?? [0, 0, 0, 1]) : color).slice(0, 7);
-}
+const opaque = (value: unknown, under: string): string | undefined => opaqueOver(colorOf(value), under);
 
 interface TokenRule {
   readonly selectors: readonly string[];
@@ -195,7 +193,17 @@ const OPEN_BRACE = 1;
 const CLOSE_BRACE = 2;
 const OPEN_BRACKET = 3;
 const CLOSE_BRACKET = 4;
+const STRING_LITERAL = 10;
+const NUMBER_LITERAL = 11;
 const END_OF_TEXT = 17;
+
+/** Whether `text`, past whitespace and comments, opens an object or an array of JSON values; an INI group such as [ColorScheme] opens with a bracket too. */
+export function opensJson(text: string): boolean {
+  const scanner = createScanner(text, true);
+  const first = scanner.scan();
+  if (first !== OPEN_BRACKET) return first === OPEN_BRACE;
+  return [OPEN_BRACE, OPEN_BRACKET, CLOSE_BRACKET, STRING_LITERAL, NUMBER_LITERAL].includes(scanner.scan());
+}
 
 /** Whether `text` opens more than MAX_JSON_DEPTH objects and arrays inside each other. A flat scan: a closer that does not match the innermost opener closes nothing. */
 function nestsTooDeep(text: string): boolean {
@@ -280,7 +288,7 @@ function uiThemeOf(value: unknown, colors: Record<string, unknown>): UiTheme {
   const named = namedUiTheme(value);
   if (named !== undefined) return named;
   const background = opaque(colors['editor.background'], '#000000');
-  return background !== undefined && luminance(parseHex(background)!) > 0.4 ? 'vs' : 'vs-dark';
+  return background !== undefined && kindOfBackground(background) === 'light' ? 'vs' : 'vs-dark';
 }
 
 /** One look from a merged theme, every seed and syntax color it leaves out taken from its base. */
@@ -307,7 +315,7 @@ function lookOf(theme: MergedTheme, uiTheme: UiTheme, label: string, warnings: L
   return { kind: base.kind, look: { colors, tokens } };
 }
 
-const cleanName = (value: unknown): string | undefined => (typeof value === 'string' ? oneLine(value, 64) : undefined);
+const cleanName = (value: unknown): string | undefined => (typeof value === 'string' ? oneLine(value, MAX_THEME_NAME_CHARS) : undefined);
 const SPDX = /^(?:LicenseRef-[A-Za-z0-9.-]+|[A-Za-z0-9][A-Za-z0-9.+-]*)$/;
 
 /** A .json or JSONC VS Code theme file; one that names `include` is refused, since its files are outside what was picked. */
@@ -374,10 +382,10 @@ export async function importVsix(zip: ZipReader): Promise<VscodeImport> {
   for (const { label, error } of unread.slice(0, MAX_LISTED)) warnings.push(l('The theme {0} in this .vsix was left out: {1}', verbatim(label), error.text));
   if (skipped.length > 0) warnings.push(l('This .vsix has more themes than a dark and a light look; these were left out: {0}', verbatim(skipped.slice(0, MAX_LISTED).join(', ') + (skipped.length > MAX_LISTED ? ', ...' : ''))));
   const name = (labels.length === 1 ? labels[0] : cleanName(manifest['displayName'])) ?? labels[0]!;
-  const description = typeof manifest['description'] === 'string' ? oneLine(manifest['description'], 1000) : undefined;
-  const author = typeof manifest['publisher'] === 'string' ? oneLine(manifest['publisher'], 200) : undefined;
-  const version = typeof manifest['version'] === 'string' ? oneLine(manifest['version'], 64) : undefined;
-  const license = typeof manifest['license'] === 'string' && SPDX.test(manifest['license']) && manifest['license'].length <= 64 ? manifest['license'] : undefined;
+  const description = typeof manifest['description'] === 'string' ? oneLine(manifest['description'], MAX_THEME_DESCRIPTION_CHARS) : undefined;
+  const author = typeof manifest['publisher'] === 'string' ? oneLine(manifest['publisher'], MAX_THEME_AUTHOR_CHARS) : undefined;
+  const version = typeof manifest['version'] === 'string' ? oneLine(manifest['version'], MAX_THEME_VERSION_CHARS) : undefined;
+  const license = typeof manifest['license'] === 'string' && SPDX.test(manifest['license']) && manifest['license'].length <= MAX_THEME_LICENSE_CHARS ? manifest['license'] : undefined;
   return {
     theme: {
       schemaVersion: 1,

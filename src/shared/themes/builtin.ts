@@ -206,7 +206,22 @@ export const BUILTIN_THEME_ID = 'damocles';
 // The read-only example themes, each a resources/themes/<id>/theme.json that the shell build copies into
 // dist/desktop-shell/themes/<id>/; core and main read them only through src/core/resource-fs.ts.
 export const BUILTIN_EXAMPLE_IDS: readonly string[] = ['damocles-aurora', 'damocles-paper', 'damocles-arcade'];
-export const isBuiltinThemeId = (id: string): boolean => id === BUILTIN_THEME_ID || BUILTIN_EXAMPLE_IDS.includes(id);
+// System colors (system-theme.ts): built from this computer's colors by main, so it has no packed file.
+export const SYSTEM_THEME_ID = 'damocles-system';
+// What Reset Theme to Default and a new install's first launch write; an unset or missing theme still shows BUILTIN_THEME_ID.
+export const DEFAULT_THEME_ID: typeof SYSTEM_THEME_ID = SYSTEM_THEME_ID;
+// Every built-in's English name by id, BUILTIN_THEME_ID, SYSTEM_THEME_ID and each BUILTIN_EXAMPLE_IDS entry: the message main's and
+// core's l10n bundles translate, and the chat page's themeAgent.builtinName.<id> (locale-parity.test.ts checks both).
+export const BUILTIN_THEME_NAMES = {
+  damocles: 'Damocles',
+  'damocles-system': 'System colors',
+  'damocles-aurora': 'Aurora',
+  'damocles-paper': 'Paper',
+  'damocles-arcade': 'Arcade',
+} as const;
+export type BuiltinThemeId = keyof typeof BUILTIN_THEME_NAMES;
+export const BUILTIN_THEME_IDS = Object.keys(BUILTIN_THEME_NAMES) as readonly BuiltinThemeId[];
+export const isBuiltinThemeId = (id: string): id is BuiltinThemeId => Object.hasOwn(BUILTIN_THEME_NAMES, id);
 
 const seeds = (palette: ThemePalette): LookColors => ({
   background: palette['--d-bg']!,

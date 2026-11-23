@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { expect, test, type ElectronApplication, type Locator, type Page } from '@playwright/test';
+import type { SystemColors } from '../../../src/shared/themes/system-theme';
 import { writeUserSettings, type HermeticHome } from './hermetic';
 import { call, type OpenAIStub } from './openai-stub';
 import { openSettingsModal, setContentSize } from './settings';
@@ -35,6 +36,7 @@ interface ThemeHooks {
   themeOsKind(kind: 'dark' | 'light' | null): void;
   themeSystemLocale(locale: string | null): void;
   themeShown(): ShownLook;
+  systemColors(set: SystemColors | null): void;
   pinMotion(pinned: MotionPins): void;
   themeBlobResponses(): ServedBlob[];
 }
@@ -70,6 +72,11 @@ export const themeHooks = (app: ElectronApplication) => ({
   region: async (locale: string | null): Promise<void> => {
     await hooksReady(app);
     await app.evaluate((_electron, given) => (globalThis as unknown as Required<HookGlobals>).__damoclesE2e.themeSystemLocale(given), locale);
+  },
+  /** What the OS reports as its colors from here on, in place of the machine's; null gives the machine's back. Main has repainted when this resolves. */
+  systemColors: async (colors: SystemColors | null): Promise<void> => {
+    await hooksReady(app);
+    await app.evaluate((_electron, set) => (globalThis as unknown as Required<HookGlobals>).__damoclesE2e.systemColors(set), colors);
   },
   shown: async (): Promise<ShownLook> => {
     await hooksReady(app);

@@ -1,6 +1,7 @@
 // How the theme cards word core's structured theme data; core never renders the text.
 import { isolated } from '@shared/bidi-isolate';
 import type { ThemeChangeItem, ThemeContrastIssue } from '@shared/themes/agent';
+import { isBuiltinThemeId } from '@shared/themes/builtin';
 import type { ThemeHistoryChange } from '@shared/themes/changes';
 import { cssDropReasonArgs, type CssDroppedPart } from '@shared/themes/css-types';
 import type { LookKind } from '@shared/themes/tokens';
@@ -27,6 +28,10 @@ function formatsOf(locale: string): { readonly number: Intl.NumberFormat; readon
   return known;
 }
 
+/** The name a card gives `theme`: a built-in's is Damocles' own text, in the UI's language; any other theme's `name` is data. */
+export const themeNameText = (t: Translate, theme: { readonly id: string } | undefined, name: string | undefined): string | undefined =>
+  (theme !== undefined && isBuiltinThemeId(theme.id) ? t(`themeAgent.builtinName.${theme.id}`) : name);
+
 /** A number as the UI language writes it: "0.6" in English, "0,6" in Greek. */
 export const numberText = (locale: string, value: number): string => formatsOf(locale).number.format(value);
 
@@ -46,9 +51,11 @@ export const ratioText = (locale: string, ratio: number): string => `${formatsOf
 
 /** A change in words, each name in it marked as user text (isolated): show it through IsolatedText. */
 export function historyChangeText({ t, locale }: Words, change: ThemeHistoryChange): string {
+  // a name stored beside a theme id; an entry stored without one keeps its name
+  const named = (id: string | undefined, name: string): string => isolated(themeNameText(t, id === undefined ? undefined : { id }, name) ?? name);
   switch (change.kind) {
     case 'pick':
-      return t('themeAgent.history.pick', { theme: isolated(change.theme), look: t(`themeAgent.look.${change.look}`) });
+      return t('themeAgent.history.pick', { theme: named(change.themeId, change.theme), look: t(`themeAgent.look.${change.look}`) });
     case 'save':
     case 'create':
     case 'delete':
@@ -60,7 +67,7 @@ export function historyChangeText({ t, locale }: Words, change: ThemeHistoryChan
     case 'schedule':
       return t('themeAgent.history.schedule');
     case 'hold':
-      return t('themeAgent.history.hold', { theme: isolated(change.theme), look: t(`themeAgent.look.${change.look}`) });
+      return t('themeAgent.history.hold', { theme: named(change.themeId, change.theme), look: t(`themeAgent.look.${change.look}`) });
     case 'resume':
       return t('themeAgent.history.resume');
     case 'projectLook':

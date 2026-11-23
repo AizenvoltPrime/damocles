@@ -31,6 +31,7 @@ import { CodecError, decode, encode } from '../../../remote/codec';
 import { FEATURES } from '../../../remote/protocol-version';
 import { CLIENT_FEATURE_MISSING, CREDENTIAL_CLIENT_ABSENT } from '../../../shared/remote-user';
 import { THEMES_FEATURE } from '../../../shared/themes/relay';
+import { systemTheme } from '../../../shared/themes/system-theme';
 import { DEFAULT_RENDER_MEDIA, DESIGN_JOURNEY_UPDATE_NEEDED, DESIGN_PREVIEW_CLIENT_ABSENT, DESIGN_RENDER_CLIENT_ABSENT, DESIGN_RENDER_PREDATES } from '../../../shared/design-render';
 
 const quiet = (): void => undefined;
@@ -726,7 +727,19 @@ describe('core routes', () => {
     h.client('c1').main.publish('clientNetwork', { authority: 'ssh-h1', allowedPorts: [3000], allowLocalNetwork: true });
     await flush();
     expect(deltas).toEqual([]);
-    expect(lines).toContain("[core-host] dropped c1's clientNetwork, which the daemon publishes");
+    expect(lines).toContain("[core-host] dropped c1's clientNetwork, which no client publishes to the daemon's core");
+  });
+
+  // OS colors belong to the computer that reads them: a client's are not the host's, whose core builds no theme store
+  it('drop and log a client\'s systemTheme delta', async () => {
+    const lines: string[] = [];
+    const h = setUp({ log: (line) => lines.push(line) });
+    const deltas: unknown[] = [];
+    h.core.onMirror('systemTheme', (patch) => deltas.push(patch));
+    h.client('c1').main.publish('systemTheme', { looks: systemTheme({ accent: '#e81123' }).looks });
+    await flush();
+    expect(deltas).toEqual([]);
+    expect(lines).toContain("[core-host] dropped c1's systemTheme, which no client publishes to the daemon's core");
   });
 
   it('refuse core.shutdown, browser pages and the e2e hooks from a client, and drop power events', async () => {

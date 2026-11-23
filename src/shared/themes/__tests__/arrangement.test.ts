@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_GRID_LAYOUT, GRID_PANES, GRID_SLOTS, MAX_SHELL_COORDINATE, MIN_SECTION_SIZE, SIDEBAR_SECTIONS, type ShellLayout } from '../../../desktop/preload/shell-channels';
 import { arrangementOf, minimumScale, withArrangement } from '../../../desktop/main/themes/arrangement';
 import { ARRANGEMENT_PANES, ARRANGEMENT_SECTIONS } from '../schema';
-import { ARRANGEMENT_SLOTS, MAX_ARRANGEMENT_COORDINATE, MIN_ARRANGEMENT_SECTION, parseArrangement, parseGridLayout, parseGridSizes, parseSectionOrder } from '../arrangement';
+import { ARRANGEMENT_SLOTS, arrangementApplies, copiedLayoutOptIn, MAX_ARRANGEMENT_COORDINATE, MIN_ARRANGEMENT_SECTION, parseArrangement, parseGridLayout, parseGridSizes, parseSectionOrder } from '../arrangement';
 
 // The shape of window-layout.json's default layout (DEFAULT_SHELL_LAYOUT in src/desktop/main/window-layout-store.ts).
 const DEFAULT_SHELL_LAYOUT: ShellLayout = {
@@ -80,5 +80,15 @@ describe('window arrangement', () => {
     expect(applied.sectionOrder).toEqual([...SIDEBAR_SECTIONS].reverse());
     expect(applied.grid.slots).toEqual(DEFAULT_SHELL_LAYOUT.grid.slots);
     expect(applied.sections).toEqual(DEFAULT_SHELL_LAYOUT.sections);
+  });
+
+  it('applies an imported scheme\'s arrangement only when the user opted in, and a copy of one stays opted out', () => {
+    const layout = { sectionOrder: [...ARRANGEMENT_SECTIONS] };
+    for (const kind of ['vscode', 'base16', 'gtk', 'kde', 'qt'] as const) {
+      expect(arrangementApplies({ layout, origin: { kind, installedAt: 1 } })).toBe(false);
+      expect(arrangementApplies({ layout, origin: { kind, installedAt: 1, layoutOptIn: true } })).toBe(true);
+      expect(copiedLayoutOptIn({ kind, installedAt: 1 })).toEqual({ layoutOptIn: false });
+      expect(copiedLayoutOptIn({ kind, installedAt: 1, layoutOptIn: true })).toEqual({});
+    }
   });
 });

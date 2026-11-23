@@ -1376,6 +1376,9 @@ describe('parseThemeAction', () => {
   it('takes each Settings theme action exactly as the overlay sends it', () => {
     expect(parseThemeAction({ action: 'pick', themeId: id, kind: 'dark' })).toEqual({ action: 'pick', themeId: id, kind: 'dark' });
     expect(parseThemeAction({ action: 'duplicate', themeId: 'damocles', name: 'Mine' })).toEqual({ action: 'duplicate', themeId: 'damocles', name: 'Mine' });
+    // Duplicate leaves the copy's name to main
+    expect(parseThemeAction({ action: 'duplicate', themeId: id })).toEqual({ action: 'duplicate', themeId: id });
+    expect(parseThemeAction({ action: 'rename', themeId: id })).toBeUndefined();
     expect(parseThemeAction({ action: 'delete', themeId: id })).toEqual({ action: 'delete', themeId: id });
     expect(parseThemeAction({ action: 'edit', themeId: id })).toEqual({ action: 'edit', themeId: id });
     expect(parseThemeAction({ action: 'showFile', themeId: id })).toEqual({ action: 'showFile', themeId: id });

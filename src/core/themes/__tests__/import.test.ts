@@ -29,6 +29,13 @@ const refusal = async (bytes: Uint8Array | Promise<Uint8Array>, fileName = 'shar
   throw new Error('not refused');
 };
 
+const NOT_A_THEME = (file: string): string => `${file} is not a theme file Damocles reads: a .damocles-theme, a VS Code theme (.json or .vsix), a base16 or base24 scheme (.yaml or .yml), a KDE color scheme (.colors or kdeglobals), a qt5ct or qt6ct palette (.conf) or a GTK color file (.css).`;
+const BASE16 = ['scheme: "Fixture"', ...Array.from({ length: 16 }, (_, i) => `base0${i.toString(16).toUpperCase()}: "${String(i).padStart(2, '0').repeat(3)}"`)].join('\n');
+const KDE = '[Colors:View]\nBackgroundNormal=20,22,30\nForegroundNormal=220,221,230\n\n[General]\nName=Fixture KDE\n';
+const QT = `[ColorScheme]\nactive_colors=${Array.from({ length: 21 }, () => '#ff202020').join(', ')}\n`;
+const GTK = '@define-color view_bg_color #101010;\n@define-color accent_bg_color #3584e4;\n';
+const ADWAITA = ':root {\n  --accent-bg-color: #e01b24;\n}\n';
+
 const WALL = png(64, 48);
 const wallMeta = (extra: Partial<AssetMeta> = {}): AssetMeta => ({ kind: 'image', mime: 'image/png', bytes: WALL.length, width: 64, height: 48, license: {}, ...extra });
 
@@ -72,7 +79,7 @@ describe('readImport refuses', () => {
 
   it('text over 4 MB, bytes that are not UTF-8 and text that is not JSON', async () => {
     expect(await refusal(new Uint8Array(MAX_THEME_FILE_BYTES + 1).fill(0x20), 'big.json')).toBe('This file is larger than 4 MB and is not a theme file.');
-    expect(await refusal(new Uint8Array([0x7b, 0xff, 0xfe, 0x7d]), 'odd.json')).toBe('odd.json is not a theme file Damocles reads: a .damocles-theme, a VS Code theme (.json) or a .vsix.');
+    expect(await refusal(new Uint8Array([0x7b, 0xff, 0xfe, 0x7d]), 'odd.json')).toBe(NOT_A_THEME('odd.json'));
     expect(await refusal(text('{ "schemaVersion": 1, '), 'cut.json')).toBe('cut.json is not JSON.');
   });
 });
@@ -108,6 +115,46 @@ describe('readImport reads each format by its name and its bytes', () => {
     expect((await readImport(vscodeText, 'code.json', ID)).theme).toMatchObject({ id: ID, name: 'Code' });
     // a byte order mark is read past
     expect((await readImport(new Uint8Array([0xef, 0xbb, 0xbf, ...json(themeJson())]), 'bom.json', ID)).format).toBe('damocles');
+  });
+
+  it('a file named .yaml or .yml as a base16 scheme, and one whose name says nothing by its keys', async () => {
+    expect((await readImport(text(BASE16), 'fixture.yml', ID)).format).toBe('base16');
+    expect((await readImport(text(BASE16), 'fixture.YAML', ID)).theme).toMatchObject({ id: ID, name: 'Fixture' });
+    expect((await readImport(text(BASE16), 'download', ID)).format).toBe('base16');
+    // a name decides before content does
+    expect(await refusal(text(BASE16), 'fixture.json')).toMatch(/^fixture\.json is not a VS Code theme/);
+  });
+
+  it('a KDE, Qt or GTK color scheme by its name: .colors or kdeglobals, .conf and .css', async () => {
+    expect((await readImport(text(KDE), 'Fixture.colors', ID))).toMatchObject({ format: 'kde', theme: { id: ID, name: 'Fixture KDE' } });
+    expect((await readImport(text(KDE), 'kdeglobals', ID)).format).toBe('kde');
+    expect((await readImport(text(QT), 'fixture.conf', ID))).toMatchObject({ format: 'qt', theme: { name: 'fixture' } });
+    expect((await readImport(text(GTK), 'gtk.css', ID)).format).toBe('gtk');
+    // a name decides before content does
+    expect(await refusal(text(KDE), 'fixture.css')).toMatch(/^fixture\.css is not GTK CSS/);
+  });
+
+  it('a KDE, Qt or GTK color scheme whose name says nothing by its content', async () => {
+    expect((await readImport(text(KDE), 'download', ID)).format).toBe('kde');
+    expect((await readImport(text(KDE.replace('[Colors:View]', '[Colors:Window]\nBackgroundNormal=1,1,1\n[Colors:View]')), 'download', ID)).format).toBe('kde');
+    expect((await readImport(text(QT), 'download', ID)).format).toBe('qt');
+    expect((await readImport(text(GTK), 'download', ID)).format).toBe('gtk');
+    expect((await readImport(text(ADWAITA), 'download', ID)).format).toBe('gtk');
+    // an INI group is not JSON, though it opens with a bracket
+    expect(await refusal(text('[Section]\nkey=value\n'), 'download')).toBe(NOT_A_THEME('download'));
+  });
+
+  it('a VS Code theme whose name says nothing by an opening brace or bracket, past leading comments', async () => {
+    const colors = '{ "name": "Sniffed", "colors": { "editor.background": "#111111" } }';
+    expect((await readImport(text(colors), 'download', ID))).toMatchObject({ format: 'vscode', theme: { name: 'Sniffed' } });
+    expect((await readImport(text(`// a comment\n/* and a block */\n${colors}`), 'download', ID)).format).toBe('vscode');
+    // an array is read as JSON, and refused as a VS Code theme
+    expect(await refusal(text('[1, 2]'), 'download')).toMatch(/^download is not a VS Code theme/);
+    expect(await refusal(text('// list\n[ { "a": 1 } ]'), 'download')).toMatch(/^download is not a VS Code theme/);
+  });
+
+  it('text that is no format it knows, under a name that says nothing, as no theme file', async () => {
+    expect(await refusal(text('just some words'), 'download')).toBe(NOT_A_THEME('download'));
   });
 });
 

@@ -6,26 +6,32 @@ import { jsonConfigWritesSettled, writeJsonConfig } from '../../core/config/json
 import { checkConfigPathSync } from '../../core/config/local-config-path';
 import { Emitter } from './emitter';
 
-function readValues(filePath: string, log: (line: string) => void): Map<string, unknown> {
+// absent: the file was not there (ENOENT), which a corrupt or refused file, read as empty too, is not
+interface StoredValues {
+  readonly values: Map<string, unknown>;
+  readonly absent: boolean;
+}
+
+function readValues(filePath: string, log: (line: string) => void): StoredValues {
   // eslint-disable-next-line damocles/no-sync -- right before the synchronous read below, judged from the store's own folder
   if (checkConfigPathSync(path.dirname(filePath), filePath) !== 'ok') {
     log(`[state] ignoring ${filePath}: it links to a network share or WSL path`);
-    return new Map();
+    return { values: new Map(), absent: false };
   }
   let text: string;
   try {
     text = fs.readFileSync(filePath, 'utf8');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return new Map();
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { values: new Map(), absent: true };
     throw err;
   }
   try {
     const parsed: unknown = JSON.parse(text);
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('not an object');
-    return new Map(Object.entries(parsed));
+    return { values: new Map(Object.entries(parsed)), absent: false };
   } catch (err) {
     log(`[state] ignoring unreadable ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
-    return new Map();
+    return { values: new Map(), absent: false };
   }
 }
 
@@ -37,12 +43,15 @@ class JsonFileMemento implements Memento {
   private readonly listeners = new Map<string, Emitter<[]>>();
   private readonly updates: Emitter<[string]>;
   private readonly log: (line: string) => void;
+  readonly absentAtStart: boolean;
 
   constructor(filePath: string, log: (line: string) => void) {
     this.filePath = filePath;
     this.log = log;
     this.updates = new Emitter('state', log);
-    this.values = readValues(filePath, log);
+    const read = readValues(filePath, log);
+    this.values = read.values;
+    this.absentAtStart = read.absent;
   }
 
   get<T>(key: string): T | undefined;
@@ -94,6 +103,8 @@ export interface DesktopKeyValueState extends KeyValueState {
   snapshot(scope: StateScope): Readonly<Record<string, unknown>>;
   // Settles once every write to both files, one queued meanwhile included, has landed or failed; a quit awaits it.
   flush(): Promise<void>;
+  // each file was absent (ENOENT) when this state first read it; false for a corrupt or refused file
+  readonly absentAtStart: Readonly<Record<StateScope, boolean>>;
 }
 
 // On desktop the app window is the workspace, so both mementos live under userData/state.
@@ -114,5 +125,6 @@ export function createDesktopKeyValueState(userDataDir: string, log: (line: stri
     snapshot: (scope) => mementos[scope].snapshot(),
     // One wait over both files: each round re-lists both queues, so a write to either queued meanwhile is included.
     flush: () => jsonConfigWritesSettled(() => files),
+    absentAtStart: { global: mementos.global.absentAtStart, workspace: mementos.workspace.absentAtStart },
   };
 }

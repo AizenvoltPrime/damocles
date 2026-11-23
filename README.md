@@ -20,7 +20,7 @@ Damocles is also a VS Code extension. The extension runs the same agent, chat an
 ## Features
 
 - **Desktop app**: projects and chats in a sidebar, plus an editor with HTML preview, terminals, search and source control. See [Desktop app](docs/desktop-app.md).
-- **Themes**: custom themes for the desktop app, shared as one `.damocles-theme` file, imported from VS Code color themes, installed from a link or from the community store's signed list, each through an install card that shows what is inside first. See [Desktop themes](docs/themes.md).
+- **Themes**: custom themes for the desktop app. A new install starts on System colors, a built-in theme that follows your computer's colors. Themes are shared as one `.damocles-theme` file, imported from VS Code color themes, base16 or base24 schemes and GTK, KDE or Qt color schemes, installed from a link or from the community store's signed list, each through an install card that shows what is inside first. See [Desktop themes](docs/themes.md).
 - **Remote development**: SSH hosts, WSL distros and dev containers from the desktop app. See [Remote development](docs/remote-development.md).
 - **GitHub and GitLab accounts**: sign in to github.com, gitlab.com and your own servers in the desktop app; git, CI status, links, history, cloning and publishing use each project's account. See [Git hosting accounts](docs/git-hosting.md).
 - **Chat**: sidebar or editor panels with diff approval, live shell output, tool overlays, a prompt navigator and session history. See [Chat interface](docs/chat.md).

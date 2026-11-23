@@ -99,6 +99,29 @@ describe('desktop key-value state', () => {
     expect(onDisk).toEqual([1, 2, 3]);
   });
 
+  // a corrupt or empty file reads as holding no key, which is why the keys alone cannot tell a new install
+  it('tells a file that is absent at the start from one that is empty or corrupt', () => {
+    expect(createDesktopKeyValueState(userData, () => undefined).absentAtStart).toEqual({ global: true, workspace: true });
+
+    fs.mkdirSync(path.join(userData, 'state'), { recursive: true });
+    fs.writeFileSync(path.join(userData, 'state', 'global.json'), '{ not json');
+    fs.writeFileSync(path.join(userData, 'state', 'workspace.json'), '');
+    const corrupt = createDesktopKeyValueState(userData, () => undefined);
+    expect(corrupt.absentAtStart).toEqual({ global: false, workspace: false });
+    expect(corrupt.snapshot('global')).toEqual({});
+    expect(corrupt.snapshot('workspace')).toEqual({});
+
+    fs.rmSync(path.join(userData, 'state', 'workspace.json'));
+    fs.writeFileSync(path.join(userData, 'state', 'global.json'), '{}');
+    expect(createDesktopKeyValueState(userData, () => undefined).absentAtStart).toEqual({ global: false, workspace: true });
+  });
+
+  it('keeps absentAtStart as it was read once a write creates the file', async () => {
+    const state = createDesktopKeyValueState(userData, () => undefined);
+    await state.global.update('a', 1);
+    expect(state.absentAtStart).toEqual({ global: true, workspace: true });
+  });
+
   it('flush waits for a write to one memento queued while it waits on the other', async () => {
     const state = createDesktopKeyValueState(userData, () => undefined);
     await state.workspace.update('seed', 0);

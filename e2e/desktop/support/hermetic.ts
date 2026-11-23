@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { SUBSCRIPTION_SOURCE } from '../../../src/core/pi-session/subscription-source';
+import { DEFAULT_DECIDED_KEY } from '../../../src/desktop/main/themes/default-theme';
 import { describeLeftovers } from './file-holders';
 import { STUB_MODEL_ID } from './openai-stub';
 
@@ -31,11 +32,14 @@ export const WINDOWS_POWERSHELL_CACHE_IN_PROFILE = path.join('Microsoft', 'Windo
 // the loopback daemon's HOME and USERPROFILE in the launch's userData (main's startLoopbackTransport)
 export const LOOPBACK_HOME_IN_USER_DATA = 'loopback-home';
 
+// the system config folder list of every launch, empty, so the host's /etc/xdg (a kdeglobals) stays out
+const XDG_CONFIG_DIRS_IN_ROOT = 'xdg';
+
 /**
  * A fresh HOME, userData and project folder under one temp root; nothing outside it is touched. Names stay short:
  * a checkpoint repo's GIT_DIR nests the encoded project path under the home, and git refuses one over 220 characters.
  */
-export function createHermeticHome(): HermeticHome {
+export function createHermeticHome(options: { readonly newInstall?: boolean } = {}): HermeticHome {
   // Native realpath resolves the macOS /var symlink and Windows 8.3 short names; folder keys compare exact paths.
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'd')));
   const home = path.join(root, 'h');
@@ -43,8 +47,15 @@ export function createHermeticHome(): HermeticHome {
   const project = path.join(root, 'p', 'alpha');
   const damoclesDir = path.join(home, '.damocles');
   const agentDir = path.join(damoclesDir, 'pi', 'agent');
-  for (const dir of [home, userData, project, agentDir, path.join(home, 'AppData', 'Roaming'), path.join(home, 'AppData', 'Local'), path.join(root, 'tmp')]) {
+  for (const dir of [home, userData, project, path.join(home, 'AppData', 'Roaming'), path.join(home, 'AppData', 'Local'), path.join(root, 'tmp'), path.join(root, XDG_CONFIG_DIRS_IN_ROOT)]) {
     fs.mkdirSync(dir, { recursive: true });
+  }
+  // Main's first-launch seed picks System colors only where ~/.damocles and userData/state were absent at its start; the
+  // marker keeps every other home on the built-in look, whose colors the specs check.
+  if (options.newInstall !== true) {
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.mkdirSync(path.join(userData, 'state'));
+    fs.writeFileSync(path.join(userData, 'state', 'global.json'), JSON.stringify({ [DEFAULT_DECIDED_KEY]: true }));
   }
   if (process.platform === 'win32') {
     for (const profile of [home, path.join(userData, LOOPBACK_HOME_IN_USER_DATA)]) {
@@ -153,7 +164,8 @@ const PASSTHROUGH_ENV = [
   'DAMOCLES_LOOPBACK_PACKAGE',
 ];
 
-function appData(h: Pick<HermeticHome, 'home'>): string {
+/** The APPDATA and XDG_CONFIG_HOME of every launch. */
+export function appData(h: Pick<HermeticHome, 'home'>): string {
   return path.join(h.home, 'AppData', 'Roaming');
 }
 
@@ -178,6 +190,7 @@ export function hermeticEnv(h: Pick<HermeticHome, 'root' | 'home'>, extra: Recor
     APPDATA: appData(h),
     LOCALAPPDATA: localAppData(h),
     XDG_CONFIG_HOME: appData(h),
+    XDG_CONFIG_DIRS: path.join(h.root, XDG_CONFIG_DIRS_IN_ROOT),
     XDG_CACHE_HOME: localAppData(h),
     TMPDIR: path.join(h.root, 'tmp'),
     TEMP: path.join(h.root, 'tmp'),

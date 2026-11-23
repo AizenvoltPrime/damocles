@@ -8,8 +8,9 @@ import type { SettingsStore } from '../../platform/settings-store';
 import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import { MAX_COUNTDOWN_OWNERS, type PendingConfirm, type ThemeLaterChange } from '../../shared/themes/agent';
 import { arrangementApplies, copiedLayoutOptIn } from '../../shared/themes/arrangement';
-import { BUILTIN_THEME, BUILTIN_THEME_ID } from '../../shared/themes/builtin';
+import { BUILTIN_EXAMPLE_IDS, BUILTIN_THEME, BUILTIN_THEME_ID, DEFAULT_THEME_ID } from '../../shared/themes/builtin';
 import { restoredChange, USER_ACTOR, type ThemeActor, type ThemeHistoryChange, type ThemeHistoryEntry, type ThemeModeValue } from '../../shared/themes/changes';
+import type { SystemLooks } from '../../shared/themes/system-theme';
 import { characterAssets, PROJECTS_FILE, spriteIsAnimated, spriteNeedsAnalysis, spriteStrip, type CharacterStrip, type SpriteImport } from '../../shared/themes/characters';
 import { bundledFonts, fontNameOf, MAX_FONT_BYTES, type FontImport } from '../../shared/themes/fonts';
 import type { ThemeExportFontBytes, ThemeExportPlan, ThemeInstallClash, ThemeInstallCommit, ThemeInstallCommitted, ThemeInstallFrom, ThemeInstallPreview, ThemeInstallProgress } from '../../shared/themes/install';
@@ -92,7 +93,10 @@ export interface ThemeService {
   // main replaces with the theme's own, which Undo gives back. Whether an entry was recorded: none is for the look already
   // preferred with no schedule to hold over, and main then leaves the window's arrangement as it is
   pick(id: string, kind: LookKind, options?: { readonly arrangementBefore?: unknown; readonly actor?: ThemeActor; readonly at?: number }): Promise<boolean>;
-  // both preferred looks back to the built-in theme in one settings write, appearance.json's pick and schedule off, and the
+  // an agent's pick of an installed theme as it is, as one history entry; on the fly, marked for the keep-changes banner.
+  // Undefined when the look was already the preferred one with no schedule to hold over.
+  agentPick(pick: AgentPick): Promise<(Recorded & PickedLook) | undefined>;
+  // both preferred looks back to the default theme (DEFAULT_THEME_ID) in one settings write, appearance.json's pick and schedule off, and the
   // look of `projectKey` (the selected project) off
   reset(actor?: ThemeActor, projectKey?: string): Promise<void>;
   // projects.json's looks and pins by project key, which follow relocation and forgetting
@@ -283,6 +287,27 @@ export interface AppliedDraft {
   readonly change: ThemeHistoryChange;
   // the theme that showed in the one picked look before, when one look was picked
   readonly previousName?: string;
+  readonly previousId?: string;
+  // the theme's window arrangement, which main puts in place now, with the theme's density its minimums scale by
+  readonly arrangement?: { readonly layout: Arrangement; readonly density: number };
+}
+
+export interface AgentPick {
+  readonly themeId: string;
+  readonly kind: LookKind;
+  readonly actor: AgentActor;
+  // applied at once and marked pendingConfirm for the keep-changes banner
+  readonly onTheFly: boolean;
+  // the window's arrangement, read only when the pick puts the theme's own in place, as a manual pick does
+  readonly currentArrangement: () => Promise<unknown>;
+}
+
+export interface PickedLook {
+  // the history change recorded
+  readonly change: ThemeHistoryChange;
+  // the theme the look had before; no name when that theme is no longer installed
+  readonly previousName?: string;
+  readonly previousId: string;
   // the theme's window arrangement, which main puts in place now, with the theme's density its minimums scale by
   readonly arrangement?: { readonly layout: Arrangement; readonly density: number };
 }
@@ -335,6 +360,8 @@ export interface ThemeServiceOptions {
   readonly store?: ThemeStore;
   // the app's resource root, where the built-in example themes are packed
   readonly resourceRoot?: string;
+  // the looks of System colors as the app last read them off this computer; absent: the Damocles seeds
+  readonly system?: () => SystemLooks;
   readonly now?: () => number;
   readonly log?: (line: string) => void;
   // this process's relocation journal; absent: the one ProjectRelocations installs
@@ -387,7 +414,8 @@ export function createThemeService(options: ThemeServiceOptions): ThemeService {
   const { resourceRoot } = options;
   const rule = createThemePathRule(options.root, options.notifications);
   const store = options.store ?? createThemeStore({
-    root: options.root, rule, ...(resourceRoot !== undefined ? { examples: () => readBuiltinExamples(resourceRoot) } : {}), ...(options.log ? { log: options.log } : {}),
+    root: options.root, rule, ...(resourceRoot !== undefined ? { examples: () => readBuiltinExamples(resourceRoot) } : {}), ...(options.system ? { system: options.system } : {}),
+    ...(options.log ? { log: options.log } : {}),
   });
   // every file of the store is replaced only while the lane's lock is still held
   const writeFile = (file: string, data: string | Uint8Array): Promise<void> => writeFileAtomic(file, data, { held: store.lane.held });
@@ -680,10 +708,29 @@ export function createThemeService(options: ThemeServiceOptions): ThemeService {
     if (isUserThemeId(id)) await rule.writable(path.join(options.root, THEMES_FOLDER, id, THEME_FILE));
     return { themes: { [id]: await store.unlocked.readText(id) } };
   };
-  const nameOf = async (id: string): Promise<string> => {
+  // The name of the theme `id`; undefined for one that is no longer installed or has no name to read.
+  const nameOf = async (id: string): Promise<string | undefined> => {
     if (id === BUILTIN_THEME_ID) return BUILTIN_THEME.name;
     const entry = (await store.list()).find((candidate) => candidate.id === id);
-    return entry?.name || id;
+    return entry?.name || undefined;
+  };
+  // Inside the lane: `entry`'s `kind` look made the preferred one, held over a running schedule from `at`.
+  const pickLook = (
+    entry: Extract<ThemeListEntry, { status: 'ok' }>,
+    kind: LookKind,
+    settingsBefore: Record<LookKind, string | null>,
+    at: number,
+    arrangementBefore: unknown,
+  ): Body<{ readonly change: ThemeHistoryChange; readonly previousName?: string; readonly previousId: string }> => async (taking) => {
+    const wasId = settingsBefore[kind] || BUILTIN_THEME_ID;
+    const was = await nameOf(wasId);
+    const picked: Snapshot = { settings: { [kind]: settingsBefore[kind] } };
+    taking(picked);
+    await settings.update(PREFERRED_LOOK_SETTINGS[kind], entry.id, 'user');
+    const held = await holdOverSchedule({ themeId: entry.id, kind, at }, taking);
+    const before: Snapshot = { ...picked, ...held, ...(arrangementBefore !== undefined ? { arrangement: arrangementBefore } : {}) };
+    const change: ThemeHistoryChange = { kind: 'pick', look: kind, theme: entry.name, themeId: entry.id, ...(was !== undefined ? { was } : {}), wasId };
+    return { result: { change, ...(was !== undefined ? { previousName: was } : {}), previousId: wasId }, change, before };
   };
   // Inside the lane: the installed theme `id` with a look of `kind`, or the refusal the caller throws.
   const themeWithLook = async (id: string, kind: LookKind): Promise<Extract<ThemeListEntry, { status: 'ok' }>> => {
@@ -877,7 +924,7 @@ export function createThemeService(options: ThemeServiceOptions): ThemeService {
     const entry = entries.find((candidate) => candidate.id === themeId);
     if (entry?.status !== 'ok') throw new LocalizedError(l('The theme {0} is missing, broken or needs a newer Damocles.', entry?.name ?? themeId));
     const packedBy = (sha256: string): string | undefined =>
-      entries.find((candidate) => candidate.status === 'ok' && candidate.builtin && candidate.id !== BUILTIN_THEME_ID && candidate.theme.assets?.[sha256] !== undefined)?.id;
+      entries.find((candidate) => candidate.status === 'ok' && BUILTIN_EXAMPLE_IDS.includes(candidate.id) && candidate.theme.assets?.[sha256] !== undefined)?.id;
     const readAsset = async (sha256: string, asset: AssetMeta): Promise<Uint8Array> => {
       const example = packedBy(sha256);
       if (example !== undefined && resourceRoot !== undefined) {
@@ -892,7 +939,8 @@ export function createThemeService(options: ThemeServiceOptions): ThemeService {
         throw err;
       }
     };
-    const licenseText = entry.builtin && entry.id !== BUILTIN_THEME_ID && resourceRoot !== undefined ? await readBuiltinLicense(resourceRoot, entry.id) : undefined;
+    // only a packed example has a license file: Damocles and System colors have no folder
+    const licenseText = BUILTIN_EXAMPLE_IDS.includes(entry.id) && resourceRoot !== undefined ? await readBuiltinLicense(resourceRoot, entry.id) : undefined;
     return { theme: entry.theme, builtin: entry.builtin, readAsset, ...(licenseText !== undefined ? { licenseText } : {}) };
   };
 
@@ -968,16 +1016,24 @@ export function createThemeService(options: ThemeServiceOptions): ThemeService {
       const settingsBefore = await readSettings();
       // the look already preferred: nothing to record, unless a running schedule would be held over from now
       if ((settingsBefore[kind] || BUILTIN_THEME_ID) === id && !(await scheduleRuns())) return undefined;
-      return async (taking) => {
-        const was = await nameOf(settingsBefore[kind] || BUILTIN_THEME_ID);
-        const picked: Snapshot = { settings: { [kind]: settingsBefore[kind] } };
-        taking(picked);
-        await settings.update(PREFERRED_LOOK_SETTINGS[kind], id, 'user');
-        const held = await holdOverSchedule({ themeId: id, kind, at: pickOptions?.at ?? now() }, taking);
-        const before: Snapshot = { ...picked, ...held, ...(pickOptions?.arrangementBefore !== undefined ? { arrangement: pickOptions.arrangementBefore } : {}) };
-        return { result: undefined, change: { kind: 'pick', look: kind, theme: entry.name, was }, before };
-      };
+      const body = pickLook(entry, kind, settingsBefore, pickOptions?.at ?? now(), pickOptions?.arrangementBefore);
+      return async (taking) => ({ ...(await body(taking)), result: undefined });
     }),
+    async agentPick({ themeId, kind, actor, onTheFly, currentArrangement }) {
+      const done = await store.lane.run(async () => {
+        const entry = await themeWithLook(themeId, kind);
+        const settingsBefore = await readSettings();
+        if ((settingsBefore[kind] || BUILTIN_THEME_ID) === themeId && !(await scheduleRuns())) return undefined;
+        // the window arrangement applies on the agent's pick exactly as on a manual one
+        const layout = arrangementApplies(entry.theme) ? entry.theme.layout : undefined;
+        const arrangementBefore = layout ? await currentArrangement() : undefined;
+        const changed = await changeLocked(actor, onTheFly, pickLook(entry, kind, settingsBefore, now(), arrangementBefore));
+        return { ...changed, result: { ...changed.result, ...(layout ? { arrangement: { layout, density: entry.theme.style?.density ?? 1 } } : {}) } };
+      });
+      if (!done) return undefined;
+      finished(done);
+      return { entryId: done.entryId, ...(done.pending !== undefined ? { pending: done.pending } : {}), ...done.result };
+    },
     setMode: async (mode, actor) => void await changeIf(actor, async () => {
       if (mode === 'system' && (await appearance.schedule()).schedule.enabled) return scheduleAndMode({ enabled: false, mode });
       // a mode change alone is not a theme change the history keeps
@@ -1006,7 +1062,7 @@ export function createThemeService(options: ThemeServiceOptions): ThemeService {
         if (!(await scheduleRuns())) return undefined;
         return async (taking) => {
           const held = await holdOverSchedule({ themeId, kind, at }, taking);
-          return { result: undefined, change: { kind: 'hold', theme: entry.name, look: kind }, before: held ?? {} };
+          return { result: undefined, change: { kind: 'hold', theme: entry.name, themeId, look: kind }, before: held ?? {} };
         };
       });
     },
@@ -1015,7 +1071,7 @@ export function createThemeService(options: ThemeServiceOptions): ThemeService {
       const lookOff = projectKey !== undefined && (await projectLooks.projectLookOf(projectKey)) !== undefined;
       const before: Snapshot = { settings: await readSettings(), appearance: await appearanceBefore(), ...(lookOff ? { projects: projectsText } : {}) };
       taking(before);
-      await writeSettings(Object.fromEntries(LOOK_KINDS.map((kind) => [kind, BUILTIN_THEME_ID])));
+      await writeSettings(Object.fromEntries(LOOK_KINDS.map((kind) => [kind, DEFAULT_THEME_ID])));
       await appearance.reset();
       if (lookOff) await projects.writeText(`${JSON.stringify(projectLooks.withLook(parseJson(projectsText), projectKey, null), null, 2)}\n`);
       return { result: undefined, change: { kind: 'reset' }, before };
@@ -1101,13 +1157,14 @@ export function createThemeService(options: ThemeServiceOptions): ThemeService {
       tellExtended(extended);
       return result;
     },
-    editBase: (id) => store.lane.run(async () => {
+    // only a user theme has a file to edit; asking for another must not make the themes folder or take its lock
+    editBase: (id) => (!isUserThemeId(id) ? Promise.resolve(undefined) : store.lane.run(async () => {
       const text = await store.unlocked.readText(id);
       const json = parseJson(text);
       if (text === null || json === undefined) return undefined;
       const valid = validateTheme(json, { folder: id });
       return valid.ok ? { theme: valid.theme, hash: hashText(text)! } : undefined;
-    }),
+    })),
     appearance: () => appearance.read(),
     drafts: {
       get: (id) => drafts.get(id),
@@ -1131,7 +1188,9 @@ export function createThemeService(options: ThemeServiceOptions): ThemeService {
         const arrangementBefore = layout ? await apply.currentArrangement() : undefined;
         const changed = await changeLocked(actor, onTheFly, async (taking) => {
           const settingsBefore = apply.pick.length > 0 ? await readSettings() : undefined;
-          const previousName = apply.pick.length === 1 ? await nameOf(settingsBefore?.[apply.pick[0]!] || BUILTIN_THEME_ID) : undefined;
+          const previousId = apply.pick.length === 1 ? settingsBefore?.[apply.pick[0]!] || BUILTIN_THEME_ID : undefined;
+          const previousName = previousId !== undefined ? await nameOf(previousId) : undefined;
+          const previous = { ...(previousName !== undefined ? { previousName } : {}), ...(previousId !== undefined ? { previousId } : {}) };
           const themeBefore: Snapshot = { themes: { [draft.theme.id]: text }, ...(settingsBefore ? { settings: Object.fromEntries(apply.pick.map((kind) => [kind, settingsBefore[kind]])) } : {}) };
           taking(themeBefore);
           if (editing) await store.unlocked.saveTheme(draft.theme.id, draft.theme);
@@ -1144,7 +1203,7 @@ export function createThemeService(options: ThemeServiceOptions): ThemeService {
           const change: ThemeHistoryChange = editing ? { kind: 'save', theme: draft.theme.name, ...picked } : { kind: 'create', theme: draft.theme.name, ...picked };
           return {
             result: {
-              themeId: draft.theme.id, name: draft.theme.name, change, ...(previousName !== undefined ? { previousName } : {}),
+              themeId: draft.theme.id, name: draft.theme.name, change, ...previous,
               ...(layout ? { arrangement: { layout, density: draft.theme.style?.density ?? 1 } } : {}),
             },
             change,

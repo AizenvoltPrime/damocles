@@ -19,6 +19,11 @@ export function luminance(c: Rgba): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
+/** The kind of look a background makes, as `Rgba`, `#rrggbb` or `#rrggbbaa` with its alpha ignored: light above luminance 0.4. */
+export function kindOfBackground(color: Rgba | string): LookKind {
+  return luminance(typeof color === 'string' ? parse(color) : color) > 0.4 ? 'light' : 'dark';
+}
+
 export function contrast(a: Rgba | string, b: Rgba | string): number {
   const [hi, lo] = [a, b].map((c) => luminance(typeof c === 'string' ? parse(c) : c)).sort((x, y) => y - x) as [number, number];
   return (hi + 0.05) / (lo + 0.05);
@@ -132,6 +137,9 @@ export function checkPalette(palette: ThemePalette, kind: LookKind): ContrastIss
   const format = [...unreadable].map((fg): ContrastIssue => ({ rule: 'format', severity: 'error', fg, bg: 'missing, or not the #rrggbb color it must be', ratio: 0, min: 0 }));
   return [...format, ...issues];
 }
+
+/** Whether `palette` fails a text rule, which makes trusted UI take the built-in palette instead (trustedPalette). */
+export const hasContrastError = (palette: ThemePalette, kind: LookKind): boolean => checkPalette(palette, kind).some((issue) => issue.severity === 'error');
 
 export const describeIssue = (issue: ContrastIssue): string =>
   issue.rule === 'format' ? `${issue.fg}: ${issue.bg}` : `${issue.fg} on ${issue.bg}: ${issue.ratio.toFixed(2)} (needs ${issue.min})`;

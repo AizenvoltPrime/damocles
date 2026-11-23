@@ -1,6 +1,6 @@
 // The CSS main gives each renderer for the shown look (docs/invariants.md "Desktop themes"). Pure: no electron, no files.
 import { BUILTIN_PALETTES } from '../../../shared/themes/builtin';
-import { checkPalette } from '../../../shared/themes/contrast';
+import { hasContrastError } from '../../../shared/themes/contrast';
 import { deriveLook } from '../../../shared/themes/derive';
 import { BUILTIN_MONO_STACK, BUILTIN_UI_STACK, fontFaceCss } from '../../../shared/themes/fonts';
 import { sanitizeThemeCss, themeCssFamilies } from '../../../shared/themes/css-sanitizer';
@@ -36,7 +36,7 @@ export function trustedPalette(palette: ThemePalette, kind: LookKind): ThemePale
   if (palette === BUILTIN_PALETTES[kind]) return palette;
   const known = trusted.get(palette);
   if (known) return known;
-  const result = checkPalette(palette, kind).every((issue) => issue.severity === 'warning') ? palette : BUILTIN_PALETTES[kind];
+  const result = hasContrastError(palette, kind) ? BUILTIN_PALETTES[kind] : palette;
   trusted.set(palette, result);
   return result;
 }

@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { AlertTriangle, CircleAlert, Download, Info, LoaderCircle, Minus } from 'lucide-vue-next';
 import { isolated, withoutIsolates } from '@shared/bidi-isolate';
-import type { ThemeInstallAnswer, ThemeInstallClashChoice, ThemeInstallFont, ThemeInstallPreview, ThemeInstallWallpaper } from '@shared/themes/install';
+import type { ThemeInstallAnswer, ThemeInstallClashChoice, ThemeInstallFont, ThemeInstallFormat, ThemeInstallPreview, ThemeInstallWallpaper } from '@shared/themes/install';
 import type { LookColors } from '@shared/themes/schema';
 import { LOOK_KINDS, type LookKind } from '@shared/themes/tokens';
 import { Badge } from '@/components/ui/badge';
@@ -16,7 +16,7 @@ import { Progress } from '@/components/ui/progress';
 import { IsolatedText } from '../isolated-text';
 import TrustedCheckingNote from '../TrustedCheckingNote.vue';
 import ThemeMiniature from './ThemeMiniature.vue';
-import { contrastText, droppedCssText, listText } from './theme-words';
+import { contrastText, droppedCssText, listText, themeNameText } from './theme-words';
 import { isHexColor } from './theme-view';
 import { formatBytes } from '@/utils/format-bytes';
 import { useDockPromptDigits } from '@/composables/useDockPrompt';
@@ -50,7 +50,7 @@ const emit = defineEmits<{
   (e: 'release-focus'): void;
 }>();
 
-const { t, locale } = useI18n();
+const { t, te, locale } = useI18n();
 const { rt } = useLocalizedText();
 const cardRef = ref<HTMLElement | null>(null);
 const { isVisible, explain, refuse } = useTrustedVisibility(cardRef, () => props.gated, { quiet: () => props.quiet === true });
@@ -70,6 +70,15 @@ const miniMode = computed<'split' | LookKind>(() => (kinds.value.length === 2 ? 
 const miniLabel = computed(() => t('themeInstall.miniLabel', { name: name.value, looks: t(`themeInstall.miniLooks.${miniMode.value}`) }));
 const looksText = computed(() => t(`themeInstall.looks.${miniMode.value}`));
 
+const FILE_SOURCE_KEYS: Readonly<Record<ThemeInstallFormat, string>> = {
+  damocles: 'themeInstall.source.file',
+  vscode: 'themeInstall.source.vscodeFile',
+  base16: 'themeInstall.source.base16File',
+  gtk: 'themeInstall.source.gtkFile',
+  kde: 'themeInstall.source.kdeFile',
+  qt: 'themeInstall.source.qtFile',
+};
+
 // The source host is what the user trusts or not, so it renders apart and in mono, as the `source` part of its message; a
 // file shows its name instead. A store file matched the signed list's pin, so the list, not the download host, vouches for it.
 const source = computed<{ readonly text: string } | { readonly keypath: string; readonly value: string }>(() => {
@@ -78,9 +87,15 @@ const source = computed<{ readonly text: string } | { readonly keypath: string; 
     const author = props.preview.about.author;
     return { text: author ? t('themeInstall.source.storeBy', { author }) : t('themeInstall.source.store') };
   }
-  if (kind === 'file') return { keypath: props.preview.format === 'vscode' ? 'themeInstall.source.vscodeFile' : 'themeInstall.source.file', value: fileName ?? '' };
-  return { keypath: `themeInstall.source.${kind}`, value: host ?? '' };
+  // a newer peer may send a format or source kind this build has no words for
+  if (kind === 'file') {
+    const { format } = props.preview;
+    return { keypath: Object.hasOwn(FILE_SOURCE_KEYS, format) ? FILE_SOURCE_KEYS[format] : 'themeInstall.source.file', value: fileName ?? '' };
+  }
+  const keypath = `themeInstall.source.${kind}`;
+  return { keypath: te(keypath) ? keypath : 'themeInstall.source.file', value: host ?? '' };
 });
+const conversionKey = computed(() => `themeInstall.conversion.${props.preview.format}`);
 
 const SWATCHES: readonly (keyof LookColors)[] = ['background', 'panel', 'text', 'accent'];
 // each seed is drawn only when it is a hex color
@@ -321,7 +336,7 @@ const subTag = computed(() => (props.variant === 'dialog' ? DialogDescription : 
                 class="mt-0.5 size-3.5 flex-none text-(--d-warning)"
                 aria-hidden="true"
               />
-              <span><IsolatedText :text="t('themeInstall.clash.legend', { name: isolated(clash.name) })" /></span>
+              <span><IsolatedText :text="t('themeInstall.clash.legend', { name: isolated(themeNameText(t, { id: clash.themeId }, clash.name) ?? clash.name) })" /></span>
             </legend>
             <RadioGroup
               v-model="onClash"
@@ -370,15 +385,15 @@ const subTag = computed(() => (props.variant === 'dialog' ? DialogDescription : 
           </fieldset>
 
           <p
-            v-if="preview.format === 'vscode'"
+            v-if="te(conversionKey)"
             class="flex items-start gap-2 rounded-9 border border-(--d-border) bg-(--d-panel) px-2.5 py-2 text-pretty"
-            data-testid="theme-install-vscode"
+            data-testid="theme-install-conversion"
           >
             <Info
               class="mt-0.5 size-3.5 flex-none text-(--d-info)"
               aria-hidden="true"
             />
-            <span>{{ t('themeInstall.vscode') }}</span>
+            <span>{{ t(conversionKey) }}</span>
           </p>
 
           <dl class="grid grid-cols-1 gap-x-3 gap-y-1.5 @min-[24rem]/pcard:grid-cols-[minmax(0,8rem)_minmax(0,1fr)]">

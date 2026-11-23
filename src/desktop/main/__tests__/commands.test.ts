@@ -683,10 +683,10 @@ describe('shell commands: the damocles command on PATH', () => {
       installApplicationMenu(PROJECTS, { ...({} as MenuActions), remote, ...(withCli ? { cliCommand } : {}) }, en, CHAT, platform);
       return (electron.template.find((item) => item.id === menu)!.submenu as MenuItemConstructorOptions[]).map((item) => item.id ?? item.type);
     };
-    const restart = ['separator', MENU_IDS.restartWithDefaultTheme];
+    const restart = ['separator', MENU_IDS.restartWithDamoclesTheme];
     expect(ids('win32', true, 'damocles.menu.help')).toEqual([MENU_IDS.about, MENU_IDS.releaseNotes, MENU_IDS.checkForUpdates, 'separator', MENU_IDS.installCliCommand, MENU_IDS.uninstallCliCommand, ...restart]);
     expect(ids('darwin', true, 'damocles.menu.app').slice(0, 6)).toEqual([MENU_IDS.about, MENU_IDS.releaseNotes, MENU_IDS.checkForUpdates, 'separator', MENU_IDS.installCliCommand, MENU_IDS.uninstallCliCommand]);
-    expect(ids('darwin', true, 'damocles.menu.help')).toEqual([MENU_IDS.restartWithDefaultTheme]);
+    expect(ids('darwin', true, 'damocles.menu.help')).toEqual([MENU_IDS.restartWithDamoclesTheme]);
     expect(ids('linux', true, 'damocles.menu.help')).toEqual([MENU_IDS.about, MENU_IDS.releaseNotes, MENU_IDS.checkForUpdates, ...restart]);
     expect(ids('win32', false, 'damocles.menu.help')).toEqual([MENU_IDS.about, MENU_IDS.releaseNotes, MENU_IDS.checkForUpdates, ...restart]);
   });

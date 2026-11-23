@@ -1879,7 +1879,7 @@ export interface ShellState {
   readonly dockInset: number;
   // Peek at the window hides the dock that covers it until the peek bar's button or Escape
   readonly dockPeek: boolean;
-  // safe start for this run: the default theme shows, and the banner says why
+  // safe start for this run: the Damocles theme shows, and the banner says why
   readonly safeStart?: { readonly reason: 'launch' | 'crashLoop' | 'reset' };
   // the keep-changes banner of an agent's on-the-fly theme change; absent while none shows
   readonly keepChanges?: KeepChangesState;

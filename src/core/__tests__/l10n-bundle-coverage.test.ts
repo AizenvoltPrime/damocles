@@ -72,16 +72,33 @@ function importedFrom(source: ts.SourceFile, name: string): ts.SourceFile | unde
   return undefined;
 }
 
+// The object literal of a constant this file declares or imports, through `as const`.
+function constantObjectOf(source: ts.SourceFile, owner: string): ts.ObjectLiteralExpression | undefined {
+  let declared = constantOf(source, owner) ?? (() => {
+    const imported = importedFrom(source, owner);
+    return imported && constantOf(imported, owner);
+  })();
+  while (declared && (ts.isAsExpression(declared) || ts.isSatisfiesExpression(declared))) declared = declared.expression;
+  return declared && ts.isObjectLiteralExpression(declared) ? declared : undefined;
+}
+
 /**
  * The messages an argument of a translating call names: a string literal, a same-file string constant, a string property of
- * a constant object this file declares or imports, or a parameter, which names what every call of its function in the same
- * file passes there. Only a translating call's own argument must resolve; one passed on through a parameter may be anything.
+ * a constant object this file declares or imports, every string of such an object for an element of it, or a parameter, which
+ * names what every call of its function in the same file passes there. Only a translating call's own argument must resolve;
+ * one passed on through a parameter may be anything.
  */
 function messagesOf(argument: ts.Expression, source: ts.SourceFile, seen: Set<ts.Node>, direct = true): string[] {
   if (isText(argument)) return [argument.text];
   if (seen.has(argument)) return [];
   seen.add(argument);
   const where = path.relative(ROOT, source.fileName);
+  if (direct && ts.isElementAccessExpression(argument) && ts.isIdentifier(argument.expression) && isConstantName(argument.expression.text)) {
+    const owner = argument.expression.text;
+    const values = constantObjectOf(source, owner)?.properties.map((property) => (ts.isPropertyAssignment(property) && isText(property.initializer) ? property.initializer.text : undefined));
+    if (!values || values.length === 0 || values.includes(undefined)) throw new Error(`${where}: ${owner} is not a constant object of strings`);
+    return values as string[];
+  }
   if (ts.isIdentifier(argument)) {
     const parameter = parameterOf(argument, argument.text);
     if (parameter) {
@@ -108,13 +125,7 @@ function messagesOf(argument: ts.Expression, source: ts.SourceFile, seen: Set<ts
   }
   if (direct && ts.isPropertyAccessExpression(argument) && ts.isIdentifier(argument.expression) && isConstantName(argument.expression.text)) {
     const owner = argument.expression.text;
-    const declared = constantOf(source, owner) ?? (() => {
-      const imported = importedFrom(source, owner);
-      return imported && constantOf(imported, owner);
-    })();
-    const property = declared && ts.isObjectLiteralExpression(declared)
-      ? declared.properties.find((candidate) => ts.isPropertyAssignment(candidate) && ts.isIdentifier(candidate.name) && candidate.name.text === argument.name.text)
-      : undefined;
+    const property = constantObjectOf(source, owner)?.properties.find((candidate) => ts.isPropertyAssignment(candidate) && ts.isIdentifier(candidate.name) && candidate.name.text === argument.name.text);
     if (!property || !ts.isPropertyAssignment(property) || !isText(property.initializer)) throw new Error(`${where}: ${owner}.${argument.name.text} is not a string of a constant object`);
     return [property.initializer.text];
   }
@@ -187,6 +198,9 @@ describe('extension l10n bundles', () => {
       'Merge into branch',
       // t(ERROR_PAGE_STRINGS.title), a constant of shared/panel-html.ts
       'Session failed to restore',
+      // t(BUILTIN_THEME_NAMES[id]) and l(BUILTIN_THEME_NAMES[id]), every string of a constant of shared/themes/builtin.ts
+      'Damocles',
+      'Aurora',
       // verbatim()'s l('{0}', text), in the file that declares l
       '{0}',
     ].filter((message) => !messages.has(message))).toEqual([]);

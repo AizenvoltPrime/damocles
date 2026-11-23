@@ -9,7 +9,8 @@ import ThemeInstallPrompt from '@/components/theme/ThemeInstallPrompt.vue';
 import ThemeInstallCard from '@/components/theme/ThemeInstallCard.vue';
 import { focusDockPrompt } from '@/composables/useDockPrompt';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
-import { i18n } from '@/i18n';
+import { i18n, loadLocale } from '@/i18n';
+import { SYSTEM_THEME_ID } from '@shared/themes/builtin';
 import { useThemePromptStore } from '@/stores/useThemePromptStore';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { createThemeHandlers } from '@/composables/message-handler/handlers/theme-handlers';
@@ -77,6 +78,41 @@ describe('the theme install card', () => {
     expect(moving).toContain('Dark look: one image across chat and sidebar');
     expect(moving).toContain('No flashing found.');
     expect(button(w, 'go').text()).toBe('Install');
+  });
+
+  it('names a converted format in a file source line and says how it converts; a Damocles theme file gets no note', async () => {
+    const base16 = await raised(request(installPreview({ format: 'base16', source: { kind: 'file', fileName: 'gruvbox-dark.yaml' } })));
+    expect(base16.get('[data-testid="theme-install-source"]').text()).toBe('A base16 or base24 scheme, from the file gruvbox-dark.yaml');
+    expect(base16.get('[data-testid="theme-install-conversion"]').text()).toMatch(/^A base16 or base24 scheme becomes a Damocles theme: base00, base01 and base05/);
+    base16.unmount();
+    useThemePromptStore().$reset();
+    for (const [format, fileName, source, note] of [
+      ['vscode', 'dark.json', 'A VS Code theme, from the file dark.json', /^A VS Code theme becomes a Damocles theme/],
+      ['kde', 'kdeglobals', 'A KDE color scheme, from the file kdeglobals', /^A KDE color scheme becomes a Damocles theme/],
+      ['qt', 'graphite.conf', 'A qt5ct or qt6ct palette, from the file graphite.conf', /Qt has no success, warning or danger color, so those come from Damocles' own look/],
+      ['gtk', 'gtk.css', 'GTK colors, from the file gtk.css', /comes from libadwaita, GTK's own look/],
+    ] as const) {
+      const card = await raised(request(installPreview({ format, source: { kind: 'file', fileName } })));
+      expect(card.get('[data-testid="theme-install-source"]').text()).toBe(source);
+      expect(card.get('[data-testid="theme-install-conversion"]').text()).toMatch(note);
+      card.unmount();
+      useThemePromptStore().$reset();
+    }
+    const damocles = await raised(request(installPreview({ source: { kind: 'file', fileName: 'aurora.damocles-theme' } })));
+    expect(damocles.get('[data-testid="theme-install-source"]').text()).toBe('From the file aurora.damocles-theme');
+    expect(damocles.find('[data-testid="theme-install-conversion"]').exists()).toBe(false);
+  });
+
+  it('words a format or source kind this build does not know as a plain file, with no conversion note', async () => {
+    const unknown = { format: 'tmtheme', source: { kind: 'file', fileName: 'night.tmTheme' } } as unknown as Parameters<typeof installPreview>[0];
+    const card = await raised(request(installPreview(unknown)));
+    expect(card.get('[data-testid="theme-install-source"]').text()).toBe('From the file night.tmTheme');
+    expect(card.find('[data-testid="theme-install-conversion"]').exists()).toBe(false);
+    card.unmount();
+    useThemePromptStore().$reset();
+    const relayed = { source: { kind: 'mirror', host: 'example.com' } } as unknown as Parameters<typeof installPreview>[0];
+    const other = await raised(request(installPreview(relayed)));
+    expect(other.get('[data-testid="theme-install-source"]').text()).toBe('From the file example.com');
   });
 
   it('installs without a clash with the arrangement off by default, and holds Install, not Cancel, until core closes it', async () => {
@@ -170,6 +206,16 @@ describe('the theme install card', () => {
     expect(button(w, 'go').text()).toBe('Replace and install');
     await button(w, 'go').trigger('click');
     expect(posted).toEqual([{ type: 'resolveThemeInstall', promptId: 'ti-1', choice: 'install', onClash: 'replace', useArrangement: false }]);
+  });
+
+  it.each([
+    [SYSTEM_THEME_ID, 'System colors', 'Χρώματα συστήματος'],
+    ['damocles-aurora', 'Aurora', 'Σέλας'],
+  ])('names a clash with the built-in %s in the UI\'s language', async (themeId, name, greek) => {
+    expect(await loadLocale('el')).toBe(true);
+    i18n.global.locale.value = 'el';
+    const w = await raised(request(installPreview({ clash: { ...CLASH, themeId, name, replaceable: false } })));
+    expect(w.get('[data-testid="theme-install-clash"]').text()).toContain(`Υπάρχει ήδη εγκατεστημένο θέμα με όνομα ${greek}.`);
   });
 
   it('offers only Keep both when the installed theme is a built-in', async () => {

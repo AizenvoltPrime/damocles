@@ -201,7 +201,7 @@ describe('theme gallery', () => {
     expect([...document.querySelectorAll('[aria-label]')].some((element) => /[\u2066-\u2069]/.test(element.getAttribute('aria-label')!))).toBe(false);
   });
 
-  it('says on the Mode row that the theme is paused for the run, whatever started the run with the default theme', async () => {
+  it('says on the Mode row that the theme is paused for the run, whatever started the run with the Damocles theme', async () => {
     await openAppearance(themes({ shown: { themeId: 'damocles', kind: 'dark', decidedBy: 'safeStart' } }));
     expect(byTestId('theme-mode-status')!.textContent?.trim()).toBe('Showing Damocles, dark look: your theme is paused for this run.');
   });
@@ -565,20 +565,16 @@ describe('theme gallery details', () => {
     vi.mocked(api.getState).mockResolvedValue({ locale: 'en', platform: 'win32' });
   });
 
-  it.each(['en', 'el'] as const)('names a copy of a theme with a 64 character name whole, the word for copy included (%s)', async (locale) => {
-    const long = 'N'.repeat(64);
-    await openAppearance(themes({ themes: [ok(BUILTIN_THEME, true), ok(theme(NIGHT, long, ['dark']))] }));
+  // main names the copy, as it names the agent's unnamed copy (themeCopyName)
+  it.each(['en', 'el'] as const)('leaves the name of a copy to main (%s)', async (locale) => {
+    await openAppearance(themes({ themes: [ok(BUILTIN_THEME, true), ok(theme(NIGHT, 'N'.repeat(64), ['dark']))] }));
     shellI18n.global.locale.value = locale;
     await flushPromises();
     // Duplicate is the item after Edit, in either language
     key(byTestId(`theme-more-${NIGHT}`)!, 'Enter');
     await flushPromises();
     await click(document.querySelectorAll('[role="menuitem"]')[1]);
-    const sent = vi.mocked(api.themeAction).mock.calls.map(([action]) => action).find((action) => action.action === 'duplicate') as { name: string };
-    const suffix = shellI18n.global.t('settingsHost.themes.copyName', { name: '' });
-    expect(suffix.trim()).not.toBe('');
-    expect([...sent.name]).toHaveLength(64);
-    expect(sent.name).toBe(`${'N'.repeat(64 - [...suffix].length)}${suffix}`);
+    expect(vi.mocked(api.themeAction).mock.calls.map(([action]) => action).find((action) => action.action === 'duplicate')).toEqual({ action: 'duplicate', themeId: NIGHT });
   });
 
   it('announces a refused name in the rename dialog and puts focus back in the field', async () => {

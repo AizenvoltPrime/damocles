@@ -128,6 +128,8 @@ for (const width of [1280, 900] as const) {
     await page.getByRole('radio', { name: 'Damocles, dark', exact: true }).click();
     await expect(page.getByRole('radio', { name: 'Damocles, dark, active', exact: true })).toBeVisible();
     await page.getByRole('radio', { name: 'Damocles, dark, active', exact: true }).press('ArrowRight');
+    await expect(page.getByRole('radio', { name: 'System colors, dark, active', exact: true })).toBeFocused();
+    await page.getByRole('radio', { name: 'System colors, dark, active', exact: true }).press('ArrowRight');
     await expect(page.getByRole('radio', { name: 'Aurora, dark, active', exact: true })).toBeVisible();
     await page.getByRole('tab', { name: 'Browse', exact: true }).click();
     await expect(page.getByLabel('Search community themes', { exact: true })).toBeVisible(CHECKED);

@@ -8,6 +8,7 @@ import { MAX_WALLPAPER_SETS, type FlashRecord, type WallpaperImport } from '../.
 import { validateTheme, type Arrangement, type ThemeFile, themeErrorEnglish } from '../../../shared/themes/schema';
 import type { ThemeShowRefusal } from '../../../shared/themes/agent';
 import { MAX_STRIP_FRAMES, MAX_THEME_NAME_CHARS } from '../../../shared/themes/limits';
+import { SYSTEM_THEME_ID } from '../../../shared/themes/builtin';
 import type { LookKind } from '../../../shared/themes/tokens';
 import {
   OVERLAY_CHANNELS, THEME_EDITOR_CHANNELS, type ThemeEditorArrangementResult, type ThemeEditorFlashResult, type ThemeEditorFontResult, type ThemeEditorImageResult,
@@ -27,7 +28,7 @@ export const THEME_DOCK_REM = 22;
 
 // A theme as the dock opens it. baseHash: the hash of its file as core read it, which a save names so a file another writer
 // changed since is left alone; absent for a built-in theme and while this computer's engine is not running.
-export type ThemeEditorRead = Omit<ThemeEditorSession, 'sessionId'> & { readonly baseHash?: string };
+export type ThemeEditorRead = Omit<ThemeEditorSession, 'sessionId' | 'shownName'> & { readonly baseHash?: string };
 
 export interface ThemeEditorDockDeps {
   readonly window: BrowserWindow;
@@ -42,6 +43,8 @@ export interface ThemeEditorDockDeps {
   readonly background: () => string;
   // the session of `themeId` without its id, or undefined when that theme cannot be edited or read
   readonly session: (themeId: string) => Promise<ThemeEditorRead | undefined>;
+  // a theme's name as the UI shows it now (shownThemeName)
+  readonly shownName: (entry: { readonly id: string; readonly builtin: boolean; readonly theme: ThemeFile }) => string;
   // paints a draft on the window, or ends the preview; answers why the window paints no preview now, if it does not
   readonly preview: (preview: TransientPreview | undefined) => ThemeShowRefusal | undefined;
   // `baseHash`: the file the draft was made from. A save that wrote answers the hash of what it wrote.
@@ -161,7 +164,7 @@ export class ThemeEditorDock {
     const { baseHash, ...session } = read;
     this.reset();
     this.baseHash = baseHash;
-    this.current = { ...session, sessionId: this.nextSession++ };
+    this.current = { ...session, ...this.named(session), sessionId: this.nextSession++ };
     const view = this.ensureView();
     if (this.loaded) view.webContents.send(THEME_EDITOR_CHANNELS.session, this.current);
     this.place();
@@ -211,6 +214,30 @@ export class ThemeEditorDock {
     if (outside === this.outside) return;
     this.outside = outside;
     if (outside) this.send(THEME_EDITOR_CHANNELS.outside, outside);
+  }
+
+  /**
+   * The library's System colors entry, after any library change: an open System colors session, which libraryChanged skips
+   * as a built-in, shows new looks. The session keeps its id, so its page keeps its place.
+   */
+  systemChanged(theme: ThemeFile): void {
+    const session = this.current;
+    if (session?.themeId !== SYSTEM_THEME_ID || isDeepStrictEqual(theme, session.theme)) return;
+    this.current = { ...session, theme };
+    this.send(THEME_EDITOR_CHANNELS.session, this.current);
+  }
+
+  /** The UI's language changed: an open built-in's session takes its name in the new language, under the same session id. */
+  languageChanged(): void {
+    const session = this.current;
+    if (!session?.builtin) return;
+    this.current = { ...session, ...this.named(session) };
+    this.send(THEME_EDITOR_CHANNELS.session, this.current);
+  }
+
+  // A built-in's name is Damocles' text, which main words; a user theme's name is its draft's, which the page edits.
+  private named(session: Pick<ThemeEditorSession, 'themeId' | 'builtin' | 'theme'>): { readonly shownName?: string } {
+    return session.builtin ? { shownName: this.deps.shownName({ id: session.themeId, builtin: true, theme: session.theme }) } : {};
   }
 
   /**

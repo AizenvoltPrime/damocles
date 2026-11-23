@@ -143,7 +143,7 @@ describe('the theme schedule in core', () => {
     await themes.setSchedule(SCHEDULE, { kind: 'user' }, false, 'dark');
     await themes.hold('damocles', 'light', 7);
     expect((await themes.schedule()).override).toEqual({ themeId: 'damocles', kind: 'light', at: 7 });
-    expect((await themes.history())[0]?.change).toEqual({ kind: 'hold', theme: 'Damocles', look: 'light' });
+    expect((await themes.history())[0]?.change).toEqual({ kind: 'hold', theme: 'Damocles', themeId: 'damocles', look: 'light' });
     await themes.resumeSchedule();
     expect((await themes.schedule()).override).toBeUndefined();
     expect((await themes.history())[0]?.change).toEqual({ kind: 'resume' });

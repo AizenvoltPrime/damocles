@@ -9,8 +9,8 @@ import { seedStubModel, writeUserSettings, type HermeticHome } from './support/h
 import { call, startOpenAIStub, type OpenAIStub } from './support/openai-stub';
 import { setPageSize } from './support/screenshots';
 import { setContentSize, settingsModal } from './support/settings';
-import { overlayPage, shellState } from './support/shell';
-import { controlReady, loadThemeTools, openAppearance, readTheme, themeHooks, windowShowsWallpapers, writeTheme } from './support/themes';
+import { overlayPage, shellPage, shellState } from './support/shell';
+import { controlReady, cssToken, loadThemeTools, openAppearance, readTheme, themeHooks, windowShowsWallpapers, writeTheme } from './support/themes';
 import { answerOpenDialog, answerSaveDialog, chatInput, saveDialogDefaults } from './support/ui';
 
 // Sharing themes (docs/desktop-app.md "Appearance", docs/invariants.md "Desktop themes"): Import and Install from link end at
@@ -125,6 +125,127 @@ test('Import of an archive: Cancel installs nothing, Install installs it under a
   expect(replaced.id).toBe(first[0]!.id);
   expect(darkAccent(replaced.theme)).toBe(RECOLORED);
   expect(darkAccent(after.find((entry) => entry.name === 'Aurora Borealis 2')!.theme)).toBe(COLORS.accent);
+});
+
+test('Import of a base16 scheme: the card names the scheme and how it converts, and the installed theme paints base00 as the background', async ({ home, launch }) => {
+  test.setTimeout(180_000);
+  writeUserSettings(home, { 'damocles.desktop.theme': 'dark' });
+  const palette = ['#1d2021', '#3c3836', '#504945', '#665c54', '#bdae93', '#d5c4a1', '#ebdbb2', '#fbf1c7', '#fb4934', '#fe8019', '#fabd2f', '#b8bb26', '#8ec07c', '#83a598', '#d3869b', '#d65d0e'];
+  const scheme = ['system: "base16"', 'name: "Fixture Gruvbox"', 'author: "e2e"', 'variant: "dark"', 'palette:', ...palette.map((color, i) => `  base0${i.toString(16).toUpperCase()}: "${color}"`)].join('\n');
+  const file = path.join(home.root, 'shared', 'fixture-gruvbox.yaml');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, scheme);
+  const { app } = await launch();
+  await activeChat(app);
+  await answerOpenDialog(app, file);
+  const overlay = await openAppearance(app, 1280);
+
+  await overlay.getByRole('button', { name: 'Import…', exact: true }).click();
+  await overlay.getByRole('dialog', { name: 'Import a theme', exact: true }).getByRole('button', { name: 'Choose file…', exact: true }).click();
+  const card = await cardReady(overlay, 'Fixture Gruvbox');
+  await expect(card.getByTestId('theme-install-source')).toHaveText('A base16 or base24 scheme, from the file fixture-gruvbox.yaml');
+  await expect(card.getByTestId('theme-install-conversion')).toBeVisible();
+  // base03, the comment color, is about 2.5:1 on base00, so the card lists it
+  await expect(card.getByTestId('theme-install-contrast')).toBeVisible();
+  await card.getByRole('button', { name: 'Install', exact: true }).click();
+  await expect(installDialog(overlay)).toBeHidden(CHECKED);
+
+  const [entry] = installed(home);
+  expect(entry!.theme['origin']).toMatchObject({ kind: 'base16' });
+  const pick = overlay.getByRole('radio', { name: 'Fixture Gruvbox, dark', exact: true });
+  await expect(overlay.getByText('Imported from a base16 or base24 scheme · Dark only', { exact: true })).toBeVisible();
+  await pick.click();
+  // the shell paints the shown look; Settings is trusted UI and keeps the built-in palette, since base03 is below 4.5:1 here
+  await expect.poll(async () => cssToken(await shellPage(app), '--d-bg')).toBe(palette[0]);
+});
+
+test('Import of a KDE color scheme and a Qt palette: each card names its format, the Qt card says its status colors come from Damocles, and each installed theme paints its background', async ({ home, launch }) => {
+  test.setTimeout(240_000);
+  writeUserSettings(home, { 'damocles.desktop.theme': 'dark' });
+  const dir = path.join(home.root, 'shared');
+  fs.mkdirSync(dir, { recursive: true });
+  // written for this test in each format's layout
+  const kde = path.join(dir, 'FixtureDusk.colors');
+  fs.writeFileSync(kde, [
+    '[Colors:View]', 'BackgroundNormal=24,26,36', 'ForegroundNormal=225,226,235', 'ForegroundPositive=90,200,120', 'ForegroundNeutral=235,175,60',
+    'ForegroundNegative=240,95,100', 'ForegroundActive=110,165,250', '', '[Colors:Window]', 'BackgroundNormal=32,34,46', '',
+    '[General]', 'AccentColor=200,120,240', 'Name=Fixture Dusk', 'Name[el]=Σούρουπο', '',
+  ].join('\n'));
+  const qtRoles: Readonly<Record<number, string>> = { 6: '#ffe6e9ef', 9: '#ff121820', 10: '#ff1a2230', 12: '#ff4c8bf5', 14: '#ff7fb0ff' };
+  const qt = path.join(dir, 'fixture-graphite.conf');
+  fs.writeFileSync(qt, `[ColorScheme]\nactive_colors=${Array.from({ length: 21 }, (_, i) => qtRoles[i] ?? '#ff808080').join(', ')}\n`);
+  const { app } = await launch();
+  await activeChat(app);
+  await answerOpenDialog(app, kde);
+  const overlay = await openAppearance(app, 1280);
+  const importScheme = async (name: string): Promise<Locator> => {
+    await overlay.getByRole('button', { name: 'Import…', exact: true }).click();
+    await overlay.getByRole('dialog', { name: 'Import a theme', exact: true }).getByRole('button', { name: 'Choose file…', exact: true }).click();
+    return cardReady(overlay, name);
+  };
+  const shownBackground = async (): Promise<string> => cssToken(await shellPage(app), '--d-bg');
+
+  const kdeCard = await importScheme('Fixture Dusk');
+  await expect(kdeCard.getByTestId('theme-install-source')).toHaveText('A KDE color scheme, from the file FixtureDusk.colors');
+  await expect(kdeCard.getByTestId('theme-install-conversion')).toBeVisible();
+  await kdeCard.getByRole('button', { name: 'Install', exact: true }).click();
+  await expect(installDialog(overlay)).toBeHidden(CHECKED);
+  expect(installed(home).find((entry) => entry.name === 'Fixture Dusk')!.theme['origin']).toMatchObject({ kind: 'kde' });
+  await expect(overlay.getByText('Imported from a KDE color scheme · Dark only', { exact: true })).toBeVisible();
+  await overlay.getByRole('radio', { name: 'Fixture Dusk, dark', exact: true }).click();
+  await expect.poll(shownBackground).toBe('#181a24');
+
+  await answerOpenDialog(app, qt);
+  const qtCard = await importScheme('fixture-graphite');
+  await expect(qtCard.getByTestId('theme-install-source')).toHaveText('A qt5ct or qt6ct palette, from the file fixture-graphite.conf');
+  await expect(qtCard.getByTestId('theme-install-conversion')).toContainText('Qt has no success, warning or danger color, so those come from Damocles\' own look of that kind.');
+  await qtCard.getByRole('button', { name: 'Install', exact: true }).click();
+  await expect(installDialog(overlay)).toBeHidden(CHECKED);
+  expect(installed(home).find((entry) => entry.name === 'fixture-graphite')!.theme['origin']).toMatchObject({ kind: 'qt' });
+  await expect(overlay.getByText('Imported from a Qt palette · Dark only', { exact: true })).toBeVisible();
+  await overlay.getByRole('radio', { name: 'fixture-graphite, dark', exact: true }).click();
+  await expect.poll(shownBackground).toBe('#121820');
+});
+
+test('Import of a GTK color file: the card names it and the color it cannot read, the installed theme paints view_bg_color, and a file whose colors are in a .gresource is refused', async ({ home, launch }) => {
+  test.setTimeout(240_000);
+  writeUserSettings(home, { 'damocles.desktop.theme': 'dark' });
+  const dir = path.join(home.root, 'shared');
+  fs.mkdirSync(dir, { recursive: true });
+  // written for this test in libadwaita's layout; color-mix() is CSS GTK accepts and Damocles does not evaluate
+  const gtk = path.join(dir, 'fixture-dusk.css');
+  fs.writeFileSync(gtk, [
+    '@define-color window_bg_color #1e2030;', '@define-color view_bg_color #181926;', '@define-color view_fg_color #e6e9f5;',
+    '@define-color accent_bg_color mix(#7aa2f7, #bb9af7, 0.5);', '@define-color success_bg_color color-mix(in srgb, #9ece6a 50%, white);', '',
+  ].join('\n'));
+  const packaged = path.join(dir, 'fixture-packaged.css');
+  fs.writeFileSync(packaged, '@import url("resource:///org/gnome/fixture/gtk.css");\n');
+  const { app } = await launch();
+  await activeChat(app);
+  await answerOpenDialog(app, gtk);
+  const overlay = await openAppearance(app, 1280);
+  const chooseFile = async (): Promise<void> => {
+    await overlay.getByRole('button', { name: 'Import…', exact: true }).click();
+    await overlay.getByRole('dialog', { name: 'Import a theme', exact: true }).getByRole('button', { name: 'Choose file…', exact: true }).click();
+  };
+
+  await chooseFile();
+  const card = await cardReady(overlay, 'fixture-dusk');
+  await expect(card.getByTestId('theme-install-source')).toHaveText('GTK colors, from the file fixture-dusk.css');
+  await expect(card.getByTestId('theme-install-conversion')).toBeVisible();
+  await expect(card.getByTestId('theme-install-warnings')).toContainText('success_bg_color');
+  await expect(card.getByTestId('theme-install-warnings')).toContainText('which Damocles cannot read, so that color comes from libadwaita.');
+  await card.getByRole('button', { name: 'Install', exact: true }).click();
+  await expect(installDialog(overlay)).toBeHidden(CHECKED);
+  expect(installed(home).find((entry) => entry.name === 'fixture-dusk')!.theme['origin']).toMatchObject({ kind: 'gtk' });
+  await expect(overlay.getByText('Imported from GTK colors · Dark only', { exact: true })).toBeVisible();
+  await overlay.getByRole('radio', { name: 'fixture-dusk, dark', exact: true }).click();
+  await expect.poll(async () => cssToken(await shellPage(app), '--d-bg')).toBe('#181926');
+
+  await answerOpenDialog(app, packaged);
+  await chooseFile();
+  await expect(overlay.getByTestId('theme-error')).toHaveText('fixture-packaged.css only imports a theme whose colors are compiled into a .gresource file, which Damocles cannot read. Import a gtk.css that defines the colors, such as ~/.config/gtk-4.0/gtk.css.');
+  expect(installed(home).map((entry) => entry.name)).toEqual(['fixture-dusk']);
 });
 
 test("Import of a theme whose moving wallpaper flashes: the card blocks it with the seizure warning, Install without Allow leaves the file blocked, and only the user's Allow on the card allows it on this computer", async ({ home, launch }) => {

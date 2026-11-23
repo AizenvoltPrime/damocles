@@ -1,10 +1,11 @@
 // A theme file from outside this computer read into a theme Damocles can stage (docs/themes.md "Sharing"): a .damocles-theme, a
-// bare theme.json, or a VS Code color theme. The file's id, origin and any flash allowance are never kept: the caller gives the
-// theme a new id and core writes its origin. Pure: nothing here writes a file.
+// bare theme.json, a VS Code color theme, a base16 or base24 scheme, or a GTK, KDE or Qt color scheme. The file's id, origin and
+// any flash allowance are never kept: the caller gives the theme a new id and core writes its origin. Pure: nothing here writes a file.
 import * as path from 'node:path';
 import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import { sanitizeThemeCss, themeCssFamilies, type CssDroppedPart } from '../../shared/themes/css-sanitizer';
 import { reservedFontName } from '../../shared/themes/fonts';
+import { MAX_THEME_NAME_CHARS } from '../../shared/themes/limits';
 import { checkSchemaVersion, themeErrorText, validateTheme, type AssetMeta, type ThemeFile } from '../../shared/themes/schema';
 import type { ThemeInstallFormat } from '../../shared/themes/install';
 import { l, verbatim } from '../l10n';
@@ -14,7 +15,9 @@ import { checkWallpaper, wallpaperAsset } from './assets';
 import { checkSprite, spriteAsset } from './characters';
 import { FontInfoError, readFontInfo } from './font-info';
 import { MAX_THEME_FILE_BYTES } from './store';
-import { importVscodeThemeText, importVsix, VSIX_LIMITS } from './vscode-import';
+import { importBase16Text } from './base16-import';
+import { importGtkText, importKdeText, importQtText } from './scheme-import';
+import { importVscodeThemeText, importVsix, opensJson, VSIX_LIMITS } from './vscode-import';
 
 export interface ImportedTheme {
   readonly format: ThemeInstallFormat;
@@ -83,7 +86,7 @@ async function checkedAsset(theme: ThemeFile, sha256: string, declared: AssetMet
 
 // A name as the card shows it: one line, no control or bidi characters. One that leaves nothing stays, for the format to refuse.
 const cleanNameOf = (holder: Record<string, unknown>): Record<string, unknown> => {
-  const name = typeof holder['name'] === 'string' ? oneLine(holder['name'], 64) : undefined;
+  const name = typeof holder['name'] === 'string' ? oneLine(holder['name'], MAX_THEME_NAME_CHARS) : undefined;
   return name === undefined ? holder : { ...holder, name };
 };
 
@@ -148,18 +151,50 @@ async function damoclesArchive(archive: ThemeArchive, id: string): Promise<Impor
   return { format: 'damocles', theme: clean, assets, droppedCss: dropped, droppedCssMore: droppedMore, originalCss: rebuilt.theme.css, warnings };
 }
 
-function vscodeTheme(imported: { readonly theme: Readonly<Record<string, unknown>>; readonly warnings: readonly LocalizedText[] }, id: string): ImportedTheme {
+type ConvertedFormat = Exclude<ThemeInstallFormat, 'damocles'>;
+
+/** A converted theme without its id and origin, which the caller gives it, and what the card warns about. */
+export interface Converted {
+  readonly theme: Readonly<Record<string, unknown>>;
+  readonly warnings: readonly LocalizedText[];
+}
+
+// Each format's refusal, as literal l() calls the l10n coverage scan resolves.
+const DID_NOT_CONVERT: Readonly<Record<ConvertedFormat, (why: LocalizedText) => LocalizedText>> = {
+  vscode: (why) => l('This VS Code theme did not convert: {0}', why),
+  base16: (why) => l('This base16 scheme did not convert: {0}', why),
+  gtk: (why) => l('This GTK color file did not convert: {0}', why),
+  kde: (why) => l('This KDE color scheme did not convert: {0}', why),
+  qt: (why) => l('This Qt color scheme did not convert: {0}', why),
+};
+
+function convertedTheme(format: ConvertedFormat, imported: Converted, id: string): ImportedTheme {
   // installed under the name the card shows, whatever the conversion took it from
-  const name = typeof imported.theme['name'] === 'string' ? oneLine(imported.theme['name'], 64) : undefined;
-  if (name === undefined) throw new LocalizedError(l('This VS Code theme has no name.'));
+  const name = typeof imported.theme['name'] === 'string' ? oneLine(imported.theme['name'], MAX_THEME_NAME_CHARS) : undefined;
   const result = validateTheme({ ...imported.theme, name, id });
-  if (!result.ok) throw new LocalizedError(l('This VS Code theme did not convert: {0}', themeErrorText(result.errors)));
-  return { format: 'vscode', theme: result.theme, assets: new Map(), droppedCss: [], droppedCssMore: 0, originalCss: undefined, warnings: imported.warnings };
+  if (!result.ok) throw new LocalizedError(DID_NOT_CONVERT[format](themeErrorText(result.errors)));
+  return { format, theme: result.theme, assets: new Map(), droppedCss: [], droppedCssMore: 0, originalCss: undefined, warnings: imported.warnings };
+}
+
+/** The format of a text file: the one its name names, else the one its content looks like. Each pattern runs in linear time. */
+function textFormat(fileName: string, text: string): ConvertedFormat | undefined {
+  const name = path.basename(fileName);
+  if (/\.ya?ml$/i.test(name)) return 'base16';
+  if (/\.colors$/i.test(name) || name === 'kdeglobals') return 'kde';
+  if (/\.css$/i.test(name)) return 'gtk';
+  if (/\.conf$/i.test(name)) return 'qt';
+  if (/\.jsonc?$/i.test(name)) return 'vscode';
+  if (opensJson(text)) return 'vscode';
+  if (/^\[ColorScheme\][ \t]*\r?$/m.test(text) && /^[ \t]*active_colors[ \t]*=/m.test(text)) return 'qt';
+  if (/^\[Colors:(?:View|Window)\][ \t]*\r?$/m.test(text)) return 'kde';
+  if (/@define-color\s/.test(text) || /:root\s*\{\s*--[\w-]+\s*:/.test(text)) return 'gtk';
+  if (/^[ \t]*(?:base00|palette)[ \t]*:/m.test(text)) return 'base16';
+  return undefined;
 }
 
 /**
  * A theme file's bytes as a theme under `id`: a zip is a .vsix when it is named so or holds extension/package.json, else a
- * .damocles-theme; text is a Damocles theme.json when it names schemaVersion, else a VS Code color theme (JSON or JSONC).
+ * .damocles-theme; text is a Damocles theme.json when it names schemaVersion, else the format `textFormat` finds.
  */
 export async function readImport(bytes: Uint8Array, fileName: string, id: string): Promise<ImportedTheme> {
   // a file named as a theme file is read as one, so one that is no zip is refused as such
@@ -168,14 +203,15 @@ export async function readImport(bytes: Uint8Array, fileName: string, id: string
     // opened once: the directory that tells a .vsix from a theme file is the one either is read from
     const zip = openZip(bytes, VSIX_LIMITS);
     const vsix = /\.vsix$/i.test(fileName) || zip.names.includes('extension/package.json');
-    return vsix ? vscodeTheme(await importVsix(zip), id) : damoclesArchive(await zip.themeArchive(), id);
+    return vsix ? convertedTheme('vscode', await importVsix(zip), id) : damoclesArchive(await zip.themeArchive(), id);
   }
   if (bytes.length > MAX_THEME_FILE_BYTES) throw new LocalizedError(l('This file is larger than {0} MB and is not a theme file.', String(MAX_THEME_FILE_BYTES / 1024 / 1024)));
+  const notTheme = (): LocalizedError => new LocalizedError(l('{0} is not a theme file Damocles reads: a .damocles-theme, a VS Code theme (.json or .vsix), a base16 or base24 scheme (.yaml or .yml), a KDE color scheme (.colors or kdeglobals), a qt5ct or qt6ct palette (.conf) or a GTK color file (.css).', verbatim(path.basename(fileName))));
   let text: string;
   try {
     text = new TextDecoder('utf-8', { fatal: true }).decode(bytes).replace(/^\uFEFF/, '');
   } catch {
-    throw new LocalizedError(l('{0} is not a theme file Damocles reads: a .damocles-theme, a VS Code theme (.json) or a .vsix.', verbatim(path.basename(fileName))));
+    throw notTheme();
   }
   const damocles = /^\s*\{[\s\S]*"schemaVersion"\s*:/.test(text) && !/"tokenColors"\s*:/.test(text);
   if (damocles) {
@@ -191,5 +227,12 @@ export async function readImport(bytes: Uint8Array, fileName: string, id: string
     const { theme: clean, dropped, droppedMore } = sanitized(theme);
     return { format: 'damocles', theme: clean, assets: new Map(), droppedCss: dropped, droppedCssMore: droppedMore, originalCss: theme.css, warnings };
   }
-  return vscodeTheme(importVscodeThemeText(text, path.basename(fileName)), id);
+  const format = textFormat(fileName, text);
+  const base = path.basename(fileName);
+  if (format === 'base16') return convertedTheme(format, importBase16Text(text, base), id);
+  if (format === 'kde') return convertedTheme(format, importKdeText(text, base), id);
+  if (format === 'qt') return convertedTheme(format, importQtText(text, base), id);
+  if (format === 'gtk') return convertedTheme(format, importGtkText(text, base), id);
+  if (format === 'vscode') return convertedTheme(format, importVscodeThemeText(text, base), id);
+  throw notTheme();
 }

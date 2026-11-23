@@ -10,10 +10,12 @@ import { englishText, LocalizedError } from '../../../shared/localized-text';
 import { DEFAULT_PANEL_LOOK, isWallpaperAsset, panelWallpapers, withoutUnusedWallpapers, type WallpaperImport } from '../../../shared/themes/wallpapers';
 import { KEEP_CHANGES_MS, miniatureTheme, SCREENSHOT_ANSWER_MS, THEME_APPLY_MODES, type ThemeApplyMode, type ThemeChangeAction, type ThemeChangeItem, type ThemeContrastIssue, type ThemeLaterChange, type ThemeOutcome, type ThemeToolDetails } from '../../../shared/themes/agent';
 import { BUILTIN_THEME, BUILTIN_THEME_ID } from '../../../shared/themes/builtin';
+import { portableBuiltinTheme } from '../../../shared/themes/portable-builtin';
 import type { ThemeActor, ThemeHistoryChange } from '../../../shared/themes/changes';
 import { checkPalette } from '../../../shared/themes/contrast';
 import { deriveLook } from '../../../shared/themes/derive';
 import { FONT_NAME, reservedFontName } from '../../../shared/themes/fonts';
+import { arrangementApplies } from '../../../shared/themes/arrangement';
 import { CSS_REGIONS, LOOK_SEEDS, validateTheme, type Arrangement, type AssetMeta, type CharacterSet, type CharFrame, type CssRegion, type Fit, type Look, type Panel, type ThemeFile, type WallpaperPanel, type WallpaperSet, themeErrorEnglish } from '../../../shared/themes/schema';
 import { characterAssets, spriteFrame, spriteStrip, type Character, type SpriteImport } from '../../../shared/themes/characters';
 import { parsePixelSprite, pixelSpriteSvg, PixelSpriteError } from '../../themes/pixel-sprite';
@@ -59,7 +61,7 @@ export interface ThemeHostPort {
   screenshotDrop(shotId: string): Promise<void>;
   // held until the banner ends; entryId names the countdown (the mark's entry) and chatId the chat that changed; the signal's
   // abort lets go of this wait only
-  applied(ask: { readonly entryId: string; readonly chatId: string; readonly chatTitle?: string; readonly change: ThemeHistoryChange; readonly previousName?: string }, signal: AbortSignal): Promise<'kept' | 'reverted'>;
+  applied(ask: { readonly entryId: string; readonly chatId: string; readonly chatTitle?: string; readonly change: ThemeHistoryChange; readonly previousName?: string; readonly previousId?: string }, signal: AbortSignal): Promise<'kept' | 'reverted'>;
   // the reason main's window cannot paint the proposal now; undefined: it shows
   showInWindow(promptId: string, chatTitle: string | undefined, theme: ThemeFile): Promise<ThemeShowRefusal | undefined>;
   stopShowing(promptId: string): Promise<void>;
@@ -68,6 +70,8 @@ export interface ThemeHostPort {
   currentArrangement(signal: AbortSignal): Promise<Arrangement>;
   // a theme's arrangement put in place as a manual pick puts it, its minimums scaled by the theme's density, or one an undo gives back
   applyArrangement(arrangement: unknown, density?: number): Promise<void>;
+  // the name of a copy made without a given name, in main's words and language; name: the theme's stored name
+  copyName(themeId: string, name: string, signal: AbortSignal): Promise<string>;
   // main ended a card's Show in window
   onShowEnded(listener: (promptId: string, reason: ThemeShowEndReason) => void): Disposable;
   // main let go of a screenshot to hold newer ones, while its card may still show it
@@ -287,6 +291,13 @@ export function projectFieldRefusal(input: Record<string, unknown>): string | un
   const extra = Object.keys(input).filter((key) => !PROJECT_FIELDS.has(key));
   return extra.length > 0 ? `target project sets only projectLook, with asset for a new wallpaper image; call again without ${extra.join(', ')}.` : undefined;
 }
+
+// A theme named with only these changes nothing of it, so the theme itself is picked and none is made or saved.
+const PICK_FIELDS = new Set(['theme', 'look', 'target']);
+
+/** Whether a ThemeSet input names an installed theme to show as it is. */
+export const isPickInput = (input: Record<string, unknown>): boolean =>
+  typeof input['theme'] === 'string' && input['target'] !== 'none' && Object.keys(input).every((key) => PICK_FIELDS.has(key));
 
 /** The chat's project and its look as ThemeSet target project sets it. */
 export interface BuiltProjectLook {
@@ -647,10 +658,10 @@ const errorText = (err: unknown): string => (err instanceof LocalizedError ? eng
 
 /**
  * The draft a ThemeSet input describes, or why it cannot be built. `images` are the call's new assets by their names;
- * `currentArrangement` is read only for layout current.
+ * `currentArrangement` is read only for layout current, and `copyName` only for a copy without a given name.
  */
 export async function buildDraft(
-  deps: Pick<ThemeAgentHost, 'themes' | 'authority'> & { readonly currentArrangement: () => Promise<Arrangement> },
+  deps: Pick<ThemeAgentHost, 'themes' | 'authority'> & { readonly currentArrangement: () => Promise<Arrangement>; readonly copyName: (themeId: string, name: string) => Promise<string> },
   input: Record<string, unknown>,
   owner: { readonly sessionId: string; readonly toolCallId: string },
   now: number,
@@ -683,16 +694,14 @@ export async function buildDraft(
     // an edit in place takes the theme and the hash its apply is checked against from one read of the file
     const base = copy ? undefined : await themes.editBase(entry.id);
     if (!copy && !base) return { error: `No theme ${entry.id} can be edited: it is missing, broken or needs a newer Damocles.` };
-    const source = entry.id === BUILTIN_THEME_ID
-      ? { schemaVersion: 1, id: entry.id, name: entry.name, looks: Object.fromEntries(LOOK_KINDS.flatMap((kind) => (entry.theme.looks[kind] ? [[kind, newLook(kind)]] : []))) }
-      : (JSON.parse(JSON.stringify(base?.theme ?? entry.theme)) as Record<string, unknown>);
-    theme = source;
+    const portable = portableBuiltinTheme(entry.theme);
+    theme = portable ? { ...portable, id: entry.id } : (JSON.parse(JSON.stringify(base?.theme ?? entry.theme)) as Record<string, unknown>);
     baseThemeId = entry.id;
     isNew = copy;
     baseHash = base?.hash ?? null;
     if (copy) {
       theme['id'] = themes.drafts.newId();
-      theme['name'] = name ?? `${entry.name} (copy)`;
+      theme['name'] = name ?? await deps.copyName(entry.id, entry.theme.name);
       if (name === undefined) changes.push({ kind: 'name', name: theme['name'] as string });
     }
   } else {
@@ -1158,10 +1167,13 @@ export function createLocalThemeBackend(agent: ThemeAgentHost, options: { readon
   const done = (value: string, details: ThemeToolDetails, isError = false, png?: Uint8Array): ThemeStageAnswer =>
     ({ kind: 'done', content: [textPart(value), ...(png ? [{ type: 'image' as const, png }] : [])], details, ...(isError ? { isError: true as const } : {}) });
   // The answer a commit settles: the on-the-fly banner's end, held on the countdown the change started or joined, or Apply's.
-  const settled = async (staging: Staging, signal: AbortSignal, entry: { readonly pending?: string; readonly change: ThemeHistoryChange; readonly previousName?: string }): Promise<ThemeCommitAnswer> => {
+  const settled = async (staging: Staging, signal: AbortSignal, entry: { readonly pending?: string; readonly change: ThemeHistoryChange; readonly previousName?: string; readonly previousId?: string }): Promise<ThemeCommitAnswer> => {
     if (!staging.onTheFly) return { outcome: 'applied' };
     if (entry.pending === undefined) throw new Error('An on-the-fly theme change was not marked for the keep-changes banner');
-    const ask = { entryId: entry.pending, chatId: staging.request.chat.id, ...titled(staging.request.chat.title), change: entry.change, ...(entry.previousName !== undefined ? { previousName: entry.previousName } : {}) };
+    const ask = {
+      entryId: entry.pending, chatId: staging.request.chat.id, ...titled(staging.request.chat.title), change: entry.change,
+      ...(entry.previousName !== undefined ? { previousName: entry.previousName } : {}), ...(entry.previousId !== undefined ? { previousId: entry.previousId } : {}),
+    };
     return { outcome: await waitForBanner(ask, signal) };
   };
   const staged = (staging: Staging, stage: Omit<Stage, 'sessionId' | 'chatTitle' | 'onTheFly'>, answer: Omit<Extract<ThemeStageAnswer, { kind: 'change' }>, 'kind' | 'stageId' | 'onTheFly'>): ThemeStageAnswer => {
@@ -1188,7 +1200,9 @@ export function createLocalThemeBackend(agent: ThemeAgentHost, options: { readon
     const tool = TOOL_THEME_SET;
     const { request, actor, applyMode, signal } = staging;
     const input = request.input as Record<string, unknown>;
-    const built = await buildDraft({ ...agent, currentArrangement: () => arrangementNow(signal) }, input, { sessionId: request.chat.id, toolCallId: request.toolCallId }, Date.now(), images, sprites);
+    const built = await buildDraft({
+      ...agent, currentArrangement: () => arrangementNow(signal), copyName: (themeId, name) => untilAborted(host.copyName(themeId, name, signal), signal),
+    }, input, { sessionId: request.chat.id, toolCallId: request.toolCallId }, Date.now(), images, sprites);
     if ('error' in built) return done(built.error, { tool }, true);
     const { draft } = built;
     try {
@@ -1244,6 +1258,49 @@ export function createLocalThemeBackend(agent: ThemeAgentHost, options: { readon
       await themes.drafts.remove(draft.id).catch((failure: unknown) => log('[theme-tools] the draft %s could not be removed: %s', draft.id, failure instanceof Error ? failure.message : String(failure)));
       throw err;
     }
+  };
+
+  // An installed theme shown as it is: one look becomes the preferred one, through the same card or banner as a theme change.
+  // Undefined for a theme that cannot be picked or a look it lacks, which the draft path answers.
+  const stagePick = async (staging: Staging): Promise<ThemeStageAnswer | undefined> => {
+    const tool = TOOL_THEME_SET;
+    const { request, actor, applyMode, signal } = staging;
+    const input = request.input as Record<string, unknown>;
+    const entry = (await themes.list()).find((candidate) => candidate.id === input['theme']);
+    if (entry?.status !== 'ok') return undefined;
+    const has = looksOf(entry.theme);
+    const kind = (input['look'] as LookKind | undefined) ?? (has.length === 1 ? has[0]! : (await shownState(signal)).kind);
+    const look = entry.theme.looks[kind];
+    if (!look) return undefined;
+    const changes: ThemeChangeItem[] = [{ kind: 'pick', looks: [kind] }, ...(arrangementApplies(entry.theme) ? [{ kind: 'arrangementApplies' } as const] : [])];
+    // the card and the window preview draw the look that is picked, whichever kind is on screen; where it came from is not shown
+    const { origin: _origin, ...plain } = entry.theme;
+    const shown: ThemeFile = { ...plain, looks: { [kind]: look } };
+    // main paints a preview only of a theme with a user theme's id
+    const canShowInWindow = !entry.builtin;
+    const mini = miniatureTheme(shown);
+    const base = { tool, themeName: entry.name, looks: [kind], applyMode, changes, ...(mini ? { theme: mini } : {}) } satisfies ThemeToolDetails;
+    const name = quoted(oneLine(entry.name, 80) ?? entry.id);
+    // a running schedule is held over from the pick, so the same theme picked again is still a change
+    if (settings.get<unknown>(PREFERRED_LOOK_SETTINGS[kind], BUILTIN_THEME_ID) === entry.id && !(await themes.schedule()).schedule.enabled) {
+      return done(`${name} is already the preferred ${kind} look. Nothing was changed.`, base);
+    }
+    const other = has.find((candidate) => candidate !== kind);
+    const summary = `${name} (${entry.id}) as the preferred ${kind} look. No theme was made or changed.${other ? ` Its ${other} look is a pick of its own: call again with look ${other} to set that too.` : ''}`;
+    return staged(staging, {
+      ...(canShowInWindow ? { showTheme: shown } : {}),
+      commit: async (commitSignal) => {
+        if (commitSignal.aborted) return { refused: STOPPED_BEFORE_COMMIT };
+        const picked = await themes.agentPick({ themeId: entry.id, kind, actor, onTheFly: staging.onTheFly, currentArrangement: () => arrangementNow(commitSignal) });
+        if (!picked) return { outcome: 'unchanged' };
+        if (picked.arrangement) await host.applyArrangement(picked.arrangement.layout, picked.arrangement.density);
+        return settled(staging, commitSignal, picked);
+      },
+    }, {
+      card: { action: 'theme', theme: shown, themeName: entry.name, looks: [kind], isNew: false, changes, contrast: contrastOf(shown), planMode: staging.cardPlanMode, canShowInWindow },
+      details: base,
+      summary: { text: summary },
+    });
   };
 
   // target project: the chat's project's own look, through the same card or banner as a theme change; no theme file changes.
@@ -1369,6 +1426,8 @@ export function createLocalThemeBackend(agent: ThemeAgentHost, options: { readon
     const forProject = input['target'] === 'project' || input['projectLook'] !== undefined;
     const refused = (forProject ? projectFieldRefusal(input) : undefined) ?? unusedAssetRefusal(input);
     if (refused !== undefined) return done(`${refused} Nothing was changed.`, { tool }, true);
+    const picked = isPickInput(input) ? await stagePick(staging) : undefined;
+    if (picked) return picked;
     const held = request.upload !== undefined ? stages.takeUpload(request.upload, request.chat.id) : undefined;
     const imported = await importAssetField(themes, input, held, signal);
     if ('error' in imported) return done(`${imported.error} Nothing was changed.`, { tool }, true);
@@ -1565,10 +1624,12 @@ export function buildThemeToolsOn(backend: ThemeBackend, deps: ThemeFlowDeps): T
   };
 
   // What an applied change did, from what its card proposed; the model has no other word of it.
-  const appliedText = (card: ThemeStagedCard): string => {
+  const appliedText = (card: ThemeStagedCard, base: ThemeToolDetails): string => {
     switch (card.action) {
       case 'theme': {
         const pick = card.changes.find((item) => item.kind === 'pick');
+        // a theme proposal without a draft is a pick of an installed theme as it is
+        if (pick && base.draftId === undefined) return `The theme is now the preferred ${pick.looks.join(' and ')} look. No theme was made or changed.`;
         return pick ? `The theme was saved and picked for its ${pick.looks.join(' and ')} ${pick.looks.length === 1 ? 'look' : 'looks'}.` : 'The theme was saved and not picked, so the window shows what it showed before.';
       }
       case 'schedule':
@@ -1586,16 +1647,16 @@ export function buildThemeToolsOn(backend: ThemeBackend, deps: ThemeFlowDeps): T
 
   const endOfBanner = (end: 'kept' | 'reverted' | 'stopped', base: ThemeToolDetails, summary: (outcome: string) => Content, card: ThemeStagedCard): ThemeResult => {
     const undone = base.undone;
-    if (end === 'kept') return result(summary(undone ? `Undone: the user kept the revert of ${describeChange(undone)}.` : `Applied and kept: the user kept the change on the ${banner}. ${appliedText(card)}`), { ...base, outcome: undone ? 'undone' : 'kept' });
+    if (end === 'kept') return result(summary(undone ? `Undone: the user kept the revert of ${describeChange(undone)}.` : `Applied and kept: the user kept the change on the ${banner}. ${appliedText(card, base)}`), { ...base, outcome: undone ? 'undone' : 'kept' });
     if (end === 'reverted') return result(summary(`Reverted: the user reverted the change on the ${banner}, or let it run out. The window shows what it showed before.`), { ...base, outcome: 'reverted' }, true);
-    return result(summary(`Applied; the turn stopped before the keep-changes banner ended, so the user still keeps or reverts it there. ${appliedText(card)}`), { ...base, outcome: 'applied' });
+    return result(summary(`Applied; the turn stopped before the keep-changes banner ended, so the user still keeps or reverts it there. ${appliedText(card, base)}`), { ...base, outcome: 'applied' });
   };
 
   const cardEnd = (end: Awaited<ReturnType<typeof onCard>>, base: ThemeToolDetails, summary: (outcome: string) => Content, card: ThemeStagedCard): ThemeResult => {
     const withOutcome = (outcome: ThemeOutcome, extra: Partial<ThemeToolDetails> = {}): ThemeToolDetails => ({ ...base, ...extra, outcome });
     switch (end.kind) {
       case 'applied':
-        return result(summary(base.undone ? `Undone: the user applied the revert of ${describeChange(base.undone)}.` : `Applied: the user applied the change. ${appliedText(card)}`), withOutcome(base.undone ? 'undone' : 'applied'));
+        return result(summary(base.undone ? `Undone: the user applied the revert of ${describeChange(base.undone)}.` : `Applied: the user applied the change. ${appliedText(card, base)}`), withOutcome(base.undone ? 'undone' : 'applied'));
       case 'unchanged':
         return result(summary(UNCHANGED[card.action]), base);
       case 'interrupted':
@@ -1642,7 +1703,7 @@ export function buildThemeToolsOn(backend: ThemeBackend, deps: ThemeFlowDeps): T
           case 'interrupted':
             return result(text(INTERRUPTED), details, true);
           case 'applied':
-            return result(summary(`Applied. ${appliedText(card)}`), { ...details, outcome: 'applied' });
+            return result(summary(`Applied. ${appliedText(card, details)}`), { ...details, outcome: 'applied' });
           default:
             return endOfBanner(committed.outcome, details, summary, card);
         }

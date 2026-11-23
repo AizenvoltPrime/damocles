@@ -212,9 +212,12 @@ export function parseThemeAction(raw: unknown): OverlayThemeAction | undefined {
   switch (raw['action']) {
     case 'pick':
       return keys === 'action,kind,themeId' && (raw['kind'] === 'dark' || raw['kind'] === 'light') ? { action: 'pick', themeId, kind: raw['kind'] } : undefined;
+    // a duplicate without a name is Duplicate's, whose copy main names
     case 'duplicate':
+      if (keys === 'action,themeId') return { action: 'duplicate', themeId };
+      return keys === 'action,name,themeId' && named !== undefined ? { action: 'duplicate', themeId, name: named } : undefined;
     case 'rename':
-      return keys === 'action,name,themeId' && named !== undefined ? { action: raw['action'], themeId, name: named } : undefined;
+      return keys === 'action,name,themeId' && named !== undefined ? { action: 'rename', themeId, name: named } : undefined;
     case 'delete':
     case 'edit':
     case 'showFile':

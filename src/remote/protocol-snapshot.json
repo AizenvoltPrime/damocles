@@ -3252,6 +3252,10 @@
                "theme": {
                 "optional": false,
                 "type": "string"
+               },
+               "themeId": {
+                "optional": true,
+                "type": "string"
                }
               }
              },
@@ -3282,8 +3286,16 @@
                 "optional": false,
                 "type": "string"
                },
+               "themeId": {
+                "optional": true,
+                "type": "string"
+               },
                "was": {
-                "optional": false,
+                "optional": true,
+                "type": "string"
+               },
+               "wasId": {
+                "optional": true,
                 "type": "string"
                }
               }
@@ -3394,6 +3406,10 @@
                     "theme": {
                      "optional": false,
                      "type": "string"
+                    },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
                     }
                    }
                   },
@@ -3424,8 +3440,16 @@
                      "optional": false,
                      "type": "string"
                     },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
+                    },
                     "was": {
-                     "optional": false,
+                     "optional": true,
+                     "type": "string"
+                    },
+                    "wasId": {
+                     "optional": true,
                      "type": "string"
                     }
                    }
@@ -3658,6 +3682,10 @@
            "optional": false,
            "type": "string"
           },
+          "previousId": {
+           "optional": true,
+           "type": "string"
+          },
           "previousName": {
            "optional": true,
            "type": "string"
@@ -3706,6 +3734,39 @@
        "result": {
         "optional": false,
         "type": "void"
+       }
+      }
+     }
+    },
+    "themes.copyName": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "name": {
+           "optional": false,
+           "type": "string"
+          },
+          "themeId": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "name": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
        }
       }
      }
@@ -4024,6 +4085,10 @@
                "theme": {
                 "optional": false,
                 "type": "string"
+               },
+               "themeId": {
+                "optional": true,
+                "type": "string"
                }
               }
              },
@@ -4054,8 +4119,16 @@
                 "optional": false,
                 "type": "string"
                },
+               "themeId": {
+                "optional": true,
+                "type": "string"
+               },
                "was": {
-                "optional": false,
+                "optional": true,
+                "type": "string"
+               },
+               "wasId": {
+                "optional": true,
                 "type": "string"
                }
               }
@@ -4166,6 +4239,10 @@
                     "theme": {
                      "optional": false,
                      "type": "string"
+                    },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
                     }
                    }
                   },
@@ -4196,8 +4273,16 @@
                      "optional": false,
                      "type": "string"
                     },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
+                    },
                     "was": {
-                     "optional": false,
+                     "optional": true,
+                     "type": "string"
+                    },
+                    "wasId": {
+                     "optional": true,
                      "type": "string"
                     }
                    }
@@ -6760,6 +6845,10 @@
                     "theme": {
                      "optional": false,
                      "type": "string"
+                    },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
                     }
                    }
                   },
@@ -6790,8 +6879,16 @@
                      "optional": false,
                      "type": "string"
                     },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
+                    },
                     "was": {
-                     "optional": false,
+                     "optional": true,
+                     "type": "string"
+                    },
+                    "wasId": {
+                     "optional": true,
                      "type": "string"
                     }
                    }
@@ -6902,6 +6999,10 @@
                          "theme": {
                           "optional": false,
                           "type": "string"
+                         },
+                         "themeId": {
+                          "optional": true,
+                          "type": "string"
                          }
                         }
                        },
@@ -6932,8 +7033,16 @@
                           "optional": false,
                           "type": "string"
                          },
+                         "themeId": {
+                          "optional": true,
+                          "type": "string"
+                         },
                          "was": {
-                          "optional": false,
+                          "optional": true,
+                          "type": "string"
+                         },
+                         "wasId": {
+                          "optional": true,
                           "type": "string"
                          }
                         }
@@ -7624,7 +7733,11 @@
                 "optional": false,
                 "type": {
                  "union": [
+                  "\"base16\"",
                   "\"damocles\"",
+                  "\"gtk\"",
+                  "\"kde\"",
+                  "\"qt\"",
                   "\"vscode\""
                  ]
                 }
@@ -8549,10 +8662,14 @@
                       "optional": false,
                       "type": {
                        "union": [
+                        "\"base16\"",
                         "\"created\"",
                         "\"duplicate\"",
+                        "\"gtk\"",
                         "\"import\"",
+                        "\"kde\"",
                         "\"link\"",
+                        "\"qt\"",
                         "\"store\"",
                         "\"vscode\""
                        ]
@@ -9213,7 +9330,11 @@
                 "optional": false,
                 "type": {
                  "union": [
+                  "\"base16\"",
                   "\"damocles\"",
+                  "\"gtk\"",
+                  "\"kde\"",
+                  "\"qt\"",
                   "\"vscode\""
                  ]
                 }
@@ -10138,10 +10259,14 @@
                       "optional": false,
                       "type": {
                        "union": [
+                        "\"base16\"",
                         "\"created\"",
                         "\"duplicate\"",
+                        "\"gtk\"",
                         "\"import\"",
+                        "\"kde\"",
                         "\"link\"",
+                        "\"qt\"",
                         "\"store\"",
                         "\"vscode\""
                        ]
@@ -10911,6 +11036,10 @@
                           "theme": {
                            "optional": false,
                            "type": "string"
+                          },
+                          "themeId": {
+                           "optional": true,
+                           "type": "string"
                           }
                          }
                         },
@@ -10941,8 +11070,16 @@
                            "optional": false,
                            "type": "string"
                           },
+                          "themeId": {
+                           "optional": true,
+                           "type": "string"
+                          },
                           "was": {
-                           "optional": false,
+                           "optional": true,
+                           "type": "string"
+                          },
+                          "wasId": {
+                           "optional": true,
                            "type": "string"
                           }
                          }
@@ -11007,13 +11144,13 @@
                               "ref": "{ readonly kind: \"delete\"; readonly theme: string; }"
                              },
                              "\"hold\"": {
-                              "ref": "{ readonly kind: \"hold\"; readonly theme: string; readonly look: import(\"src/shared/themes/tokens\").LookKind; }"
+                              "ref": "{ readonly kind: \"hold\"; readonly theme: string; readonly themeId?: string; readonly look: import(\"src/shared/themes/tokens\").LookKind; }"
                              },
                              "\"other\"": {
                               "ref": "{ readonly kind: \"other\"; }"
                              },
                              "\"pick\"": {
-                              "ref": "{ readonly kind: \"pick\"; readonly look: import(\"src/shared/themes/tokens\").LookKind; readonly theme: string; readonly was: string; }"
+                              "ref": "{ readonly kind: \"pick\"; readonly look: import(\"src/shared/themes/tokens\").LookKind; readonly theme: string; readonly themeId?: string; readonly was?: string; readonly wasId?: string; }"
                              },
                              "\"projectLook\"": {
                               "ref": "{ readonly kind: \"projectLook\"; readonly project: string; readonly look: \"none\" | \"touches\" | \"full\"; }"
@@ -12511,10 +12648,14 @@
                       "optional": false,
                       "type": {
                        "union": [
+                        "\"base16\"",
                         "\"created\"",
                         "\"duplicate\"",
+                        "\"gtk\"",
                         "\"import\"",
+                        "\"kde\"",
                         "\"link\"",
+                        "\"qt\"",
                         "\"store\"",
                         "\"vscode\""
                        ]
@@ -12772,6 +12913,10 @@
                           "theme": {
                            "optional": false,
                            "type": "string"
+                          },
+                          "themeId": {
+                           "optional": true,
+                           "type": "string"
                           }
                          }
                         },
@@ -12802,8 +12947,16 @@
                            "optional": false,
                            "type": "string"
                           },
+                          "themeId": {
+                           "optional": true,
+                           "type": "string"
+                          },
                           "was": {
-                           "optional": false,
+                           "optional": true,
+                           "type": "string"
+                          },
+                          "wasId": {
+                           "optional": true,
                            "type": "string"
                           }
                          }
@@ -12868,13 +13021,13 @@
                               "ref": "{ readonly kind: \"delete\"; readonly theme: string; }"
                              },
                              "\"hold\"": {
-                              "ref": "{ readonly kind: \"hold\"; readonly theme: string; readonly look: import(\"src/shared/themes/tokens\").LookKind; }"
+                              "ref": "{ readonly kind: \"hold\"; readonly theme: string; readonly themeId?: string; readonly look: import(\"src/shared/themes/tokens\").LookKind; }"
                              },
                              "\"other\"": {
                               "ref": "{ readonly kind: \"other\"; }"
                              },
                              "\"pick\"": {
-                              "ref": "{ readonly kind: \"pick\"; readonly look: import(\"src/shared/themes/tokens\").LookKind; readonly theme: string; readonly was: string; }"
+                              "ref": "{ readonly kind: \"pick\"; readonly look: import(\"src/shared/themes/tokens\").LookKind; readonly theme: string; readonly themeId?: string; readonly was?: string; readonly wasId?: string; }"
                              },
                              "\"projectLook\"": {
                               "ref": "{ readonly kind: \"projectLook\"; readonly project: string; readonly look: \"none\" | \"touches\" | \"full\"; }"
@@ -13600,6 +13753,10 @@
                        "theme": {
                         "optional": false,
                         "type": "string"
+                       },
+                       "themeId": {
+                        "optional": true,
+                        "type": "string"
                        }
                       }
                      },
@@ -13630,8 +13787,16 @@
                         "optional": false,
                         "type": "string"
                        },
+                       "themeId": {
+                        "optional": true,
+                        "type": "string"
+                       },
                        "was": {
-                        "optional": false,
+                        "optional": true,
+                        "type": "string"
+                       },
+                       "wasId": {
+                        "optional": true,
                         "type": "string"
                        }
                       }
@@ -13739,6 +13904,10 @@
                             "theme": {
                              "optional": false,
                              "type": "string"
+                            },
+                            "themeId": {
+                             "optional": true,
+                             "type": "string"
                             }
                            }
                           },
@@ -13769,8 +13938,16 @@
                              "optional": false,
                              "type": "string"
                             },
+                            "themeId": {
+                             "optional": true,
+                             "type": "string"
+                            },
                             "was": {
-                             "optional": false,
+                             "optional": true,
+                             "type": "string"
+                            },
+                            "wasId": {
+                             "optional": true,
                              "type": "string"
                             }
                            }
@@ -14896,10 +15073,14 @@
                       "optional": false,
                       "type": {
                        "union": [
+                        "\"base16\"",
                         "\"created\"",
                         "\"duplicate\"",
+                        "\"gtk\"",
                         "\"import\"",
+                        "\"kde\"",
                         "\"link\"",
+                        "\"qt\"",
                         "\"store\"",
                         "\"vscode\""
                        ]
@@ -15122,6 +15303,10 @@
                     "theme": {
                      "optional": false,
                      "type": "string"
+                    },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
                     }
                    }
                   },
@@ -15152,8 +15337,16 @@
                      "optional": false,
                      "type": "string"
                     },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
+                    },
                     "was": {
-                     "optional": false,
+                     "optional": true,
+                     "type": "string"
+                    },
+                    "wasId": {
+                     "optional": true,
                      "type": "string"
                     }
                    }
@@ -15264,6 +15457,10 @@
                          "theme": {
                           "optional": false,
                           "type": "string"
+                         },
+                         "themeId": {
+                          "optional": true,
+                          "type": "string"
                          }
                         }
                        },
@@ -15294,8 +15491,16 @@
                           "optional": false,
                           "type": "string"
                          },
+                         "themeId": {
+                          "optional": true,
+                          "type": "string"
+                         },
                          "was": {
-                          "optional": false,
+                          "optional": true,
+                          "type": "string"
+                         },
+                         "wasId": {
+                          "optional": true,
                           "type": "string"
                          }
                         }
@@ -15692,6 +15897,10 @@
                           "theme": {
                            "optional": false,
                            "type": "string"
+                          },
+                          "themeId": {
+                           "optional": true,
+                           "type": "string"
                           }
                          }
                         },
@@ -15722,8 +15931,16 @@
                            "optional": false,
                            "type": "string"
                           },
+                          "themeId": {
+                           "optional": true,
+                           "type": "string"
+                          },
                           "was": {
-                           "optional": false,
+                           "optional": true,
+                           "type": "string"
+                          },
+                          "wasId": {
+                           "optional": true,
                            "type": "string"
                           }
                          }
@@ -15788,13 +16005,13 @@
                               "ref": "{ readonly kind: \"delete\"; readonly theme: string; }"
                              },
                              "\"hold\"": {
-                              "ref": "{ readonly kind: \"hold\"; readonly theme: string; readonly look: import(\"src/shared/themes/tokens\").LookKind; }"
+                              "ref": "{ readonly kind: \"hold\"; readonly theme: string; readonly themeId?: string; readonly look: import(\"src/shared/themes/tokens\").LookKind; }"
                              },
                              "\"other\"": {
                               "ref": "{ readonly kind: \"other\"; }"
                              },
                              "\"pick\"": {
-                              "ref": "{ readonly kind: \"pick\"; readonly look: import(\"src/shared/themes/tokens\").LookKind; readonly theme: string; readonly was: string; }"
+                              "ref": "{ readonly kind: \"pick\"; readonly look: import(\"src/shared/themes/tokens\").LookKind; readonly theme: string; readonly themeId?: string; readonly was?: string; readonly wasId?: string; }"
                              },
                              "\"projectLook\"": {
                               "ref": "{ readonly kind: \"projectLook\"; readonly project: string; readonly look: \"none\" | \"touches\" | \"full\"; }"
@@ -16520,6 +16737,10 @@
                        "theme": {
                         "optional": false,
                         "type": "string"
+                       },
+                       "themeId": {
+                        "optional": true,
+                        "type": "string"
                        }
                       }
                      },
@@ -16550,8 +16771,16 @@
                         "optional": false,
                         "type": "string"
                        },
+                       "themeId": {
+                        "optional": true,
+                        "type": "string"
+                       },
                        "was": {
-                        "optional": false,
+                        "optional": true,
+                        "type": "string"
+                       },
+                       "wasId": {
+                        "optional": true,
                         "type": "string"
                        }
                       }
@@ -16659,6 +16888,10 @@
                             "theme": {
                              "optional": false,
                              "type": "string"
+                            },
+                            "themeId": {
+                             "optional": true,
+                             "type": "string"
                             }
                            }
                           },
@@ -16689,8 +16922,16 @@
                              "optional": false,
                              "type": "string"
                             },
+                            "themeId": {
+                             "optional": true,
+                             "type": "string"
+                            },
                             "was": {
-                             "optional": false,
+                             "optional": true,
+                             "type": "string"
+                            },
+                            "wasId": {
+                             "optional": true,
                              "type": "string"
                             }
                            }
@@ -17816,10 +18057,14 @@
                       "optional": false,
                       "type": {
                        "union": [
+                        "\"base16\"",
                         "\"created\"",
                         "\"duplicate\"",
+                        "\"gtk\"",
                         "\"import\"",
+                        "\"kde\"",
                         "\"link\"",
+                        "\"qt\"",
                         "\"store\"",
                         "\"vscode\""
                        ]
@@ -18042,6 +18287,10 @@
                     "theme": {
                      "optional": false,
                      "type": "string"
+                    },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
                     }
                    }
                   },
@@ -18072,8 +18321,16 @@
                      "optional": false,
                      "type": "string"
                     },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
+                    },
                     "was": {
-                     "optional": false,
+                     "optional": true,
+                     "type": "string"
+                    },
+                    "wasId": {
+                     "optional": true,
                      "type": "string"
                     }
                    }
@@ -18184,6 +18441,10 @@
                          "theme": {
                           "optional": false,
                           "type": "string"
+                         },
+                         "themeId": {
+                          "optional": true,
+                          "type": "string"
                          }
                         }
                        },
@@ -18214,8 +18475,16 @@
                           "optional": false,
                           "type": "string"
                          },
+                         "themeId": {
+                          "optional": true,
+                          "type": "string"
+                         },
                          "was": {
-                          "optional": false,
+                          "optional": true,
+                          "type": "string"
+                         },
+                         "wasId": {
+                          "optional": true,
                           "type": "string"
                          }
                         }
@@ -28880,6 +29149,10 @@
                    "theme": {
                     "optional": false,
                     "type": "string"
+                   },
+                   "themeId": {
+                    "optional": true,
+                    "type": "string"
                    }
                   }
                  },
@@ -28910,8 +29183,16 @@
                     "optional": false,
                     "type": "string"
                    },
+                   "themeId": {
+                    "optional": true,
+                    "type": "string"
+                   },
                    "was": {
-                    "optional": false,
+                    "optional": true,
+                    "type": "string"
+                   },
+                   "wasId": {
+                    "optional": true,
                     "type": "string"
                    }
                   }
@@ -29022,6 +29303,10 @@
                         "theme": {
                          "optional": false,
                          "type": "string"
+                        },
+                        "themeId": {
+                         "optional": true,
+                         "type": "string"
                         }
                        }
                       },
@@ -29052,8 +29337,16 @@
                          "optional": false,
                          "type": "string"
                         },
+                        "themeId": {
+                         "optional": true,
+                         "type": "string"
+                        },
                         "was": {
-                         "optional": false,
+                         "optional": true,
+                         "type": "string"
+                        },
+                        "wasId": {
+                         "optional": true,
                          "type": "string"
                         }
                        }
@@ -30290,7 +30583,11 @@
                 "optional": false,
                 "type": {
                  "union": [
+                  "\"base16\"",
                   "\"damocles\"",
+                  "\"gtk\"",
+                  "\"kde\"",
+                  "\"qt\"",
                   "\"vscode\""
                  ]
                 }
@@ -31215,10 +31512,14 @@
                       "optional": false,
                       "type": {
                        "union": [
+                        "\"base16\"",
                         "\"created\"",
                         "\"duplicate\"",
+                        "\"gtk\"",
                         "\"import\"",
+                        "\"kde\"",
                         "\"link\"",
+                        "\"qt\"",
                         "\"store\"",
                         "\"vscode\""
                        ]
@@ -31911,7 +32212,11 @@
                 "optional": false,
                 "type": {
                  "union": [
+                  "\"base16\"",
                   "\"damocles\"",
+                  "\"gtk\"",
+                  "\"kde\"",
+                  "\"qt\"",
                   "\"vscode\""
                  ]
                 }
@@ -32836,10 +33141,14 @@
                       "optional": false,
                       "type": {
                        "union": [
+                        "\"base16\"",
                         "\"created\"",
                         "\"duplicate\"",
+                        "\"gtk\"",
                         "\"import\"",
+                        "\"kde\"",
                         "\"link\"",
+                        "\"qt\"",
                         "\"store\"",
                         "\"vscode\""
                        ]
@@ -34027,6 +34336,10 @@
                     "theme": {
                      "optional": false,
                      "type": "string"
+                    },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
                     }
                    }
                   },
@@ -34057,8 +34370,16 @@
                      "optional": false,
                      "type": "string"
                     },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
+                    },
                     "was": {
-                     "optional": false,
+                     "optional": true,
+                     "type": "string"
+                    },
+                    "wasId": {
+                     "optional": true,
                      "type": "string"
                     }
                    }
@@ -34169,6 +34490,10 @@
                          "theme": {
                           "optional": false,
                           "type": "string"
+                         },
+                         "themeId": {
+                          "optional": true,
+                          "type": "string"
                          }
                         }
                        },
@@ -34199,8 +34524,16 @@
                           "optional": false,
                           "type": "string"
                          },
+                         "themeId": {
+                          "optional": true,
+                          "type": "string"
+                         },
                          "was": {
-                          "optional": false,
+                          "optional": true,
+                          "type": "string"
+                         },
+                         "wasId": {
+                          "optional": true,
                           "type": "string"
                          }
                         }
@@ -34891,7 +35224,11 @@
                 "optional": false,
                 "type": {
                  "union": [
+                  "\"base16\"",
                   "\"damocles\"",
+                  "\"gtk\"",
+                  "\"kde\"",
+                  "\"qt\"",
                   "\"vscode\""
                  ]
                 }
@@ -35816,10 +36153,14 @@
                       "optional": false,
                       "type": {
                        "union": [
+                        "\"base16\"",
                         "\"created\"",
                         "\"duplicate\"",
+                        "\"gtk\"",
                         "\"import\"",
+                        "\"kde\"",
                         "\"link\"",
+                        "\"qt\"",
                         "\"store\"",
                         "\"vscode\""
                        ]
@@ -36476,7 +36817,11 @@
                 "optional": false,
                 "type": {
                  "union": [
+                  "\"base16\"",
                   "\"damocles\"",
+                  "\"gtk\"",
+                  "\"kde\"",
+                  "\"qt\"",
                   "\"vscode\""
                  ]
                 }
@@ -37401,10 +37746,14 @@
                       "optional": false,
                       "type": {
                        "union": [
+                        "\"base16\"",
                         "\"created\"",
                         "\"duplicate\"",
+                        "\"gtk\"",
                         "\"import\"",
+                        "\"kde\"",
                         "\"link\"",
+                        "\"qt\"",
                         "\"store\"",
                         "\"vscode\""
                        ]
@@ -38101,6 +38450,10 @@
                           "theme": {
                            "optional": false,
                            "type": "string"
+                          },
+                          "themeId": {
+                           "optional": true,
+                           "type": "string"
                           }
                          }
                         },
@@ -38131,8 +38484,16 @@
                            "optional": false,
                            "type": "string"
                           },
+                          "themeId": {
+                           "optional": true,
+                           "type": "string"
+                          },
                           "was": {
-                           "optional": false,
+                           "optional": true,
+                           "type": "string"
+                          },
+                          "wasId": {
+                           "optional": true,
                            "type": "string"
                           }
                          }
@@ -38197,13 +38558,13 @@
                               "ref": "{ readonly kind: \"delete\"; readonly theme: string; }"
                              },
                              "\"hold\"": {
-                              "ref": "{ readonly kind: \"hold\"; readonly theme: string; readonly look: import(\"src/shared/themes/tokens\").LookKind; }"
+                              "ref": "{ readonly kind: \"hold\"; readonly theme: string; readonly themeId?: string; readonly look: import(\"src/shared/themes/tokens\").LookKind; }"
                              },
                              "\"other\"": {
                               "ref": "{ readonly kind: \"other\"; }"
                              },
                              "\"pick\"": {
-                              "ref": "{ readonly kind: \"pick\"; readonly look: import(\"src/shared/themes/tokens\").LookKind; readonly theme: string; readonly was: string; }"
+                              "ref": "{ readonly kind: \"pick\"; readonly look: import(\"src/shared/themes/tokens\").LookKind; readonly theme: string; readonly themeId?: string; readonly was?: string; readonly wasId?: string; }"
                              },
                              "\"projectLook\"": {
                               "ref": "{ readonly kind: \"projectLook\"; readonly project: string; readonly look: \"none\" | \"touches\" | \"full\"; }"
@@ -39701,10 +40062,14 @@
                       "optional": false,
                       "type": {
                        "union": [
+                        "\"base16\"",
                         "\"created\"",
                         "\"duplicate\"",
+                        "\"gtk\"",
                         "\"import\"",
+                        "\"kde\"",
                         "\"link\"",
+                        "\"qt\"",
                         "\"store\"",
                         "\"vscode\""
                        ]
@@ -39962,6 +40327,10 @@
                           "theme": {
                            "optional": false,
                            "type": "string"
+                          },
+                          "themeId": {
+                           "optional": true,
+                           "type": "string"
                           }
                          }
                         },
@@ -39992,8 +40361,16 @@
                            "optional": false,
                            "type": "string"
                           },
+                          "themeId": {
+                           "optional": true,
+                           "type": "string"
+                          },
                           "was": {
-                           "optional": false,
+                           "optional": true,
+                           "type": "string"
+                          },
+                          "wasId": {
+                           "optional": true,
                            "type": "string"
                           }
                          }
@@ -40058,13 +40435,13 @@
                               "ref": "{ readonly kind: \"delete\"; readonly theme: string; }"
                              },
                              "\"hold\"": {
-                              "ref": "{ readonly kind: \"hold\"; readonly theme: string; readonly look: import(\"src/shared/themes/tokens\").LookKind; }"
+                              "ref": "{ readonly kind: \"hold\"; readonly theme: string; readonly themeId?: string; readonly look: import(\"src/shared/themes/tokens\").LookKind; }"
                              },
                              "\"other\"": {
                               "ref": "{ readonly kind: \"other\"; }"
                              },
                              "\"pick\"": {
-                              "ref": "{ readonly kind: \"pick\"; readonly look: import(\"src/shared/themes/tokens\").LookKind; readonly theme: string; readonly was: string; }"
+                              "ref": "{ readonly kind: \"pick\"; readonly look: import(\"src/shared/themes/tokens\").LookKind; readonly theme: string; readonly themeId?: string; readonly was?: string; readonly wasId?: string; }"
                              },
                              "\"projectLook\"": {
                               "ref": "{ readonly kind: \"projectLook\"; readonly project: string; readonly look: \"none\" | \"touches\" | \"full\"; }"
@@ -40790,6 +41167,10 @@
                        "theme": {
                         "optional": false,
                         "type": "string"
+                       },
+                       "themeId": {
+                        "optional": true,
+                        "type": "string"
                        }
                       }
                      },
@@ -40820,8 +41201,16 @@
                         "optional": false,
                         "type": "string"
                        },
+                       "themeId": {
+                        "optional": true,
+                        "type": "string"
+                       },
                        "was": {
-                        "optional": false,
+                        "optional": true,
+                        "type": "string"
+                       },
+                       "wasId": {
+                        "optional": true,
                         "type": "string"
                        }
                       }
@@ -40929,6 +41318,10 @@
                             "theme": {
                              "optional": false,
                              "type": "string"
+                            },
+                            "themeId": {
+                             "optional": true,
+                             "type": "string"
                             }
                            }
                           },
@@ -40959,8 +41352,16 @@
                              "optional": false,
                              "type": "string"
                             },
+                            "themeId": {
+                             "optional": true,
+                             "type": "string"
+                            },
                             "was": {
-                             "optional": false,
+                             "optional": true,
+                             "type": "string"
+                            },
+                            "wasId": {
+                             "optional": true,
                              "type": "string"
                             }
                            }
@@ -42086,10 +42487,14 @@
                       "optional": false,
                       "type": {
                        "union": [
+                        "\"base16\"",
                         "\"created\"",
                         "\"duplicate\"",
+                        "\"gtk\"",
                         "\"import\"",
+                        "\"kde\"",
                         "\"link\"",
+                        "\"qt\"",
                         "\"store\"",
                         "\"vscode\""
                        ]
@@ -42312,6 +42717,10 @@
                     "theme": {
                      "optional": false,
                      "type": "string"
+                    },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
                     }
                    }
                   },
@@ -42342,8 +42751,16 @@
                      "optional": false,
                      "type": "string"
                     },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
+                    },
                     "was": {
-                     "optional": false,
+                     "optional": true,
+                     "type": "string"
+                    },
+                    "wasId": {
+                     "optional": true,
                      "type": "string"
                     }
                    }
@@ -42454,6 +42871,10 @@
                          "theme": {
                           "optional": false,
                           "type": "string"
+                         },
+                         "themeId": {
+                          "optional": true,
+                          "type": "string"
                          }
                         }
                        },
@@ -42484,8 +42905,16 @@
                           "optional": false,
                           "type": "string"
                          },
+                         "themeId": {
+                          "optional": true,
+                          "type": "string"
+                         },
                          "was": {
-                          "optional": false,
+                          "optional": true,
+                          "type": "string"
+                         },
+                         "wasId": {
+                          "optional": true,
                           "type": "string"
                          }
                         }
@@ -42882,6 +43311,10 @@
                           "theme": {
                            "optional": false,
                            "type": "string"
+                          },
+                          "themeId": {
+                           "optional": true,
+                           "type": "string"
                           }
                          }
                         },
@@ -42912,8 +43345,16 @@
                            "optional": false,
                            "type": "string"
                           },
+                          "themeId": {
+                           "optional": true,
+                           "type": "string"
+                          },
                           "was": {
-                           "optional": false,
+                           "optional": true,
+                           "type": "string"
+                          },
+                          "wasId": {
+                           "optional": true,
                            "type": "string"
                           }
                          }
@@ -42978,13 +43419,13 @@
                               "ref": "{ readonly kind: \"delete\"; readonly theme: string; }"
                              },
                              "\"hold\"": {
-                              "ref": "{ readonly kind: \"hold\"; readonly theme: string; readonly look: import(\"src/shared/themes/tokens\").LookKind; }"
+                              "ref": "{ readonly kind: \"hold\"; readonly theme: string; readonly themeId?: string; readonly look: import(\"src/shared/themes/tokens\").LookKind; }"
                              },
                              "\"other\"": {
                               "ref": "{ readonly kind: \"other\"; }"
                              },
                              "\"pick\"": {
-                              "ref": "{ readonly kind: \"pick\"; readonly look: import(\"src/shared/themes/tokens\").LookKind; readonly theme: string; readonly was: string; }"
+                              "ref": "{ readonly kind: \"pick\"; readonly look: import(\"src/shared/themes/tokens\").LookKind; readonly theme: string; readonly themeId?: string; readonly was?: string; readonly wasId?: string; }"
                              },
                              "\"projectLook\"": {
                               "ref": "{ readonly kind: \"projectLook\"; readonly project: string; readonly look: \"none\" | \"touches\" | \"full\"; }"
@@ -43710,6 +44151,10 @@
                        "theme": {
                         "optional": false,
                         "type": "string"
+                       },
+                       "themeId": {
+                        "optional": true,
+                        "type": "string"
                        }
                       }
                      },
@@ -43740,8 +44185,16 @@
                         "optional": false,
                         "type": "string"
                        },
+                       "themeId": {
+                        "optional": true,
+                        "type": "string"
+                       },
                        "was": {
-                        "optional": false,
+                        "optional": true,
+                        "type": "string"
+                       },
+                       "wasId": {
+                        "optional": true,
                         "type": "string"
                        }
                       }
@@ -43849,6 +44302,10 @@
                             "theme": {
                              "optional": false,
                              "type": "string"
+                            },
+                            "themeId": {
+                             "optional": true,
+                             "type": "string"
                             }
                            }
                           },
@@ -43879,8 +44336,16 @@
                              "optional": false,
                              "type": "string"
                             },
+                            "themeId": {
+                             "optional": true,
+                             "type": "string"
+                            },
                             "was": {
-                             "optional": false,
+                             "optional": true,
+                             "type": "string"
+                            },
+                            "wasId": {
+                             "optional": true,
                              "type": "string"
                             }
                            }
@@ -45006,10 +45471,14 @@
                       "optional": false,
                       "type": {
                        "union": [
+                        "\"base16\"",
                         "\"created\"",
                         "\"duplicate\"",
+                        "\"gtk\"",
                         "\"import\"",
+                        "\"kde\"",
                         "\"link\"",
+                        "\"qt\"",
                         "\"store\"",
                         "\"vscode\""
                        ]
@@ -45232,6 +45701,10 @@
                     "theme": {
                      "optional": false,
                      "type": "string"
+                    },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
                     }
                    }
                   },
@@ -45262,8 +45735,16 @@
                      "optional": false,
                      "type": "string"
                     },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
+                    },
                     "was": {
-                     "optional": false,
+                     "optional": true,
+                     "type": "string"
+                    },
+                    "wasId": {
+                     "optional": true,
                      "type": "string"
                     }
                    }
@@ -45374,6 +45855,10 @@
                          "theme": {
                           "optional": false,
                           "type": "string"
+                         },
+                         "themeId": {
+                          "optional": true,
+                          "type": "string"
                          }
                         }
                        },
@@ -45404,8 +45889,16 @@
                           "optional": false,
                           "type": "string"
                          },
+                         "themeId": {
+                          "optional": true,
+                          "type": "string"
+                         },
                          "was": {
-                          "optional": false,
+                          "optional": true,
+                          "type": "string"
+                         },
+                         "wasId": {
+                          "optional": true,
                           "type": "string"
                          }
                         }
@@ -46909,7 +47402,11 @@
                 "optional": false,
                 "type": {
                  "union": [
+                  "\"base16\"",
                   "\"damocles\"",
+                  "\"gtk\"",
+                  "\"kde\"",
+                  "\"qt\"",
                   "\"vscode\""
                  ]
                 }
@@ -47834,10 +48331,14 @@
                       "optional": false,
                       "type": {
                        "union": [
+                        "\"base16\"",
                         "\"created\"",
                         "\"duplicate\"",
+                        "\"gtk\"",
                         "\"import\"",
+                        "\"kde\"",
                         "\"link\"",
+                        "\"qt\"",
                         "\"store\"",
                         "\"vscode\""
                        ]
@@ -48604,6 +49105,10 @@
                "theme": {
                 "optional": false,
                 "type": "string"
+               },
+               "themeId": {
+                "optional": true,
+                "type": "string"
                }
               }
              },
@@ -48634,8 +49139,16 @@
                 "optional": false,
                 "type": "string"
                },
+               "themeId": {
+                "optional": true,
+                "type": "string"
+               },
                "was": {
-                "optional": false,
+                "optional": true,
+                "type": "string"
+               },
+               "wasId": {
+                "optional": true,
                 "type": "string"
                }
               }
@@ -48746,6 +49259,10 @@
                     "theme": {
                      "optional": false,
                      "type": "string"
+                    },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
                     }
                    }
                   },
@@ -48776,8 +49293,16 @@
                      "optional": false,
                      "type": "string"
                     },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
+                    },
                     "was": {
-                     "optional": false,
+                     "optional": true,
+                     "type": "string"
+                    },
+                    "wasId": {
+                     "optional": true,
                      "type": "string"
                     }
                    }
@@ -49085,6 +49610,10 @@
                "theme": {
                 "optional": false,
                 "type": "string"
+               },
+               "themeId": {
+                "optional": true,
+                "type": "string"
                }
               }
              },
@@ -49115,8 +49644,16 @@
                 "optional": false,
                 "type": "string"
                },
+               "themeId": {
+                "optional": true,
+                "type": "string"
+               },
                "was": {
-                "optional": false,
+                "optional": true,
+                "type": "string"
+               },
+               "wasId": {
+                "optional": true,
                 "type": "string"
                }
               }
@@ -49227,6 +49764,10 @@
                     "theme": {
                      "optional": false,
                      "type": "string"
+                    },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
                     }
                    }
                   },
@@ -49257,8 +49798,16 @@
                      "optional": false,
                      "type": "string"
                     },
+                    "themeId": {
+                     "optional": true,
+                     "type": "string"
+                    },
                     "was": {
-                     "optional": false,
+                     "optional": true,
+                     "type": "string"
+                    },
+                    "wasId": {
+                     "optional": true,
                      "type": "string"
                     }
                    }
@@ -51925,7 +52474,11 @@
               "optional": false,
               "type": {
                "union": [
+                "\"base16\"",
                 "\"damocles\"",
+                "\"gtk\"",
+                "\"kde\"",
+                "\"qt\"",
                 "\"vscode\""
                ]
               }
@@ -53180,10 +53733,14 @@
                     "optional": false,
                     "type": {
                      "union": [
+                      "\"base16\"",
                       "\"created\"",
                       "\"duplicate\"",
+                      "\"gtk\"",
                       "\"import\"",
+                      "\"kde\"",
                       "\"link\"",
+                      "\"qt\"",
                       "\"store\"",
                       "\"vscode\""
                      ]
@@ -55749,7 +56306,11 @@
            "optional": false,
            "type": {
             "union": [
+             "\"base16\"",
              "\"damocles\"",
+             "\"gtk\"",
+             "\"kde\"",
+             "\"qt\"",
              "\"vscode\""
             ]
            }
@@ -57129,10 +57690,14 @@
                  "optional": false,
                  "type": {
                   "union": [
+                   "\"base16\"",
                    "\"created\"",
                    "\"duplicate\"",
+                   "\"gtk\"",
                    "\"import\"",
+                   "\"kde\"",
                    "\"link\"",
+                   "\"qt\"",
                    "\"store\"",
                    "\"vscode\""
                   ]
@@ -59301,6 +59866,164 @@
       }
      }
     },
+    "systemTheme": {
+     "optional": false,
+     "type": {
+      "object": {
+       "looks": {
+        "optional": false,
+        "type": {
+         "object": {
+          "dark": {
+           "optional": false,
+           "type": {
+            "object": {
+             "colors": {
+              "optional": false,
+              "type": {
+               "object": {
+                "accent": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "background": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "danger": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "info": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "panel": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "success": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "text": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "warning": {
+                 "optional": false,
+                 "type": "string"
+                }
+               }
+              }
+             },
+             "tokens": {
+              "optional": true,
+              "type": {
+               "object": {},
+               "index": [
+                {
+                 "key": "`--d-${string}`",
+                 "value": {
+                  "union": [
+                   "string",
+                   "undefined"
+                  ]
+                 }
+                },
+                {
+                 "key": "`--s-${string}`",
+                 "value": {
+                  "union": [
+                   "string",
+                   "undefined"
+                  ]
+                 }
+                }
+               ]
+              }
+             }
+            }
+           }
+          },
+          "light": {
+           "optional": false,
+           "type": {
+            "object": {
+             "colors": {
+              "optional": false,
+              "type": {
+               "object": {
+                "accent": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "background": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "danger": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "info": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "panel": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "success": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "text": {
+                 "optional": false,
+                 "type": "string"
+                },
+                "warning": {
+                 "optional": false,
+                 "type": "string"
+                }
+               }
+              }
+             },
+             "tokens": {
+              "optional": true,
+              "type": {
+               "object": {},
+               "index": [
+                {
+                 "key": "`--d-${string}`",
+                 "value": {
+                  "union": [
+                   "string",
+                   "undefined"
+                  ]
+                 }
+                },
+                {
+                 "key": "`--s-${string}`",
+                 "value": {
+                  "union": [
+                   "string",
+                   "undefined"
+                  ]
+                 }
+                }
+               ]
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
     "terminal": {
      "optional": false,
      "type": {
@@ -60426,6 +61149,164 @@
               "value": "unknown"
              }
             ]
+           }
+          }
+         }
+        }
+       },
+       "systemTheme": {
+        "optional": true,
+        "type": {
+         "object": {
+          "looks": {
+           "optional": false,
+           "type": {
+            "object": {
+             "dark": {
+              "optional": false,
+              "type": {
+               "object": {
+                "colors": {
+                 "optional": false,
+                 "type": {
+                  "object": {
+                   "accent": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "background": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "danger": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "info": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "panel": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "success": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "text": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "warning": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 }
+                },
+                "tokens": {
+                 "optional": true,
+                 "type": {
+                  "object": {},
+                  "index": [
+                   {
+                    "key": "`--d-${string}`",
+                    "value": {
+                     "union": [
+                      "string",
+                      "undefined"
+                     ]
+                    }
+                   },
+                   {
+                    "key": "`--s-${string}`",
+                    "value": {
+                     "union": [
+                      "string",
+                      "undefined"
+                     ]
+                    }
+                   }
+                  ]
+                 }
+                }
+               }
+              }
+             },
+             "light": {
+              "optional": false,
+              "type": {
+               "object": {
+                "colors": {
+                 "optional": false,
+                 "type": {
+                  "object": {
+                   "accent": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "background": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "danger": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "info": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "panel": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "success": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "text": {
+                    "optional": false,
+                    "type": "string"
+                   },
+                   "warning": {
+                    "optional": false,
+                    "type": "string"
+                   }
+                  }
+                 }
+                },
+                "tokens": {
+                 "optional": true,
+                 "type": {
+                  "object": {},
+                  "index": [
+                   {
+                    "key": "`--d-${string}`",
+                    "value": {
+                     "union": [
+                      "string",
+                      "undefined"
+                     ]
+                    }
+                   },
+                   {
+                    "key": "`--s-${string}`",
+                    "value": {
+                     "union": [
+                      "string",
+                      "undefined"
+                     ]
+                    }
+                   }
+                  ]
+                 }
+                }
+               }
+              }
+             }
+            }
            }
           }
          }
@@ -83402,6 +84283,10 @@
                  "theme": {
                   "optional": false,
                   "type": "string"
+                 },
+                 "themeId": {
+                  "optional": true,
+                  "type": "string"
                  }
                 }
                },
@@ -83432,8 +84317,16 @@
                   "optional": false,
                   "type": "string"
                  },
+                 "themeId": {
+                  "optional": true,
+                  "type": "string"
+                 },
                  "was": {
-                  "optional": false,
+                  "optional": true,
+                  "type": "string"
+                 },
+                 "wasId": {
+                  "optional": true,
                   "type": "string"
                  }
                 }
@@ -83544,6 +84437,10 @@
                       "theme": {
                        "optional": false,
                        "type": "string"
+                      },
+                      "themeId": {
+                       "optional": true,
+                       "type": "string"
                       }
                      }
                     },
@@ -83574,8 +84471,16 @@
                        "optional": false,
                        "type": "string"
                       },
+                      "themeId": {
+                       "optional": true,
+                       "type": "string"
+                      },
                       "was": {
-                       "optional": false,
+                       "optional": true,
+                       "type": "string"
+                      },
+                      "wasId": {
+                       "optional": true,
                        "type": "string"
                       }
                      }
@@ -85730,10 +86635,14 @@
              "optional": false,
              "type": {
               "union": [
+               "\"base16\"",
                "\"created\"",
                "\"duplicate\"",
+               "\"gtk\"",
                "\"import\"",
+               "\"kde\"",
                "\"link\"",
+               "\"qt\"",
                "\"store\"",
                "\"vscode\""
               ]
@@ -86254,7 +87163,11 @@
           "optional": false,
           "type": {
            "union": [
+            "\"base16\"",
             "\"damocles\"",
+            "\"gtk\"",
+            "\"kde\"",
+            "\"qt\"",
             "\"vscode\""
            ]
           }
@@ -87634,10 +88547,14 @@
                 "optional": false,
                 "type": {
                  "union": [
+                  "\"base16\"",
                   "\"created\"",
                   "\"duplicate\"",
+                  "\"gtk\"",
                   "\"import\"",
+                  "\"kde\"",
                   "\"link\"",
+                  "\"qt\"",
                   "\"store\"",
                   "\"vscode\""
                  ]
@@ -93649,7 +94566,11 @@
           "optional": false,
           "type": {
            "union": [
+            "\"base16\"",
             "\"damocles\"",
+            "\"gtk\"",
+            "\"kde\"",
+            "\"qt\"",
             "\"vscode\""
            ]
           }
@@ -95029,10 +95950,14 @@
                 "optional": false,
                 "type": {
                  "union": [
+                  "\"base16\"",
                   "\"created\"",
                   "\"duplicate\"",
+                  "\"gtk\"",
                   "\"import\"",
+                  "\"kde\"",
                   "\"link\"",
+                  "\"qt\"",
                   "\"store\"",
                   "\"vscode\""
                  ]

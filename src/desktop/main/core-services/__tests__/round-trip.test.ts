@@ -19,6 +19,8 @@ import { englishText } from '../../../../shared/localized-text';
 import type { ShellPlatform } from '../../../preload/shell-channels';
 import { HostStore, type RemoteProjectRecord, type RemoteRelocation } from '../../remote/host-store';
 import { remoteHostTrust } from '../../remote/remote-trust';
+import { systemTheme, type SystemLooks } from '../../../../shared/themes/system-theme';
+import { MAX_TOKEN_VALUE_CHARS } from '../../../../shared/themes/schema';
 
 interface Harness {
   readonly main: FakePlatform;
@@ -63,7 +65,7 @@ afterEach(() => {
 });
 
 // editor: main's editor service in place of the fake's, built before the core's init reads it
-function connect(options: { readonly trusted?: readonly string[]; readonly trust?: HostTrust; readonly globalState?: Record<string, unknown>; readonly ui?: Partial<HostUi>; readonly language?: 'en' | 'el'; readonly user?: Partial<HostUser>; readonly editor?: (main: FakePlatform) => Partial<FakePlatform['editor']>; readonly e2e?: Pick<HostServicesDeps, 'e2eHooks' | 'e2eThemeDownloads' | 'e2eThemeStore'> } = {}): Harness {
+function connect(options: { readonly trusted?: readonly string[]; readonly trust?: HostTrust; readonly globalState?: Record<string, unknown>; readonly ui?: Partial<HostUi>; readonly language?: 'en' | 'el'; readonly user?: Partial<HostUser>; readonly editor?: (main: FakePlatform) => Partial<FakePlatform['editor']>; readonly e2e?: Pick<HostServicesDeps, 'e2eHooks' | 'e2eThemeDownloads' | 'e2eThemeStore'>; readonly systemTheme?: HostServicesDeps['systemTheme'] } = {}): Harness {
   let language = options.language ?? 'en';
   const languageListeners = new Set<() => void>();
   const main = createFakePlatform({ chatBrowserPane: true, secrets: { stored: 'one' }, folders: [{ fsPath: path.resolve('/projects/a'), name: 'a' }] });
@@ -112,6 +114,7 @@ function connect(options: { readonly trusted?: readonly string[]; readonly trust
     git: { available: true },
     e2eHooks: false,
     ...options.e2e,
+    ...(options.systemTheme ? { systemTheme: options.systemTheme } : {}),
     ...hostExtras(options.ui ? { ui: options.ui } : {}),
     user: { ...NO_USER_RELAYS, ...options.user },
     language: {
@@ -222,6 +225,48 @@ describe('mirrored services', () => {
     const plain = connect();
     expect(plain.core.init.e2eThemeDownloads).toBeUndefined();
     expect(plain.core.init.e2eThemeStore).toBeUndefined();
+  });
+
+  // only a local core gets System colors: a remote host's services are built without the source
+  it('System colors reach core\'s init and each change reaches its mirror, and nothing of them without a source', async () => {
+    const listeners = new Set<(patch: { looks: SystemLooks }) => void>();
+    let looks = systemTheme({ accent: '#0078d4' }).looks;
+    const local = connect({
+      systemTheme: {
+        current: () => ({ looks }),
+        onDidChange: (listener) => {
+          listeners.add(listener);
+          return { dispose: () => { listeners.delete(listener); } };
+        },
+      },
+    });
+    expect(local.core.init.mirrors.systemTheme).toEqual({ looks });
+    const seen: unknown[] = [];
+    local.core.endpoint.onMirror('systemTheme', (patch) => seen.push(patch));
+    looks = systemTheme({ accent: '#e81123' }).looks;
+    for (const listener of [...listeners]) listener({ looks });
+    await vi.waitFor(() => expect(seen).toEqual([{ looks }]));
+    const remote = connect();
+    expect(remote.core.init.mirrors).not.toHaveProperty('systemTheme');
+    const remoteSeen: unknown[] = [];
+    remote.core.endpoint.onMirror('systemTheme', (patch) => remoteSeen.push(patch));
+    remote.setLanguage('el');
+    await vi.waitFor(() => expect(remote.core.localization.language).toBe('el'));
+    expect(remoteSeen).toEqual([]);
+  });
+
+  it('parseCoreInit keeps a System colors mirror of seeds and overrides only, and refuses a malformed one', () => {
+    const { host } = connect();
+    const looks = systemTheme({ accent: '#0078d4' }).looks;
+    const withSystem = (value: unknown): unknown => structuredClone({ ...host.init, mirrors: { ...host.init.mirrors, systemTheme: value } });
+    const kept = parseCoreInit(withSystem({ looks: { ...looks, dark: { ...looks.dark, wallpapers: [] } } }));
+    expect(kept !== INVALID && kept.mirrors.systemTheme).toEqual({ looks });
+    for (const bad of [
+      { looks: { ...looks, dark: { colors: { ...looks.dark.colors, accent: 'red' } } } },
+      { looks: { ...looks, light: { colors: { background: '#ffffff' } } } },
+      { looks: { ...looks, dark: { ...looks.dark, tokens: { '--d-muted': 'x'.repeat(MAX_TOKEN_VALUE_CHARS + 1) } } } },
+      { looks: { dark: looks.dark } },
+    ]) expect(parseCoreInit(withSystem(bad))).toBe(INVALID);
   });
 
   it('trust reads the mirror; requestTrust is answered after the grant reached core', async () => {

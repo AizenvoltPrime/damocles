@@ -6,7 +6,8 @@ import type { ToolCall } from '@shared/types/session';
 import type { ThemeToolDetails } from '@shared/themes/agent';
 import ThemeToolCard from '@/components/theme/ThemeToolCard.vue';
 import { i18n, loadLocale } from '@/i18n';
-import { BUILTIN_THEME } from '@shared/themes/builtin';
+import { BUILTIN_THEME, SYSTEM_THEME_ID } from '@shared/themes/builtin';
+import { systemTheme } from '@shared/themes/system-theme';
 import { miniatureTheme } from '@shared/themes/agent';
 import { VSCODE_HOST_CAPABILITIES } from '@shared/types/messages';
 import { useSettingsStore } from '@/stores/useSettingsStore';
@@ -197,6 +198,26 @@ describe('the ThemeSet tool card and details it did not write', () => {
     const replayed = await show(metadata({ outcome: 'applied', themeName: 'Amber Night', theme }));
     expect(replayed.find('[data-testid="theme-miniature"]').exists()).toBe(false);
     expect(body(replayed)).toContain('Applied: Amber Night.');
+  });
+
+  it('names a project look\'s System colors miniature in the UI\'s language', async () => {
+    expect(await loadLocale('el')).toBe(true);
+    i18n.global.locale.value = 'el';
+    desktop();
+    const w = await show(call({ input: { target: 'project', projectLook: { mode: 'full', themeId: SYSTEM_THEME_ID, look: 'auto' } } }, { outcome: 'applied', themeName: 'System colors', theme: miniatureTheme(systemTheme({}))! }));
+    expect(w.get('[data-testid="theme-miniature"]').attributes('aria-label')).toBe('Χρώματα συστήματος, σκούρα και ανοιχτή εμφάνιση');
+  });
+
+  it('names Aurora in the UI\'s language on its miniature and in an undone pick', async () => {
+    expect(await loadLocale('el')).toBe(true);
+    i18n.global.locale.value = 'el';
+    desktop();
+    const aurora = await show(call({ input: { theme: 'damocles-aurora' } }, { outcome: 'applied', themeName: 'Aurora', theme: miniatureTheme({ ...BUILTIN_THEME, id: 'damocles-aurora', name: 'Aurora' })! }));
+    expect(aurora.get('[data-testid="theme-miniature"]').attributes('aria-label')).toBe('Σέλας, σκούρα και ανοιχτή εμφάνιση');
+    aurora.unmount();
+    const undone = await show(metadata({ outcome: 'undone', undone: { kind: 'pick', look: 'dark', theme: 'Aurora', themeId: 'damocles-aurora', was: 'Damocles', wasId: 'damocles' } }));
+    expect(body(undone)).toContain('Σέλας');
+    expect(body(undone)).not.toContain('Aurora');
   });
 
   it('shows the plain card for an outcome it does not know', async () => {

@@ -5,9 +5,10 @@ import * as path from 'node:path';
 import * as lockfile from 'proper-lockfile';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SettingsStore } from '../../../platform/settings-store';
-import { LocalizedError } from '../../../shared/localized-text';
-import { BUILTIN_THEME } from '../../../shared/themes/builtin';
+import { l, LocalizedError } from '../../../shared/localized-text';
+import { BUILTIN_THEME, DEFAULT_THEME_ID } from '../../../shared/themes/builtin';
 import { validateTheme, type LookColors } from '../../../shared/themes/schema';
+import { systemTheme } from '../../../shared/themes/system-theme';
 import { THEMES_DARK_SETTING, THEMES_LIGHT_SETTING } from '../../../desktop/local-services/desktop-configuration';
 import { createAppearanceStore } from '../appearance-store';
 import { createDraftStore } from '../drafts';
@@ -81,7 +82,7 @@ describe('theme store', () => {
     const lines: string[] = [];
     const store = createThemeStore({ root, log: (line) => lines.push(line) });
     const ids = (await store.list()).map((entry) => entry.id);
-    expect(ids).toEqual(['damocles', ID]);
+    expect(ids).toEqual(['damocles', 'damocles-system', ID]);
     await store.list();
     // a file system that folds letter case holds the upper-case folder and the theme's own as one
     const strays = fs.readdirSync(path.join(root, 'themes')).filter((name) => name !== ID && name !== 'notes.txt');
@@ -122,7 +123,7 @@ describe('theme store', () => {
 
   it('lists a theme.json past its size cap as broken, with a reason of its own', async () => {
     writeTheme(ID, `{"schemaVersion":1,"pad":"${'x'.repeat(4 * 1024 * 1024)}"}`);
-    const [, entry] = await createThemeStore({ root }).list();
+    const entry = (await createThemeStore({ root }).list()).find((listed) => listed.id === ID);
     expect(entry).toMatchObject({ status: 'broken', id: ID, reason: { message: '{0} is larger than {1} MB.', args: ['theme.json', '4'] } });
   });
 
@@ -339,7 +340,7 @@ describe('theme service', () => {
     await expect(themes.duplicate('damocles', 'Mine')).rejects.toThrow(/could not save the theme Mine/);
     failing.restore();
     expect(fs.existsSync(path.dirname(themeFile(ID)))).toBe(false);
-    expect((await themes.list()).map((entry) => entry.id)).toEqual(['damocles']);
+    expect((await themes.list()).map((entry) => entry.id)).toEqual(['damocles', 'damocles-system']);
     expect(await themes.duplicate('damocles', 'Mine')).toBe(ID);
     const again = themes.applyDraft({ draft: draftOf(themes.drafts.newId(), ID, 'Again'), pick: [], actor: AGENT, onTheFly: false, currentArrangement: async () => undefined });
     await expect(again).rejects.toThrow('The theme Again was not saved: a theme folder of its id is already there.');
@@ -372,7 +373,7 @@ describe('theme service', () => {
     fs.writeFileSync(file, JSON.stringify({ [THEMES_DARK_SETTING]: '', [THEMES_LIGHT_SETTING]: 'My Theme!' }));
     const themes = createThemeService({ root, settings: fileSettings(file) });
     await themes.pick(ID, 'dark');
-    expect((await themes.history())[0]!.change).toEqual({ kind: 'pick', look: 'dark', theme: 'Night', was: 'Damocles' });
+    expect((await themes.history())[0]!.change).toEqual({ kind: 'pick', look: 'dark', theme: 'Night', themeId: ID, was: 'Damocles', wasId: 'damocles' });
     await themes.undo();
     expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ [THEMES_LIGHT_SETTING]: 'My Theme!' });
   });
@@ -383,7 +384,8 @@ describe('theme service', () => {
     fs.writeFileSync(path.join(root, 'appearance.json'), JSON.stringify({ version: 1, override: { themeId: ID, kind: 'dark', at: 1 }, schedule: { enabled: true, rules: [] }, later: 3 }));
     const themes = createThemeService({ root, settings: fakeSettings(file) });
     await themes.reset();
-    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ 'damocles.model': 'x', [THEMES_DARK_SETTING]: 'damocles', [THEMES_LIGHT_SETTING]: 'damocles' });
+    expect(DEFAULT_THEME_ID).toBe('damocles-system');
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ 'damocles.model': 'x', [THEMES_DARK_SETTING]: DEFAULT_THEME_ID, [THEMES_LIGHT_SETTING]: DEFAULT_THEME_ID });
     expect(JSON.parse(fs.readFileSync(path.join(root, 'appearance.json'), 'utf8'))).toEqual({ version: 1, schedule: { enabled: false, rules: [] }, later: 3 });
   });
 
@@ -438,13 +440,90 @@ describe('theme service', () => {
     if (!example.ok) throw new Error(example.errors.join('\n'));
     const store = createThemeStore({ root, examples: () => Promise.resolve([{ id: 'damocles-paper', theme: example.theme }]), newId: () => ID });
     const themes = service({ store });
-    expect((await themes.list()).map((entry) => [entry.id, entry.status, entry.status === 'ok' && entry.builtin])).toEqual([['damocles', 'ok', true], ['damocles-paper', 'ok', true]]);
+    expect((await themes.list()).map((entry) => [entry.id, entry.status, entry.status === 'ok' && entry.builtin])).toEqual([['damocles', 'ok', true], ['damocles-system', 'ok', true], ['damocles-paper', 'ok', true]]);
     await expect(themes.saveTheme('damocles-paper', paper)).rejects.toThrow(/built-in theme/);
-    await expect(themes.rename('damocles-paper', 'Mine')).rejects.toThrow(/damocles-paper is a built-in theme/);
+    // the refusal names the example by the text each view words in its own language
+    await expect(themes.rename('damocles-paper', 'Mine')).rejects.toMatchObject({ text: l('{0} is a built-in theme, which cannot be changed. Duplicate it to edit a copy.', l('Paper')) });
     expect(await themes.duplicate('damocles-paper', 'Paper copy')).toBe(ID);
     const copy = JSON.parse(fs.readFileSync(themeFile(ID), 'utf8'));
     expect(copy).toMatchObject({ id: ID, name: 'Paper copy', style: { radius: 0, density: 0.9, chatColumn: 40 }, origin: { kind: 'duplicate', from: 'damocles-paper' } });
     await themes.pick('damocles-paper', 'light');
+  });
+
+  describe('System colors', () => {
+    // a macOS-like dark palette, whose muted override survives, so the copy has an override to keep
+    const MAC = { accent: '#bf5af2', palettes: { dark: { kind: 'dark' as const, seeds: { background: '#1e1e1e', panel: '#323232', text: '#ffffffd8' }, tokens: { '--d-muted': '#ffffffc0' } } } };
+    const paper = { schemaVersion: 1, id: 'damocles-paper', name: 'Paper', looks: { light: { colors: COLORS } } };
+
+    it('lists after Damocles and before the examples and the user themes, with the colors of each listing', async () => {
+      writeTheme(ID, userTheme(ID));
+      const example = validateTheme(paper, { builtin: true, folder: 'damocles-paper' });
+      if (!example.ok) throw new Error(example.errors.join(' '));
+      let colors: Parameters<typeof systemTheme>[0] = { accent: '#0078d4' };
+      const store = createThemeStore({ root, examples: () => Promise.resolve([{ id: 'damocles-paper', theme: example.theme }]), system: () => systemTheme(colors).looks });
+      const listed = await store.list();
+      expect(listed.map((entry) => entry.id)).toEqual(['damocles', 'damocles-system', 'damocles-paper', ID]);
+      expect(listed[1]).toEqual({ status: 'ok', id: 'damocles-system', builtin: true, name: 'System colors', theme: systemTheme(colors) });
+      colors = MAC;
+      expect((await store.list())[1]).toMatchObject({ theme: { looks: systemTheme(MAC).looks } });
+    });
+
+    it('is the Damocles seeds for looks that are no valid theme, logged once for that value', async () => {
+      const looks = systemTheme(MAC).looks;
+      const bad = { ...looks, dark: { ...looks.dark, tokens: { '--d-muted': 'red' } } };
+      const lines: string[] = [];
+      const store = createThemeStore({ root, system: () => bad, log: (line) => lines.push(line) });
+      expect((await store.list())[1]).toEqual({ status: 'ok', id: 'damocles-system', builtin: true, name: 'System colors', theme: systemTheme({}) });
+      await store.list();
+      expect(lines.filter((line) => line.includes('System colors'))).toHaveLength(1);
+    });
+
+    it('is the Damocles seeds for a store that is given none', async () => {
+      expect((await createThemeStore({ root }).list()).slice(0, 2)).toMatchObject([{ id: 'damocles' }, { id: 'damocles-system', builtin: true, theme: systemTheme({}) }]);
+    });
+
+    it('is read-only, and its copy keeps its looks exactly, overrides included', async () => {
+      const looks = systemTheme(MAC).looks;
+      expect(looks.dark!.tokens).toBeDefined();
+      const themes = service({ store: createThemeStore({ root, newId: () => ID, now: () => 42, system: () => systemTheme(MAC).looks }) });
+      await expect(themes.saveTheme('damocles-system', systemTheme(MAC))).rejects.toThrow(/built-in theme/);
+      await expect(themes.rename('damocles-system', 'Mine')).rejects.toThrow(/built-in theme/);
+      await expect(themes.remove('damocles-system')).rejects.toMatchObject({ text: l('{0} is a built-in theme, which cannot be deleted.', l('System colors')) });
+      expect(await themes.duplicate('damocles-system', 'My colors')).toBe(ID);
+      const copy = JSON.parse(fs.readFileSync(themeFile(ID), 'utf8')) as unknown;
+      expect(copy).toEqual({ schemaVersion: 1, id: ID, name: 'My colors', looks, origin: { kind: 'duplicate', from: 'damocles-system', installedAt: 42 } });
+      expect(validateTheme(copy, { folder: ID }).ok).toBe(true);
+    });
+
+    // a read-only View asks for an edit base, which must not create the themes folder or take its lock
+    it('has no edit base, and asking for one enters no write lane', async () => {
+      const fresh = path.join(root, 'fresh');
+      const store = createThemeStore({ root: fresh });
+      const run = vi.spyOn(store.lane, 'run');
+      const themes = service({ root: fresh, store });
+      expect(await themes.editBase('damocles-system')).toBeUndefined();
+      expect(run).not.toHaveBeenCalled();
+      expect(fs.existsSync(fresh)).toBe(false);
+    });
+
+    it('can be picked for either look', async () => {
+      const settings = fakeSettings(path.join(root, 'settings.json'));
+      const themes = createThemeService({ root, settings, system: () => systemTheme({}).looks });
+      await themes.pick('damocles-system', 'dark');
+      await themes.pick('damocles-system', 'light');
+      expect(settings.updates).toEqual([[THEMES_DARK_SETTING, 'damocles-system'], [THEMES_LIGHT_SETTING, 'damocles-system']]);
+    });
+
+    // an unset or missing preferred look means Damocles; only Reset and the first launch name the default theme
+    it('is not what a deleted theme in use leaves behind: the settings keep naming the deleted theme', async () => {
+      writeTheme(ID, userTheme(ID));
+      const file = path.join(root, 'settings.json');
+      fs.writeFileSync(file, JSON.stringify({ [THEMES_DARK_SETTING]: ID, [THEMES_LIGHT_SETTING]: ID }));
+      const themes = createThemeService({ root, settings: fileSettings(file), system: () => systemTheme({}).looks });
+      await themes.remove(ID);
+      expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ [THEMES_DARK_SETTING]: ID, [THEMES_LIGHT_SETTING]: ID });
+      expect((await themes.list()).map((entry) => entry.id)).toEqual(['damocles', 'damocles-system']);
+    });
   });
 
   it('sweeps every draft at core start and counts the drafts, not the other files beside them', async () => {

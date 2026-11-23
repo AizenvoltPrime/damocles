@@ -360,7 +360,7 @@ test('the Show wallpapers setting and safe start each show the theme with no wal
   await pinNativeTheme(safe.app, HOST_NEUTRAL);
   const safeTab = await activeChat(safe.app);
   const safeShell = await shellPage(safe.app);
-  const banner = safeShell.getByRole('region', { name: 'Started with the default theme.' });
+  const banner = safeShell.getByRole('region', { name: 'Started with the Damocles theme.' });
   await expect(banner).toBeVisible();
   await expect.poll(() => cssToken(safeTab, '--d-bg')).toBe('#0b0f14');
   expect(await regions(safe.app)).toBe(0);

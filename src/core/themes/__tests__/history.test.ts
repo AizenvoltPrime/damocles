@@ -56,11 +56,23 @@ describe('theme history', () => {
     await themes.pick(ID, 'dark', { arrangementBefore: arrangement });
     expect(readJson(settingsFile)[THEMES_DARK_SETTING]).toBe(ID);
     const [entry] = await themes.history();
-    expect(entry).toMatchObject({ actor: { kind: 'user' }, change: { kind: 'pick', look: 'dark', theme: 'Night', was: 'Damocles' } });
+    expect(entry).toMatchObject({ actor: { kind: 'user' }, change: { kind: 'pick', look: 'dark', theme: 'Night', themeId: ID, was: 'Damocles', wasId: 'damocles' } });
     expect(await themes.undo()).toEqual({ undone: entry!.change, arrangement });
     expect(readJson(settingsFile)[THEMES_DARK_SETTING]).toBeUndefined();
     expect(await themes.history()).toEqual([]);
     expect(await themes.undo()).toEqual({});
+  });
+
+  it('names no previous theme for a look whose theme is no longer installed, keeping its id', async () => {
+    const GONE = '75c07e6a-d17c-4a7c-9d0e-0c5a6f6f0b11';
+    writeTheme(ID, 'Night');
+    const settings = fileSettings();
+    await settings.update(THEMES_DARK_SETTING, GONE, 'user');
+    const themes = createThemeService({ root, settings });
+    await themes.pick(ID, 'dark');
+    expect((await themes.history()).map((entry) => entry.change)).toEqual([{ kind: 'pick', look: 'dark', theme: 'Night', themeId: ID, wasId: GONE }]);
+    await themes.undo();
+    expect(readJson(settingsFile)[THEMES_DARK_SETTING]).toBe(GONE);
   });
 
   it('records one entry for a look picked twice, and says which pick recorded it', async () => {
@@ -68,7 +80,7 @@ describe('theme history', () => {
     const themes = createThemeService({ root, settings: fileSettings() });
     expect(await themes.pick(ID, 'dark')).toBe(true);
     expect(await themes.pick(ID, 'dark')).toBe(false);
-    expect((await themes.history()).map((entry) => entry.change)).toEqual([{ kind: 'pick', look: 'dark', theme: 'Night', was: 'Damocles' }]);
+    expect((await themes.history()).map((entry) => entry.change)).toEqual([{ kind: 'pick', look: 'dark', theme: 'Night', themeId: ID, was: 'Damocles', wasId: 'damocles' }]);
   });
 
   it('refuses an undo that names an entry another change was made after, and undoes the one it names while it is the newest', async () => {
@@ -113,7 +125,7 @@ describe('theme history', () => {
     const themes = createThemeService({ root, settings: fileSettings() });
     await themes.reset();
     expect(await themes.history()).toHaveLength(1);
-    expect(readJson(settingsFile)).toMatchObject({ [THEMES_DARK_SETTING]: 'damocles', [THEMES_LIGHT_SETTING]: 'damocles' });
+    expect(readJson(settingsFile)).toMatchObject({ [THEMES_DARK_SETTING]: 'damocles-system', [THEMES_LIGHT_SETTING]: 'damocles-system' });
     await themes.undo();
     expect(readJson(settingsFile)).toEqual({ [THEMES_DARK_SETTING]: ID, [THEMES_LIGHT_SETTING]: ID, other: 1 });
     expect(fs.readFileSync(path.join(root, 'appearance.json'), 'utf8')).toBe(appearance);

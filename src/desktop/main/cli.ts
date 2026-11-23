@@ -52,7 +52,7 @@ export function parseCliPathAction(argv: readonly string[]): 'add' | 'remove' | 
   return action === 'add' || action === 'remove' ? action : 'invalid';
 }
 
-/** Whether this run starts with the default theme (`--damocles-safe-theme`). */
+/** Whether this run starts with the Damocles theme (`--damocles-safe-theme`). */
 export function isSafeThemeLaunch(argv: readonly string[]): boolean {
   return optionArgs(argv).includes(SAFE_THEME_FLAG);
 }

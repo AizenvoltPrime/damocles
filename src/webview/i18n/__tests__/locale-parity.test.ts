@@ -7,6 +7,7 @@ import l10nEn from '../../../../l10n/bundle.l10n.json' with { type: 'json' };
 import l10nEl from '../../../../l10n/bundle.l10n.el.json' with { type: 'json' };
 import shellEn from '../../../desktop/shell/locales/en.json' with { type: 'json' };
 import shellEl from '../../../desktop/shell/locales/el.json' with { type: 'json' };
+import { BUILTIN_EXAMPLE_IDS, BUILTIN_THEME_ID, BUILTIN_THEME_IDS, BUILTIN_THEME_NAMES, SYSTEM_THEME_ID } from '@shared/themes/builtin';
 
 /**
  * Both locale bundles checked as data rather than through a rendered component.
@@ -137,6 +138,21 @@ describe('key order', () => {
     const firstApart = [...english.keys()].findIndex((key, index) => [...greek.keys()][index] !== key);
 
     expect(firstApart === -1 ? undefined : [...english.keys()][firstApart]).toBeUndefined();
+  });
+});
+
+describe('built-in theme names', () => {
+  it('lists every built-in id, the packed examples included, with its English name', () => {
+    expect([...BUILTIN_THEME_IDS].sort()).toEqual([BUILTIN_THEME_ID, SYSTEM_THEME_ID, ...BUILTIN_EXAMPLE_IDS].sort());
+  });
+
+  // main and core translate the English name; the chat page names each by id, in the words main's bundle uses
+  it.each(BUILTIN_THEME_IDS)('names %s in every catalog that shows it', (id) => {
+    const name = BUILTIN_THEME_NAMES[id];
+    expect(L10N_EN.get(name)).toBe(name);
+    expect(L10N_EL.get(name)?.trim()).toBeTruthy();
+    expect(EN.get(`themeAgent.builtinName.${id}`)).toBe(name);
+    expect(EL.get(`themeAgent.builtinName.${id}`)).toBe(L10N_EL.get(name));
   });
 });
 

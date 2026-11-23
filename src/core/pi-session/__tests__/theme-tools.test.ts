@@ -10,7 +10,8 @@ import { KEEP_CHANGES_MS, SCREENSHOT_ANSWER_MS, type ThemeScreenshotChoice, type
 import { THEME_IMAGE_ASPECTS } from '../../../shared/themes/asset-source';
 import { CHAT_COLUMN_RANGE, DENSITY_RANGE, DIM_RANGE, LINE_HEIGHT_RANGE, MAX_BLUR_PX, MAX_WALLPAPER_SETS, RADIUS_RANGE, SURFACE_OPACITY_RANGE } from '../../../shared/themes/limits';
 import { MAX_SCHEDULE_RULES, MINUTES_PER_DAY } from '../../../shared/themes/schedule';
-import { CSS_REGIONS, FITS, LOOK_SEEDS, PANELS, type LookColors } from '../../../shared/themes/schema';
+import { CSS_REGIONS, FITS, LOOK_SEEDS, PANELS, validateTheme, type LookColors } from '../../../shared/themes/schema';
+import { systemTheme } from '../../../shared/themes/system-theme';
 import { createThemeService, MAX_DRAFTS, MAX_DRAFTS_PER_CHAT, WEEKDAYS, type ThemeService } from '../../themes';
 import { PermissionHandler } from '../../permission-handler';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
@@ -83,7 +84,7 @@ interface Chat {
   readonly installAnswers: Array<ThemeInstallAnswer | 'stop'>;
   // the screenshot card's answers, in order; Deny once they run out
   readonly screenshotAnswers: ThemeScreenshotChoice[];
-  readonly host: ThemeHostPort & { applied: ReturnType<typeof vi.fn>; render: ReturnType<typeof vi.fn>; state: ReturnType<typeof vi.fn>; currentArrangement: ReturnType<typeof vi.fn>; applyArrangement: ReturnType<typeof vi.fn>; screenshotTake: ReturnType<typeof vi.fn> };
+  readonly host: ThemeHostPort & { applied: ReturnType<typeof vi.fn>; render: ReturnType<typeof vi.fn>; state: ReturnType<typeof vi.fn>; currentArrangement: ReturnType<typeof vi.fn>; applyArrangement: ReturnType<typeof vi.fn>; screenshotTake: ReturnType<typeof vi.fn>; copyName: ReturnType<typeof vi.fn> };
   readonly stop: AbortController;
   planMode: boolean;
 }
@@ -133,6 +134,7 @@ function chat(
     state: vi.fn(async () => ({ kind: 'dark' as const, themeId: 'damocles', decidedBy: 'system' })),
     currentArrangement: vi.fn(async () => ARRANGEMENT),
     applyArrangement: vi.fn(async () => undefined),
+    copyName: vi.fn(async (_themeId: string, name: string) => `${name} copy`),
     onShowEnded: () => ({ dispose: () => undefined }),
     onScreenshotGone: () => ({ dispose: () => undefined }),
   };
@@ -210,6 +212,17 @@ describe('ThemeRead', () => {
     expect(described['untrusted']).toMatchObject({ description: 'From afar.' });
   });
 
+  it('makes an agent copy of System colors with its looks of that moment and no description, which no longer holds', async () => {
+    const { themes, settings } = setup();
+    const c = chat(themes, settings, 'chat-a');
+    c.answers.push('apply');
+    const set = await run(c, 'ThemeSet', { theme: 'damocles-system', name: 'Copy' });
+    expect(set.details.outcome).toBe('applied');
+    const copy = (await themes.list()).find((entry) => entry.status === 'ok' && entry.name === 'Copy')!;
+    expect(copy.status === 'ok' && copy.theme.looks).toEqual(systemTheme({}).looks);
+    expect(copy.status === 'ok' && copy.theme).not.toHaveProperty('description');
+  });
+
   it('lists a duplicate\'s name as the user\'s own only while its source shows the name is', async () => {
     const OWN_COPY = '2f8fad5b-d9cb-469f-a165-70867728950e';
     const OUTSIDE_COPY = '3f8fad5b-d9cb-469f-a165-70867728950e';
@@ -266,6 +279,129 @@ describe('ThemeSet', () => {
     expect(entry).toMatchObject({ actor: { kind: 'agent', chatId: 'chat-a', title: 'Make it warm' }, change: { kind: 'create', theme: 'Amber Night', picked: ['dark'] } });
     const request = c.posted.find((message) => message.type === 'requestThemeChange');
     expect(request).toMatchObject({ action: 'theme', state: 'waiting', planMode: false, isNew: true, canShowInWindow: true });
+  });
+
+  describe('a theme named with nothing to change', () => {
+    const DARK = 'damocles.desktop.themes.dark';
+    const LIGHT = 'damocles.desktop.themes.light';
+
+    it('picks a built-in itself for the look named: no copy, one pick entry of the agent', async () => {
+      const { themes, settings } = setup();
+      const c = chat(themes, settings, 'chat-a');
+      const before = (await themes.list()).length;
+      c.answers.push('apply');
+      const result = await run(c, 'ThemeSet', { theme: 'damocles-system', look: 'dark' });
+      expect(result.isError).toBeUndefined();
+      expect(result.details).toMatchObject({ tool: 'ThemeSet', outcome: 'applied', themeName: 'System colors', changes: [{ kind: 'pick', looks: ['dark'] }] });
+      expect(result.details).not.toHaveProperty('draftId');
+      expect(text(result)).toContain('No theme was made or changed');
+      expect(await themes.list()).toHaveLength(before);
+      expect(c.host.copyName).not.toHaveBeenCalled();
+      expect(readJson(settingsFile)[DARK]).toBe('damocles-system');
+      expect(readJson(settingsFile)[LIGHT]).toBeUndefined();
+      expect(await themes.history()).toEqual([expect.objectContaining({
+        actor: { kind: 'agent', chatId: 'chat-a', title: 'Make it warm' },
+        change: { kind: 'pick', look: 'dark', theme: 'System colors', themeId: 'damocles-system', was: 'Damocles', wasId: 'damocles' },
+      })]);
+      const card = c.posted.find((message) => message.type === 'requestThemeChange');
+      expect(card).toMatchObject({ action: 'theme', isNew: false, themeName: 'System colors', looks: ['dark'], changes: [{ kind: 'pick', looks: ['dark'] }], canShowInWindow: false });
+    });
+
+    it('offers Show in window only for a theme main can paint: a user theme, without its origin', async () => {
+      writeTheme(IMPORTED, { name: 'From afar', origin: { kind: 'import', installedAt: 1 } });
+      const { themes, settings } = setup();
+      const c = chat(themes, settings, 'chat-a');
+      for (const theme of [IMPORTED, 'damocles-system']) {
+        c.answers.push('discard');
+        await run(c, 'ThemeSet', { theme, look: 'dark' });
+      }
+      const [own, builtin] = c.posted.filter((message) => message.type === 'requestThemeChange');
+      expect(own).toMatchObject({ canShowInWindow: true });
+      expect(own?.type === 'requestThemeChange' && validateTheme(own.theme)).toMatchObject({ ok: true, unknownKeys: [] });
+      expect(builtin).toMatchObject({ canShowInWindow: false });
+    });
+
+    it('picks the kind on screen when a theme of both looks is named without one, and a theme\'s only look otherwise', async () => {
+      writeTheme(OWN, { name: 'Mine', origin: { kind: 'created', installedAt: 1 } });
+      const { themes, settings } = setup();
+      const c = chat(themes, settings, 'chat-a');
+      c.host.state.mockResolvedValue({ kind: 'light', themeId: 'damocles', decidedBy: 'system' });
+      c.answers.push('apply');
+      expect((await run(c, 'ThemeSet', { theme: 'damocles-system' })).details).toMatchObject({ outcome: 'applied', changes: [{ kind: 'pick', looks: ['light'] }] });
+      expect(readJson(settingsFile)[LIGHT]).toBe('damocles-system');
+      expect(readJson(settingsFile)[DARK]).toBeUndefined();
+      c.answers.push('apply');
+      expect((await run(c, 'ThemeSet', { theme: OWN })).details).toMatchObject({ outcome: 'applied', changes: [{ kind: 'pick', looks: ['dark'] }] });
+      expect(readJson(settingsFile)[DARK]).toBe(OWN);
+    });
+
+    it('picks a theme of the user as it is: its file is not saved again, and the chat\'s undo gives the look back', async () => {
+      writeTheme(OWN, { name: 'Mine', origin: { kind: 'created', installedAt: 1 } });
+      const { themes, settings } = setup();
+      const c = chat(themes, settings, 'chat-a');
+      const file = path.join(root, 'themes', OWN, 'theme.json');
+      const written = fs.readFileSync(file, 'utf8');
+      c.answers.push('apply');
+      await run(c, 'ThemeSet', { theme: OWN, look: 'dark' });
+      expect(fs.readFileSync(file, 'utf8')).toBe(written);
+      expect((await themes.history()).map((entry) => entry.change.kind)).toEqual(['pick']);
+      c.answers.push('apply');
+      expect((await run(c, 'ThemeSet', { undo: true })).details.outcome).toBe('undone');
+      expect(readJson(settingsFile)[DARK]).toBeUndefined();
+    });
+
+    it('asks nothing for a look that is already the preferred one', async () => {
+      const { themes, settings } = setup();
+      await settings.update(DARK, 'damocles-system', 'user');
+      const c = chat(themes, settings, 'chat-a');
+      const result = await run(c, 'ThemeSet', { theme: 'damocles-system', look: 'dark' });
+      expect(result.isError).toBeUndefined();
+      expect(text(result)).toContain('already');
+      expect(c.posted.some((message) => message.type === 'requestThemeChange')).toBe(false);
+      expect(await themes.history()).toEqual([]);
+    });
+
+    it('on the fly, the banner names the theme the look had', async () => {
+      const { themes, settings } = setup();
+      await settings.update(THEMES_APPLY_MODE_SETTING, 'onTheFly', 'user');
+      const c = chat(themes, settings, 'chat-a');
+      const kept = await run(c, 'ThemeSet', { theme: 'damocles-system', look: 'dark' });
+      expect(kept.details).toMatchObject({ outcome: 'kept', applyMode: 'onTheFly' });
+      const [entry] = await themes.history();
+      expect(c.host.applied).toHaveBeenCalledWith(expect.objectContaining({ entryId: entry!.id, change: expect.objectContaining({ kind: 'pick', look: 'dark' }), previousName: 'Damocles', previousId: 'damocles' }), expect.anything());
+    });
+
+    it('still copies a built-in that is changed, saved without a pick, or given a look it lacks', async () => {
+      const { themes, settings } = setup();
+      const c = chat(themes, settings, 'chat-a');
+      for (const input of [{ colors: { accent: '#f59e0b' }, look: 'dark' }, { target: 'none' }, { name: 'Named' }]) {
+        c.answers.push('apply');
+        const result = await run(c, 'ThemeSet', { theme: 'damocles', ...input });
+        expect(result.details).toMatchObject({ outcome: 'applied', draftId: expect.any(String) });
+      }
+      expect((await themes.history()).map((entry) => entry.change.kind)).toEqual(['create', 'create', 'create']);
+    });
+  });
+
+  // main words an unnamed copy as Duplicate does, in its language; this main answers in Greek
+  it('names an unnamed copy of a built-in with main\'s answer, and keeps a given name without asking', async () => {
+    const aurora = path.join(root, 'resources', 'dist', 'desktop-shell', 'themes', 'damocles-aurora', 'theme.json');
+    fs.mkdirSync(path.dirname(aurora), { recursive: true });
+    fs.writeFileSync(aurora, JSON.stringify({ schemaVersion: 1, id: 'damocles-aurora', name: 'Aurora', looks: { dark: { colors: COLORS } } }));
+    const settings = fileSettings();
+    const themes = createThemeService({ root, settings, owner: OWNER, resourceRoot: path.join(root, 'resources') });
+    const c = chat(themes, settings, 'chat-a');
+    c.host.copyName.mockImplementation(async (themeId: string) => ({ 'damocles-system': 'Χρώματα συστήματος αντίγραφο', 'damocles-aurora': 'Σέλας αντίγραφο' })[themeId]);
+    for (const [theme, name] of [['damocles-system', 'Χρώματα συστήματος αντίγραφο'], ['damocles-aurora', 'Σέλας αντίγραφο']] as const) {
+      c.answers.push('apply');
+      const result = await run(c, 'ThemeSet', { theme, look: 'dark', colors: { accent: '#f59e0b' } });
+      expect(result.details).toMatchObject({ outcome: 'applied', themeName: name });
+      expect((await themes.list()).some((entry) => entry.status === 'ok' && entry.name === name)).toBe(true);
+    }
+    expect(c.host.copyName.mock.calls.map(([themeId, stored]) => [themeId, stored])).toEqual([['damocles-system', 'System colors'], ['damocles-aurora', 'Aurora']]);
+    c.answers.push('apply');
+    expect((await run(c, 'ThemeSet', { theme: 'damocles-aurora', name: 'Northern' })).details).toMatchObject({ outcome: 'applied', themeName: 'Northern' });
+    expect(c.host.copyName).toHaveBeenCalledTimes(2);
   });
 
   it('Change keeps the draft for the next call, Discard deletes it, and a stopped turn deletes it', async () => {
@@ -601,7 +737,8 @@ describe('ThemeSet', () => {
     const kept = await run(c, 'ThemeSet', { name: 'Fly', look: 'dark' });
     expect(kept.details).toMatchObject({ outcome: 'kept', applyMode: 'onTheFly' });
     const [entry] = await themes.history();
-    expect(c.host.applied).toHaveBeenCalledWith(expect.objectContaining({ entryId: entry!.id, chatTitle: 'Make it warm', change: { kind: 'create', theme: 'Fly', picked: ['dark'] } }), expect.anything());
+    // the theme it replaced by id too, so the banner names a built-in in the UI's language
+    expect(c.host.applied).toHaveBeenCalledWith(expect.objectContaining({ entryId: entry!.id, chatTitle: 'Make it warm', change: { kind: 'create', theme: 'Fly', picked: ['dark'] }, previousName: 'Damocles', previousId: 'damocles' }), expect.anything());
     expect(await themes.pendingConfirm()).toEqual({ entryId: entry!.id, startedAt: expect.any(Number), owners: [OWNER] });
     expect(c.posted.some((message) => message.type === 'requestThemeChange')).toBe(false);
 
@@ -727,7 +864,7 @@ describe('pendingConfirm across chats and at start', () => {
     await vi.waitFor(async () => expect(await themes.pendingConfirm()).toBeDefined());
     const first = (await themes.pendingConfirm())!.entryId;
     await themes.pick(OWN, 'light');
-    expect(extended).toHaveBeenCalledWith({ entryId: first, change: { kind: 'pick', look: 'light', theme: 'Mine', was: 'Damocles' }, actor: { kind: 'user' } });
+    expect(extended).toHaveBeenCalledWith({ entryId: first, change: { kind: 'pick', look: 'light', theme: 'Mine', themeId: OWN, was: 'Damocles', wasId: 'damocles' }, actor: { kind: 'user' } });
     expect((await themes.pendingConfirm())!.entryId).toBe(first);
     // the agent's undo targets its own entry, which the user's pick did not touch
     a.host.applied.mockResolvedValue('kept');
@@ -795,7 +932,7 @@ describe('pendingConfirm across chats and at start', () => {
     expect((await themes.pendingConfirm())?.entryId).toBe(entryId);
     expect(settled).not.toHaveBeenCalled();
     // the banner counts the user's Undo of the later change as one more change of its countdown
-    expect(extended).toHaveBeenLastCalledWith({ entryId, change: { kind: 'restore', before: { kind: 'pick', look: 'light', theme: 'Mine', was: 'Damocles' } }, actor: { kind: 'user' } });
+    expect(extended).toHaveBeenLastCalledWith({ entryId, change: { kind: 'restore', before: { kind: 'pick', look: 'light', theme: 'Mine', themeId: OWN, was: 'Damocles', wasId: 'damocles' } }, actor: { kind: 'user' } });
     await themes.undo();
     expect(settled).toHaveBeenCalledWith({ entryId, outcome: 'reverted' });
     expect(await themes.pendingConfirm()).toBeUndefined();

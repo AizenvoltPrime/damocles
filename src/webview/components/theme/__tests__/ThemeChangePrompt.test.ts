@@ -348,7 +348,7 @@ describe('the theme preview card', () => {
 
   it.each([
     ['forcedColors', "Windows contrast themes are on, so the window shows Damocles' own look and cannot show this proposal."],
-    ['safeStart', 'This run shows the default theme, so the window cannot show this proposal.'],
+    ['safeStart', 'This run shows the Damocles theme, so the window cannot show this proposal.'],
   ] as const)('keeps the toggle off and says why when the window cannot show a proposal (%s)', async (showNote, sentence) => {
     const w = await raised();
     await w.get('[data-testid="theme-change-show"]').trigger('click');

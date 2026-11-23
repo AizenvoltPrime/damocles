@@ -4,8 +4,9 @@ import { DESKTOP_FONT_FILES } from '../../desktop-fonts';
 import { BUILTIN_PALETTES } from '../../../../shared/themes/builtin';
 import { BUILTIN_FONT_FAMILIES, BUILTIN_MONO_STACK, BUILTIN_UI_STACK, fontFaceCss, fontStack } from '../../../../shared/themes/fonts';
 import { themeErrorEnglish, validateTheme, type ThemeFile } from '../../../../shared/themes/schema';
-import { isValidTokenValue } from '../../../../shared/themes/tokens';
-import { pageCss, pageCustomCss, pagePalette, scopedThemeCss, trustedCss } from '../theme-css';
+import { systemTheme } from '../../../../shared/themes/system-theme';
+import { isValidTokenValue, LOOK_KINDS } from '../../../../shared/themes/tokens';
+import { pageCss, pageCustomCss, pagePalette, scopedThemeCss, shownPalette, trustedCss, trustedPalette } from '../theme-css';
 
 const ID = '3f1c2a4e-9b7d-4c1e-8a2f-5d6e7f809a1b';
 const SHA = '0123456789abcdef'.repeat(4);
@@ -100,6 +101,28 @@ describe('a page\'s theme CSS', () => {
 
   it('names the built-in families the desktop fonts declare', () => {
     expect([...BUILTIN_FONT_FAMILIES].sort()).toEqual([...new Set(DESKTOP_FONT_FILES.map((font) => font.family))].sort());
+  });
+});
+
+describe('the System colors palette', () => {
+  const shown = (accent: string, kind: 'dark' | 'light') => ({ kind, themeId: 'damocles-system', look: systemTheme({ accent }).looks[kind]!, builtin: false });
+
+  // the theme id stays the same across every OS change, so only the look tells two palettes apart
+  it('is derived again when the OS accent changes', () => {
+    const blue = shownPalette(shown('#0078d4', 'dark'));
+    const red = shownPalette(shown('#e81123', 'dark'));
+    expect(red).not.toBe(blue);
+    expect(red['--d-accent-fill']).not.toBe(blue['--d-accent-fill']);
+    expect(shownPalette(shown('#0078d4', 'dark'))).toBe(blue);
+    expect(blue).not.toBe(BUILTIN_PALETTES.dark);
+  });
+
+  it.each(['#ffe100', '#fdfdfd', '#020202', '#0078d4'])('is the trusted palette too for the accent %s, so trusted UI never falls back', (accent) => {
+    for (const kind of LOOK_KINDS) {
+      const palette = shownPalette(shown(accent, kind));
+      expect(trustedPalette(palette, kind), kind).toBe(palette);
+      expect(trustedCss(palette, kind, 'root')).toContain(`--d-accent-fill: ${palette['--d-accent-fill']};`);
+    }
   });
 });
 

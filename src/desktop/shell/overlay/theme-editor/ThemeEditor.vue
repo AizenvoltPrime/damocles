@@ -18,7 +18,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { MENU_CONTENT, MENU_ITEM } from '@/components/chat-header/menuStyles';
 import { canonicalHexColor, type HexColor } from '@shared/hex-color';
 import type { ThemeShowRefusal } from '@shared/themes/agent';
-import { BUILTIN_THEME } from '@shared/themes/builtin';
+import { BUILTIN_THEME, SYSTEM_THEME_ID } from '@shared/themes/builtin';
 import { AA, checkPalette } from '@shared/themes/contrast';
 import { themeCssFamilies } from '@shared/themes/css-sanitizer';
 import { deriveLookDetails, type SeedMove } from '@shared/themes/derive';
@@ -103,6 +103,13 @@ const imports = createEditorImports({ api: props.api, sessionId: () => session.v
 onScopeDispose(props.api.themeEditor.onImportProgress((fraction) => imports.progress(fraction)));
 
 function load(next: ThemeEditorSession): void {
+  // the session it holds, with System colors' new looks: the look tab and the section stay
+  if (session.value?.sessionId === next.sessionId && next.builtin) {
+    session.value = next;
+    draft.value = next.theme;
+    saved.value = stableStringify(next.theme);
+    return;
+  }
   forgetInstalledFonts();
   imports.reset();
   session.value = next;
@@ -138,7 +145,9 @@ onScopeDispose(props.api.themeEditor.onOutside((what) => {
 }));
 
 const readOnly = computed(() => session.value?.builtin !== false);
-const name = computed(() => draft.value.name);
+// A built-in's name comes from main in the UI's language; System colors' description is Damocles' own text too
+const name = computed(() => session.value?.shownName ?? draft.value.name);
+const description = computed(() => (session.value?.themeId === SYSTEM_THEME_ID ? t('settingsHost.themes.system.description') : draft.value.description ?? ''));
 const dirty = computed(() => stableStringify(draft.value) !== saved.value || pinEdits(pinsSaved.value, pinsNow.value).length > 0);
 const kinds = computed(() => LOOK_KINDS.filter((kind) => draft.value.looks[kind] !== undefined));
 const missingKind = computed(() => LOOK_KINDS.find((kind) => draft.value.looks[kind] === undefined));
@@ -1077,7 +1086,7 @@ const arrangementFacts = computed(() => {
               >{{ t('themeEditor.details.name') }}</Label>
               <Input
                 id="theme-editor-name"
-                :model-value="draft.name"
+                :model-value="name"
                 dir="auto"
                 class="h-7.5 text-12.5"
                 :maxlength="MAX_THEME_NAME_CHARS"
@@ -1121,7 +1130,7 @@ const arrangementFacts = computed(() => {
               >{{ t('themeEditor.details.description') }}</Label>
               <Textarea
                 id="theme-editor-description"
-                :model-value="draft.description ?? ''"
+                :model-value="description"
                 class="min-h-14 text-12.5"
                 :maxlength="MAX_THEME_DESCRIPTION_CHARS"
                 :readonly="readOnly"

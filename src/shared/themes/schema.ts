@@ -22,7 +22,9 @@ export const CSS_REGIONS = ['transcript', 'sidebar', 'editorChrome', 'terminalCh
 export type CssRegion = (typeof CSS_REGIONS)[number];
 export const ASSET_KINDS = ['image', 'animated', 'video', 'font', 'sprite'] as const;
 export type AssetKind = (typeof ASSET_KINDS)[number];
-export const ORIGIN_KINDS = ['created', 'duplicate', 'import', 'vscode', 'link', 'store'] as const;
+export const ORIGIN_KINDS = ['created', 'duplicate', 'import', 'vscode', 'base16', 'gtk', 'kde', 'qt', 'link', 'store'] as const;
+// Themes from outside this computer: every origin but one made here.
+export const OUTSIDE_ORIGIN_KINDS: ReadonlySet<string> = new Set(ORIGIN_KINDS.filter((kind) => kind !== 'created' && kind !== 'duplicate'));
 export const LOOK_SEEDS = ['background', 'panel', 'text', 'accent', 'success', 'warning', 'danger', 'info'] as const;
 // Must match GRID_PANES and SIDEBAR_SECTIONS in src/desktop/preload/shell-channels.ts.
 export const ARRANGEMENT_PANES = ['chat', 'editor', 'terminal'] as const;
@@ -126,7 +128,8 @@ const optional = <T extends TSchema>(schema: T) => Type.Optional(schema);
 const partialOf = <T extends TSchema>(keys: readonly string[], value: T) => Type.Object(Object.fromEntries(keys.map((key) => [key, Type.Optional(value)])));
 
 const opaqueHex = Type.String({ pattern: '^#[0-9a-fA-F]{6}$' });
-const tokenValue = Type.String({ maxLength: 128 });
+export const MAX_TOKEN_VALUE_CHARS = 128;
+const tokenValue = Type.String({ maxLength: MAX_TOKEN_VALUE_CHARS });
 const fit = literals(FITS);
 const panel = literals(PANELS);
 const fontName = text(64);

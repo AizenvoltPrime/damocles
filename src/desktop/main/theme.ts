@@ -479,7 +479,13 @@ export function currentBaseShown(): ShownTheme {
   return current().base;
 }
 
-/** Safe start for this run (`--damocles-safe-theme`, Help › Restart with Default Theme, or the crash loop); undefined ends it. */
+/** The look that shows once forced colors and safe start end, without the transient preview. */
+export function decidedShown(): ShownTheme {
+  const { safeStart: _safeStart, ...inputs } = appearanceInputs();
+  return resolveShown({ ...inputs, forcedColors: false });
+}
+
+/** Safe start for this run (`--damocles-safe-theme`, Help › Restart with Damocles Theme, the crash loop, or Reset while the engine is down); undefined ends it. */
 export function setSafeStart(reason: SafeStartReason | undefined): void {
   if (safeStart === reason) return;
   safeStart = reason;

@@ -1959,7 +1959,8 @@ export type OverlayThemesResult = ({ readonly ok: true } & OverlayThemes) | { re
 // What the page may send. The Mode row is not among them: the page sets damocles.desktop.theme, and main writes it through core.
 export type OverlayThemeAction =
   | { readonly action: 'pick'; readonly themeId: string; readonly kind: LookKind }
-  | { readonly action: 'duplicate'; readonly themeId: string; readonly name: string }
+  // name: a new theme's; absent, main names the copy (themeCopyName)
+  | { readonly action: 'duplicate'; readonly themeId: string; readonly name?: string }
   | { readonly action: 'rename'; readonly themeId: string; readonly name: string }
   | { readonly action: 'delete'; readonly themeId: string }
   // opens the theme editor beside the window on the theme; Settings closes
@@ -2066,6 +2067,8 @@ export interface ThemeEditorSession {
   readonly themeId: string;
   readonly builtin: boolean;
   readonly theme: ThemeFile;
+  // a built-in's name in the UI's language, which the page shows in place of theme.name
+  readonly shownName?: string;
   // the look the editor starts on: the shown kind when the theme has that look
   readonly kind: LookKind;
   // Next Wallpaper's shortcut as this platform writes it

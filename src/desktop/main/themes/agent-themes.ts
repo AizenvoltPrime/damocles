@@ -302,7 +302,7 @@ export class AgentThemes {
   }
 
   /** The requests core makes for its theme tools. */
-  services(): Omit<ThemeHostServices, 'themes.analyze' | 'themes.analyzeSprite'> {
+  services(): Omit<ThemeHostServices, 'themes.analyze' | 'themes.analyzeSprite' | 'themes.copyName'> {
     return {
       'themes.render': async ({ theme, mode }, signal) => ({ png: await this.deps.renderer.preview(this.validated(theme), mode, signal) }),
       'themes.screenshotTake': (_params, signal) => this.screenshot(signal),
@@ -358,6 +358,7 @@ export class AgentThemes {
       ...(params.chatTitle !== undefined ? { chatTitle: params.chatTitle } : {}),
       change: params.change,
       ...(params.previousName !== undefined ? { previousName: params.previousName } : {}),
+      ...(params.previousId !== undefined ? { previousId: params.previousId } : {}),
     }, signal);
     const [outcome] = await Promise.all([waiting, this.holdBefore(params.entryId)]);
     return { outcome };

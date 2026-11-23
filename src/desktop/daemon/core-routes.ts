@@ -199,6 +199,7 @@ export const CORE_REQUEST_ROUTES: { readonly [M in keyof CoreRequests]: CoreRequ
   'themes.pendingExtended': { to: 'refused' },
   'themes.currentArrangement': { to: 'refused' },
   'themes.applyArrangement': { to: 'refused' },
+  'themes.copyName': { to: 'refused' },
   'themes.showInWindow': { to: 'refused' },
   'themes.stopShowing': { to: 'refused' },
   'themes.state': { to: 'refused' },
@@ -524,8 +525,8 @@ export const MAIN_EVENT_ROUTES: Readonly<Record<keyof MainEvents, 'core' | 'host
  * union: the union of each client's latest set, which a client's own patch replaces and which outlives its detach;
  * folders: the attached clients' projects, a busy one kept; panel: per panel, by the client's view; perClient: keyed by the
  * sending client's id (editor, terminal and language as clientEditor, clientTerminal and clientLanguage), dropped when it
- * detaches; daemonOwned: the daemon publishes it, a client's delta is dropped (state: core's key-value state is the daemon's
- * own).
+ * detaches; daemonOwned: a client's delta is dropped, and only the daemon itself publishes the topic, if anything does
+ * (state: core's key-value state is the daemon's own).
  */
 export const MIRROR_TOPIC_ROUTES: Readonly<Record<keyof MirrorTopics, 'union' | 'folders' | 'panel' | 'perClient' | 'daemonOwned'>> = {
   state: 'daemonOwned',
@@ -541,6 +542,8 @@ export const MIRROR_TOPIC_ROUTES: Readonly<Record<keyof MirrorTopics, 'union' | 
   actingClient: 'daemonOwned',
   hostSockets: 'daemonOwned',
   clientNetwork: 'daemonOwned',
+  // a client's OS colors are its own computer's, and a daemon's core builds no theme store
+  systemTheme: 'daemonOwned',
   clientEditor: 'daemonOwned',
   clientTerminal: 'daemonOwned',
   clientLanguage: 'daemonOwned',
@@ -1514,11 +1517,12 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
           case 'actingClient':
           case 'hostSockets':
           case 'clientNetwork':
+          case 'systemTheme':
           case 'clientEditor':
           case 'clientTerminal':
           case 'clientLanguage':
           case 'clientFeatures':
-            log(`[core-host] dropped ${client.id}'s ${topic}, which the daemon publishes`);
+            log(`[core-host] dropped ${client.id}'s ${topic}, which no client publishes to the daemon's core`);
             return;
           default: {
             const unrouted: never = topic;

@@ -3,9 +3,19 @@
 // the timeout undoes every change it covers, and every waiting tool call gets the end.
 import { KEEP_CHANGES_MS, type KeepChangesEndedBy, type KeepChangesState } from '../../../shared/themes/agent';
 import type { ThemeHistoryChange } from '../../../shared/themes/changes';
+import { shownChange, shownStoredName } from './theme-files';
 
 // How long the banner says Kept or Reverted after the end.
 export const KEEP_RESULT_LINGER_MS = 5_000;
+
+/** The banner's state as the shell shows it: every built-in it names by id in the UI's language. */
+export function shownKeepChanges(state: KeepChangesState, localization: { t(message: string): string }): KeepChangesState {
+  return {
+    ...state,
+    change: shownChange(state.change, localization),
+    ...(state.previousName !== undefined ? { previousName: shownStoredName(state.previousId, state.previousName, localization) } : {}),
+  };
+}
 
 export type KeepOutcome = 'kept' | 'reverted';
 
@@ -18,6 +28,7 @@ export interface KeepChangesAsk {
   readonly chatTitle?: string;
   readonly change: ThemeHistoryChange;
   readonly previousName?: string;
+  readonly previousId?: string;
 }
 
 export interface KeepChangesDeps {
@@ -107,7 +118,7 @@ export class KeepChanges {
     const countdown = running ?? { entryId: ask.entryId, state: undefined as unknown as KeepChangesState, actors: new Set<string>(), timer: undefined, waiters: new Set(), asked: false };
     countdown.actors.add(ask.chatId ?? '');
     const several = countdown.actors.size > 1;
-    const previousName = running ? running.state.previousName : ask.previousName;
+    const { previousName, previousId } = running ? running.state : ask;
     this.clearTimer(countdown.timer);
     this.clearTimer(this.linger);
     countdown.state = {
@@ -117,6 +128,7 @@ export class KeepChanges {
       ...(!several && ask.chatTitle !== undefined ? { chatTitle: ask.chatTitle } : {}),
       change: ask.change,
       ...(previousName !== undefined ? { previousName } : {}),
+      ...(previousId !== undefined ? { previousId } : {}),
       changeCount: running ? running.state.changeCount + 1 : 1,
       ...(several ? { several: true as const } : {}),
     };

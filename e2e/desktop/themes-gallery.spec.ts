@@ -49,7 +49,10 @@ for (const width of WIDTHS) {
       await page.getByRole('radio', { name: 'Damocles, dark', exact: true }).click();
       await expect(page.getByRole('radio', { name: 'Damocles, dark, active', exact: true })).toBeVisible();
       await expect.poll(() => background(tab)).toBe(BUILTIN_DARK_BG);
+      // System colors, the second built-in, sits between Damocles and Aurora
       await page.getByRole('radio', { name: 'Damocles, dark, active', exact: true }).press('ArrowRight');
+      await expect(page.getByRole('radio', { name: 'System colors, dark, active', exact: true })).toBeFocused();
+      await page.getByRole('radio', { name: 'System colors, dark, active', exact: true }).press('ArrowRight');
       await expect(page.getByRole('radio', { name: 'Aurora, dark, active', exact: true })).toBeVisible();
       await expect(page.getByRole('radio', { name: 'Aurora, dark, active', exact: true })).toBeFocused();
       await expect.poll(() => readUserSettings(home)['damocles.desktop.themes.dark']).toBe(BUILTIN_AURORA);
@@ -186,20 +189,20 @@ for (const width of WIDTHS) {
       await undo();
       await expect.poll(async () => (await shellState(app)).layout.grid.slots).toEqual(before.layout.grid.slots);
       expect((await shellState(app)).layout.sidebarWidth).toBe(before.layout.sidebarWidth);
-      expect(await menuItemState(app, 'damocles.themes.restartWithDefault')).toEqual({ enabled: true, visible: true, accelerator: null });
+      expect(await menuItemState(app, 'damocles.themes.restartWithDamocles')).toEqual({ enabled: true, visible: true, accelerator: null });
       expect(await menuItemState(app, 'damocles.themes.undo')).toMatchObject({ enabled: true, visible: true });
     });
   });
 }
 
-test('safe start shows the default theme with its banner until Use my theme', async ({ home, launch }) => {
+test('safe start shows the Damocles theme with its banner until Use my theme', async ({ home, launch }) => {
   writeTheme(home, AURORA, aurora);
   writeUserSettings(home, { 'damocles.desktop.theme': 'dark', 'damocles.desktop.themes.dark': AURORA });
   const { app } = await launch({ args: ['--damocles-safe-theme'] });
   const tab = await activeChat(app);
   const shell = await shellPage(app);
   await expect(chatInput(tab)).toBeVisible();
-  const banner = shell.getByRole('region', { name: 'Started with the default theme.' });
+  const banner = shell.getByRole('region', { name: 'Started with the Damocles theme.' });
   await expect(banner).toBeVisible();
   await expect(banner).toHaveAttribute('data-trusted', '');
   expect(await background(tab)).toBe(BUILTIN_DARK_BG);
@@ -240,6 +243,6 @@ test('two renderer crashes within a minute under a custom theme switch the run t
   await crash('/shell/index.html');
   await expect.poll(() => inShell(banner), { timeout: 20_000 }).toBe('none');
   await crash('/panel/');
-  await expect.poll(() => inShell(banner), { timeout: 20_000 }).toContain('Damocles switched to the default theme because the window kept crashing.');
+  await expect.poll(() => inShell(banner), { timeout: 20_000 }).toContain('The window kept crashing, so this run shows the Damocles theme.');
   expect(await inShell(`getComputedStyle(document.documentElement).getPropertyValue('--d-bg').trim()`)).toBe('#0b0f14');
 });

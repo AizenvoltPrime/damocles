@@ -1,8 +1,8 @@
 # Desktop themes
 
 A theme changes the colors, fonts, line spacing, corners, density, chat column width, wallpapers and project characters of the Damocles desktop app. This
-page is the reference for theme authors: where themes live, the file format and its limits. The VS Code extension keeps VS
-Code's own theme and reads no theme file.
+page is the reference for theme authors: where themes live, the file format and its limits, and how VS Code themes, base16
+schemes and GTK, KDE and Qt color schemes import. The VS Code extension keeps VS Code's own theme and reads no theme file.
 
 ## Where themes live
 
@@ -27,7 +27,8 @@ Each theme is a folder under `~/.damocles/themes/themes/`, named by the theme's 
 Damocles also ships read-only example themes: Aurora (`damocles-aurora`, a night look and a dawn look with one image of
 northern lights across the window), Paper (`damocles-paper`, a warm light look with square corners, density 0.9 and a
 40rem chat column) and Arcade (`damocles-arcade`, a neon dark look with six pixel characters for your projects). Duplicate
-one to edit a copy.
+one to edit a copy. System colors (`damocles-system`) is built in too, with no file of its own: see
+[The System colors theme](#the-system-colors-theme).
 
 Damocles writes these files itself (Settings › Appearance: Duplicate, the color editor, Rename and Delete) and reads every
 file again before it uses it. You may write a theme folder by hand: Damocles picks it up within a moment. The folder's
@@ -41,11 +42,11 @@ history (`history/index.json`): while a newer Damocles' history is there, this o
 change, Undo or Restore, each saying so.
 
 Settings › Appearance picks one theme for the dark look and one for the light look (`damocles.desktop.themes.dark` and
-`damocles.desktop.themes.light`, default `damocles`, the built-in theme); the Mode row (`damocles.desktop.theme`: System,
-Dark or Light) decides which of the two shows. A picked theme that is missing, broken or has no look of that kind shows the
-Damocles look instead, and Settings names it. Reset Theme to Default (View menu, the command palette, or
-Ctrl+Alt+Shift+0, Cmd+Alt+Shift+0 on macOS) sets both back to Damocles. Under a Windows contrast theme the built-in look
-always shows.
+`damocles.desktop.themes.light`; unset, each means `damocles`, the built-in theme); the Mode row (`damocles.desktop.theme`:
+System, Dark or Light) decides which of the two shows. A new install sets both to System colors (`damocles-system`) on its
+first launch. A picked theme that is missing, broken or has no look of that kind shows the Damocles look instead, and
+Settings names it. Reset Theme to Default (View menu, the command palette, or Ctrl+Alt+Shift+0, Cmd+Alt+Shift+0 on macOS)
+sets both to System colors. Under a Windows contrast theme the built-in Damocles look always shows.
 
 ## The file
 
@@ -306,6 +307,89 @@ fails, menus, dialogs, Settings and the chat's approval cards keep the Damocles 
 readable; the rest of the window shows your colors. A remote host's color stripe, chip and badges always use Damocles' own
 colors.
 
+## The System colors theme
+
+System colors (`damocles-system`) is a built-in, read-only theme whose two looks follow this computer's colors. It has no
+file: Damocles builds it from what the operating system reports, and builds it again whenever the system says a color
+changed, so the window, Settings and its card repaint at once. The change is the computer's, like a switch between light
+and dark mode, so no keep-changes banner shows and nothing is written to the theme history.
+
+What it reads:
+
+| System | Colors |
+| --- | --- |
+| Windows | The accent color. Every other color is Damocles' own of that kind. |
+| macOS | The accent color, and for the appearance the app shows: the text background (Background), the window background (Panel), the label color (Text), and system green, orange, red and blue (Success, Warning, Danger, Info). The separator and secondary label colors become the border and muted text colors where they keep contrast. |
+| Linux | The palette of the desktop's own source (below), and the accent color the desktop portal reports wherever that source sets none. On any other desktop, Damocles' own colors with the portal's accent. |
+
+On Linux System colors reads one source, chosen at launch from the environment. Its colors map as an
+[import](#importing-gtk-kde-and-qt-color-schemes) of the same format does:
+
+1. **KDE**, when `XDG_CURRENT_DESKTOP` names KDE: `kdeglobals` as KDE apps read it, `$XDG_CONFIG_HOME/kdeglobals` over
+   each `$XDG_CONFIG_DIRS/kdeglobals` (`/etc/xdg` when unset) and an earlier folder of that list over a later one, key by key, with
+   KDE's built-in Breeze colors for every color none of them sets. It gives the look of its background's kind.
+2. **GNOME**, when `XDG_CURRENT_DESKTOP` names GNOME and not KDE: libadwaita's colors of each kind under the colors
+   `$XDG_CONFIG_HOME/gtk-4.0/gtk.css` defines, its `@media (prefers-color-scheme: dark)` and `light` blocks for that
+   kind. The accent is the file's, else the portal's, else libadwaita blue. It gives both looks, so it switches with
+   dark and light.
+3. **qt5ct or qt6ct**, when `QT_QPA_PLATFORMTHEME` is `qt5ct` or `qt6ct` on another desktop: with `[Appearance]
+   custom_palette=true` in `qt5ct/qt5ct.conf` (or `qt6ct/qt6ct.conf`), the palette file `color_scheme_path` names, which
+   must be an absolute path. It gives the look of its Base color's kind.
+
+`$XDG_CONFIG_HOME` counts only when it is an absolute path; otherwise it is `~/.config`. A look the source does not give
+is Damocles' own with the accent. Damocles reads the files again 100 ms after one of them changes, a replacement by
+rename included, and whenever the system's dark or light setting changes, the accent included. A followed file
+(`kdeglobals`, `gtk-4.0/gtk.css`, the qt5ct or qt6ct conf, or the palette file it names) that is a link to a file changed
+elsewhere is seen only then or at the next launch. At launch Damocles waits at most a second for these files; colors
+read later repaint the window when they arrive.
+
+A file that is not a regular file, is larger than 1 MB or cannot be read gives no palette (on GNOME, libadwaita's own
+colors), and the log says why once. A `kdeglobals` in an `$XDG_CONFIG_DIRS` folder is the exception: it is skipped, as
+KDE skips it, and the log says so. A KDE value that is not a color reads as KDE's built-in color for that key, as KDE apps
+show it. A `gtk.css` that defines none of the colors, one that only imports another file included, gives libadwaita's
+colors; the imported file is not followed, and the log names it. Damocles does not read GTK 3 themes or `gtk-3.0/gtk.css`.
+
+Fallbacks:
+
+- A color the system does not report, reports fully transparent, or reports in a form Damocles cannot read, is Damocles'
+  own color for that role.
+- A translucent color is painted over the background of the look it is used in first, since a theme's main colors are
+  opaque.
+- macOS reports colors only for the appearance the app currently shows. The other look uses what was read the last time it
+  showed in this run, and until then Damocles' own colors with the accent. Colors read while macOS reports a background of
+  the other appearance are not kept.
+- Every text color is held at 4.5:1 as for any theme (see [How the colors are used](#how-the-colors-are-used)). Unlike
+  other themes, every fill System colors takes from the computer (the accent, success, warning, danger and info) is also held
+  at 3:1 against the background and the panel, with its label still at 4.5:1: it keeps its hue, and its lightness moves only
+  as far as that needs, so a typical accent such as Windows blue shows unchanged. An exact color the system gives for a
+  derived token (the macOS border and muted text, KDE's inactive text and Qt's placeholder text as the muted text) is kept
+  only while no contrast rule names it.
+- Colors that cannot meet these together are replaced by Damocles' own with the accent, so menus, dialogs and approval
+  cards never have to fall back to other colors while System colors shows. A palette whose background is of the other kind
+  gives that look only its fills. The log says once per change which look fell back and why.
+- Under a Windows contrast theme and in safe start the fixed Damocles look shows, never System colors.
+
+On Windows the result is close to the Damocles theme with your accent, and not identical: Damocles pins every derived
+color of its own theme by hand, and System colors derives them.
+
+Using it:
+
+- **A new install** starts with System colors for both looks. Damocles decides this once, on the first launch, and only
+  on a computer where Damocles never ran: no `~/.damocles` folder when the app starts and no saved app state. Anyone who
+  already used Damocles on this computer, the VS Code extension included, has that folder and keeps the Damocles look
+  until they pick System colors or reset.
+- **Reset Theme to Default** sets both looks to System colors.
+- **A missing theme** still shows Damocles, not System colors: a look whose theme was deleted, is broken or needs a newer
+  Damocles, and a look setting that was never set, show the built-in Damocles look.
+- **Duplicate** makes an editable theme with the colors of that moment. The copy no longer follows the computer.
+- **Export** writes those same colors of the moment to a `.damocles-theme` file, with no images or fonts.
+- **View** opens it in the theme editor read-only. The editor shows new colors as the system changes them.
+- The agent's ThemeRead lists and reads it like any theme. A ThemeSet that names it and changes nothing picks System colors
+  itself for one look, so the look keeps following the computer; a ThemeSet that changes it edits a copy, which does not.
+
+An older Damocles that shares `~/.damocles` does not know `damocles-system`: it shows a look set to it as a missing theme,
+with the Damocles look in its place, and changes nothing.
+
 ## Custom CSS
 
 ```json
@@ -482,7 +566,8 @@ Install. A card left unanswered for an hour closes, since Damocles drops the fil
 ThemeSet ends as expired, and starting the install again reads the file again. The install:
 
 - always gives the theme a new id; the file's id and `origin` are ignored, and Damocles writes the origin itself (`import` for
-  a file, `vscode` for a VS Code theme, `link` for a download);
+  a file, `vscode` for a VS Code theme, `base16` for a base16 or base24 scheme, `gtk`, `kde` and `qt` for a GTK, KDE or Qt
+  color scheme, `link` for a downloaded Damocles theme; a downloaded scheme or VS Code theme takes its format's kind);
 - never reads a flash allowance from the file: a flagged wallpaper or sprite arrives blocked, and only you allow it on this
   computer, on the install card's Allow flashing for this file or later in the theme editor, never the file or the agent;
 - stores the theme under its name flattened to one line, without control or bidi characters, as the card showed it, and
@@ -551,6 +636,133 @@ paints each with (`--s-kw` keywords, `--s-str` strings, `--s-num` numbers and co
 functions, `--s-type` types); the most specific selector wins. A color the theme leaves out comes from VS Code's default for
 its base (`uiTheme` `vs-dark`, `vs`, `hc-black` or `hc-light`). A high contrast theme becomes a dark or light look and the card
 says so; Windows contrast themes are the way to keep high contrast everywhere.
+
+### Importing base16 and base24 schemes
+
+Import also takes a [Tinted Theming](https://github.com/tinted-theming/home) base16 or base24 scheme: a `.yaml` or `.yml`
+file in the current layout (`system`, `name`, `variant` and a `palette` map) or the legacy one (`scheme` and top-level
+`baseXX` keys). A file whose name says nothing, such as a link ending in `/download`, is read as a scheme when it has a
+`base00:` or `palette:` key. The scheme becomes one look: `variant` names its kind, else base00's luminance does (light above
+0.4). The name is `name` (current layout) or `scheme` (legacy layout), else the file name; `author` and `description` are kept.
+
+| Damocles | base16 |
+| --- | --- |
+| background | base00 |
+| panel | base01 |
+| text | base05 |
+| accent | base0D |
+| success | base0B |
+| warning | base0A |
+| danger | base08 |
+| info | base0C |
+| `--s-kw`, `--s-str`, `--s-num`, `--s-com`, `--s-fn`, `--s-type` | base0E, base0B, base09, base03, base0D, base0A |
+| `--d-ansi-1` to `--d-ansi-6` | base08, base0B, base0A, base0D, base0E, base0C |
+| `--d-ansi-7`, `--d-ansi-8` | base05, base03 |
+| `--d-ansi-9` to `--d-ansi-14` | base16: as 1 to 6; base24: base12, base14, base13, base16, base17, base15 |
+
+A scheme is base24 when its `system` is `base24` or, with no `system`, when it sets any of base12 to base17. A base24
+bright color the scheme leaves out takes the base16 color the base24 spec gives (base12 base08, base13 base0A, base14
+base0B, base15 base0C, base16 base0D, base17 base0E). The spec puts base00 in ANSI slot 0, but Damocles exempts one slot per kind
+from contrast as the background (ansi-0 on dark, ansi-15 on light), so base00 goes to that slot and base07 to the other end:
+on a dark look 0 is base00 and 15 is base07, on a light look 0 is base07 and 15 is base00.
+
+Colors are kept exactly as the scheme sets them, as editors show a theme's code colors. The card lists each color below 4.5:1;
+base03, the comment color, often is. While such a look shows, trusted UI uses the built-in palette, and the terminal still
+draws its text at 4.5:1. The YAML is read with every value a string (an unquoted `base00: 000000` stays a color), and a file
+with an alias or a duplicate key is refused, as is a color that is not `#rrggbb` or `rrggbb`, a missing base00 to base0F, a
+`system` other than `base16` or `base24`, and YAML nested more than 64 levels deep.
+
+### Importing GTK, KDE and Qt color schemes
+
+Import also takes the color scheme a Linux desktop already uses, so its colors need no binding by hand:
+
+- a KDE color scheme: a `.colors` file (`~/.local/share/color-schemes/`) or `kdeglobals` (`~/.config/kdeglobals`);
+- a qt5ct or qt6ct palette: a `.conf` file from `~/.config/qt5ct/colors/` or `~/.config/qt6ct/colors/`;
+- GTK colors: a `.css` file of `@define-color name value;` lines or libadwaita's `:root { --name: value; }` variables, such
+  as `~/.config/gtk-4.0/gtk.css`.
+
+A file whose name says nothing, such as a link ending in `/download`, is read by its content: `[ColorScheme]` with
+`active_colors=` is Qt, `[Colors:View]` or `[Colors:Window]` is KDE, and `@define-color` or a `:root {` block opening with a
+`--` property is GTK. Colors are kept exactly as the scheme sets them, and the card lists each below 4.5:1, as for a base16
+scheme. A translucent color is painted over the look's background. One warning names the seeds a scheme leaves out, which
+come from the defaults the table names.
+
+KDE and Qt schemes are one look, of the kind their background's luminance gives (light above 0.4). KDE's name is `[General]
+Name` (the key without a locale suffix such as `Name[de]`), else `ColorScheme`, else the file name; a Qt or GTK file is
+named by its file name.
+
+| Damocles | KDE | Qt (`active_colors` role) | GTK, first one the file defines |
+| --- | --- | --- | --- |
+| background | View/BackgroundNormal | Base | `view_bg_color`, `theme_base_color` |
+| panel | Window/BackgroundNormal | Window | `window_bg_color`, `theme_bg_color` |
+| text | View/ForegroundNormal | Text | `view_fg_color`, `theme_text_color`, `window_fg_color`, `theme_fg_color` |
+| accent | `[General] AccentColor`, else Selection/BackgroundNormal | Accent, else Highlight | `accent_bg_color`, `theme_selected_bg_color`, `accent_color` |
+| success | View/ForegroundPositive | none | `success_bg_color`, `success_color` |
+| warning | View/ForegroundNeutral | none | `warning_bg_color`, `warning_color` |
+| danger | View/ForegroundNegative | none | `error_bg_color`, `destructive_bg_color`, `error_color`, `destructive_color` |
+| info | View/ForegroundActive | Link | none: libadwaita blue `#3584e4` |
+| `--d-muted` | View/ForegroundInactive | PlaceholderText | none |
+| what is missing | Damocles' look of the kind | Damocles' look of the kind | libadwaita's look of the kind |
+
+**KDE.** Colors are `r,g,b` or `r,g,b,a` (each 0 to 255), or a `#rrggbb` or color name as KConfig reads them. A key or
+group marked `[$i]` is read as KDE reads it. KDE stores
+no success, warning or danger backgrounds (KColorScheme tints them from the text colors), so the positive, neutral and
+negative text colors are the fills. Plasma 5.25 and later keep your accent color in `[General] AccentColor`. A file that sets
+neither View/BackgroundNormal nor View/ForegroundNormal is refused.
+
+**Qt.** `[ColorScheme] active_colors` lists `#aarrggbb` colors (alpha first) in QPalette role order: 0 WindowText, 1 Button,
+2 Light, 3 Midlight, 4 Dark, 5 Mid, 6 Text, 7 BrightText, 8 ButtonText, 9 Base, 10 Window, 11 Shadow, 12 Highlight,
+13 HighlightedText, 14 Link, 15 LinkVisited, 16 AlternateBase, 17 NoRole, 18 ToolTipBase, 19 ToolTipText, 20 PlaceholderText,
+and 21 Accent, which Qt 6.6 and later write. A list shorter than 20 is refused. Colors may also be `#rrrgggbbb` or
+`#rrrrggggbbbb`, as QColor reads them, and the file follows QSettings' rules: a `;` outside quotes starts a comment, and a
+`\` at the end of a line continues it. Qt has no success, warning or danger role, so those come from Damocles and the card
+always says so.
+
+**GTK.** Each libadwaita color is one name in both spellings, so `@define-color accent_bg_color` and `--accent-bg-color`
+set the same color. Any other `@name` and `--name` are apart, as in GTK. Seeds are fills, so each `*_bg_color` comes
+before the standalone `*_color` text variant. Values may be `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb()` and `rgba()`
+in either syntax (`r, g, b[, a]` or `r g b[ / a]`), CSS color names, `@name` and `var(--name)` references (with a `var()`
+fallback), and GTK's functions, whose factor is a plain number:
+
+| Function | Result |
+| --- | --- |
+| `mix(a, b, f)` | each channel, alpha included, `f` of the way from `a` to `b` |
+| `alpha(c, f)` | `c` with its alpha times `f` |
+| `shade(c, f)` | `c` with its HLS lightness and saturation times `f`, each kept within 0 to 1 |
+| `lighter(c)`, `darker(c)` | `shade(c, 1.3)`, `shade(c, 0.7)` |
+
+A reference to a name the file does not define reads libadwaita's value of the kind: its UI colors, the GNOME palette
+(`blue_3`), the accent choices (`accent_blue`) and the GTK3 compatibility names, which follow the file's own colors as in
+libadwaita (`theme_bg_color` is `@window_bg_color`, `theme_base_color` is `@view_bg_color`, and so on). Any other
+expression, such as `color-mix()`, `hsl()` or `oklab(from ...)`, leaves its seed to libadwaita, and the card names the
+variable. A reference that leads back to itself is refused, as are more than 32 references in a row or color functions
+nested more than 32 deep.
+
+Top-level definitions apply to both kinds, and an `@media (prefers-color-scheme: dark)` or `light` block to its own, the
+later definition of a name winning, so one file can give a dark and a light look. The looks are the kinds with a media
+block, plus, when the top level sets a color Damocles reads, the kind of its top-level background (or panel), or both kinds
+when it sets neither or that color follows a libadwaita color the file does not define. Rules other than `:root` are
+skipped. `@import` is never followed, and the card names each one. A file that defines none of the colors and imports
+another file is refused with the imported file's name, so you can import that file instead. Most packaged GTK3 themes
+compile their colors into a `.gresource` file, so a `gtk.css` that only imports a `resource://` URL is refused with that
+explanation.
+
+libadwaita's defaults, from its [CSS variables](https://gnome.pages.gitlab.gnome.org/libadwaita/doc/main/css-variables.html):
+
+| Seed | Light | Dark |
+| --- | --- | --- |
+| background (`view_bg_color`) | `#ffffff` | `#1d1d20` |
+| panel (`window_bg_color`) | `#fafafb` | `#222226` |
+| text (`view_fg_color`) | `rgb(0 0 6 / 80%)`, `#333338` over the background | `#ffffff` |
+| accent (`accent_bg_color`) | `#3584e4` | `#3584e4` |
+| success (`success_bg_color`) | `#2ec27e` | `#26a269` |
+| warning (`warning_bg_color`) | `#e5a50a` | `#cd9309` |
+| danger (`error_bg_color`) | `#e01b24` | `#c01c28` |
+| info | `#3584e4` | `#3584e4` |
+
+Every one of these files is read as untrusted text in linear time: an INI file is refused with more than 20,000 lines or
+1,000 groups, or with a NUL byte, and a line that is neither a comment, a `[group]` nor `key=value` is refused with its
+number.
 
 ## Community store
 

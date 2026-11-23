@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { DEFAULT_THEME_ID } from '../../../shared/themes/builtin';
 import type { Arrangement, ThemeFile } from '../../../shared/themes/schema';
 import { ThemeCommands, type ThemeCommandsClient, type ThemeCommandsDeps } from '../theme-commands';
 import type { LibraryEntry } from '../themes/theme-files';
@@ -26,11 +27,15 @@ function fakeClient(): { [K in keyof ThemeCommandsClient]: ReturnType<typeof vi.
   };
 }
 
+type Look = ReturnType<ThemeCommandsDeps['shown']> & ReturnType<ThemeCommandsDeps['decided']>;
+
 interface Setup {
   engine?: boolean;
-  shown?: ReturnType<ThemeCommandsDeps['shown']>;
+  shown?: Look;
   // what the screen shows once main wrote both preferred looks
-  shownAfterReset?: ReturnType<ThemeCommandsDeps['shown']>;
+  shownAfterReset?: Look;
+  // the look beneath forced colors and safe start; the shown look when unset
+  decided?: ReturnType<ThemeCommandsDeps['decided']>;
   entries?: readonly ThemeFile[];
   selectedProject?: string;
   noticeAnswer?: number;
@@ -47,7 +52,8 @@ function setup(options: Setup = {}) {
   const openEditor = vi.fn(async () => true);
   const revealThemeFile = vi.fn(async () => undefined);
   const entries = new Map((options.entries ?? []).map((theme): [string, LibraryEntry] => [theme.id, { status: 'ok', id: theme.id, builtin: false, theme }]));
-  const before = options.shown ?? { kind: 'dark' as const, decidedBy: 'mode' as const, builtin: false };
+  const before: Look = options.shown ?? { kind: 'dark', decidedBy: 'mode' };
+  const shown = (): Look => (written.length >= 2 && options.shownAfterReset ? options.shownAfterReset : before);
   const commands = new ThemeCommands({
     client: () => (options.engine === false ? undefined : (client as unknown as ThemeCommandsClient)),
     settings: {
@@ -56,7 +62,8 @@ function setup(options: Setup = {}) {
         written.push([key, value]);
       },
     },
-    shown: () => (written.length >= 2 && options.shownAfterReset ? options.shownAfterReset : before),
+    shown,
+    decided: () => options.decided ?? shown(),
     shownKind: () => before.kind,
     preferred: () => ID,
     now: () => 1234,
@@ -91,18 +98,18 @@ describe('Toggle Theme', () => {
 
   it('holds the preferred look of the other kind while the schedule decides, and the built-in one when that theme lacks the kind', async () => {
     const night: ThemeFile = { schemaVersion: 1, id: ID, name: 'Night', looks: { dark: { colors: COLORS }, light: { colors: COLORS } } };
-    const scheduled = setup({ shown: { kind: 'dark', decidedBy: 'schedule', builtin: false }, entries: [night] });
+    const scheduled = setup({ shown: { kind: 'dark', decidedBy: 'schedule' }, entries: [night] });
     await scheduled.commands.toggle();
     expect(scheduled.client.themesHold).toHaveBeenCalledWith({ themeId: ID, kind: 'light', at: 1234 });
     expect(scheduled.written).toEqual([]);
 
-    const darkOnly = setup({ shown: { kind: 'dark', decidedBy: 'override', builtin: false }, entries: [{ ...night, looks: { dark: { colors: COLORS } } }] });
+    const darkOnly = setup({ shown: { kind: 'dark', decidedBy: 'override' }, entries: [{ ...night, looks: { dark: { colors: COLORS } } }] });
     await darkOnly.commands.toggle();
     expect(darkOnly.client.themesHold).toHaveBeenCalledWith({ themeId: 'damocles', kind: 'light', at: 1234 });
   });
 
   it("writes nothing while the selected project's own theme decides the look, and offers that project's look", async () => {
-    const { commands, written, client, notices, projectLooks } = setup({ shown: { kind: 'dark', decidedBy: 'project', builtin: false }, selectedProject: 'c:/work/app', noticeAnswer: 0 });
+    const { commands, written, client, notices, projectLooks } = setup({ shown: { kind: 'dark', decidedBy: 'project' }, selectedProject: 'c:/work/app', noticeAnswer: 0 });
     await commands.toggle();
     await settle();
     expect(written).toEqual([]);
@@ -113,7 +120,7 @@ describe('Toggle Theme', () => {
   });
 
   it('opens no dialog when the notice is dismissed', async () => {
-    const { commands, projectLooks } = setup({ shown: { kind: 'light', decidedBy: 'project', builtin: false }, selectedProject: 'c:/work/app' });
+    const { commands, projectLooks } = setup({ shown: { kind: 'light', decidedBy: 'project' }, selectedProject: 'c:/work/app' });
     await commands.toggle();
     await settle();
     expect(projectLooks).toEqual([]);
@@ -129,19 +136,48 @@ describe('Reset Theme to Default', () => {
     expect(safeStart).not.toHaveBeenCalled();
   });
 
-  it('writes the two preferred looks itself while the engine is down, which shows the built-in look when they decided it', async () => {
-    const { commands, written, safeStart } = setup({ engine: false, shownAfterReset: { kind: 'dark', decidedBy: 'mode', builtin: true } });
-    await commands.reset();
-    expect(written).toEqual([['damocles.desktop.themes.dark', 'damocles'], ['damocles.desktop.themes.light', 'damocles']]);
-    expect(safeStart).not.toHaveBeenCalled();
+  // System colors is a derived look (builtin: false), so the look's own flag cannot tell whether the reset took
+  it('writes the default theme to the two preferred looks itself while the engine is down, with no safe start when they decide the look', async () => {
+    expect(DEFAULT_THEME_ID).toBe('damocles-system');
+    for (const decidedBy of ['mode', 'system'] as const) {
+      const { commands, written, safeStart } = setup({ engine: false, shown: { kind: 'dark', decidedBy }, shownAfterReset: { kind: 'dark', decidedBy } });
+      await commands.reset();
+      expect(written).toEqual([['damocles.desktop.themes.dark', DEFAULT_THEME_ID], ['damocles.desktop.themes.light', DEFAULT_THEME_ID]]);
+      expect(safeStart, decidedBy).not.toHaveBeenCalled();
+    }
   });
 
-  it('shows the default theme for this run while the engine is down and the schedule or a project look still decides', async () => {
+  it('shows the Damocles theme for this run while the engine is down and the schedule or a project look still decides', async () => {
     for (const decidedBy of ['schedule', 'override', 'project'] as const) {
-      const { commands, written, safeStart } = setup({ engine: false, shown: { kind: 'dark', decidedBy, builtin: false } });
+      const { commands, written, safeStart } = setup({ engine: false, shown: { kind: 'dark', decidedBy } });
       await commands.reset();
       expect(written).toHaveLength(2);
       expect(safeStart, decidedBy).toHaveBeenCalledOnce();
+    }
+  });
+
+  // touches keep the base look's decidedBy, so they would stay on top of System colors after main's Reset
+  it("shows the Damocles theme for this run while the engine is down and the selected project's touches show", async () => {
+    const { commands, written, safeStart } = setup({ engine: false, shown: { kind: 'dark', decidedBy: 'system', touches: ['accent'] } });
+    await commands.reset();
+    expect(written).toHaveLength(2);
+    expect(safeStart).toHaveBeenCalledOnce();
+  });
+
+  // the look beneath comes back when the contrast theme ends or the user picks Use my theme
+  it('decides from the look beneath forced colors or safe start while the engine is down', async () => {
+    for (const decidedBy of ['forcedColors', 'safeStart'] as const) {
+      const preferred = setup({ engine: false, shown: { kind: 'dark', decidedBy }, decided: { decidedBy: 'system' } });
+      await preferred.commands.reset();
+      expect(preferred.written).toEqual([['damocles.desktop.themes.dark', DEFAULT_THEME_ID], ['damocles.desktop.themes.light', DEFAULT_THEME_ID]]);
+      expect(preferred.safeStart, decidedBy).not.toHaveBeenCalled();
+
+      for (const beneath of [{ decidedBy: 'schedule' }, { decidedBy: 'project' }, { decidedBy: 'mode', touches: ['wallpaper'] }] as const) {
+        const engineDecided = setup({ engine: false, shown: { kind: 'dark', decidedBy }, decided: beneath });
+        await engineDecided.commands.reset();
+        expect(engineDecided.written).toHaveLength(2);
+        expect(engineDecided.safeStart, `${decidedBy} over ${beneath.decidedBy}`).toHaveBeenCalledOnce();
+      }
     }
   });
 });
@@ -152,9 +188,10 @@ describe('Settings › Appearance actions', () => {
     expect(await mode.commands.act({ action: 'mode', mode: 'light' })).toEqual({ ok: true });
     expect(mode.written).toEqual([['damocles.desktop.theme', 'light']]);
 
-    const reset = setup({ engine: false, shownAfterReset: { kind: 'dark', decidedBy: 'mode', builtin: true } });
+    const reset = setup({ engine: false, shownAfterReset: { kind: 'dark', decidedBy: 'mode' } });
     expect(await reset.commands.act({ action: 'reset' })).toEqual({ ok: true });
-    expect(reset.written).toEqual([['damocles.desktop.themes.dark', 'damocles'], ['damocles.desktop.themes.light', 'damocles']]);
+    expect(reset.written).toEqual([['damocles.desktop.themes.dark', DEFAULT_THEME_ID], ['damocles.desktop.themes.light', DEFAULT_THEME_ID]]);
+    expect(reset.safeStart).not.toHaveBeenCalled();
   });
 
   it('opens the editor and shows a theme\'s file while the engine is down', async () => {
@@ -174,6 +211,18 @@ describe('Settings › Appearance actions', () => {
     for (const action of actions) expect(await commands.act(action), action.action).toEqual({ ok: false, error: ENGINE_DOWN });
   });
 
+  it('names a Duplicate the gallery sent without a name as the agent\'s unnamed copy is named, and a new theme by the name it was given', async () => {
+    const night: ThemeFile = { schemaVersion: 1, id: ID, name: 'Night', looks: { dark: { colors: COLORS } } };
+    const { commands, client } = setup({ entries: [night] });
+    expect(await commands.act({ action: 'duplicate', themeId: ID })).toEqual({ ok: true, themeId: 'copy' });
+    expect(client.themesDuplicate).toHaveBeenLastCalledWith(ID, 'Night copy');
+    expect(await commands.act({ action: 'duplicate', themeId: ID, name: 'New theme' })).toEqual({ ok: true, themeId: 'copy' });
+    expect(client.themesDuplicate).toHaveBeenLastCalledWith(ID, 'New theme');
+    const gone = '1f8fad5b-d9cb-469f-a165-70867728950e';
+    expect(await commands.act({ action: 'duplicate', themeId: gone })).toEqual({ ok: false, error: `The theme ${gone} is missing, broken or needs a newer Damocles.` });
+    expect(client.themesDuplicate).toHaveBeenCalledTimes(2);
+  });
+
   it("names the entry an offered Undo was for, and answers the engine's refusal when another change was made since", async () => {
     const { commands, client } = setup();
     client.themesUndo.mockResolvedValueOnce({ undone: { kind: 'reset' } });
@@ -183,6 +232,12 @@ describe('Settings › Appearance actions', () => {
     expect(await commands.act({ action: 'undo', entryId: 'e1' })).toEqual({ ok: false, error: 'Another theme change was made after this one, so nothing was undone.' });
     expect(await commands.act({ action: 'undo' })).toEqual({ ok: true });
     expect(client.themesUndo).toHaveBeenLastCalledWith(undefined);
+  });
+
+  it('names a built-in in the undone change by its id, in the UI\'s language', async () => {
+    const { commands, client } = setup();
+    client.themesUndo.mockResolvedValueOnce({ undone: { kind: 'pick', look: 'dark', theme: 'stored', themeId: 'damocles-system', was: 'Night', wasId: ID } });
+    expect(await commands.act({ action: 'undo', entryId: 'e1' })).toEqual({ ok: true, undone: { kind: 'pick', look: 'dark', theme: 'System colors', themeId: 'damocles-system', was: 'Night', wasId: ID } });
   });
 
   it('sets the mode through the engine while it runs', async () => {

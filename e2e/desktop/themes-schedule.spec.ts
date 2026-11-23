@@ -353,6 +353,6 @@ test('safe start pauses the schedule until Use my theme', async ({ home, launch 
   await at(app, WED_2015);
   await expect.poll(async () => themeHooks(app).shown()).toMatchObject({ themeId: 'damocles', decidedBy: 'safeStart' });
   const shell = await shellPage(app);
-  await shell.getByRole('region', { name: 'Started with the default theme.' }).getByRole('button', { name: 'Use my theme', exact: true }).click();
+  await shell.getByRole('region', { name: 'Started with the Damocles theme.' }).getByRole('button', { name: 'Use my theme', exact: true }).click();
   await expect.poll(async () => themeHooks(app).shown()).toMatchObject({ themeId: GALAXY, decidedBy: 'schedule' });
 });

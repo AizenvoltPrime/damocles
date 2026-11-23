@@ -36,6 +36,8 @@ async function usingPointer(use: () => Promise<void>): Promise<void> {
 }
 
 export interface DesktopFixtures {
+  /** `test.use({ newInstall: true })` gives a home no Damocles ever ran on, where main chooses its default theme. */
+  newInstall: boolean;
   home: HermeticHome;
   /** Launches the app on `home`; every launch is closed and its logs attached after the test. */
   launch: (options?: LaunchOptions) => Promise<DesktopApp>;
@@ -54,9 +56,9 @@ export interface DesktopFixtures {
 }
 
 export const test = base.extend<DesktopFixtures>({
-  // eslint-disable-next-line no-empty-pattern
-  home: async ({}, use) => {
-    const home = createHermeticHome();
+  newInstall: [false, { option: true }],
+  home: async ({ newInstall }, use) => {
+    const home = createHermeticHome({ newInstall });
     await use(home);
     await home.dispose();
   },

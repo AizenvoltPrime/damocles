@@ -3,8 +3,8 @@
 import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
-import { BUILTIN_THEME, BUILTIN_THEME_ID } from '../../shared/themes/builtin';
 import { FONT_NAME, MAX_FONT_BYTES, reservedFontName } from '../../shared/themes/fonts';
+import { portableBuiltinTheme } from '../../shared/themes/portable-builtin';
 import { EXPORT_LICENSE_TEXT_CHARS, THEME_ARCHIVE_EXTENSION, type ThemeExportFont, type ThemeExportFontBytes, type ThemeExportPlan } from '../../shared/themes/install';
 import type { AssetMeta, FontChoice, ThemeFile } from '../../shared/themes/schema';
 import { l, verbatim } from '../l10n';
@@ -126,10 +126,8 @@ export async function buildExport(source: ExportSource, installed: readonly Them
   const refused = fonts.find((font) => font.font.verdict === 'refused');
   if (refused) throw new LocalizedError(refused.font.refusal ?? l('{0} cannot be shared in a theme file.', refused.font.family));
   const { origin: _origin, ...rest } = source.theme;
-  // the built-in's token overrides pin every derived token, so its export carries its colors only, as a copy of it does
-  const theme: Record<string, unknown> = source.theme.id === BUILTIN_THEME_ID
-    ? { schemaVersion: 1, id: BUILTIN_THEME_ID, name: BUILTIN_THEME.name, looks: Object.fromEntries(Object.entries(BUILTIN_THEME.looks).map(([kind, look]) => [kind, { colors: { ...look!.colors } }])) }
-    : JSON.parse(JSON.stringify(rest)) as Record<string, unknown>;
+  const portable = portableBuiltinTheme(source.theme);
+  const theme: Record<string, unknown> = portable ? { ...portable, id: source.theme.id } : JSON.parse(JSON.stringify(rest)) as Record<string, unknown>;
   const metas: Record<string, AssetMeta> = {};
   const assets = new Map<string, ArchiveAsset>();
   for (const [sha256, asset] of Object.entries(source.theme.assets ?? {})) {

@@ -2296,6 +2296,22 @@
             },
             {
               "type": "string",
+              "const": "base16"
+            },
+            {
+              "type": "string",
+              "const": "gtk"
+            },
+            {
+              "type": "string",
+              "const": "kde"
+            },
+            {
+              "type": "string",
+              "const": "qt"
+            },
+            {
+              "type": "string",
               "const": "link"
             },
             {

@@ -163,6 +163,8 @@ export interface HostServicesDeps {
   // this computer's core only: each remote authority's forwarded local ports and local-network switch, which its browser
   // context's proxy applies; a change publishes before the forward that caused it is used
   readonly clientNetwork?: { current(): NonNullable<CoreInit['mirrors']['clientNetwork']>; onDidChange(listener: (patch: MirrorTopics['clientNetwork']) => void): Disposable };
+  // System colors as main reads them off this computer; only this computer's core gets them
+  readonly systemTheme?: { current(): MirrorTopics['systemTheme']; onDidChange(listener: (patch: MirrorTopics['systemTheme']) => void): Disposable };
   readonly power: { onSuspend(listener: () => void): Disposable; onResume(listener: () => void): Disposable };
   readonly ui: HostUi;
   readonly user: HostUser;
@@ -196,7 +198,7 @@ export interface HostServicesDeps {
 /** What main does for this computer's core's theme tools; every request names its own params, as the protocol table parses them. */
 export type ThemeHostServices = {
   readonly [M in 'themes.render' | 'themes.screenshotTake' | 'themes.screenshotRead' | 'themes.screenshotDrop' | 'themes.applied' | 'themes.pendingSettled' | 'themes.pendingElsewhere' | 'themes.pendingExtended'
-    | 'themes.currentArrangement' | 'themes.applyArrangement' | 'themes.showInWindow' | 'themes.stopShowing' | 'themes.state' | 'themes.analyze' | 'themes.analyzeSprite']:
+    | 'themes.currentArrangement' | 'themes.applyArrangement' | 'themes.copyName' | 'themes.showInWindow' | 'themes.stopShowing' | 'themes.state' | 'themes.analyze' | 'themes.analyzeSprite']:
     (params: Params<CoreRequests, M>, signal: AbortSignal) => Promise<Result<CoreRequests, M>> | Result<CoreRequests, M>;
 };
 
@@ -256,6 +258,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
       clientPolicy: { [LOCAL_CLIENT_ID]: { voice: desktopHostCapabilities(process.platform).voice, allowBypass: true } },
       actingClient: { clientId: LOCAL_CLIENT_ID },
       ...(deps.clientNetwork ? { clientNetwork: deps.clientNetwork.current() } : {}),
+      ...(deps.systemTheme ? { systemTheme: deps.systemTheme.current() } : {}),
     },
   };
 
@@ -470,6 +473,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
       endpoint.serve('themes.pendingExtended', (params, signal) => themes['themes.pendingExtended'](params, signal));
       endpoint.serve('themes.currentArrangement', (params, signal) => themes['themes.currentArrangement'](params, signal));
       endpoint.serve('themes.applyArrangement', (params, signal) => themes['themes.applyArrangement'](params, signal));
+      endpoint.serve('themes.copyName', (params, signal) => themes['themes.copyName'](params, signal));
       endpoint.serve('themes.showInWindow', (params, signal) => themes['themes.showInWindow'](params, signal));
       endpoint.serve('themes.stopShowing', (params, signal) => themes['themes.stopShowing'](params, signal));
       endpoint.serve('themes.state', (params, signal) => themes['themes.state'](params, signal));
@@ -537,6 +541,7 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     platform.editor.onDidChangeActiveContext((context) => endpoint.publish('editor', editorPatch(context))),
     deps.language.onDidChange(() => endpoint.publish('language', { language: deps.language.current() })),
     ...(deps.clientNetwork ? [deps.clientNetwork.onDidChange((patch) => endpoint.publish('clientNetwork', patch))] : []),
+    ...(deps.systemTheme ? [deps.systemTheme.onDidChange((patch) => endpoint.publish('systemTheme', patch))] : []),
     deps.power.onSuspend(() => endpoint.emit('power.suspend', {})),
     deps.power.onResume(() => endpoint.emit('power.resume', {})),
   ];

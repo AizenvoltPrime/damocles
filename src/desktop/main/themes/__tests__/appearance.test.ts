@@ -4,7 +4,9 @@ import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { BUILTIN_PALETTES, BUILTIN_THEME } from '../../../../shared/themes/builtin';
 import { checkPalette, contrast } from '../../../../shared/themes/contrast';
+import { deriveLook } from '../../../../shared/themes/derive';
 import type { LookColors, ThemeFile } from '../../../../shared/themes/schema';
+import { systemTheme } from '../../../../shared/themes/system-theme';
 import { resolveShown, themeSourceFor, wallpaperMotion, type AppearanceInputs, type MotionInputs } from '../appearance';
 import { opaqueBackground, shownPalette, trustedCss, trustedPalette } from '../theme-css';
 import { cssRefusal, readThemeFiles, themeEntry, type LibraryEntry } from '../theme-files';
@@ -76,6 +78,39 @@ describe('resolveShown', () => {
   it('paints a transient preview\'s look and kind over the preferred look', () => {
     const preview = { themeId: ID, kind: 'light' as const, look: NIGHT.looks.dark! };
     expect(resolveShown(inputs({ preview }))).toMatchObject({ kind: 'light', themeId: ID, builtin: false, decidedBy: 'preview', look: preview.look });
+  });
+});
+
+describe('System colors in resolveShown', () => {
+  const system: LibraryEntry = { status: 'ok', id: 'damocles-system', builtin: true, theme: systemTheme({ accent: '#e81123' }) };
+  const preferred = { dark: 'damocles-system', light: 'damocles-system' };
+
+  // the fixed palette is BUILTIN_THEME's alone; a library entry's built-in flag says only that it is read-only
+  it('shows as a derived look, not the fixed built-in palette, and trusted UI keeps it', () => {
+    for (const osKind of ['dark', 'light'] as const) {
+      const shown = resolveShown(inputs({ entries: [system], preferred, osKind }));
+      expect(shown).toMatchObject({ kind: osKind, themeId: 'damocles-system', builtin: false, decidedBy: 'system' });
+      expect(shown.look).toBe(system.theme.looks[osKind]);
+      expect(shown.fallback).toBeUndefined();
+      const palette = shownPalette(shown);
+      expect(palette).not.toBe(BUILTIN_PALETTES[osKind]);
+      expect(palette).toEqual(deriveLook(shown.look.colors, osKind, shown.look.tokens));
+      expect(trustedPalette(palette, osKind)).toBe(palette);
+    }
+  });
+
+  it('steps aside for the fixed built-in look under forced colors and in safe start', () => {
+    expect(resolveShown(inputs({ entries: [system], preferred, forcedColors: true }))).toMatchObject({ themeId: 'damocles', builtin: true, decidedBy: 'forcedColors' });
+    const safe = resolveShown(inputs({ entries: [system], preferred, safeStart: 'crashLoop', mode: 'light' }));
+    expect(safe).toMatchObject({ kind: 'light', themeId: 'damocles', builtin: true, decidedBy: 'safeStart' });
+    expect(shownPalette(safe)).toBe(BUILTIN_PALETTES.light);
+  });
+
+  it('leaves an unset, missing or broken preferred look on Damocles, never on System colors', () => {
+    expect(resolveShown(inputs({ entries: [system] }))).toMatchObject({ themeId: 'damocles', builtin: true });
+    const gone = { dark: ID, light: ID };
+    expect(resolveShown(inputs({ entries: [system], preferred: gone }))).toMatchObject({ themeId: 'damocles', builtin: true, fallback: { themeId: ID, reason: 'missing' } });
+    expect(resolveShown(inputs({ entries: [system, { status: 'broken', id: ID, error: 'x' }], preferred: gone }))).toMatchObject({ themeId: 'damocles', builtin: true, fallback: { themeId: ID, reason: 'broken' } });
   });
 });
 

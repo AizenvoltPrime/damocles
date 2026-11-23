@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserWindow } from 'electron';
-import { BUILTIN_THEME } from '../../../../shared/themes/builtin';
+import { BUILTIN_THEME, SYSTEM_THEME_ID } from '../../../../shared/themes/builtin';
+import { systemTheme } from '../../../../shared/themes/system-theme';
 import type { ThemeFile } from '../../../../shared/themes/schema';
 import type { ThemeShowRefusal } from '../../../../shared/themes/agent';
 import { THEME_EDITOR_CHANNELS, type ThemeEditorResult, type ThemeEditorSession } from '../../../preload/overlay-channels';
@@ -97,6 +98,7 @@ function setup() {
   const importSprite = vi.fn(async () => SPRITE);
   const allowFlash = vi.fn();
   const closed = vi.fn();
+  const language = { current: 'en' };
   const dock = new ThemeEditorDock({
     window,
     preloadPath: 'preload-overlay.js',
@@ -106,6 +108,7 @@ function setup() {
     theme: () => ({ kind: 'dark', css: '', trustedCss: '', reducedMotion: false, fileIconTheme: 'material' }),
     background: () => '#000000',
     session,
+    shownName: (entry) => `${language.current}:${entry.theme.name}`,
     preview: (preview) => {
       previews.push(preview);
       return state.refused;
@@ -136,7 +139,7 @@ function setup() {
   // the page finished loading: main sends to it from here on
   const load = (): void => view().webContents.events.get('did-finish-load')!();
   const sent = (channel: string): unknown[][] => view().webContents.sent.filter(([name]) => name === channel).map(([, ...args]) => args);
-  return { dock, view, invoke, send, sessionId, load, sent, state, removed, previews, session, save, baseHash, duplicate, pickFontFile, pickImageFile, pickSpriteFile, importFont, importSprite, allowFlash, closed };
+  return { dock, view, invoke, send, sessionId, load, sent, state, language, removed, previews, session, save, baseHash, duplicate, pickFontFile, pickImageFile, pickSpriteFile, importFont, importSprite, allowFlash, closed };
 }
 
 beforeEach(() => {
@@ -379,6 +382,85 @@ describe('ThemeEditorDock', () => {
     d.send(THEME_EDITOR_CHANNELS.reload, { sessionId });
     await vi.waitFor(async () => expect(await d.sessionId()).toBe(sessionId + 1));
     expect(d.dock.editing()).toBe(USER_ID);
+  });
+
+  describe('a System colors session', () => {
+    function systemSetup() {
+      const d = setup();
+      const os = { accent: '#0078d4' };
+      d.session.mockImplementation(async (themeId: string): Promise<ThemeEditorRead | undefined> => themeId === SYSTEM_THEME_ID
+        ? { themeId, builtin: true, theme: systemTheme(os), kind: 'dark', nextWallpaperShortcut: 'Ctrl+Alt+Shift+.' }
+        : { themeId, builtin: false, theme: { ...THEME, id: themeId }, kind: 'dark', nextWallpaperShortcut: 'Ctrl+Alt+Shift+.', baseHash: HASH(1) });
+      return { d, os };
+    }
+
+    it('names a built-in in the UI\'s language, again in the session it holds when the language changes, and leaves a user\'s theme to its draft', async () => {
+      const { d } = systemSetup();
+      await d.dock.open(SYSTEM_THEME_ID);
+      d.load();
+      const opened = (await d.invoke(THEME_EDITOR_CHANNELS.getSession)) as ThemeEditorSession;
+      expect(opened.shownName).toBe('en:System colors');
+      d.language.current = 'el';
+      d.dock.languageChanged();
+      expect(d.sent(THEME_EDITOR_CHANNELS.session).at(-1)![0]).toEqual({ ...opened, shownName: 'el:System colors' });
+
+      await d.dock.open(USER_ID);
+      expect(await d.invoke(THEME_EDITOR_CHANNELS.getSession)).not.toHaveProperty('shownName');
+      const sent = d.sent(THEME_EDITOR_CHANNELS.session).length;
+      d.dock.languageChanged();
+      expect(d.sent(THEME_EDITOR_CHANNELS.session)).toHaveLength(sent);
+    });
+
+    // libraryChanged() asks whether a user's file changed, which a built-in has none of; the OS change comes separately
+    it('takes the new looks at once from systemChanged(), in the session it already holds, with no read, and libraryChanged() still skips it', async () => {
+      const { d } = systemSetup();
+      await d.dock.open(SYSTEM_THEME_ID);
+      d.load();
+      const opened = (await d.invoke(THEME_EDITOR_CHANNELS.getSession)) as ThemeEditorSession;
+      expect(opened).toMatchObject({ themeId: SYSTEM_THEME_ID, builtin: true, theme: { looks: { dark: { colors: { accent: '#0078d4' } } } } });
+      const sentBefore = d.sent(THEME_EDITOR_CHANNELS.session).length;
+      const readsBefore = d.session.mock.calls.length;
+
+      await d.dock.libraryChanged();
+      expect(d.sent(THEME_EDITOR_CHANNELS.session)).toHaveLength(sentBefore);
+      expect(d.sent(THEME_EDITOR_CHANNELS.outside)).toEqual([]);
+
+      d.dock.systemChanged(systemTheme({ accent: '#e81123' }));
+      const sent = d.sent(THEME_EDITOR_CHANNELS.session);
+      expect(sent).toHaveLength(sentBefore + 1);
+      expect(sent.at(-1)![0]).toEqual({ ...opened, theme: systemTheme({ accent: '#e81123' }) });
+      expect(await d.invoke(THEME_EDITOR_CHANNELS.getSession)).toEqual(sent.at(-1)![0]);
+      expect(d.dock.editing()).toBe(SYSTEM_THEME_ID);
+      expect(d.session.mock.calls.length).toBe(readsBefore);
+      expect(d.baseHash).not.toHaveBeenCalled();
+
+      // still read-only
+      expect(await d.invoke(THEME_EDITOR_CHANNELS.save, { sessionId: opened.sessionId, theme: THEME })).toEqual(CLOSED);
+      expect(d.save).not.toHaveBeenCalled();
+    });
+
+    // the library fires for every theme file change too, which leaves System colors as it was
+    it('sends nothing when the colors did not change', async () => {
+      const { d, os } = systemSetup();
+      await d.dock.open(SYSTEM_THEME_ID);
+      d.load();
+      const sent = d.sent(THEME_EDITOR_CHANNELS.session).length;
+      d.dock.systemChanged(systemTheme({ ...os }));
+      expect(d.sent(THEME_EDITOR_CHANNELS.session)).toHaveLength(sent);
+    });
+
+    it('changes nothing for a session of another theme, or with the dock closed', async () => {
+      const { d } = systemSetup();
+      d.dock.systemChanged(systemTheme({ accent: '#e81123' }));
+      expect(d.dock.isOpen()).toBe(false);
+      await d.dock.open(USER_ID);
+      d.load();
+      const opened = await d.invoke(THEME_EDITOR_CHANNELS.getSession);
+      const sent = d.sent(THEME_EDITOR_CHANNELS.session).length;
+      d.dock.systemChanged(systemTheme({ accent: '#e81123' }));
+      expect(d.sent(THEME_EDITOR_CHANNELS.session)).toHaveLength(sent);
+      expect(await d.invoke(THEME_EDITOR_CHANNELS.getSession)).toEqual(opened);
+    });
   });
 
   it('names a sprite its session imported for the blob route before the import answers, and until the session ends', async () => {

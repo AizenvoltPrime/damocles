@@ -4,7 +4,7 @@ import { connect as netConnect } from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { app, BrowserWindow, clipboard, crashReporter, dialog, Menu, nativeTheme, net, powerMonitor, screen, session, shell as electronShell, webContents, WebContentsView, type WebContents } from 'electron';
+import { app, BrowserWindow, clipboard, crashReporter, dialog, Menu, nativeTheme, net, powerMonitor, screen, session, shell as electronShell, systemPreferences, webContents, WebContentsView, type WebContents } from 'electron';
 import { installLogSink, log, showLog } from '../../core/logger';
 import { processProfiler, StallMonitor } from '../local-services/stall-monitor';
 import type { WalkHost } from '../../core/search-walk/walk-host';
@@ -249,7 +249,7 @@ import { SUBCALL_USAGE_LEDGER_PATH } from '../../core/paths';
 import { TaskbarBadges } from './taskbar-badges';
 import { TaskbarCounter } from './taskbar-counter';
 import {
-  currentBaseShown, currentDensity, currentShown, currentTextSize, currentTheme, currentThemeKind, currentWallpaperMotion, currentWallpapers, followThemeSettings, FONT_FACE_CSS, invalidateWallpaperStats,
+  currentBaseShown, decidedShown, currentDensity, currentShown, currentTextSize, currentTheme, currentThemeKind, currentWallpaperMotion, currentWallpapers, followThemeSettings, FONT_FACE_CSS, invalidateWallpaperStats,
   namedFontBlob, namedImageBlob, onThemeChange, preferredThemeId, safeStartReason, setHeldLook, setMotionEnvironment, setSafeStart, setThemePreview, setWallpaperCycle, setWallpaperEnvironment,
   setWallpaperFlashReader, setWallpaperStatsReader, shownBackground, trustedBackground, wallpaperCycleChanged, currentCharacters, namedSpriteBlob, setProjectPins,
   projectLookOf, setProjectLooks, setSelectedProject,
@@ -266,7 +266,11 @@ import { batterySaverOn } from './themes/power-saver-win32';
 import { HeldTimers } from './themes/held-timers';
 import { KeepFocus } from './themes/keep-focus';
 import { KEEP_CHANGES_MS } from '../../shared/themes/agent';
-import { builtinName, overlayThemeEntry, themeFilePath, ThemeLibrary } from './themes/theme-files';
+import { overlayThemeEntry, shownChange, shownThemeName, themeCopyName, themeFilePath, ThemeLibrary } from './themes/theme-files';
+import { shownKeepChanges } from './themes/keep-changes';
+import { LinuxDesktopColors } from './themes/linux-desktop-colors';
+import { SystemColorSource } from './themes/system-colors';
+import { homeExisted, seedSystemDefault } from './themes/default-theme';
 import { SAFE_THEME_FLAG } from './themes/appearance';
 import { ThemeCrashLoop } from './themes/crash-loop';
 import { THEME_DOCK_REM, ThemeEditorDock, type ThemeEditorRead } from './themes/editor-dock';
@@ -274,7 +278,8 @@ import { ThemeSharing } from './themes/theme-sharing';
 import { THEME_LINK_SCHEME } from '../../shared/themes/theme-links';
 import { THEME_ARCHIVE_EXTENSION } from '../../shared/themes/install';
 import { arrangementOf, arrangementRoom, minimumScale, withArrangement } from './themes/arrangement';
-import { BUILTIN_THEME_ID } from '../../shared/themes/builtin';
+import { BUILTIN_THEME_ID, SYSTEM_THEME_ID } from '../../shared/themes/builtin';
+import type { SystemColors } from '../../shared/themes/system-theme';
 import { MAX_FONT_BYTES } from '../../shared/themes/fonts';
 import { sanitizeThemeCss, themeCssFamilies } from '../../shared/themes/css-sanitizer';
 import type { Arrangement, ThemeFile } from '../../shared/themes/schema';
@@ -959,6 +964,7 @@ class DesktopApp {
       update: (key, value, target) => this.requirePlatform().settings.update(key, value, target),
     },
     shown: () => currentBaseShown(),
+    decided: () => decidedShown(),
     shownKind: () => currentThemeKind(),
     preferred: (kind) => preferredThemeId(this.requirePlatform().settings.get<unknown>(kind === 'dark' ? THEMES_DARK_SETTING : THEMES_LIGHT_SETTING)),
     now: () => themeNow(),
@@ -1105,6 +1111,16 @@ class DesktopApp {
   private readonly themeCrashLoop = new ThemeCrashLoop();
   // the theme files main paints from, read and validated again here (docs/invariants.md "Desktop themes")
   private themeLibrary: ThemeLibrary | undefined;
+  // this computer's colors, which only main reads; its theme reaches the window through the library and core as a mirror
+  private readonly systemColors = new SystemColorSource({
+    platform: process.platform,
+    systemPreferences,
+    nativeTheme,
+    log: (line) => log(line),
+    ...(process.platform === 'linux'
+      ? { desktop: new LinuxDesktopColors({ env: process.env, home: os.homedir(), watch: (base, glob) => this.requirePlatform().fileWatchers.watch(base, glob), log: (line) => log(line) }) }
+      : {}),
+  });
   private quickOpenPicker: QuickOpenPicker | undefined;
   private readonly backups = new BackupStore(this.userDataDir, (line) => log(line));
   // Files' trash and permanent delete; the e2e hooks replace them to fail on demand.
@@ -1459,8 +1475,12 @@ class DesktopApp {
   // Why the taskbar button flashes: an entry waiting on the user, or an overlay popup waiting for the window to activate.
   private readonly flashReasons = new Set<'notifications' | 'overlay'>();
 
+  // ~/.damocles was there when this launch started, read before anything of it could create the folder
+  private readonly damoclesHomeExisted: boolean;
+
   // The stores log what they skip while reading their files, so they are read only once the log sink is installed.
-  constructor() {
+  constructor(damoclesHomeExisted: boolean) {
+    this.damoclesHomeExisted = damoclesHomeExisted;
     installLogSink(this.logSink);
     logUncaughtErrors(process, 'main', (line) => log(line));
     this.states = new PanelStateStore(this.userDataDir, (line) => log(line));
@@ -1696,6 +1716,10 @@ class DesktopApp {
         current: () => this.requirePorts().clientNetworks(),
         onDidChange: (listener) => this.requirePorts().onClientNetwork(listener),
       },
+      systemTheme: {
+        current: () => ({ looks: this.systemColors.looks() }),
+        onDidChange: (listener) => this.systemColors.onDidChange(() => listener({ looks: this.systemColors.looks() })),
+      },
       divert: (view, message) => this.divertViewMessage(view, message),
       showSession: (sessionId) => this.showSessionOf('local', sessionId),
       openDesignPreview: (corePanelId, designId, relPath) => this.openDesignPreview('local', corePanelId, designId, relPath),
@@ -1705,6 +1729,7 @@ class DesktopApp {
         // core's cancel frees the renderer, which runs one job at a time
         'themes.analyze': ({ sha256, mime, width, height, kind, durationMs }, signal) => this.themeRenderer.analyze(sha256, mime, { width, height }, kind ?? 'image', durationMs, signal),
         'themes.analyzeSprite': ({ sha256, mime, width, height, strip, animated }, signal) => this.themeRenderer.analyzeSprite(sha256, { mime, width, height, ...(strip ? { strip } : {}), animated }, signal),
+        'themes.copyName': ({ themeId, name }) => ({ name: themeCopyName(themeId, name, this.requireLocalization()) }),
       },
       git: git.available ? { available: true, path: git.path, version: git.version } : { available: false, reason: git.reason },
       e2eHooks: E2E_HOOKS,
@@ -1812,10 +1837,18 @@ class DesktopApp {
 
     // Before the window exists, which takes its background from the shown look.
     if (isSafeThemeLaunch(process.argv)) {
-      log('[themes] started with the default theme (safe start)');
+      log('[themes] started with the Damocles theme (safe start)');
       setSafeStart('launch');
     }
-    const themeLibrary = new ThemeLibrary({ root: THEMES_DIR, resourceRoot, watchers: this.platform.fileWatchers, log: (line) => log(line), notifications: this.themeNotices });
+    // Before the library's first read and this computer's core, both of which read the preferred looks it may write.
+    await seedSystemDefault({
+      homeExisted: this.damoclesHomeExisted,
+      stateAbsent: this.state.absentAtStart,
+      state: this.state.global,
+      settings: this.platform.settings,
+      log: (line) => log(line),
+    });
+    const themeLibrary = new ThemeLibrary({ root: THEMES_DIR, resourceRoot, watchers: this.platform.fileWatchers, log: (line) => log(line), notifications: this.themeNotices, system: this.systemColors });
     this.themeLibrary = themeLibrary;
     setWallpaperStatsReader((sha256) => readWallpaperStats(THEMES_DIR, sha256, this.themeNotices));
     setWallpaperFlashReader((sha256) => readWallpaperFlash(THEMES_DIR, sha256, this.themeNotices));
@@ -1828,6 +1861,9 @@ class DesktopApp {
     const gpuChanged = (): void => setWallpaperEnvironment({ gpuCompositing: gpuCompositing(), reducedTransparency: nativeTheme.prefersReducedTransparency === true });
     app.on('gpu-info-update', gpuChanged);
     this.disposables.push({ dispose: () => app.removeListener('gpu-info-update', gpuChanged) });
+    this.disposables.push(this.systemColors);
+    // before the first paint and before CoreInit takes the mirror of System colors, so both have this computer's colors
+    await this.systemColors.load();
     await themeLibrary.load();
     await this.readProjectPins();
     await this.readAppearanceSchedule();
@@ -1850,6 +1886,8 @@ class DesktopApp {
       themeLibrary.onDidChange(() => {
         this.overlaySettings?.themesChanged();
         this.themeDock?.libraryChanged().catch(this.report('Checking the theme the editor holds'));
+        const system = themeLibrary.entry(SYSTEM_THEME_ID);
+        if (system?.status === 'ok') this.themeDock?.systemChanged(system.theme);
       }),
       // core writes a pick into the settings file, which this process reads after it; a pick of the kind that does not show
       // changes no palette, so Settings hears of it here
@@ -1945,6 +1983,7 @@ class DesktopApp {
         this.tray?.relocalize();
         this.shellStateChanged();
         this.overlay?.stateChanged();
+        this.themeDock?.languageChanged();
         this.notifier.stateChanged();
         // The overlay icon's description is localized.
         this.taskbar.reapply();
@@ -1954,6 +1993,8 @@ class DesktopApp {
       }),
       this.onScaleChange(() => this.taskbar.reapply()),
     );
+    // macOS answers its colors for the appearance followThemeSettings has just written to nativeTheme.themeSource
+    this.systemColors.readNow();
     this.devcontainerConfigs.sync(this.devcontainerProjectKeys());
     this.installMenu();
 
@@ -5013,7 +5054,10 @@ class DesktopApp {
     // a rejected invoke reaches the page under Electron's own English prefix, so the engine being down is an answer in the UI's language
     if (!client) return { ok: false, error: this.requireLocalization().t("This computer's Damocles engine is not running.") };
     const [{ themes }, { entries }] = await Promise.all([client.themesList(), client.themesHistory()]);
-    const listed = themes.map((listing) => overlayThemeEntry(listing, this.requireLocalization()));
+    // System colors as main holds them now: core's copy is a mirror, which may be a change behind the window
+    const system = this.themeLibrary?.entry(SYSTEM_THEME_ID);
+    const current = themes.map((listing) => (listing.id === SYSTEM_THEME_ID && listing.status === 'ok' && system?.status === 'ok' ? { ...listing, theme: system.theme } : listing));
+    const listed = current.map((listing) => overlayThemeEntry(listing, this.requireLocalization()));
     const names = new Map(listed.flatMap((entry): Array<[string, string]> => (entry.status === 'ok' ? [[entry.id, entry.name]] : [])));
     const shown = currentBaseShown();
     if (shown.decidedBy === 'preview') throw new Error('The look without a transient preview was decided by one');
@@ -5033,7 +5077,7 @@ class DesktopApp {
       preferred: { dark: preferredThemeId(settings.get<unknown>(THEMES_DARK_SETTING)), light: preferredThemeId(settings.get<unknown>(THEMES_LIGHT_SETTING)) },
       mode: themePreference(settings.get<unknown>(THEME_SETTING)),
       schedule: scheduleView,
-      history: entries,
+      history: entries.map((entry) => ({ ...entry, change: shownChange(entry.change, this.requireLocalization()) })),
     };
   }
 
@@ -5072,8 +5116,8 @@ class DesktopApp {
     return placement.fullScreen ? display.size : display.workAreaSize;
   }
 
-  // Help › Restart with Default Theme: the next run starts in safe start; nothing is written.
-  private restartWithDefaultTheme(): void {
+  // Help › Restart with Damocles Theme: the next run starts in safe start; nothing is written.
+  private restartWithDamoclesTheme(): void {
     const args = relaunchArgs(process.argv);
     const relaunch = (): void => app.relaunch({ args: [...args, SAFE_THEME_FLAG] });
     app.once('quit', relaunch);
@@ -5152,10 +5196,14 @@ class DesktopApp {
     return settings.sendWhenShown(OVERLAY_CHANNELS.themesInstallChanged, {});
   }
 
-  // Settings' Import: Damocles theme files and VS Code color themes.
+  // Settings' Import: Damocles theme files, VS Code color themes, base16 schemes and GTK, KDE and Qt color schemes. KDE's
+  // kdeglobals has no extension, so only All files shows it.
   private async pickThemeImportFile(): Promise<string | undefined> {
     const t = (message: string): string => this.requireLocalization().t(message);
-    const filters = [{ name: t('Themes'), extensions: [THEME_ARCHIVE_EXTENSION, 'json', 'jsonc', 'vsix'] }];
+    const filters = [
+      { name: t('Themes'), extensions: [THEME_ARCHIVE_EXTENSION, 'json', 'jsonc', 'vsix', 'yaml', 'yml', 'colors', 'conf', 'css'] },
+      { name: t('All files'), extensions: ['*'] },
+    ];
     const options = { title: t('Import Theme'), properties: ['openFile' as const], filters };
     const window = this.window;
     const picked = await (window ? dialog.showOpenDialog(window, options) : dialog.showOpenDialog(options));
@@ -5208,7 +5256,7 @@ class DesktopApp {
   // A shell or chat page crashed: under a custom look the second crash within a minute switches this run to safe start.
   private rendererCrashed(what: string): void {
     if (!this.themeCrashLoop.crashed(Date.now(), !currentShown().builtin)) return;
-    log(`[themes] ${what} crashed twice within a minute under a custom theme; this run shows the default theme`);
+    log(`[themes] ${what} crashed twice within a minute under a theme other than Damocles; this run shows the Damocles theme`);
     setSafeStart('crashLoop');
     this.shellStateChanged();
   }
@@ -5230,6 +5278,7 @@ class DesktopApp {
       theme: () => currentTheme('root'),
       background: () => trustedBackground(),
       session: (themeId) => this.themeEditorSession(themeId),
+      shownName: (entry) => shownThemeName(entry, this.requireLocalization()),
       preview: (preview) => this.agentThemes.editorPreview(preview),
       save: (themeId, theme, pins, baseHash) => this.saveEditedTheme(themeId, theme, pins, baseHash),
       engineDown: () => this.requireLocalization().t("This computer's Damocles engine is not running."),
@@ -5243,8 +5292,7 @@ class DesktopApp {
         const entry = this.themeLibrary?.entry(themeId);
         if (!client || entry?.status !== 'ok') return { error: this.requireLocalization().t("This computer's Damocles engine is not running.") };
         try {
-          const name = [...this.requireLocalization().t('{0} copy', entry.theme.name)].slice(0, 64).join('');
-          return { themeId: (await client.themesDuplicate(themeId, name)).themeId };
+          return { themeId: (await client.themesDuplicate(themeId, themeCopyName(themeId, entry.theme.name, this.requireLocalization()))).themeId };
         } catch (err) {
           return { error: err instanceof Error ? err.message : String(err) };
         }
@@ -5339,14 +5387,15 @@ class DesktopApp {
     const kind: LookKind = entry.theme.looks[shownKind] ? shownKind : shownKind === 'dark' ? 'light' : 'dark';
     const from = entry.theme.origin?.from;
     const source = from === undefined ? undefined : this.themeLibrary?.entry(from);
-    const fromName = source?.status === 'ok' ? source.theme.name : undefined;
+    // a built-in's name in the UI's language, as the gallery's card of the same copy says it
+    const fromName = source?.status === 'ok' ? shownThemeName(source, this.requireLocalization()) : undefined;
     const wallpapers = Object.fromEntries((await Promise.all(Object.entries(entry.theme.assets ?? {}).filter(([, asset]) => isWallpaperAsset(asset)).map(async ([sha]) => {
       const [stats, palette, flash] = await Promise.all([readWallpaperStats(THEMES_DIR, sha, this.themeNotices), readWallpaperPalette(THEMES_DIR, sha, this.themeNotices), readWallpaperFlash(THEMES_DIR, sha, this.themeNotices)]);
       return stats ? [[sha, { stats, ...(palette ? { palette } : {}), ...(flash ? { flash } : {}) }]] : [];
     }))).flat());
     const contrast = this.requirePlatform().settings.get<unknown>(WALLPAPER_CONTRAST_SETTING) === 'warn' ? 'warn' : 'raiseDim';
     const characterSets = [...(this.themeLibrary?.entries().values() ?? [])].flatMap((other) => (other.status === 'ok' && other.id !== themeId && other.theme.characters
-      ? [{ themeId: other.id, name: (other.builtin ? builtinName(other.id, this.requireLocalization()) : undefined) ?? other.theme.name, characters: other.theme.characters, assets: Object.fromEntries(characterAssets(other.theme).flatMap((sha) => (other.theme.assets?.[sha] ? [[sha, other.theme.assets[sha]!]] : []))) }]
+      ? [{ themeId: other.id, name: shownThemeName(other, this.requireLocalization()), characters: other.theme.characters, assets: Object.fromEntries(characterAssets(other.theme).flatMap((sha) => (other.theme.assets?.[sha] ? [[sha, other.theme.assets[sha]!]] : []))) }]
       : []));
     const spriteShas = new Set([...characterAssets(entry.theme), ...characterSets.flatMap((set) => Object.keys(set.assets))]);
     const sprites = Object.fromEntries((await Promise.all([...spriteShas].map(async (sha) => {
@@ -6388,6 +6437,8 @@ class DesktopApp {
         themeTick: () => reevaluateTheme(),
         // stands in for the computer's light or dark mode; null gives the OS's back
         themeOsKind: (kind: 'dark' | 'light' | null) => setOsKindStandIn(kind ?? undefined),
+        // the accent and palettes System colors reads in place of this computer's; null gives the computer's back
+        systemColors: (set: SystemColors | null) => this.systemColors.override(set ?? undefined),
         // the GPU compositing status once the GPU process has reported
         gpuCompositing: async () => {
           await E2E_GPU_REPORTED;
@@ -10547,7 +10598,8 @@ class DesktopApp {
     const selectedDesign = selected ? this.designOf(selected) : undefined;
     const projectKey = this.selectedProjectKey ?? defaultKey;
     const safeStart = safeStartReason();
-    const keepChanges = this.agentThemes.keepState();
+    const kept = this.agentThemes.keepState();
+    const keepChanges = kept && shownKeepChanges(kept, this.requireLocalization());
     const themeProposal = this.agentThemes.proposalStrip();
     const wallpapers = currentWallpapers();
     const characters = currentCharacters();
@@ -11027,7 +11079,7 @@ class DesktopApp {
       toggleWallpapers: () => { this.toggleWallpapers().catch(this.themeCommands.failed('Toggle Wallpapers')); },
       nextWallpaper: () => { this.nextWallpaper().catch(this.themeCommands.failed('Next Wallpaper')); },
       undoThemeChange: () => { this.themeCommands.undoCommand().catch(this.themeCommands.failed('Undo Theme Change')); },
-      restartWithDefaultTheme: () => this.restartWithDefaultTheme(),
+      restartWithDamoclesTheme: () => this.restartWithDamoclesTheme(),
       openSettings: () => this.openSettings({}),
       selectRelativeChat: (delta) => { this.selectRelativeChat(delta).catch(report('Select Chat')); },
       focusPart: (delta) => this.focusPart(delta),
@@ -11378,6 +11430,8 @@ if (isDesignRendererLaunch(process.argv)) {
 } else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
+  // before anything of this launch can create the folder (themes/default-theme.ts)
+  const damoclesHomeExisted = homeExisted(DAMOCLES_HOME_DIR);
   // Reading the stores can fail (EACCES on userData), which must end in the same dialog as a failed start.
   const failed = (err: unknown): void => {
     const message = errorText(err);
@@ -11386,7 +11440,7 @@ if (isDesignRendererLaunch(process.argv)) {
     app.exit(1);
   };
   try {
-    new DesktopApp().start().catch(failed);
+    new DesktopApp(damoclesHomeExisted).start().catch(failed);
   } catch (err) {
     failed(err);
   }

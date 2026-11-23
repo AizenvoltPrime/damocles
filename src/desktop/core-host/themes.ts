@@ -7,6 +7,7 @@ import type { ThemeAgentHost, ThemeHostPort } from '../../core/pi-session/tools/
 import { createThemeRelayHost, RELAYED_DRAFT_SWEEP_MS } from '../../core/pi-session/tools/theme-relay';
 import { LOCAL_CLIENT_ID } from '../../shared/remote-user';
 import type { ThemeShowEndReason } from '../../shared/themes/agent';
+import { systemTheme, type SystemLooks } from '../../shared/themes/system-theme';
 import { LocalizedError, type LocalizedText } from '../../shared/localized-text';
 import { createStoreList, type StoreFetch } from '../../core/themes/store/list';
 import { createThemePathRule } from '../../core/themes/network-rule';
@@ -34,8 +35,15 @@ export function startCoreThemes(platform: CorePlatform, log?: (line: string) => 
   if (platform.init.remote !== undefined) return undefined;
   // the install download's stand-in folder is honored only with the e2e hooks on, as e2eForgeServers is
   const e2eThemeDownloads = platform.init.e2eHooks ? platform.init.e2eThemeDownloads : undefined;
+  // System colors as main last sent them, which the store checks; a new value emits no themes.changed, since main, which read
+  // it, repaints by itself and that event makes it read every theme file again
+  let system: SystemLooks = platform.init.mirrors.systemTheme?.looks ?? systemTheme({}).looks;
+  const systemMirror = platform.endpoint.onMirror('systemTheme', ({ looks }) => {
+    system = looks;
+  });
   const themes = createThemeService({
     root: THEMES_DIR,
+    system: () => system,
     settings: platform.settings,
     resourceRoot: platform.init.paths.resourceRoot,
     notifications: platform.notifications,
@@ -212,6 +220,7 @@ export function startCoreThemes(platform: CorePlatform, log?: (line: string) => 
     state: (signal) => endpoint.request('themes.state', {}, signal),
     currentArrangement: async (signal) => (await endpoint.request('themes.currentArrangement', {}, signal)).arrangement,
     applyArrangement: (arrangement, density) => endpoint.request('themes.applyArrangement', { arrangement, ...(density !== undefined ? { density } : {}) }),
+    copyName: async (themeId, name, signal) => (await endpoint.request('themes.copyName', { themeId, name }, signal)).name,
     onShowEnded(listener) {
       showEnded.add(listener);
       return { dispose: () => showEnded.delete(listener) };
@@ -254,6 +263,7 @@ export function startCoreThemes(platform: CorePlatform, log?: (line: string) => 
     agent,
     dispose() {
       disposed = true;
+      systemMirror.dispose();
       clearInterval(expiring);
       for (const timer of timers) clearTimeout(timer);
       timers.clear();

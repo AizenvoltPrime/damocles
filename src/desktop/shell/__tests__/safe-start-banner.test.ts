@@ -26,15 +26,15 @@ function banner(reason: 'launch' | 'crashLoop' | 'reset' = 'launch'): VueWrapper
 }
 
 describe('the safe-start banner', () => {
-  it('is a trusted, labelled region that says why the default theme shows, for each reason', () => {
+  it('is a trusted, labelled region that says why the Damocles theme shows, for each reason', () => {
     const root = banner().get('[data-testid="safe-start-banner"]');
     expect(root.attributes('role')).toBe('region');
     expect(root.attributes('aria-labelledby')).toBe('safe-start-title');
     expect(root.attributes('data-trusted')).toBeDefined();
-    expect(root.get('#safe-start-title').text()).toBe('Started with the default theme.');
+    expect(root.get('#safe-start-title').text()).toBe('Started with the Damocles theme.');
     expect(root.text()).toContain('Your theme is paused for this run until you turn it back on.');
-    expect(banner('crashLoop').get('#safe-start-title').text()).toBe('Damocles switched to the default theme because the window kept crashing.');
-    expect(banner('reset').get('#safe-start-title').text()).toBe('Showing the default theme for this run. The engine is not running, so the schedule and project looks were not reset.');
+    expect(banner('crashLoop').get('#safe-start-title').text()).toBe('The window kept crashing, so this run shows the Damocles theme.');
+    expect(banner('reset').get('#safe-start-title').text()).toBe('Showing the Damocles theme for this run. The engine is not running, so the schedule and project looks were not reset.');
   });
 
   it('emits useMine and openSettings from its two buttons', async () => {

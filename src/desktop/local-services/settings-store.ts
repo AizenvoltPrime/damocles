@@ -260,6 +260,24 @@ export class DesktopSettingsStore implements SettingsStore, Disposable {
     this.reloadAll(false);
   }
 
+  /**
+   * Sets every key of `values` in the user file in one locked write, unless the file then exists and `keep` holds for its
+   * settings; true when they were written.
+   */
+  async updateUserUnless(values: SettingsObject, keep: (current: SettingsObject) => boolean): Promise<boolean> {
+    if (this.deps.remote !== undefined) for (const key of Object.keys(values)) this.checkMachineWrite(key);
+    const filePath = this.deps.userFile;
+    let written = false;
+    await writeJsonConfig(filePath, (current) => {
+      const settings = current === undefined ? {} : parseSettingsText(current, filePath);
+      if (current !== undefined && keep(settings)) return current;
+      written = true;
+      return `${JSON.stringify({ ...settings, ...values }, null, 2)}\n`;
+    }, { baseFolder: path.dirname(filePath) });
+    this.reloadAll(false);
+    return written;
+  }
+
   /** Settles once every write to the files the store serves or wrote, one queued meanwhile included, has landed or failed; a quit awaits it. */
   flush(): Promise<void> {
     return jsonConfigWritesSettled(() => [

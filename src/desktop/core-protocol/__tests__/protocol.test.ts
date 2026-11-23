@@ -241,6 +241,14 @@ describe('the theme history on the wire', () => {
     expect(elsewhere({ entryId: 'e' })).toEqual({ entryId: 'e' });
     expect(elsewhere({ entryId: '' })).toBe(INVALID);
   });
+
+  it("asks main for an unnamed copy's name by the theme's id and stored name, and takes back a name only", () => {
+    const { params, result } = CORE_TO_MAIN.requests['themes.copyName'];
+    expect(params({ themeId: 'damocles-aurora', name: 'Aurora', extra: 1 })).toEqual({ themeId: 'damocles-aurora', name: 'Aurora' });
+    for (const bad of [{ themeId: 'Aurora', name: 'Aurora' }, { themeId: 'damocles-aurora', name: '' }, { themeId: 'damocles-aurora' }, { name: 'Aurora' }]) expect(params(bad)).toBe(INVALID);
+    expect(result({ name: 'Σέλας αντίγραφο' })).toEqual({ name: 'Σέλας αντίγραφο' });
+    for (const bad of [{ name: '' }, { name: 7 }, {}]) expect(result(bad)).toBe(INVALID);
+  });
 });
 
 describe('the theme requests main sends', () => {

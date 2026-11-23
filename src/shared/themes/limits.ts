@@ -61,6 +61,8 @@ export const MAX_STATE_FILE_BYTES: number = 8 * 1024 * 1024;
 // below ECMA-262's time limit of 8.64e15 ms.
 export const MAX_INSTANT_MS: number = Date.UTC(9999, 11, 31);
 
-// A one-line name, as a JSON Schema pattern: no control character, line or paragraph separator, or bidi control. Must refuse
-// exactly what oneLine (src/core/pi-session/untrusted-text.ts) removes, so a name an install flattened always passes.
-export const ONE_LINE_NAME = '^[^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069]*$';
+// The characters that break one line of text, as a regular expression class body: control characters, line and paragraph
+// separators, and bidi controls. Must be exactly what oneLine (src/core/pi-session/untrusted-text.ts) removes.
+export const NOT_ONE_LINE = '\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069';
+// A one-line name, as a JSON Schema pattern, so a name an install flattened always passes.
+export const ONE_LINE_NAME: string = `^[^${NOT_ONE_LINE}]*$`;

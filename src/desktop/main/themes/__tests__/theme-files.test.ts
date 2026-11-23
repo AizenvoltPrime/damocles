@@ -4,7 +4,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { FileWatcherFactory } from '../../../../platform/file-watcher';
 import type { LookColors, ThemeFile } from '../../../../shared/themes/schema';
-import { ThemeLibrary, WATCH_DEBOUNCE_MS } from '../theme-files';
+import { systemTheme } from '../../../../shared/themes/system-theme';
+import { shownChange, shownStoredName, shownThemeName, themeCopyName, ThemeLibrary, WATCH_DEBOUNCE_MS } from '../theme-files';
+import greekBundle from '../../../../../l10n/bundle.l10n.el.json' with { type: 'json' };
 
 // Main reads the theme files again WATCH_DEBOUNCE_MS after the last change its watcher saw, so a burst of events is one read,
 // or at once when core says it wrote one, which also cancels that wait: core's write is the change the watcher reports.
@@ -96,6 +98,154 @@ describe('the theme library\'s read of a file', () => {
     fs.writeFileSync(path.join(folder, 'theme.json'), `\ufeff${JSON.stringify(NIGHT)}`);
     const { library: themes } = await library();
     expect(themes.entry(NIGHT.id)).toMatchObject({ status: 'ok', theme: { name: 'Night' } });
+  });
+});
+
+describe('the theme library\'s System colors entry', () => {
+  function fakeSystem(accent: string) {
+    const listeners = new Set<() => void>();
+    let current = systemTheme({ accent });
+    return {
+      theme: () => current,
+      looks: () => current.looks,
+      onDidChange: (listener: () => void) => {
+        listeners.add(listener);
+        return { dispose: () => void listeners.delete(listener) };
+      },
+      set: (next: string): void => {
+        current = systemTheme({ accent: next });
+        for (const listener of [...listeners]) listener();
+      },
+      listeners,
+    };
+  }
+
+  async function systemLibrary(accent = '#0078d4') {
+    const system = fakeSystem(accent);
+    const watchers = fakeWatchers();
+    const themes = new ThemeLibrary({ root, watchers: watchers.factory, log: () => undefined, system });
+    libraries.push(themes);
+    return { themes, system, watchers };
+  }
+
+  it('is a built-in entry before the first listing, and without a source the Damocles seeds', async () => {
+    const { themes, system } = await systemLibrary();
+    expect(themes.entry('damocles-system')).toEqual({ status: 'ok', id: 'damocles-system', builtin: true, theme: system.theme() });
+    const bare = new ThemeLibrary({ root, watchers: fakeWatchers().factory, log: () => undefined });
+    libraries.push(bare);
+    await bare.load();
+    expect(bare.entry('damocles-system')).toEqual({ status: 'ok', id: 'damocles-system', builtin: true, theme: systemTheme({}) });
+  });
+
+  // core checks the same looks with the same builder, so main never paints System colors that core serves differently
+  it('is the Damocles seeds, with a log line, for looks that are no valid theme', () => {
+    const looks = systemTheme({}).looks;
+    const lines: string[] = [];
+    const themes = new ThemeLibrary({
+      root,
+      watchers: fakeWatchers().factory,
+      log: (line) => lines.push(line),
+      system: { looks: () => ({ ...looks, dark: { ...looks.dark, tokens: { '--d-muted': 'red' } } }), onDidChange: () => ({ dispose: () => undefined }) },
+    });
+    libraries.push(themes);
+    expect(themes.entry('damocles-system')).toEqual({ status: 'ok', id: 'damocles-system', builtin: true, theme: systemTheme({}) });
+    expect(lines.join(' ')).toContain('System colors');
+  });
+
+  it('lists after Damocles and before the user\'s themes, and names itself through t()', async () => {
+    write(NIGHT);
+    const { themes } = await systemLibrary();
+    await themes.load();
+    const ids = [...themes.entries().keys()];
+    expect(ids.slice(0, 2)).toEqual(['damocles', 'damocles-system']);
+    expect(ids.indexOf(NIGHT.id)).toBeGreaterThan(1);
+  });
+
+  // a copy's source, a character set's owner and Duplicate's "copy" name all read it, so each shows in the UI's language
+  it('shows a built-in\'s name in the UI\'s language and any other theme\'s as its file says it', () => {
+    const greek = { t: (message: string): string => ({ 'System colors': 'Χρώματα συστήματος', Aurora: 'Σέλας' })[message] ?? message };
+    expect(shownThemeName({ id: 'damocles-system', builtin: true, theme: { name: 'System colors' } }, greek)).toBe('Χρώματα συστήματος');
+    expect(shownThemeName({ id: 'damocles-aurora', builtin: true, theme: { name: 'Aurora' } }, greek)).toBe('Σέλας');
+    // Damocles is a name, the same in every language
+    expect(shownThemeName({ id: 'damocles', builtin: true, theme: { name: 'Damocles' } }, greek)).toBe('Damocles');
+    // a user's theme keeps its own name even when it matches a built-in's
+    expect(shownThemeName({ id: NIGHT.id, builtin: false, theme: { name: 'System colors' } }, greek)).toBe('System colors');
+  });
+
+  it('words a history change\'s built-ins by their ids in the UI\'s language, and every other name as it was stored', () => {
+    const greek = { t: (message: string): string => (greekBundle as Record<string, string>)[message] ?? message };
+    expect(shownChange({ kind: 'pick', look: 'dark', theme: 'System colors', themeId: 'damocles-system', was: 'Aurora', wasId: 'damocles-aurora' }, greek))
+      .toEqual({ kind: 'pick', look: 'dark', theme: 'Χρώματα συστήματος', themeId: 'damocles-system', was: 'Σέλας', wasId: 'damocles-aurora' });
+    expect(shownChange({ kind: 'restore', before: { kind: 'hold', theme: 'Aurora', themeId: 'damocles-aurora', look: 'light' } }, greek))
+      .toEqual({ kind: 'restore', before: { kind: 'hold', theme: 'Σέλας', themeId: 'damocles-aurora', look: 'light' } });
+    // an entry written before ids were stored, and a user's theme named like a built-in
+    const older = { kind: 'pick', look: 'dark', theme: 'System colors', was: 'Aurora' } as const;
+    expect(shownChange(older, greek)).toEqual(older);
+    // a pick over a theme that was no longer installed names none, and gains none
+    expect(shownChange({ kind: 'pick', look: 'dark', theme: 'Aurora', themeId: 'damocles-aurora', wasId: NIGHT.id }, greek))
+      .toEqual({ kind: 'pick', look: 'dark', theme: 'Σέλας', themeId: 'damocles-aurora', wasId: NIGHT.id });
+    const mine = { kind: 'hold', theme: 'System colors', themeId: NIGHT.id, look: 'dark' } as const;
+    expect(shownChange(mine, greek)).toEqual(mine);
+    expect(shownStoredName('damocles-system', 'System colors', greek)).toBe('Χρώματα συστήματος');
+    expect(shownStoredName(undefined, 'System colors', greek)).toBe('System colors');
+  });
+
+  it('names a copy as Duplicate and the agent\'s unnamed copy both do: a built-in by its id in the UI\'s language, cut to fit a theme name', () => {
+    const translator = (bundle: Record<string, string>) => ({
+      t: (message: string, ...args: string[]): string => (bundle[message] ?? message).replace(/\{(\d+)\}/g, (_, at: string) => args[Number(at)] ?? ''),
+    });
+    const greek = translator(greekBundle as Record<string, string>);
+    expect(themeCopyName('damocles-system', 'System colors', greek)).toBe('Χρώματα συστήματος αντίγραφο');
+    expect(themeCopyName('damocles-aurora', 'Aurora', greek)).toBe('Σέλας αντίγραφο');
+    expect(themeCopyName(NIGHT.id, 'Aurora', greek)).toBe('Aurora αντίγραφο');
+    for (const localization of [translator({}), greek]) {
+      const copy = themeCopyName(NIGHT.id, 'N'.repeat(64), localization);
+      const suffix = localization.t('{0} copy', '');
+      expect([...copy]).toHaveLength(64);
+      expect(copy).toBe(`${'N'.repeat(64 - [...suffix].length)}${suffix}`);
+    }
+  });
+
+  // `current` is rebuilt by every listing, which reads no System colors file
+  it('survives a re-listing of the theme files, with the colors of that moment', async () => {
+    const { themes, system, watchers } = await systemLibrary();
+    await themes.load();
+    system.set('#e81123');
+    watchers.fire('create', write(NIGHT));
+    await themes.coreChanged();
+    expect(themes.entry(NIGHT.id)).toMatchObject({ status: 'ok' });
+    expect(themes.entry('damocles-system')).toEqual({ status: 'ok', id: 'damocles-system', builtin: true, theme: system.theme() });
+    expect(themes.entry('damocles-system')).toMatchObject({ theme: { looks: { dark: { colors: { accent: '#e81123' } } } } });
+    expect(themes.entries().get('damocles-system')).toEqual(themes.entry('damocles-system'));
+  });
+
+  it('fires its listeners at once on a System change, reading no file', async () => {
+    const { themes, system } = await systemLibrary();
+    await themes.load();
+    readdir.mockClear();
+    const seen: unknown[] = [];
+    themes.onDidChange(() => seen.push(themes.entry('damocles-system')));
+    system.set('#e81123');
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ status: 'ok', builtin: true, theme: { looks: { dark: { colors: { accent: '#e81123' } }, light: { colors: { accent: '#e81123' } } } } });
+    expect(reads()).toBe(0);
+  });
+
+  // a user folder may not take a reserved id, whatever it holds
+  it('never lists a user folder named damocles-system', async () => {
+    write({ ...NIGHT, id: 'damocles-system', name: 'Shadow' });
+    const { themes, system } = await systemLibrary();
+    await themes.load();
+    expect(themes.entry('damocles-system')).toEqual({ status: 'ok', id: 'damocles-system', builtin: true, theme: system.theme() });
+    expect(themes.entries().get('damocles-system')).toEqual(themes.entry('damocles-system'));
+  });
+
+  it('lets go of the source once disposed', async () => {
+    const { themes, system } = await systemLibrary();
+    await themes.load();
+    expect(system.listeners.size).toBe(1);
+    themes.dispose();
+    expect(system.listeners.size).toBe(0);
   });
 });
 

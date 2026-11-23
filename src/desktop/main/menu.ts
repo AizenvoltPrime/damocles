@@ -220,7 +220,7 @@ export interface MenuActions {
   // reverses the newest theme change in the history
   undoThemeChange(): void;
   // relaunches with --damocles-safe-theme
-  restartWithDefaultTheme(): void;
+  restartWithDamoclesTheme(): void;
   openSettings(): void;
   // 1 selects the next chat of the selected project's list, -1 the previous one
   selectRelativeChat(delta: 1 | -1): void;
@@ -543,8 +543,8 @@ export function installApplicationMenu(
       // No close role here: its CmdOrCtrl+W would compete with Close Editor.
       : [{ role: 'minimize', label: t('Minimize') }],
   };
-  const restartItems: MenuItemConstructorOptions[] = [{ type: 'separator' }, item(MENU_IDS.restartWithDefaultTheme)];
-  const helpMenu: MenuItemConstructorOptions = { id: 'damocles.menu.help', label: t('Help'), submenu: mac ? [item(MENU_IDS.restartWithDefaultTheme)] : [...aboutItems, ...cliItems, ...restartItems] };
+  const restartItems: MenuItemConstructorOptions[] = [{ type: 'separator' }, item(MENU_IDS.restartWithDamoclesTheme)];
+  const helpMenu: MenuItemConstructorOptions = { id: 'damocles.menu.help', label: t('Help'), submenu: mac ? [item(MENU_IDS.restartWithDamoclesTheme)] : [...aboutItems, ...cliItems, ...restartItems] };
   const template: MenuItemConstructorOptions[] = mac
     ? [appMenu, fileMenu, editMenu, viewMenu, chatMenu, windowMenu, helpMenu]
     : [fileMenu, editMenu, viewMenu, chatMenu, windowMenu, helpMenu];

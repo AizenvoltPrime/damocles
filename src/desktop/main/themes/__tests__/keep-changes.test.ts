@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { KEEP_CHANGES_MS, type KeepChangesState } from '../../../../shared/themes/agent';
-import { KEEP_RESULT_LINGER_MS, KeepChanges } from '../keep-changes';
+import { KEEP_RESULT_LINGER_MS, KeepChanges, shownKeepChanges } from '../keep-changes';
 
 // The keep-changes banner's state machine: one countdown at most, restarted by a later change of its entry, Keep and Revert
 // through core, the timeout reverting, and every waiting tool call told the end.
 
 const CHANGE = { kind: 'create', theme: 'Amber', picked: ['dark'] } as const;
+const NIGHT_ID = '0f8fad5b-d9cb-469f-a165-70867728950e';
 
 function setup(revertUndid = true) {
   const published: Array<KeepChangesState | undefined> = [];
@@ -388,5 +389,21 @@ describe('KeepChanges', () => {
     banner.coreStarted('reverted');
     expect(last()).toMatchObject({ phase: 'reverted' });
     expect(last()).not.toHaveProperty('engineDown');
+  });
+
+  it('keeps the previous theme\'s id across a restart, and the shell is shown every built-in it names in the UI\'s language', () => {
+    const { banner, last } = setup();
+    void banner.applied({ entryId: 'e1', change: CHANGE, previousName: 'System colors', previousId: 'damocles-system' });
+    banner.extended({ entryId: 'e1', change: { kind: 'restore', before: { kind: 'pick', look: 'light', theme: 'Aurora', themeId: 'damocles-aurora', was: 'Night', wasId: NIGHT_ID } } });
+    const state = last()!;
+    expect(state).toMatchObject({ previousName: 'System colors', previousId: 'damocles-system' });
+    const greek = { t: (message: string): string => ({ 'System colors': 'Χρώματα συστήματος', Aurora: 'Σέλας' })[message] ?? message };
+    expect(shownKeepChanges(state, greek)).toEqual({
+      ...state, previousName: 'Χρώματα συστήματος',
+      change: { kind: 'restore', before: { kind: 'pick', look: 'light', theme: 'Σέλας', themeId: 'damocles-aurora', was: 'Night', wasId: NIGHT_ID } },
+    });
+    // a state without the previous theme's id keeps its name
+    const { previousId: _id, ...older } = state;
+    expect(shownKeepChanges(older, greek).previousName).toBe('System colors');
   });
 });

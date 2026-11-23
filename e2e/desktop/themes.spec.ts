@@ -9,7 +9,7 @@ import { hostMessage } from './support/screenshots';
 import { openSettingsModal, settingsRow } from './support/settings';
 import { shellPage } from './support/shell';
 import { chatInput, clickMenu, menuItemState, sendAndAwaitEcho } from './support/ui';
-import { cssToken, themeDir, themeEditorPage, windowBackground, writeTheme } from './support/themes';
+import { cssToken, HOOKS, themeDir, themeEditorPage, themeHooks, windowBackground, writeTheme } from './support/themes';
 
 // Desktop themes (docs/invariants.md "Desktop themes"): theme files under ~/.damocles/themes/themes/<id>/theme.json, the
 // preferred looks in damocles.desktop.themes.dark and .light, main's own validation, and the trusted palette.
@@ -139,10 +139,12 @@ test('a theme that fails the contrast check leaves the overlay and a permission 
   expect(await cssToken(shell, '--d-text')).toBe('#2a2040');
 });
 
-test('Reset Theme to Default sets both preferred looks back to Damocles from the View menu as one undoable change, and Duplicate makes an editable copy', async ({ home, launch }) => {
+test('Reset Theme to Default sets both preferred looks to System colors from the View menu as one undoable change, and Duplicate makes an editable copy', async ({ home, launch }) => {
   writeTheme(home, NIGHT, night);
   writeUserSettings(home, { 'damocles.desktop.theme': 'dark', 'damocles.desktop.themes.dark': NIGHT, 'damocles.desktop.themes.light': NIGHT });
-  const { app } = await launch();
+  const { app } = await launch(HOOKS);
+  // System colors would otherwise show this machine's colors, which on macOS include its background
+  await themeHooks(app).systemColors({});
   const tab = await activeChat(app);
   await expect.poll(() => background(tab, 'body')).toBe(NIGHT_BG);
 
@@ -152,7 +154,7 @@ test('Reset Theme to Default sets both preferred looks back to Damocles from the
   await expect.poll(() => {
     const settings = readUserSettings(home);
     return [settings['damocles.desktop.themes.dark'], settings['damocles.desktop.themes.light']];
-  }).toEqual(['damocles', 'damocles']);
+  }).toEqual(['damocles-system', 'damocles-system']);
 
   // one change: a single Undo Theme Change gives both looks back
   await clickMenu(app, 'damocles.themes.undo');
@@ -166,7 +168,7 @@ test('Reset Theme to Default sets both preferred looks back to Damocles from the
 
   const overlay = await openSettingsModal(app, 'appearance');
   await overlay.getByRole('button', { name: 'History', exact: true }).click();
-  await expect(overlay.getByRole('dialog', { name: 'Theme history' }).getByRole('listitem')).toHaveText([/Reset to Damocles, dark and light/]);
+  await expect(overlay.getByRole('dialog', { name: 'Theme history' }).getByRole('listitem')).toHaveText([/Reset to the default theme, dark and light/]);
   await overlay.keyboard.press('Escape');
   await overlay.getByRole('button', { name: 'More actions for Damocles', exact: true }).click();
   await overlay.getByRole('menuitem', { name: 'Duplicate to edit' }).click();

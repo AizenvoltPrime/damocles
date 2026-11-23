@@ -13,7 +13,7 @@ import type {
   ThemeInstallAbout, ThemeInstallClash, ThemeInstallCss, ThemeInstallFont, ThemeInstallFrom, ThemeInstallPlacement, ThemeInstallPreview,
   ThemeInstallProgress, ThemeInstallSource, ThemeInstallStore, ThemeInstallWallpaper,
 } from '../../shared/themes/install';
-import { CSS_REGIONS, PANELS, type AssetMeta, type Panel, type ThemeFile } from '../../shared/themes/schema';
+import { CSS_REGIONS, OUTSIDE_ORIGIN_KINDS, PANELS, type AssetMeta, type Origin, type Panel, type ThemeFile } from '../../shared/themes/schema';
 import { LOOK_KINDS } from '../../shared/themes/tokens';
 import { isMoving, isWallpaperAsset, type WallpaperKind } from '../../shared/themes/wallpapers';
 import { oneLine } from '../pi-session/untrusted-text';
@@ -134,8 +134,6 @@ export function contentHash(theme: ThemeFile): string {
   return createHash('sha256').update(JSON.stringify(canonical(content))).digest('hex');
 }
 
-const OUTSIDE_ORIGINS: ReadonlySet<string> = new Set(['import', 'vscode', 'link', 'store']);
-
 /** The Keep both name: the name with the lowest number from 2 that no theme has, cut so it stays within 64 characters. */
 export function keepBothName(name: string, taken: readonly string[]): string {
   const names = new Set(taken.map((value) => value.toLowerCase()));
@@ -152,7 +150,7 @@ export function clashOf(name: string, entries: readonly ThemeListEntry[]): Omit<
   const entry = same.find((candidate) => !candidate.builtin) ?? same[0];
   if (!entry) return undefined;
   const origin = entry.theme.origin;
-  const unedited = origin !== undefined && OUTSIDE_ORIGINS.has(origin.kind) && origin.installedHash === contentHash(entry.theme);
+  const unedited = origin !== undefined && OUTSIDE_ORIGIN_KINDS.has(origin.kind) && origin.installedHash === contentHash(entry.theme);
   return { themeId: entry.id, name: entry.name, replaceable: !entry.builtin, keepsCopy: !entry.builtin && !unedited };
 }
 
@@ -647,9 +645,9 @@ export function createThemeInstalls(deps: ThemeInstallDeps): ThemeInstalls {
   };
 }
 
-/** An origin kind for what was installed: a store entry, a VS Code theme, a file picked on this computer, or a download. */
-export function originKind(staged: StagedInstall): 'store' | 'import' | 'vscode' | 'link' {
+/** An origin kind for what was installed: a store entry, a converted format's own kind, a file picked on this computer, or a download. */
+export function originKind(staged: StagedInstall): Origin['kind'] {
   if (staged.store) return 'store';
-  if (staged.imported.format === 'vscode') return 'vscode';
+  if (staged.imported.format !== 'damocles') return staged.imported.format;
   return staged.source.kind === 'file' ? 'import' : 'link';
 }

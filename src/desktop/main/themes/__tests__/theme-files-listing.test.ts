@@ -89,7 +89,7 @@ describe("main's theme listing", () => {
     const themes = library((line) => lines.push(line));
     await themes.load();
     await themes.load();
-    expect([...themes.entries().keys()]).toEqual(['damocles', NIGHT]);
+    expect([...themes.entries().keys()]).toEqual(['damocles', 'damocles-system', NIGHT]);
     const told = lines.filter((line) => line.includes('is not named by a theme id'));
     // a file system that folds case holds the uppercase folder and the theme's as one
     expect(told.length).toBeGreaterThanOrEqual(5);

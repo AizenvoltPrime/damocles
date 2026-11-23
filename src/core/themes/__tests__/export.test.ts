@@ -9,6 +9,7 @@ import { englishText, LocalizedError } from '../../../shared/localized-text';
 import { BUILTIN_EXAMPLE_IDS, BUILTIN_THEME_ID } from '../../../shared/themes/builtin';
 import type { ThemeExportFontBytes } from '../../../shared/themes/install';
 import type { ThemeFile } from '../../../shared/themes/schema';
+import { systemTheme } from '../../../shared/themes/system-theme';
 import { readThemeArchive, writeThemeArchive } from '../archive';
 import { sha256Of } from '../blobs';
 import { buildExport, exportFileName, planExport, type ExportSource } from '../export';
@@ -163,6 +164,30 @@ describe('export of a theme on this computer', () => {
     // and installs again as a theme of its own
     const preview = await themes.installPrepare({ kind: 'file', path: out });
     expect(preview.theme.id).not.toBe(id);
+  });
+
+  // System colors has no packed folder, so a license read for it would fail with ENOENT
+  it('exports System colors as the looks of that moment, with no license file and no assets', async () => {
+    let colors = { accent: '#0078d4' };
+    const system = createThemeService({ root: path.join(root, 'themes'), settings: settings(path.join(root, 'settings.json')), resourceRoot: path.join(root, 'resources'), system: () => systemTheme(colors).looks });
+    const plan = await system.exportPlan('damocles-system');
+    expect(plan.fileName).toMatch(/\.damocles-theme$/);
+    const out = path.join(root, 'system.damocles-theme');
+    await system.exportWrite('damocles-system', out, []);
+    colors = { accent: '#e81123' };
+    const archive = await readThemeArchive(fs.readFileSync(out));
+    const exported = archive.themeJson as ThemeFile;
+    expect(exported.name).toBe('System colors');
+    expect(exported.looks).toEqual(systemTheme({ accent: '#0078d4' }).looks);
+    // the file holds the colors of that moment, so it does not say it follows the computer
+    expect(exported.description).toBeUndefined();
+    expect(exported.origin).toBeUndefined();
+    expect([...archive.assets.keys()]).toEqual([]);
+    expect([...archive.licenses.keys()]).toEqual([]);
+    // and installs again as a theme of the user's own
+    const preview = await system.installPrepare({ kind: 'file', path: out });
+    expect(preview.theme.id).not.toBe('damocles-system');
+    expect(preview.theme.looks).toEqual(systemTheme({ accent: '#0078d4' }).looks);
   });
 
   it('refuses a path that is not absolute', async () => {

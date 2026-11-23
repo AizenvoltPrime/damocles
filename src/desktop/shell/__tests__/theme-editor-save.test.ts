@@ -488,10 +488,10 @@ describe('what main tells the editor', () => {
     expect(e.preview()).toBe("Not previewing: Windows contrast themes are on, so the window shows Damocles' own look.");
     refused('safeStart');
     await flushPromises();
-    expect(e.preview()).toBe('Not previewing: this run shows the default theme.');
+    expect(e.preview()).toBe('Not previewing: this run shows the Damocles theme.');
     shellI18n.global.locale.value = 'el';
     await flushPromises();
-    expect(e.preview()).toBe('Χωρίς προεπισκόπηση: αυτή η εκτέλεση εμφανίζει το προεπιλεγμένο θέμα.');
+    expect(e.preview()).toBe('Χωρίς προεπισκόπηση: αυτή η εκτέλεση εμφανίζει το θέμα Damocles.');
     shellI18n.global.locale.value = 'en';
     vi.mocked(e.edits.preview).mockClear();
     refused(null);

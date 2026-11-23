@@ -62,10 +62,12 @@ function fileSettings(): SettingsStore {
 // the device's window arrangement, which only the device's main reads
 const DEVICE_ARRANGEMENT = { sidebarWidth: 300, sectionOrder: ['projects', 'files', 'search', 'repos', 'scm', 'graph', 'chats'] } as const;
 
-function fakeHost(): ThemeHostPort & { currentArrangement: ReturnType<typeof vi.fn>; applyArrangement: ReturnType<typeof vi.fn> } {
+function fakeHost(): ThemeHostPort & { currentArrangement: ReturnType<typeof vi.fn>; applyArrangement: ReturnType<typeof vi.fn>; copyName: ReturnType<typeof vi.fn> } {
   return {
     currentArrangement: vi.fn(async () => DEVICE_ARRANGEMENT),
     applyArrangement: vi.fn(async () => undefined),
+    // the device's main words a copy in its own language
+    copyName: vi.fn(async () => 'Χρώματα συστήματος αντίγραφο'),
     render: vi.fn(async () => PNG),
     screenshotTake: vi.fn(async () => ({ shotId: '0123456789abcdef0123456789abcdef', url: 'app://damocles/theme-shot/0123456789abcdef0123456789abcdef', width: 1, height: 1 })),
     screenshotRead: vi.fn(async () => PNG),
@@ -217,6 +219,16 @@ describe('the theme tools of a chat on a remote host', () => {
     expect(theme?.status === 'ok' && theme.theme.layout).toEqual(DEVICE_ARRANGEMENT);
     expect(host.applyArrangement).toHaveBeenCalledWith(DEVICE_ARRANGEMENT, 1);
     expect(await themes.undo()).toMatchObject({ arrangement: DEVICE_ARRANGEMENT });
+  });
+
+  it("names an unnamed copy on the device that makes it, in that device's main's words", async () => {
+    const { themes, host, byDevice, run, answer } = setup();
+    const result = run('ThemeSet', { theme: 'damocles-system', look: 'dark', colors: { accent: '#e0a030' } });
+    expect((await cardOn(byDevice, 'client-a')).theme?.name).toBe('Χρώματα συστήματος αντίγραφο');
+    expect(host.copyName).toHaveBeenCalledWith('damocles-system', 'System colors', expect.any(AbortSignal));
+    answer('client-a', 'apply');
+    expect((await result).details.outcome).toBe('applied');
+    expect((await themes.list()).some((entry) => entry.status === 'ok' && entry.name === 'Χρώματα συστήματος αντίγραφο')).toBe(true);
   });
 
   describe('install', () => {

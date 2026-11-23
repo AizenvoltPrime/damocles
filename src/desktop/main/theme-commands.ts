@@ -1,7 +1,7 @@
 // The user's theme commands (docs/invariants.md "Desktop themes"): Toggle Theme, Reset Theme to Default and Undo Theme Change
 // from the menu and the palette, and Settings › Appearance's actions. Core writes every theme file; main does itself only what
 // must work while the engine is down (the Mode row and Reset), and it puts a theme's window arrangement in place.
-import { BUILTIN_THEME_ID } from '../../shared/themes/builtin';
+import { BUILTIN_THEME_ID, DEFAULT_THEME_ID } from '../../shared/themes/builtin';
 import { arrangementApplies, parseArrangement } from '../../shared/themes/arrangement';
 import type { ThemeHistoryChange } from '../../shared/themes/changes';
 import type { Arrangement } from '../../shared/themes/schema';
@@ -11,7 +11,7 @@ import type { OverlayThemeResult } from '../preload/overlay-channels';
 import type { CoreClient } from './core-client';
 import type { ThemeAction } from './overlay-settings';
 import type { ShownTheme } from './themes/appearance';
-import type { LibraryEntry } from './themes/theme-files';
+import { shownChange, themeCopyName, type LibraryEntry } from './themes/theme-files';
 
 export type ThemeCommandsClient = Pick<
   CoreClient,
@@ -24,7 +24,9 @@ export interface ThemeCommandsDeps {
   client(): ThemeCommandsClient | undefined;
   readonly settings: { get<T>(key: string): T | undefined; update(key: string, value: unknown, target: 'user'): Promise<void> };
   // the look on screen without a transient preview
-  shown(): Pick<ShownTheme, 'kind' | 'decidedBy' | 'builtin'>;
+  shown(): Pick<ShownTheme, 'kind' | 'decidedBy'>;
+  // the look without a transient preview, forced colors and safe start: what shows once those end
+  decided(): Pick<ShownTheme, 'decidedBy' | 'touches'>;
   // the kind on screen, a transient preview's included
   shownKind(): LookKind;
   // the preferred look setting of a kind, as a theme id
@@ -50,6 +52,8 @@ export interface ThemeCommandsDeps {
 }
 
 const ENGINE_DOWN = "This computer's Damocles engine is not running.";
+// What decides the look from data only the engine writes (appearance.json, projects.json), which a Reset by main leaves standing.
+const ENGINE_DECIDED: ReadonlySet<ShownTheme['decidedBy']> = new Set(['schedule', 'override', 'project']);
 const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 export class ThemeCommands {
@@ -94,9 +98,11 @@ export class ThemeCommands {
   }
 
   /**
-   * Reset Theme to Default: both preferred looks back to the built-in theme, the schedule and the selected project's own look
-   * off. While the engine is down main writes the two settings, the only theme data it may write; a look the schedule, a held
-   * pick or the project still decides then steps aside for this run through safe start.
+   * Reset Theme to Default: both preferred looks back to the default theme (DEFAULT_THEME_ID, System colors), the schedule and
+   * the selected project's own look off. While the engine is down main writes the two settings itself; a look the schedule, a
+   * held pick or the project still decides, or that the project's touches still change, then steps aside for this run through
+   * safe start, judged from the look beneath forced colors and safe start. Where the preferred looks alone decide, the default
+   * theme shows with no safe start.
    */
   async reset(): Promise<void> {
     const { deps } = this;
@@ -106,9 +112,10 @@ export class ThemeCommands {
       return;
     }
     deps.log('[themes] the engine is not running, so main resets the preferred looks itself');
-    for (const key of [THEMES_DARK_SETTING, THEMES_LIGHT_SETTING]) await deps.settings.update(key, BUILTIN_THEME_ID, 'user');
-    if (deps.shown().builtin) return;
-    deps.log('[themes] the schedule or a project look still decides the look, which the engine writes; this run shows the default theme');
+    for (const key of [THEMES_DARK_SETTING, THEMES_LIGHT_SETTING]) await deps.settings.update(key, DEFAULT_THEME_ID, 'user');
+    const decided = deps.decided();
+    if (!ENGINE_DECIDED.has(decided.decidedBy) && (decided.touches?.length ?? 0) === 0) return;
+    deps.log('[themes] the schedule, a held pick or a project look still decides the look, which the engine writes; this run shows the Damocles look');
     deps.safeStart();
   }
 
@@ -156,8 +163,12 @@ export class ThemeCommands {
         case 'pick':
           await this.pick(client, action.themeId, action.kind);
           return { ok: true };
-        case 'duplicate':
-          return { ok: true, themeId: (await client.themesDuplicate(action.themeId, action.name)).themeId };
+        case 'duplicate': {
+          const entry = deps.entry(action.themeId);
+          const name = action.name ?? (entry?.status === 'ok' ? themeCopyName(action.themeId, entry.theme.name, deps) : undefined);
+          if (name === undefined) return { ok: false, error: deps.t('The theme {0} is missing, broken or needs a newer Damocles.', action.themeId) };
+          return { ok: true, themeId: (await client.themesDuplicate(action.themeId, name)).themeId };
+        }
         case 'rename':
           await client.themesRename(action.themeId, action.name);
           return { ok: true };
@@ -166,7 +177,7 @@ export class ThemeCommands {
           return { ok: true };
         case 'undo': {
           const undone = await this.undo(client, action.entryId);
-          return { ok: true, ...(undone ? { undone } : {}) };
+          return { ok: true, ...(undone ? { undone: shownChange(undone, deps) } : {}) };
         }
         case 'restore':
           await this.restore(client, action.entryId);

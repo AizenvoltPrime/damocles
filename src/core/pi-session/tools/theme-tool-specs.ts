@@ -59,7 +59,7 @@ const THEME_READ_PARAMETERS = Type.Object({
 
 const THEME_SET_PARAMETERS = Type.Object({
   draft: Type.Optional(Type.String({ maxLength: 64, description: "This chat's draft to keep working on, as an earlier result named it (after the user asked for changes)." })),
-  theme: Type.Optional(Type.String({ maxLength: 64, description: 'The theme id to start from. Editing a built-in theme makes a copy. Omit both draft and theme to make a new theme.' })),
+  theme: Type.Optional(Type.String({ maxLength: 64, description: 'The theme id to start from. Editing a built-in theme makes a copy. Alone, or with only look, it shows that theme as it is: the look named (default: the kind on screen, or its only look) becomes the preferred one and no theme is made or changed, so a built-in that follows the computer keeps following it. Omit both draft and theme to make a new theme.' })),
   saveAs: Type.Optional(Type.Union([Type.Literal('new'), Type.Literal('same')], { description: "same (default for the user's own themes): change that theme; new: save the result as a new theme." })),
   name: Type.Optional(Type.String({ minLength: 1, maxLength: 64, description: 'The name; required for a new theme.' })),
   look: Type.Optional(Type.Union([look], { description: 'The look colors, tokens, wallpapers, cycle, surfaceOpacity and paletteFromWallpaper apply to; a look the theme lacks is added. Required when the theme has both.' })),
@@ -151,7 +151,7 @@ const THEME_SET_PARAMETERS = Type.Object({
     description: "With target project: this chat's project's own look, stored on this computer only and never in the project's files; touches start from the look the project has. Switching projects never changes the window arrangement.",
   })),
   install: Type.Optional(Type.Object({
-    url: Type.String({ minLength: 1, maxLength: 2048, description: 'An https URL of a .damocles-theme file, a VS Code theme (.json) or a .vsix.' }),
+    url: Type.String({ minLength: 1, maxLength: 2048, description: 'An https URL of a .damocles-theme file, a VS Code theme (.json or .vsix), a base16 or base24 scheme (.yaml or .yml), a KDE color scheme (.colors or kdeglobals), a qt5ct or qt6ct palette (.conf) or a GTK color file (.css).' }),
   }, {
     ...strict,
     description: "Install a theme from an https URL, alone with no other field: fetched only while Web search is on, under the chat's WebFetch rules, following redirects only within the same host. The user sees what the file holds on an install card and installs or cancels; installing never shows the theme, so pick it with another call if the user asks.",

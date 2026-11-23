@@ -36,7 +36,7 @@ describe('the theme listing', () => {
     writeTheme(root, OTHER, themeJson(OTHER, 'Day'));
     thrower.folder = OTHER;
     const listed = await createThemeStore({ root }).list();
-    expect(listed.map((entry) => [entry.id, entry.status])).toEqual([['damocles', 'ok'], [OTHER, 'broken'], [ID, 'ok']]);
-    expect(listed[1]).toMatchObject({ name: 'Day', reason: { message: 'theme.json is not a valid theme: {0}', args: [{ message: '{0}', args: ['Maximum call stack size exceeded'] }] } });
+    expect(listed.map((entry) => [entry.id, entry.status])).toEqual([['damocles', 'ok'], ['damocles-system', 'ok'], [OTHER, 'broken'], [ID, 'ok']]);
+    expect(listed[2]).toMatchObject({ name: 'Day', reason: { message: 'theme.json is not a valid theme: {0}', args: [{ message: '{0}', args: ['Maximum call stack size exceeded'] }] } });
   });
 });

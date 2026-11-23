@@ -238,12 +238,6 @@ async function reset(): Promise<void> {
 }
 const resetKeys = computed(() => (prefs.platform.value === undefined ? undefined : acceleratorKeyshortcuts(RESET_THEME_ACCELERATOR, prefs.platform.value)));
 
-// The copy's name with the theme's own name cut so that the whole of it, the word for "copy" included, fits a theme name.
-function copyName(name: string): string {
-  const fixed = [...t('settingsHost.themes.copyName', { name: '' })].length;
-  return t('settingsHost.themes.copyName', { name: [...name].slice(0, MAX_THEME_NAME_CHARS - fixed).join('').trimEnd() });
-}
-
 // A new theme starts as a copy of Damocles and opens in the editor beside the window.
 async function newTheme(): Promise<void> {
   const copy = await act({ action: 'duplicate', themeId: BUILTIN_THEME_ID, name: t('settingsHost.themes.newName') });
@@ -299,7 +293,7 @@ async function cardAction(entry: OverlayThemeEntry, action: CardAction): Promise
       await act({ action: 'edit', themeId: entry.id });
       return;
     case 'duplicate': {
-      const copy = await act({ action: 'duplicate', themeId: entry.id, name: copyName(name) });
+      const copy = await act({ action: 'duplicate', themeId: entry.id });
       if (copy?.themeId) await act({ action: 'edit', themeId: copy.themeId });
       return;
     }

@@ -29,8 +29,10 @@ export interface ThemeInstallSource {
   readonly fileName?: string;
 }
 
-// damocles: a .damocles-theme file; vscode: a VS Code color theme (.json, JSONC or a .vsix's theme)
-export type ThemeInstallFormat = 'damocles' | 'vscode';
+// damocles: a .damocles-theme file; vscode: a VS Code color theme (.json, JSONC or a .vsix's theme); base16: a base16 or
+// base24 scheme (.yaml, .yml); gtk: GTK CSS color definitions (.css); kde: a KDE color scheme (.colors, kdeglobals); qt: a qt5ct or
+// qt6ct palette (.conf)
+export type ThemeInstallFormat = 'damocles' | 'vscode' | 'base16' | 'gtk' | 'kde' | 'qt';
 
 // none: a still image needs no flash check; pending: the theme renderer is checking it; unchecked: the check failed, so the file
 // never plays until a later check passes

@@ -13,7 +13,7 @@ import ToolErrorStrip from '../ToolErrorStrip.vue';
 import ToolBlockedReason from '../ToolBlockedReason.vue';
 import ToolResultImages from '../ToolResultImages.vue';
 import ThemeMiniature from './ThemeMiniature.vue';
-import { historyChangeText, looksText } from './theme-words';
+import { historyChangeText, looksText, themeNameText } from './theme-words';
 import { useThemePromptStore } from '@/stores/useThemePromptStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useSettingsStore } from '@/stores/useSettingsStore';
@@ -151,7 +151,7 @@ const miniMode = computed(() => {
   return theme.value?.looks.light ? 'light' as const : 'dark' as const;
 });
 const miniLabel = computed(() => t('themeAgent.card.miniLabel', {
-  name: theme.value?.name ?? '',
+  name: themeNameText(t, theme.value, theme.value?.name) ?? '',
   looks: miniMode.value === 'split' ? t('themeAgent.looks.bothLooks') : t(`themeAgent.looks.${miniMode.value}Look`),
 }));
 

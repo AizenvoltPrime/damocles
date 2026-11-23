@@ -5,6 +5,7 @@ import { fileSettings } from '../../../core/themes/__tests__/service-fixtures';
 import { STAGED_INSTALL_TTL_MS } from '../../../core/themes/install';
 import { MAX_PROJECT_KEY_CHARS } from '../../../shared/themes/project-looks';
 import type { LookColors } from '../../../shared/themes/schema';
+import { systemTheme, type SystemLooks } from '../../../shared/themes/system-theme';
 import { createCoreEndpoint, createLoopback, createMainEndpoint, type CoreTransport, type MainEndpoint } from '../../core-protocol';
 import type { CorePlatform } from '../platform';
 import { ANALYZE_RETRY_DELAYS_MS, startCoreThemes, type CoreThemes } from '../themes';
@@ -69,8 +70,9 @@ interface Started {
   readonly events: string[];
 }
 
-// `seen` gets every envelope core posts, in the order it posts them, before main's endpoint handles it
-function start(seen?: (envelope: { readonly kind: string; readonly method?: string }) => void): Started {
+// `seen` gets every envelope core posts, in the order it posts them, before main's endpoint handles it; `systemAtInit` is the
+// System colors value main's init carries, which must be one parseCoreInit passes
+function start(seen?: (envelope: { readonly kind: string; readonly method?: string }) => void, systemAtInit?: { readonly looks: SystemLooks }): Started {
   const { main: channel, core } = createLoopback();
   const main: CoreTransport = !seen ? channel : {
     post: channel.post,
@@ -97,7 +99,7 @@ function start(seen?: (envelope: { readonly kind: string; readonly method?: stri
   mainEndpoint.onEvent('themes.store.updated', () => undefined);
   const platform = {
     endpoint: createCoreEndpoint(core, () => undefined, (error) => violations.push(error.message)),
-    init: { paths: { resourceRoot: process.cwd() }, appInfo: { version: '1.0.0' }, e2eHooks: false, themesOwner: OWNER },
+    init: { paths: { resourceRoot: process.cwd() }, appInfo: { version: '1.0.0' }, e2eHooks: false, themesOwner: OWNER, mirrors: systemAtInit === undefined ? {} : { systemTheme: systemAtInit } },
     settings: fileSettings(file('settings.json')),
     notifications: { info: async () => undefined },
   } as unknown as CorePlatform;
@@ -147,6 +149,93 @@ describe('the theme list over the core protocol', () => {
     const list = vi.spyOn(host.service, 'list');
     await main.request('themes.list', {});
     expect(list).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('System colors over the core protocol', () => {
+  const looksOf = (accent?: string): SystemLooks => systemTheme(accent === undefined ? {} : { accent }).looks;
+  const listed = async (main: MainEndpoint) => (await main.request('themes.list', {})).themes.find((entry) => entry.id === 'damocles-system');
+  const copyOf = (id: string): Record<string, unknown> => JSON.parse(fs.readFileSync(file('themes', id, 'theme.json'), 'utf8')) as Record<string, unknown>;
+
+  it('lists the value main sent at init after Damocles, read-only', async () => {
+    const { main, violations } = start(undefined, { looks: looksOf('#0078d4') });
+    const { themes } = await main.request('themes.list', {});
+    expect(themes.slice(0, 2).map((entry) => entry.id)).toEqual(['damocles', 'damocles-system']);
+    expect(themes[1]).toMatchObject({ status: 'ok', builtin: true, name: 'System colors', theme: { id: 'damocles-system', looks: looksOf('#0078d4') } });
+    await expect(main.request('themes.rename', { themeId: 'damocles-system', name: 'Mine' })).rejects.toThrow();
+    await expect(main.request('themes.delete', { themeId: 'damocles-system' })).rejects.toThrow();
+    expect(violations).toEqual([]);
+  });
+
+  it('is the Damocles seeds when main sent none', async () => {
+    const { main, violations } = start();
+    expect(await listed(main)).toMatchObject({ status: 'ok', builtin: true, theme: { looks: looksOf() } });
+    expect(violations).toEqual([]);
+  });
+
+  // themes.changed makes main read every theme file, pin, project look and schedule again, which an accent change must not
+  it('serves a mirror update at once and emits no themes.changed for it', async () => {
+    const { main, host, events, violations } = start(undefined, { looks: looksOf('#0078d4') });
+    await host.settled();
+    events.length = 0;
+    main.publish('systemTheme', { looks: looksOf('#e81123') });
+    await vi.waitFor(async () => expect(await listed(main)).toMatchObject({ theme: { looks: looksOf('#e81123') } }));
+    // a round trip after the value landed: an event core posted for it would be here by now
+    await main.request('themes.history', {});
+    expect(events).toEqual([]);
+    expect(violations).toEqual([]);
+  });
+
+  it('copies the looks of that moment exactly, and a later change leaves the copy as it is', async () => {
+    const { main, violations } = start(undefined, { looks: looksOf('#0078d4') });
+    const { themeId } = await main.request('themes.duplicate', { themeId: 'damocles-system', name: 'My colors' });
+    expect(copyOf(themeId)).toEqual({ schemaVersion: 1, id: themeId, name: 'My colors', looks: looksOf('#0078d4'), origin: { kind: 'duplicate', from: 'damocles-system', installedAt: expect.any(Number) } });
+    main.publish('systemTheme', { looks: looksOf('#e81123') });
+    await vi.waitFor(async () => expect(await listed(main)).toMatchObject({ theme: { looks: looksOf('#e81123') } }));
+    expect(copyOf(themeId)['looks']).toEqual(looksOf('#0078d4'));
+    expect(violations).toEqual([]);
+  });
+
+  // macOS values carry token overrides (the separator as --d-border), which the wire and the copy must keep
+  it('carries the token overrides of a look at init and in an update, and the copy keeps them', async () => {
+    const withBorder = (border: string): SystemLooks => ({ ...looksOf('#bf5af2'), dark: { ...looksOf('#bf5af2').dark, tokens: { '--d-border': border } } });
+    const { main, violations } = start(undefined, { looks: withBorder('#353535') });
+    expect(await listed(main)).toMatchObject({ theme: { looks: withBorder('#353535') } });
+    main.publish('systemTheme', { looks: withBorder('#404040') });
+    await vi.waitFor(async () => expect(await listed(main)).toMatchObject({ theme: { looks: withBorder('#404040') } }));
+    const { themeId } = await main.request('themes.duplicate', { themeId: 'damocles-system', name: 'My colors' });
+    expect(copyOf(themeId)['looks']).toEqual(withBorder('#404040'));
+    expect(violations).toEqual([]);
+  });
+
+  it('can be picked, and Reset lands on it', async () => {
+    writeTheme(ID, themeJson(ID));
+    fs.writeFileSync(file('settings.json'), JSON.stringify({ 'damocles.desktop.themes.dark': ID, 'damocles.desktop.themes.light': 'damocles' }));
+    const { main, violations } = start(undefined, { looks: looksOf('#0078d4') });
+    await main.request('themes.pick', { themeId: 'damocles-system', kind: 'light' });
+    expect(JSON.parse(fs.readFileSync(file('settings.json'), 'utf8'))).toMatchObject({ 'damocles.desktop.themes.dark': ID, 'damocles.desktop.themes.light': 'damocles-system' });
+    await main.request('themes.reset', {});
+    expect(JSON.parse(fs.readFileSync(file('settings.json'), 'utf8'))).toMatchObject({ 'damocles.desktop.themes.dark': 'damocles-system', 'damocles.desktop.themes.light': 'damocles-system' });
+    expect(violations).toEqual([]);
+  });
+
+  // the wire refuses a seed that is no color or is missing (parseCoreInit), so an override is what reaches the check
+  it('replaces an override that is no color at init by the Damocles seeds, and says so in the log', async () => {
+    const { main, logs } = start(undefined, { looks: { ...looksOf(), dark: { ...looksOf().dark, tokens: { '--d-muted': 'red' } } } });
+    expect(await listed(main)).toMatchObject({ status: 'ok', builtin: true, theme: { looks: looksOf() } });
+    expect(logs.join(' ')).toContain('System colors');
+  });
+
+  it('replaces a mirror update that is no valid theme by the Damocles seeds, with no themes.changed', async () => {
+    const { main, host, events, logs } = start(undefined, { looks: looksOf('#0078d4') });
+    await host.settled();
+    events.length = 0;
+    // a look the protocol carries, which is no valid theme: the override is no color
+    main.publish('systemTheme', { looks: { ...looksOf('#e81123'), dark: { ...looksOf('#e81123').dark, tokens: { '--d-muted': 'red' } } } });
+    await vi.waitFor(async () => expect(await listed(main)).toMatchObject({ theme: { looks: looksOf() } }));
+    expect(logs.join(' ')).toContain('System colors');
+    await main.request('themes.history', {});
+    expect(events).toEqual([]);
   });
 });
 
@@ -202,7 +291,7 @@ describe('the theme history over the core protocol', () => {
     expect(Object.keys((await main.request('themes.projectLooks', {})).looks)).toEqual(['c:/work/app']);
     await main.request('themes.pick', { themeId: ID, kind: 'dark', arrangementBefore: { sidebarWidth: 300 } });
     const { entries } = await main.request('themes.history', {});
-    expect(entries).toEqual([{ id: expect.any(String), at: expect.any(Number), actor: { kind: 'user' }, change: { kind: 'pick', look: 'dark', theme: 'Night', was: 'Damocles' } }]);
+    expect(entries).toEqual([{ id: expect.any(String), at: expect.any(Number), actor: { kind: 'user' }, change: { kind: 'pick', look: 'dark', theme: 'Night', themeId: ID, was: 'Damocles', wasId: 'damocles' } }]);
     expect(await main.request('themes.undo', {})).toEqual({ undone: entries[0]!.change, arrangement: { sidebarWidth: 300 } });
     expect(violations).toEqual([]);
   });

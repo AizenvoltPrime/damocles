@@ -4064,6 +4064,13 @@
       "darkTitle": "Dark",
       "lightTitle": "Light"
     },
+    "builtinName": {
+      "damocles": "Damocles",
+      "damocles-system": "System colors",
+      "damocles-aurora": "Aurora",
+      "damocles-paper": "Paper",
+      "damocles-arcade": "Arcade"
+    },
     "seed": {
       "background": "Background",
       "panel": "Panel",
@@ -4218,7 +4225,7 @@
       "showHint": "Paints the whole window until you stop or answer.",
       "takenOver": "Another preview took over the window.",
       "forcedColors": "Windows contrast themes are on, so the window shows Damocles' own look and cannot show this proposal.",
-      "safeStart": "This run shows the default theme, so the window cannot show this proposal.",
+      "safeStart": "This run shows the Damocles theme, so the window cannot show this proposal.",
       "showing": "Showing in the window",
       "stopShowing": "Stop showing",
       "applying": "Applying…",
@@ -4339,13 +4346,23 @@
     "source": {
       "file": "From the file {source}",
       "vscodeFile": "A VS Code theme, from the file {source}",
+      "base16File": "A base16 or base24 scheme, from the file {source}",
+      "gtkFile": "GTK colors, from the file {source}",
+      "kdeFile": "A KDE color scheme, from the file {source}",
+      "qtFile": "A qt5ct or qt6ct palette, from the file {source}",
       "url": "From a link on {source}",
       "link": "From a damocles:// link on {source}",
       "agent": "From a link on {source}",
       "store": "From the community store. The file matched the signed list.",
       "storeBy": "From the community store, by {author}. The file matched the signed list."
     },
-    "vscode": "A VS Code theme becomes a Damocles theme: its colors map onto Damocles' tokens and its syntax colors onto the six code colors; anything missing comes from Damocles' own look of that kind.",
+    "conversion": {
+      "vscode": "A VS Code theme becomes a Damocles theme: its colors map onto Damocles' tokens and its syntax colors onto the six code colors; anything missing comes from Damocles' own look of that kind.",
+      "base16": "A base16 or base24 scheme becomes a Damocles theme: base00, base01 and base05 become the background, panel and text, base08 to base0E the accent, status, syntax and terminal colors, and base03 the comment color, each exactly as the scheme sets it.",
+      "gtk": "GTK colors become a Damocles theme: the view, window, accent, success, warning and error colors become the background, panel, text, accent and status colors. Anything missing, or written in a way Damocles cannot read, comes from libadwaita, GTK's own look. A dark and a light media block each become a look.",
+      "kde": "A KDE color scheme becomes a Damocles theme: the View and Window colors become the background, panel and text, the accent color the accent, and the positive, neutral, negative and active text colors the status colors, each exactly as the scheme sets it.",
+      "qt": "A Qt palette becomes a Damocles theme: Base, Window, Text, Accent (or Highlight) and Link become the background, panel, text, accent and info colors. Qt has no success, warning or danger color, so those come from Damocles' own look of that kind."
+    },
     "clash": {
       "legend": "A theme named {name} is installed.",
       "group": "What to do with the installed theme",
