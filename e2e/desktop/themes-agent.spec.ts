@@ -11,7 +11,7 @@ import { hostMessage, setPageSize, settled } from './support/screenshots';
 import { closeSettingsModal, setContentSize } from './support/settings';
 import { pressKeys, SHELL_URL, shellPage, shellState, viewFocused } from './support/shell';
 import { cssToken, HOOKS, loadThemeTools, openAppearance, readTheme, themeHooks, windowBackground, writeTheme } from './support/themes';
-import { awaitTurnEnd, chatInput, clickMenu, postFromWebview, promptReady } from './support/ui';
+import { awaitTurnEnd, chatInput, clickAnswer, clickMenu, postFromWebview, promptReady } from './support/ui';
 
 // The agent's theme tools on this computer (docs/invariants.md "Desktop themes", "Permissions and plan mode"): the theme
 // cards are content decisions raised in every permission mode, the keep-changes banner settles an on-the-fly apply, and
@@ -156,7 +156,7 @@ test('with no ask rule ThemeSet raises the preview card, never the generic card,
     await send(tab, `a warmer theme in ${mode}`);
     await expect(previewCard(tab)).toBeVisible(CHECKED);
     await expect(genericCard(tab)).toHaveCount(0);
-    await answers(tab).getByRole('option', { name: 'Discard', exact: true }).click();
+    await clickAnswer(answers(tab).getByRole('option', { name: 'Discard', exact: true }));
     await expect(tab.getByText(`Discarded in ${mode}.`, { exact: true })).toBeVisible(CHECKED);
     await awaitTurnEnd(tab);
     await expect(lastToolCard(tab)).toHaveAttribute('data-outcome', 'discarded');
@@ -168,7 +168,7 @@ test('with no ask rule ThemeSet raises the preview card, never the generic card,
   await send(tab, 'a warmer theme in plan mode');
   await expect(previewCard(tab)).toBeVisible(CHECKED);
   await expect(genericCard(tab)).toHaveCount(0);
-  await answers(tab).getByRole('option', { name: 'Discard', exact: true }).click();
+  await clickAnswer(answers(tab).getByRole('option', { name: 'Discard', exact: true }));
   await expect(tab.getByText('Discarded in plan mode.', { exact: true })).toBeVisible(CHECKED);
   await tab.getByTestId('composer-send').click();
   await awaitTurnEnd(tab);
@@ -192,7 +192,7 @@ test('with no ask rule ThemeSet raises the preview card, never the generic card,
   await expect(lastToolCard(tab)).not.toHaveAttribute('data-outcome', 'applied');
   expect(toolResults(run.openai)).toHaveLength(answered);
   expect(await windowBackground(run.app)).toBe(BUILTIN_DARK_BG);
-  await answers(tab).getByRole('option', { name: 'Apply', exact: true }).click();
+  await clickAnswer(answers(tab).getByRole('option', { name: 'Apply', exact: true }));
   await expect(tab.getByText('Applied in YOLO.', { exact: true })).toBeVisible(CHECKED);
   await awaitTurnEnd(tab);
   await expect(lastToolCard(tab)).toHaveAttribute('data-outcome', 'applied');
@@ -259,7 +259,7 @@ test('a file source is a Read of it: a Read deny rule blocks it with no card, an
   await send(tab, 'use the picture in img');
   await expect(previewCard(tab)).toBeVisible(CHECKED);
   await expect(genericCard(tab)).toHaveCount(0);
-  await answers(tab).getByRole('option', { name: 'Apply', exact: true }).click();
+  await clickAnswer(answers(tab).getByRole('option', { name: 'Apply', exact: true }));
   await expect(tab.getByText('Applied with your picture.', { exact: true })).toBeVisible(CHECKED);
   await awaitTurnEnd(tab);
   await expect(lastToolCard(tab)).toHaveAttribute('data-outcome', 'applied');
@@ -289,7 +289,7 @@ test('a generated image asks on the image card in plan mode, naming no file; No 
   await expect(card.getByTestId('image-permission-prompt')).toHaveText('warm dunes at dusk\n\nAspect ratio 16:9 (width:height).');
   await expect(previewCard(tab)).toHaveCount(0);
   // a No with no note ends the turn, as for any tool
-  await card.getByRole('option', { name: 'No', exact: true }).click();
+  await clickAnswer(card.getByRole('option', { name: 'No', exact: true }));
   await expect(card).toHaveCount(0, CHECKED);
   await awaitTurnEnd(tab);
   await expect(previewCard(tab)).toHaveCount(0);
@@ -312,7 +312,7 @@ test('on the fly: plan mode shows the preview card instead; YOLO shows one keep-
   await expect(previewCard(tab)).toBeVisible(CHECKED);
   await expect(tab.getByTestId('theme-change-plan-mode')).toBeVisible();
   await expect(keepBanner(shell)).toHaveCount(0);
-  await answers(tab).getByRole('option', { name: 'Discard', exact: true }).click();
+  await clickAnswer(answers(tab).getByRole('option', { name: 'Discard', exact: true }));
   await expect(tab.getByText('Plan mode preview answered.', { exact: true })).toBeVisible(CHECKED);
   await tab.getByTestId('composer-send').click();
   await awaitTurnEnd(tab);
@@ -442,7 +442,7 @@ test('ThemeSchedule goes through its card: Apply saves the schedule and the wind
   await expect(card).toBeVisible(CHECKED);
   await expect(genericCard(tab)).toHaveCount(0);
   expect(await hooks.shown()).toMatchObject({ themeId: 'damocles', kind: 'dark', decidedBy: 'mode' });
-  await answers(tab).getByRole('option', { name: 'Apply', exact: true }).click();
+  await clickAnswer(answers(tab).getByRole('option', { name: 'Apply', exact: true }));
   await expect(tab.getByText('Scheduled.', { exact: true })).toBeVisible(CHECKED);
   await awaitTurnEnd(tab);
   await expect(lastToolCard(tab)).toHaveAttribute('data-outcome', 'applied');
@@ -455,7 +455,7 @@ test('ThemeSchedule goes through its card: Apply saves the schedule and the wind
   await send(tab, 'undo that');
   const undoCard = previewCard(tab, 'Undo the agent\'s theme change?');
   await expect(undoCard).toBeVisible(CHECKED);
-  await undoCard.getByRole('option', { name: 'Apply', exact: true }).click();
+  await clickAnswer(undoCard.getByRole('option', { name: 'Apply', exact: true }));
   await expect(tab.getByText('Unscheduled.', { exact: true })).toBeVisible(CHECKED);
   await awaitTurnEnd(tab);
   await expect(lastToolCard(tab)).toHaveAttribute('data-outcome', 'undone');
@@ -492,7 +492,7 @@ test('undo in Preview first: the chat\'s own change comes back through the card,
   await send(tab, 'undo that');
   const undoCard = previewCard(tab, 'Undo the agent\'s theme change?');
   await expect(undoCard).toBeVisible(CHECKED);
-  await undoCard.getByRole('option', { name: 'Apply', exact: true }).click();
+  await clickAnswer(undoCard.getByRole('option', { name: 'Apply', exact: true }));
   await expect(tab.getByText('Undone.', { exact: true })).toBeVisible(CHECKED);
   await awaitTurnEnd(tab);
   await expect(lastToolCard(tab)).toHaveAttribute('data-outcome', 'undone');
@@ -513,7 +513,7 @@ test('a ThemeSet that names System colors and changes nothing picks it as it is:
   await expect(card).toContainText('System colors');
   // main paints a preview only of a user theme, so a built-in's card offers none
   await expect(tab.getByRole('button', { name: 'Show in window', exact: true })).toHaveCount(0);
-  await card.getByRole('option', { name: 'Apply', exact: true }).click();
+  await clickAnswer(card.getByRole('option', { name: 'Apply', exact: true }));
   await expect(tab.getByText('Switched.', { exact: true })).toBeVisible(CHECKED);
   await awaitTurnEnd(tab);
   await expect(lastToolCard(tab)).toHaveAttribute('data-outcome', 'applied');
@@ -553,15 +553,15 @@ test('two chats keep their own drafts of one theme, and the later Apply turns Ou
   await expect(previewCard(second, 'Preview a theme change')).toBeVisible(CHECKED);
   await expect.poll(() => draftFiles(home).length).toBe(2);
 
-  await answers(second).getByRole('option', { name: 'Apply', exact: true }).click();
+  await clickAnswer(answers(second).getByRole('option', { name: 'Apply', exact: true }));
   await expect(second.getByText('Second chat done.', { exact: true })).toBeVisible(CHECKED);
 
   await selectChatPage(run.app, first);
   const firstCard = previewCard(first, 'Preview a theme change');
-  await answers(first).getByRole('option', { name: 'Apply', exact: true }).click();
+  await clickAnswer(answers(first).getByRole('option', { name: 'Apply', exact: true }));
   await expect(firstCard.getByTestId('theme-change-outdated')).toBeVisible(CHECKED);
   await expect(answers(first).getByRole('option')).toHaveText(['1Discard']);
-  await answers(first).getByRole('option', { name: 'Discard', exact: true }).click();
+  await clickAnswer(answers(first).getByRole('option', { name: 'Discard', exact: true }));
   await expect(first.getByText('First chat done.', { exact: true })).toBeVisible(CHECKED);
   await expect.poll(() => draftFiles(home)).toEqual([]);
   // the theme holds the second chat's change, never the outdated one's
@@ -586,7 +586,7 @@ test("the agent's pick of a theme with a window arrangement puts it in place as 
   ask(run, 'ThemeSet', { theme: NIGHT, look: 'dark', colors: { accent: '#ff4040' } }, 'Picked Night.');
   await send(tab, 'pick Night with a redder accent');
   await expect(previewCard(tab, 'Preview a theme change')).toBeVisible(CHECKED);
-  await answers(tab).getByRole('option', { name: 'Apply', exact: true }).click();
+  await clickAnswer(answers(tab).getByRole('option', { name: 'Apply', exact: true }));
   await expect(tab.getByText('Picked Night.', { exact: true })).toBeVisible(CHECKED);
   await awaitTurnEnd(tab);
   await expect.poll(sidebarWidth).toBe(NIGHT_SIDEBAR_WIDTH);
@@ -594,7 +594,7 @@ test("the agent's pick of a theme with a window arrangement puts it in place as 
 
   ask(run, 'ThemeSet', { undo: true }, 'Undone.');
   await send(tab, 'undo that');
-  await answers(tab).getByRole('option', { name: 'Apply', exact: true }).click();
+  await clickAnswer(answers(tab).getByRole('option', { name: 'Apply', exact: true }));
   await expect(tab.getByText('Undone.', { exact: true })).toBeVisible(CHECKED);
   await awaitTurnEnd(tab);
   await expect(lastToolCard(tab)).toHaveAttribute('data-outcome', 'undone');
@@ -685,7 +685,7 @@ for (const [label, shadow] of [['the built-in shadow', undefined], ['a theme\'s 
     await firstAnswer.click();
     await expect(permission).toBeHidden();
 
-    await answers(tab).getByRole('option', { name: 'Discard', exact: true }).click();
+    await clickAnswer(answers(tab).getByRole('option', { name: 'Discard', exact: true }));
     await expect(tab.getByText('Discarded under the permission card.', { exact: true })).toBeVisible(CHECKED);
     await awaitTurnEnd(tab);
   });
@@ -751,7 +751,7 @@ for (const [label, width] of [['1280 px', 1280], ['a 300 px chat column', 300]] 
     await tab.getByRole('button', { name: 'Close preview', exact: true }).click();
     await expect(tab.getByRole('dialog', { name: 'Amber Night preview', exact: true })).toBeHidden();
 
-    await tab.getByRole('option', { name: 'Change…', exact: true }).click();
+    await clickAnswer(tab.getByRole('option', { name: 'Change…', exact: true }));
     await expect(tab.getByLabel('What should change?', { exact: true })).toBeVisible();
     await tab.getByLabel('What should change?', { exact: true }).fill(NOTE);
     await expect(tab.getByLabel('What should change?', { exact: true })).toHaveValue(NOTE);

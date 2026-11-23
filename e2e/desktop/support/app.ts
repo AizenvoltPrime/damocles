@@ -107,15 +107,35 @@ async function sampledStacks(pid: number): Promise<string> {
   }
 }
 
-async function closeWithin(app: ElectronApplication, proc: ChildProcess, exit: Promise<void>, note: (text: string) => void): Promise<void> {
+// A loop turn that passes the poll phase, where a pipe's waiting bytes are read.
+const pollTurn = (): Promise<void> => new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
+
+/**
+ * Ends this process's reads of main's stdout and stderr once main has exited and `outputLength` shows what it wrote was read.
+ * Playwright's close waits for both pipes to end, and a process that outlives main by design can hold them: on macOS the
+ * crash handler, which serves the loopback daemon's processes after a quit.
+ */
+async function releaseOutput(proc: ChildProcess, outputLength: () => number): Promise<void> {
+  for (let read = -1; read !== outputLength();) {
+    read = outputLength();
+    await pollTurn();
+  }
+  proc.stdout?.destroy();
+  proc.stderr?.destroy();
+}
+
+async function closeWithin(app: ElectronApplication, proc: ChildProcess, exit: Promise<void>, outputLength: () => number, note: (text: string) => void): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   const timedOut = new Promise<'timeout'>((resolve) => (timer = setTimeout(() => resolve('timeout'), QUIT_TIMEOUT_MS)));
   try {
     // app.close() returns at once when the app's browser connection already closed, before the process exits.
-    if ((await Promise.race([app.close().then(() => exit).then(() => 'closed' as const), timedOut])) === 'closed') return;
+    const closed = Promise.all([app.close(), exit.then(() => releaseOutput(proc, outputLength))]).then(() => 'closed' as const);
+    if ((await Promise.race([closed, timedOut])) === 'closed') return;
   } finally {
     clearTimeout(timer);
   }
+  // Its output was released at its exit, so what Playwright still waits for is the DevTools connection.
+  if (proc.exitCode !== null || proc.signalCode !== null) throw new Error(`the main process exited, but app.close() did not finish within ${QUIT_TIMEOUT_MS} ms: another process holds the app's DevTools connection`);
   const sampledPid = process.platform === 'darwin' ? proc.pid : undefined;
   if (sampledPid !== undefined) note(`\n[e2e] main's stacks after ${QUIT_TIMEOUT_MS} ms of quitting:\n${await sampledStacks(sampledPid)}`);
   const killFailure = await killTree(proc).then(() => '', (error: unknown) => `; reading its process tree failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -199,7 +219,7 @@ export async function launchDesktop(h: HermeticHome, options: LaunchOptions = {}
     },
     close: async () => {
       // A packaged app's close bounds its own quit and kills it (packaged-app.ts).
-      if (!exited()) await (packaged !== undefined ? app.close() : closeWithin(app, proc, exit, (text) => (output += text)));
+      if (!exited()) await (packaged !== undefined ? app.close() : closeWithin(app, proc, exit, () => output.length, (text) => (output += text)));
       if (exitReported) return;
       exitReported = true;
       if (proc.exitCode !== 0) throw new Error(`the main process ${proc.signalCode !== null ? `died of ${proc.signalCode}` : `exited with code ${proc.exitCode}`} instead of 0; see its main output`);

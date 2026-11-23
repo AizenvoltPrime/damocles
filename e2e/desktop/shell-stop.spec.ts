@@ -2,7 +2,7 @@ import type { ElectronApplication, Page } from '@playwright/test';
 import { activeChat, expect, nextChat, test } from './support/fixtures';
 import { seedStubModel, type HermeticHome } from './support/hermetic';
 import { chatRequests, startOpenAIStub } from './support/openai-stub';
-import { addProject, chatInput } from './support/ui';
+import { addProject, chatInput, promptReady } from './support/ui';
 
 const STOPPED_REPLY = 'Left the build stopped.';
 
@@ -77,8 +77,11 @@ test("a subagent's shell command needs approval with no Stop while its prompt is
     await expect(card).toContainText('Needs approval');
     await expect(stop).toHaveCount(0);
 
-    // The overlay covers the dock, so the prompt is answered with it closed.
+    // The overlay covers the dock, so the prompt is answered with it closed. The card's covered report arrives frames
+    // after the overlay shows, so it is awaited before the close: a click before it lands on a card about to be held.
+    await expect(prompt).toHaveAttribute('data-trusted-ready', 'false');
     await overlay.getByTestId('overlay-close').click();
+    await promptReady(prompt);
     await prompt.getByRole('option', { name: 'Yes', exact: true }).click();
     await expect(prompt).toBeHidden();
     await subagentCard.click();

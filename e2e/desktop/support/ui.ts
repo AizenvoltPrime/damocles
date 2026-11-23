@@ -253,9 +253,17 @@ export async function addProject(app: ElectronApplication, dir: string, trust: b
  * a card's control waits by itself, because a held card's controls are aria-disabled and Playwright clicks only an
  * enabled one. Where the dock is taller than the chat pane the page scrolls, and a click Playwright retries scrolls it
  * (each retry aligns the control another way), which cuts the card off and holds it: there a click waits here first too.
+ * Chromium reports a cover frames after it shows, so a card answered after something covered it waits to be held
+ * (`data-trusted-ready` false) before the cover goes, then here.
  */
 export async function promptReady(card: Locator): Promise<void> {
   await expect(card).toHaveAttribute('data-trusted-ready', 'true');
+}
+
+/** Clicks `answer`, a control of a trusted card, once its card takes an answer: for a card that can be taller than the chat pane. */
+export async function clickAnswer(answer: Locator): Promise<void> {
+  await promptReady(answer.locator('xpath=ancestor::*[@data-trusted-ready][1]'));
+  await answer.click();
 }
 
 /**

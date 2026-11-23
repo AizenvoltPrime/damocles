@@ -7,8 +7,8 @@ import { expect, test } from './support/fixtures';
 import { codeEditor, editorShows, openInEditor } from './support/editor';
 import { seedStubModel, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { call, chatRequests, startOpenAIStub, type OpenAIStub } from './support/openai-stub';
-import { hostMessage, openProjectChat } from './support/screenshots';
-import { selectedProjectKey, shellPage, SHELL_URL } from './support/shell';
+import { hostMessage, openProjectChat, settled } from './support/screenshots';
+import { selectedProjectKey, shellPage, SHELL_URL, SHELL_WINDOW_CONTROLS } from './support/shell';
 import { activeTerminal, openTerminal, useTestProfile } from './support/terminal';
 import { loadThemeTools, readTheme, writeTheme } from './support/themes';
 import { addProject, awaitTurnEnd, chatInput, promptReady } from './support/ui';
@@ -164,9 +164,9 @@ async function trustedState(page: Page, inWindow: boolean): Promise<Array<{ read
     }), inWindow);
 }
 
-async function expectTrustedIntact(page: Page, inWindow = false): Promise<void> {
+async function expectTrustedIntact(page: Page, inWindow = false, atLeast = 1): Promise<void> {
   const states = await trustedState(page, inWindow);
-  expect(states.length, page.url()).toBeGreaterThan(0);
+  expect(states.length, page.url()).toBeGreaterThanOrEqual(atLeast);
   expect(states.filter((state) => state.problems.length > 0), page.url()).toEqual([]);
 }
 
@@ -308,7 +308,8 @@ test('an adversarial theme leaves every trusted card visible and clickable, load
   const permission = tab.getByTestId('permission-card');
   await expect(permission).toBeVisible();
   await expectTrustedIntact(tab);
-  await expectTrustedIntact(shell, true);
+  // with the strip gone the shell's trusted region is its window controls
+  await expectTrustedIntact(shell, true, SHELL_WINDOW_CONTROLS ? 1 : 0);
   // the answer enables once the visibility check passes over the theme, and then it lands
   const firstAnswer: Locator = permission.locator('[role="option"], button').first();
   await expect(firstAnswer).not.toHaveAttribute('aria-disabled', 'true');
@@ -363,6 +364,8 @@ test('a theme that strikes through the sidebar leaves the Untrusted badge unstru
       return count;
     }, [SHELL_URL, rect] as const);
   };
+  // a row added to the list fades in, and a capture before that ends reads no text
+  await settled(shell);
   expect(await red(name)).toBeGreaterThan(0);
   expect(await red(badge)).toBe(0);
   // the badge is a control of its own, so it keeps the pointer whatever cursor the theme gives the row

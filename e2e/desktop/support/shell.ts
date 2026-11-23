@@ -328,3 +328,6 @@ export async function pressKeys(app: ElectronApplication, urlPart: string, keyCo
 
 /** The platform's primary modifier: Cmd on macOS, Ctrl elsewhere. */
 export const PRIMARY: 'meta' | 'control' = process.platform === 'darwin' ? 'meta' : 'control';
+
+/** Whether the shell draws its own window controls (TitleBar.vue), the one trusted region it shows at rest: macOS draws the system's. */
+export const SHELL_WINDOW_CONTROLS = process.platform !== 'darwin';

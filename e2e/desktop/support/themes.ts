@@ -202,6 +202,17 @@ export async function cssToken(page: Page, name: string, selector = ':root'): Pr
   return page.locator(selector).first().evaluate((element, token) => getComputedStyle(element).getPropertyValue(token).trim(), name);
 }
 
+/** A token as a trusted region of `page` computes it, read on a probe: the macOS shell shows no trusted region at rest. */
+export async function trustedToken(page: Page, name: string): Promise<string> {
+  return page.evaluate((token) => {
+    const probe = document.body.appendChild(document.createElement('div'));
+    probe.setAttribute('data-trusted', '');
+    const value = getComputedStyle(probe).getPropertyValue(token).trim();
+    probe.remove();
+    return value;
+  }, name);
+}
+
 /** Waits until main reports the dock open and shown: the dock view is visible on a non-empty rectangle. */
 export async function dockShown(app: ElectronApplication): Promise<void> {
   await expect.poll(async () => {

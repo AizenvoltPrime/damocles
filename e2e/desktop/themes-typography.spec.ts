@@ -6,7 +6,7 @@ import { seedStubModel, writeUserSettings, type HermeticHome } from './support/h
 import { startOpenAIStub } from './support/openai-stub';
 import { closeSettingsModal, openSettingsModal, setContentSize } from './support/settings';
 import { overlayPage, shellPage } from './support/shell';
-import { cssToken, openThemeEditor, readTheme, storeBlob, themeDir, writeTheme } from './support/themes';
+import { cssToken, openThemeEditor, readTheme, storeBlob, themeDir, trustedToken, writeTheme } from './support/themes';
 import { answerOpenDialog, chatInput, horizontalOverflow, pageOverflow, sendAndAwaitEcho } from './support/ui';
 
 // A theme's type and spacing (docs/themes.md "Style"): fonts, line spacing, corners, density and the chat column, and the
@@ -142,7 +142,7 @@ test('a bundled font loads as dt-<sha8>-<name> from its blob, never shadows a bu
   // trusted UI: the overlay's page palette keeps Damocles' fonts
   const overlay = await openSettingsModal(app, 'appearance');
   expect(await cssToken(overlay, '--d-font')).toBe(BUILTIN_UI_STACK);
-  expect(await cssToken(shell, '--d-font', '[data-trusted]')).toBe(BUILTIN_UI_STACK);
+  expect(await trustedToken(shell, '--d-font')).toBe(BUILTIN_UI_STACK);
 
   // main serves the blob only while a theme names it, as its sniffed type
   const fetched = await app.evaluate(async ({ session }, [named, unnamed]) => Promise.all([named, unnamed].map(async (key) => {

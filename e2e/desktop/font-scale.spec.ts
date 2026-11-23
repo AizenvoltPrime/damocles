@@ -138,9 +138,10 @@ test('the window page scales with the text size setting without overflowing', as
     writeUserSettings(home, { 'damocles.desktop.textSize': size });
     const { app } = await launch();
     const shell = await shellPage(app);
-    await expect.poll(() => shell.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--d-font-size').trim())).toBe(`${size}px`);
-    const rem = await shell.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).fontSize));
-    expect(rem).toBeCloseTo((size * 16) / 13, 1);
+    // The token comes from the page's inline style and the root font from its linked sheet, which applies later: the root font is the one awaited.
+    let rem = 0;
+    await expect.poll(async () => (rem = await shell.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).fontSize)))).toBeCloseTo((size * 16) / 13, 1);
+    expect(await shell.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--d-font-size').trim())).toBe(`${size}px`);
     for (const width of [1280, 900]) {
       await setContentSize(app, width, HEIGHT);
       await expect.poll(() => pageOverflow(shell), { message: `the window page at ${size}px and ${width}px` }).toEqual([]);

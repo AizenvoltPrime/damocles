@@ -555,6 +555,8 @@ test('permissions on a loopback chat: "Always allow on Local daemon" writes the 
     ({ app } = await launch(LOOPBACK_ENV));
     const { tab } = await newLoopbackChat(app, folder);
     await recordHostMessages(tab);
+    // The captures below switch the look through the user settings file and end on dark, so the snapshot holds dark already.
+    await showShellTheme(app, 'dark');
     const before = snapshot();
 
     // A client deny blocks the call without asking, though the target's ~/.claude/settings.json allows it.
