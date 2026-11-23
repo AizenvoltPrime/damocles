@@ -26,6 +26,11 @@ test('prod-1 in red: its badge, the title-bar stripe and the host chip take the 
     await remoteProjectKey(app, { authorityKey: `ssh+${hostId}` }, APP);
     const shell = await shellPage(app);
     await shell.evaluate((projectKey) => window.damoclesShell!.selectProject(projectKey), key);
+    // the remote chat's selection re-attaches an open settings modal, whose page then remounts and drops a typed name
+    await expect.poll(async () => {
+      const { selected } = await shellState(app);
+      return selected.projectKey === key && selected.chatId !== undefined;
+    }, { timeout: 60_000 }).toBe(true);
     const badge = projectRow(shell, key).getByTestId('host-badge');
     const stripe = titleBar(shell).getByTestId('title-bar-stripe');
     const chip = titleBar(shell).getByTestId('title-bar-host');
