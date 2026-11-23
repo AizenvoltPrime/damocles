@@ -323,7 +323,9 @@ test.describe('Dev Containers on this computer', () => {
     const head = await gitIn(home, folder, 'rev-parse', 'HEAD');
     fs.writeFileSync(path.join(home.userData, 'projects.json'), JSON.stringify({ version: 1, projects: [folder] }));
     fs.writeFileSync(path.join(home.userData, 'trusted-folders.json'), JSON.stringify({ version: 1, folders: [folder] }));
-    writeUserSettings(home, { 'damocles.desktop.terminal.confirmOnKill': 'never' });
+    // this computer's own git fetches the folder over ssh with the stub, wherever the git server's bridge address is reachable
+    // (a Linux host), so autofetch is off and every signature counted is the container's
+    writeUserSettings(home, { 'damocles.desktop.terminal.confirmOnKill': 'never', 'damocles.desktop.git.autofetch': false });
     const keys: string[] = [];
     const { app } = await launch({ env: { ...CONTAINER_ENV, SSH_AUTH_SOCK: agent.socket } });
     try {
