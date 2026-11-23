@@ -80,8 +80,10 @@ export async function openThemeRenderPage(url: string, gone: (reason: string) =>
   const contents = window.webContents;
   // WebRTC's sockets bypass CSP; the page needs none
   contents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
+  // Closing the page closes the window after it, skipping beforeunload. window.destroy() would leave the WebContents a task
+  // without its window, and Electron's WebContents.isFocused(), which every menu command calls on all of them, crashes main then.
   const destroy = (): void => {
-    if (!window.isDestroyed()) window.destroy();
+    if (!contents.isDestroyed()) contents.close();
   };
   contents.on('render-process-gone', (_event, details) => {
     gone(details.reason);

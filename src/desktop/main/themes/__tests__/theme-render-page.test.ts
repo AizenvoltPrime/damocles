@@ -5,21 +5,30 @@ interface FakeWindow {
   readonly options: { webPreferences: Record<string, unknown> };
   readonly webContents: { emit(event: string, ...args: unknown[]): boolean };
   destroyed: boolean;
+  closedBeforeItsPage: boolean;
 }
 const fake = vi.hoisted(() => ({ session: undefined as unknown, partitions: [] as string[], windows: [] as FakeWindow[], loadFails: false }));
 
 vi.mock('electron', async () => {
   const { EventEmitter: Emitter } = await import('node:events');
   class BrowserWindow extends Emitter {
+    private pageDestroyed = false;
     readonly webContents = Object.assign(new Emitter(), {
       setWebRTCIPHandlingPolicy: vi.fn(),
       loadURL: vi.fn(async () => {
         if (fake.loadFails) throw new Error('ERR_FAILED');
       }),
       executeJavaScript: vi.fn(),
+      isDestroyed: () => this.pageDestroyed,
+      // Electron's order: the WebContents goes, then BrowserWindow::WebContentsDestroyed closes the window
+      close: () => {
+        this.pageDestroyed = true;
+        this.destroy();
+      },
     });
     readonly options: { webPreferences: Record<string, unknown> };
     destroyed = false;
+    closedBeforeItsPage = false;
     constructor(options: { webPreferences: Record<string, unknown> }) {
       super();
       this.options = options;
@@ -30,6 +39,8 @@ vi.mock('electron', async () => {
       return this.destroyed;
     }
     destroy(): void {
+      if (this.destroyed) return;
+      this.closedBeforeItsPage = !this.pageDestroyed;
       this.destroyed = true;
       this.emit('closed');
     }
@@ -114,6 +125,17 @@ describe("the theme renderer's window", () => {
     page.close();
     page.close();
     expect(fake.windows[0]!.destroyed).toBe(true);
+  });
+
+  // WebContents.isFocused(), which every menu command calls on every WebContents, crashes main on an offscreen one whose window closed
+  it('closes after its page on every path, never before it', async () => {
+    fake.loadFails = true;
+    await expect(openThemeRenderPage(THEME_RENDER_PAGE_URL, () => undefined)).rejects.toThrow('ERR_FAILED');
+    fake.loadFails = false;
+    await openThemeRenderPage(THEME_RENDER_PAGE_URL, () => undefined);
+    fake.windows[1]!.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+    (await openThemeRenderPage(THEME_RENDER_PAGE_URL, () => undefined)).close();
+    expect(fake.windows.map((window) => [window.destroyed, window.closedBeforeItsPage])).toEqual([[true, false], [true, false], [true, false]]);
   });
 
   it('loads no media: a video is decoded from the bytes main feeds, never played', () => {
