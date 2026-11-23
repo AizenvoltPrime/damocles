@@ -873,45 +873,51 @@ jobs:
       fail-fast: false
       matrix:
         target: [win-x64, win-arm64, mac-arm64, linux-x64, linux-arm64]
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4, 5, 6, 7]
         exclude:
           - target: win-x64
-            shard: 5
+            shard: 6
+          - target: win-x64
+            shard: 7
           - target: win-arm64
-            shard: 5
+            shard: 6
+          - target: win-arm64
+            shard: 7
           - target: linux-x64
-            shard: 4
+            shard: 6
           - target: linux-x64
+            shard: 7
+          - target: linux-arm64
             shard: 5
           - target: linux-arm64
-            shard: 4
+            shard: 6
           - target: linux-arm64
-            shard: 5
+            shard: 7
         include:
           - target: win-x64
             runner: windows-latest
             os: win32
-            shards: 4
+            shards: 5
             serverTarget: win32-x64
           - target: win-arm64
             runner: windows-11-arm
             os: win32
-            shards: 4
+            shards: 5
             serverTarget: win32-arm64
           - target: mac-arm64
             runner: macos-latest
             os: darwin
-            shards: 5
+            shards: 7
             serverTarget: darwin-arm64
           - target: linux-x64
             runner: ubuntu-latest
             os: linux
-            shards: 3
+            shards: 5
             serverTarget: linux-x64
           - target: linux-arm64
             runner: ubuntu-24.04-arm
             os: linux
-            shards: 3
+            shards: 4
             serverTarget: linux-arm64
     runs-on: ${{ matrix.runner }}
     # npm ci, the suite step's limit, the server package's loopback run and the report upload (docs/release.md "Time limits").
