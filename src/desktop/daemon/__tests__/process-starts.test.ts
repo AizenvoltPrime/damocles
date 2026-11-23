@@ -30,6 +30,32 @@ describe.runIf(process.platform === 'win32')('the bridge\'s detached start on Wi
   }, 30_000);
 });
 
+describe('the bridge\'s detached start', () => {
+  // the started daemon outlives the app, so a crashpad handler it connected to would outlive it too, holding the app's stdio
+  it('gives the started process none of the starter\'s crashpad handler', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-crashpad-'));
+    const report = path.join(dir, 'report.json');
+    const entry = path.join(dir, 'child.js');
+    fs.writeFileSync(entry, `
+      const fs = require('node:fs');
+      fs.writeFileSync(process.argv[2] + '.tmp', JSON.stringify({ pipe: process.env.CHROME_CRASHPAD_PIPE_NAME ?? null, probe: process.env.DAMOCLES_START_PROBE }));
+      fs.renameSync(process.argv[2] + '.tmp', process.argv[2]);
+    `);
+    const env = {
+      ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
+      CHROME_CRASHPAD_PIPE_NAME: '\\\\.\\pipe\\crashpad_1_ABCDEF',
+      DAMOCLES_START_PROBE: 'kept',
+    };
+    try {
+      await startDaemonDetached(process.execPath, [entry, report], env, dir);
+      await expect.poll(() => fs.existsSync(report), { timeout: 15_000 }).toBe(true);
+      expect(JSON.parse(fs.readFileSync(report, 'utf8'))).toEqual({ pipe: null, probe: 'kept' });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    }
+  }, 30_000);
+});
+
 describe('a forked child of the daemon', () => {
   it('reports its exit and stderr tail while a grandchild still holds its stderr', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-fork-'));

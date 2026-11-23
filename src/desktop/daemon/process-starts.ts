@@ -15,6 +15,9 @@ const WMI_TIMEOUT_MS = 30_000;
 const INHERITED_FDS_ENV = 'DAMOCLES_INHERITED_FDS';
 // O_CLOEXEC in the octal flags of /proc/<pid>/fdinfo
 const O_CLOEXEC = 0o2000000;
+// Where an Electron process running as Node finds the crashpad handler of the app that started it (Windows). A daemon given
+// it keeps that handler, which holds the app's stdout and stderr, running after the app quits.
+const CRASHPAD_PIPE_ENV = 'CHROME_CRASHPAD_PIPE_NAME';
 
 // Linux: this process's fds above stdio that survive an exec. Electron main's Chromium fds lack FD_CLOEXEC and libuv closes
 // nothing above a child's stdio, so the bridge holds them; macOS libuv spawns with POSIX_SPAWN_CLOEXEC_DEFAULT.
@@ -143,9 +146,10 @@ const base64 = (text: string): string => Buffer.from(text, 'utf8').toString('bas
 /**
  * Starts the daemon outside the caller's session: detached (setsid) on POSIX; through WMI on Windows, whose
  * Win32_Process.Create runs it outside the caller's job object with env in Win32_ProcessStartup.EnvironmentVariables.
- * Resolves once the start was handed to the OS.
+ * The daemon gets none of the caller's crash handler. Resolves once the start was handed to the OS.
  */
-export function startDaemonDetached(file: string, args: readonly string[], env: Readonly<Record<string, string>>, cwd: string): Promise<void> {
+export function startDaemonDetached(file: string, args: readonly string[], starterEnv: Readonly<Record<string, string>>, cwd: string): Promise<void> {
+  const env = Object.fromEntries(Object.entries(starterEnv).filter(([key]) => key.toUpperCase() !== CRASHPAD_PIPE_ENV));
   if (process.platform !== 'win32') {
     const child = withSpawnLock(() => spawn(file, [...args], { detached: true, stdio: 'ignore', env: { ...env, [INHERITED_FDS_ENV]: inheritableFds().join(',') }, cwd }));
     return new Promise((resolve, reject) => {
