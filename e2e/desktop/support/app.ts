@@ -126,6 +126,8 @@ export interface DesktopApp {
   readonly app: ElectronApplication;
   /** Main-process stdout and stderr so far. */
   output(): string;
+  /** The folder Electron writes a minidump of each of the launch's crashed processes into. */
+  readonly crashDumps: string;
   startTracing(): Promise<void>;
   /** Stops tracing if it is running, saving the trace when `path` is given. */
   stopTracing(path?: string): Promise<void>;
@@ -151,7 +153,9 @@ const SOFTWARE_GL_ARGS: readonly string[] = process.env['DAMOCLES_E2E_SOFTWARE_G
  * captured for artifacts. With `mainProcess` false, a dev launch refuses main-process calls as a packaged one does.
  */
 export async function launchDesktop(h: HermeticHome, options: LaunchOptions = {}, mainProcess = true): Promise<DesktopApp> {
-  const args = ['--user-data-dir', h.userData, ...SOFTWARE_GL_ARGS, ...(options.args ?? [])];
+  // one folder per launch, so a minidump names the launch whose process crashed
+  const crashDumps = fs.mkdtempSync(path.join(h.root, 'cd'));
+  const args = ['--user-data-dir', h.userData, '--crash-reporter-directory', crashDumps, ...SOFTWARE_GL_ARGS, ...(options.args ?? [])];
   const env = hermeticEnv(h, options.env);
   const packaged = packagedAppPath();
   if (packaged !== undefined && options.require !== undefined) throw new Error('a packaged app runs no module ahead of its main script');
@@ -171,6 +175,7 @@ export async function launchDesktop(h: HermeticHome, options: LaunchOptions = {}
   return {
     app: mainProcess ? app : withoutMainProcess(app),
     output: () => output,
+    crashDumps,
     startTracing: async () => {
       await app.context().tracing.start({ screenshots: true, snapshots: true });
       tracing = true;
@@ -332,9 +337,14 @@ export function logFiles(h: HermeticHome): string[] {
     .map((entry) => path.join(entry.parentPath, entry.name));
 }
 
-/** Attaches the main-process output and every file under userData's logs, so a failure is debuggable offline. */
+/**
+ * Attaches the main-process output, the launch's minidumps and every file under userData's logs, so a failure is debuggable
+ * offline. A minidump is symbolized with the symbols archive of the Electron release that wrote it.
+ */
 export async function attachDiagnostics(testInfo: TestInfo, name: string, desktop: DesktopApp, h: HermeticHome): Promise<void> {
   await testInfo.attach(`${name}-main-output.txt`, { body: desktop.output(), contentType: 'text/plain' });
+  const dumps = fs.readdirSync(desktop.crashDumps, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith('.dmp'));
+  for (const dump of dumps) await testInfo.attach(`${name}-crash-${dump.name}`, { path: path.join(dump.parentPath, dump.name), contentType: 'application/octet-stream' });
   const logs = path.join(h.userData, 'logs');
   if (!fs.existsSync(logs)) return;
   for (const file of logFiles(h)) {

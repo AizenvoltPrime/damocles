@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 // the design renderer's module reads the app only when it runs
 vi.mock('electron', () => ({ app: {} }));
 
-import { isSafeThemeLaunch, operandArgs, optionArgs, parseCliPathAction, parseUserDataDir, registersLinkScheme, relaunchArgs } from '../cli';
+import { isSafeThemeLaunch, operandArgs, optionArgs, parseCliPathAction, parseCrashReporterDirectory, parseUserDataDir, registersLinkScheme, relaunchArgs } from '../cli';
 import { isDesignRendererLaunch } from '../design/design-renderer';
 import { DESIGN_RENDERER_SWITCH } from '../design/design-renderer-protocol';
 import { parseCommandLine } from '../../cli/cli-protocol';
@@ -16,6 +16,14 @@ describe('parseUserDataDir', () => {
     expect(parseUserDataDir(['electron', 'main.js', '--user-data-dir', '/tmp/x'])).toBe('/tmp/x');
     expect(parseUserDataDir(['electron', 'main.js', '--user-data-dir=/tmp/y'])).toBe('/tmp/y');
     expect(parseUserDataDir(['electron', 'main.js'])).toBeUndefined();
+  });
+});
+
+describe('parseCrashReporterDirectory', () => {
+  it('reads the separate and the = forms, and never from a link after the end-of-options marker', () => {
+    expect(parseCrashReporterDirectory(['electron', 'main.js', '--crash-reporter-directory', '/tmp/dumps'])).toBe('/tmp/dumps');
+    expect(parseCrashReporterDirectory(['electron', 'main.js', '--crash-reporter-directory=/tmp/dumps'])).toBe('/tmp/dumps');
+    expect(parseCrashReporterDirectory([EXE, '--', '--crash-reporter-directory=C:\\x'])).toBeUndefined();
   });
 });
 

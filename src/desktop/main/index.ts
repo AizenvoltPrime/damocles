@@ -4,7 +4,7 @@ import { connect as netConnect } from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { app, BrowserWindow, clipboard, dialog, Menu, nativeTheme, net, powerMonitor, screen, session, shell as electronShell, webContents, WebContentsView, type WebContents } from 'electron';
+import { app, BrowserWindow, clipboard, crashReporter, dialog, Menu, nativeTheme, net, powerMonitor, screen, session, shell as electronShell, webContents, WebContentsView, type WebContents } from 'electron';
 import { installLogSink, log, showLog } from '../../core/logger';
 import { processProfiler, StallMonitor } from '../local-services/stall-monitor';
 import type { WalkHost } from '../../core/search-walk/walk-host';
@@ -100,7 +100,7 @@ import { showHeldChat } from './held-chat';
 import { isActiveActivity } from '../../shared/chat-retention';
 import { chatTitle, panelTitle, storedTitle } from './chat-title';
 import { chatActions, refusesMirrored } from './chat-actions';
-import { END_OF_OPTIONS, isSafeThemeLaunch, optionArgs, parseCliPathAction, parseUserDataDir, registersLinkScheme, relaunchArgs } from './cli';
+import { END_OF_OPTIONS, isSafeThemeLaunch, optionArgs, parseCliPathAction, parseCrashReporterDirectory, parseUserDataDir, registersLinkScheme, relaunchArgs } from './cli';
 import { CoreHost } from './core-host';
 import { bounded, createQuitJoins, detachRemotes, QuitLifecycle, shutDown } from './shutdown';
 import {
@@ -11348,6 +11348,12 @@ async function registerThemeLinkScheme(): Promise<void> {
 app.setName(APP_NAME);
 const userDataDir = parseUserDataDir(process.argv);
 if (userDataDir !== undefined) app.setPath('userData', path.resolve(userDataDir));
+const crashReporterDirectory = parseCrashReporterDirectory(process.argv);
+if (crashReporterDirectory !== undefined) {
+  // setPath throws for a folder that does not exist; crashpad watches only processes started after start()
+  app.setPath('crashDumps', path.resolve(crashReporterDirectory));
+  crashReporter.start({ uploadToServer: false });
+}
 app.setAppUserModelId(APP_ID);
 app.enableSandbox();
 registerAppScheme();

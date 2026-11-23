@@ -20,17 +20,25 @@ export function operandArgs(argv: readonly string[]): readonly string[] | undefi
   return end === -1 ? undefined : argv.slice(end + 1);
 }
 
-const USER_DATA_FLAG = '--user-data-dir';
-
-/** `--user-data-dir <path>` or `--user-data-dir=<path>`. */
-export function parseUserDataDir(argv: readonly string[]): string | undefined {
+/** `<flag> <value>` or `<flag>=<value>`. */
+function flagValue(argv: readonly string[], flag: string): string | undefined {
   const options = optionArgs(argv);
   for (let index = 0; index < options.length; index++) {
     const arg = options[index]!;
-    if (arg === USER_DATA_FLAG) return options[index + 1];
-    if (arg.startsWith(`${USER_DATA_FLAG}=`)) return arg.slice(USER_DATA_FLAG.length + 1);
+    if (arg === flag) return options[index + 1];
+    if (arg.startsWith(`${flag}=`)) return arg.slice(flag.length + 1);
   }
   return undefined;
+}
+
+/** `--user-data-dir <path>` or `--user-data-dir=<path>`. */
+export function parseUserDataDir(argv: readonly string[]): string | undefined {
+  return flagValue(argv, '--user-data-dir');
+}
+
+/** `--crash-reporter-directory <folder>`, VS Code's flag: the existing folder Electron writes every process's minidumps to, uploading none. */
+export function parseCrashReporterDirectory(argv: readonly string[]): string | undefined {
+  return flagValue(argv, '--crash-reporter-directory');
 }
 
 const CLI_PATH_FLAG = '--cli-path';
