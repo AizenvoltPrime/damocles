@@ -5,7 +5,7 @@ import { hermeticEnv, writeUserSettings } from '../desktop/support/hermetic';
 import { overlayPage, shellPage, shellState } from '../desktop/support/shell';
 import { projectRow } from '../desktop/support/shell-ui';
 import { connectDialog } from './support/connect-ui';
-import { configureHermeticPodman, CONTAINER_ENV, containerHosts, containerServerProcesses, copyFixture, dataVolume, DEVCONTAINER_TAG, editConfig, type Engine, inContainer, leftovers, pruneHermeticStore, removeLeftovers, shutdownContainerDaemon } from './support/devcontainer';
+import { awaitContainerConnected, configureHermeticPodman, CONTAINER_ENV, containerHosts, containerServerProcesses, copyFixture, dataVolume, DEVCONTAINER_TAG, editConfig, type Engine, inContainer, leftovers, pruneHermeticStore, removeLeftovers, shutdownContainerDaemon } from './support/devcontainer';
 import { expect, lastConnectStep, test } from './support/remote';
 import { runProgram } from './support/sshd';
 
@@ -44,13 +44,7 @@ test.describe('Dev Containers with Podman', () => {
       let record: Awaited<ReturnType<typeof containerHosts>>[number] | undefined;
       await expect.poll(async () => (record = (await containerHosts(app))[0])).toBeDefined();
       keys.push(record!.container);
-      // a failed attempt ends the wait with its build log, which the error dialog shows only the end of
-      await expect.poll(async () => {
-        const attempt = await lastConnectStep(app, record!.hostId);
-        if (attempt?.step === 'failed') throw new Error(`the container attempt failed: ${JSON.stringify(attempt.failure)}\n${attempt.buildLog?.lines.join('\n') ?? 'no build log'}`);
-        return attempt?.step;
-      }, { timeout: 600_000 }).toBe('connected');
-      await expect.poll(async () => (await shellState(app)).projects.find((project) => project.key.startsWith(`${record!.authorityKey}|`))?.connection).toBe('connected');
+      await awaitContainerConnected(app, record!);
       await expect(connectDialog(overlay)).toBeHidden();
       expect((await lastConnectStep(app, record!.hostId))?.visited).toEqual(['building', 'connecting', 'checking', 'installing', 'starting']);
       await expect(filesRow(shell, 'README.md')).toBeVisible({ timeout: 60_000 });

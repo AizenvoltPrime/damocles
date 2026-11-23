@@ -36,6 +36,13 @@ describe('host aliases in the relocation journal', () => {
     expect(store.hostAliases()).toHaveLength(2);
   });
 
+  it('holds a host id that starts or ends with - or _, as the host store draws them in base64url', async () => {
+    for (const hostId of ['gzb_kmN38m8-', '_Tq3xY0aBcDe', '-Tq3xY0aBcDe']) await store.addHostAlias({ hostId, from: '/home/dev/acme', to: '/home/dev/acme-moved' });
+    store.dispose();
+    store = open();
+    expect(store.hostAliases().map((alias) => alias.hostId)).toEqual(['gzb_kmN38m8-', '_Tq3xY0aBcDe', '-Tq3xY0aBcDe']);
+  });
+
   it('appends a move again after the folder moved back, and skips a repeat once a later move took the folder on', async () => {
     await store.addHostAlias({ hostId: 'h', from: '/a', to: '/b' });
     await store.addHostAlias({ hostId: 'h', from: '/b', to: '/c' });

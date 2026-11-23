@@ -31,25 +31,28 @@ const post = (tab: Page, message: Record<string, unknown>): Promise<void> => tab
 // The app's core writes the store while a spec reads it, so a read waits out its write lock as the core's own readers do.
 const BUSY_TIMEOUT_MS = 5000;
 
-/** Global rows of this computer's memory store whose content is `content`. */
-function localGlobals(damoclesDir: string, content: string): number {
+/** A read of this computer's memory store; `empty` until its core created the memories table, as for the target's store. */
+function readLocalStore<T>(damoclesDir: string, read: (db: DatabaseSync) => T, empty: T): T {
   const db = new DatabaseSync(path.join(damoclesDir, 'memory.v3.db'), { readOnly: true, timeout: BUSY_TIMEOUT_MS });
   try {
-    return (db.prepare("SELECT count(*) AS n FROM memories WHERE scope = 'global' AND content = ?").get(content) as { n: number }).n;
+    const created = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memories'").get() !== undefined;
+    return created ? read(db) : empty;
   } finally {
     db.close();
   }
 }
 
+/** Global rows of this computer's memory store whose content is `content`. */
+function localGlobals(damoclesDir: string, content: string): number {
+  return readLocalStore(damoclesDir, (db) => (db.prepare("SELECT count(*) AS n FROM memories WHERE scope = 'global' AND content = ?").get(content) as { n: number }).n, 0);
+}
+
 /** This computer's global rows whose content is `content`: how many, and whether any is pinned or forgotten. */
 function localGlobal(damoclesDir: string, content: string): { n: number; pinned: boolean; forgotten: boolean } {
-  const db = new DatabaseSync(path.join(damoclesDir, 'memory.v3.db'), { readOnly: true, timeout: BUSY_TIMEOUT_MS });
-  try {
+  return readLocalStore(damoclesDir, (db) => {
     const row = db.prepare("SELECT count(*) AS n, coalesce(max(pinned), 0) AS pinned, coalesce(max(forgotten), 0) AS forgotten FROM memories WHERE scope = 'global' AND content = ?").get(content) as { n: number; pinned: number; forgotten: number };
     return { n: row.n, pinned: row.pinned === 1, forgotten: row.forgotten === 1 };
-  } finally {
-    db.close();
-  }
+  }, { n: 0, pinned: false, forgotten: false });
 }
 
 const outbox = (fixture: Pick<SshdFixture, 'sh'>): Promise<string> =>

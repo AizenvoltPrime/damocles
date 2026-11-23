@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Disposable } from '../../platform/disposable';
 import type { FileWatcher, FileWatcherFactory } from '../../platform/file-watcher';
-import { isSafeAgentPathId } from '../../shared/agent-path-id';
+import { isHostId } from '../../shared/host-id';
 import { writeJsonConfig } from '../config/json-config-write';
 import { checkConfigPathSync } from '../config/local-config-path';
 import { isFolderId } from '../pi-session/checkpoints/resolver';
@@ -80,7 +80,7 @@ export class RelocationStore implements Disposable {
    * with the same startedAt, or, from a host core that sends none, the same move while its old folder is still moved away.
    */
   async addHostAlias(alias: Omit<HostAlias, 'seq'>): Promise<void> {
-    if (!isSafeAgentPathId(alias.hostId) || alias.hostId.length > MAX_ID_LENGTH || !isHostPath(alias.from) || !isHostPath(alias.to)) throw new Error('A host alias names a host id or a path this journal does not hold');
+    if (!isHostId(alias.hostId) || !isHostPath(alias.from) || !isHostPath(alias.to)) throw new Error('A host alias names a host id or a path this journal does not hold');
     if (alias.startedAt !== undefined && !isCount(alias.startedAt)) throw new Error('A host alias names a start time this journal does not hold');
     await this.mutate((journal) => {
       const held = journal.hostAliases.flatMap((raw) => hostAliasOf(raw) ?? []);
@@ -331,7 +331,7 @@ function isHostPath(value: unknown): value is string {
 function hostAliasOf(raw: unknown): HostAlias | undefined {
   if (!isObject(raw)) return undefined;
   const { hostId, from, to, seq, startedAt } = raw;
-  if (typeof hostId !== 'string' || !isSafeAgentPathId(hostId) || hostId.length > MAX_ID_LENGTH) return undefined;
+  if (typeof hostId !== 'string' || !isHostId(hostId)) return undefined;
   if (!isHostPath(from) || !isHostPath(to) || !isCount(seq) || seq === 0) return undefined;
   if (startedAt !== undefined && !isCount(startedAt)) return undefined;
   return { hostId, from, to, seq, ...(startedAt !== undefined ? { startedAt } : {}) };

@@ -2,8 +2,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication } from '@playwright/test';
 import { runInTerminal } from '../../desktop/support/terminal';
-import { shellPage } from '../../desktop/support/shell';
-import { control, expect, remoteHosts } from './remote';
+import { shellPage, shellState } from '../../desktop/support/shell';
+import { control, expect, lastConnectStep, remoteHosts } from './remote';
 import { runProgram } from './sshd';
 
 // The Dev Containers suite: the app builds and attaches containers through the engine this computer (or a fixture's host)
@@ -86,6 +86,20 @@ export async function leftovers(keys: readonly string[], on: Engine = DOCKER): P
   const images = lines(await engine(['images', '-q', '--filter', `label=${E2E_LABEL}`], on));
   const volumes = lines(await engine(['volume', 'ls', '-q'], on)).filter((volume) => keys.some((key) => volume === dataVolume(key)));
   return { containers, images, volumes };
+}
+
+/**
+ * Waits until the container's project is connected. A failed `devcontainer up` ends the wait at once with its failure and
+ * whole build log, which the error dialog shows only the end of; a folder's untrusted first attempt does not end it.
+ */
+export async function awaitContainerConnected(app: ElectronApplication, record: { readonly hostId: string; readonly authorityKey: string }, timeout = 600_000): Promise<void> {
+  await expect.poll(async () => {
+    const attempt = await lastConnectStep(app, record.hostId);
+    if (attempt?.step === 'failed' && attempt.failure?.code === 'devcontainerFailed') {
+      throw new Error(`devcontainer up failed: ${JSON.stringify(attempt.failure)}\n${attempt.buildLog?.lines.join('\n') ?? 'no build log'}`);
+    }
+    return (await shellState(app)).projects.find((project) => project.key.startsWith(`${record.authorityKey}|`))?.connection;
+  }, { timeout }).toBe('connected');
 }
 
 /** Removes what the specs made: labelled containers and images, and the data volumes of keys; then checks that none is left. */

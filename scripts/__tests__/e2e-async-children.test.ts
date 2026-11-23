@@ -60,7 +60,8 @@ async function withFailingPowerShell<T>(body: () => Promise<T>): Promise<T> {
     return await body();
   } finally {
     process.env.PATH = savedPath;
-    rmSync(dir, { recursive: true, force: true });
+    // Windows (its loader, or antivirus scanning a new .exe) can still hold the copy just after it exited, as in fs-remove.ts
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 

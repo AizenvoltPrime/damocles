@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type { ElectronApplication, Page } from '@playwright/test';
 import { mainLog } from '../desktop/support/app';
 import { filesRow } from '../desktop/support/editor';
-import { overlayPage, shellPage, shellState } from '../desktop/support/shell';
+import { overlayPage, shellPage } from '../desktop/support/shell';
 import { projectRow } from '../desktop/support/shell-ui';
 import { connectDialog } from './support/connect-ui';
 import { shutdownHostDaemon } from './support/daemon-teardown';
@@ -10,7 +10,7 @@ import { closeSettingsModal } from '../desktop/support/settings';
 import { activeTerminal, openTerminal, terminalRows } from '../desktop/support/terminal';
 import { openRemoteHostSettings, setHostSwitch, storedHost } from './support/host-settings-ui';
 import { startSshAgentStub } from './support/ssh-agent-stub';
-import { agentInTerminal, agentSockets, containerHosts, containerServerProcesses, DEVCONTAINER_TAG, E2E_LABEL, engine, FIXTURE_DIR, NODE_IMAGE, removeLeftovers, shutdownContainerDaemon } from './support/devcontainer';
+import { agentInTerminal, agentSockets, awaitContainerConnected, containerHosts, containerServerProcesses, DEVCONTAINER_TAG, E2E_LABEL, engine, FIXTURE_DIR, NODE_IMAGE, removeLeftovers, shutdownContainerDaemon } from './support/devcontainer';
 import { addHost, expect, lastConnectStep, openRemoteFolder, remoteEnv, test } from './support/remote';
 import { TARGET_USER } from './support/sshd';
 
@@ -51,7 +51,7 @@ test.describe('Dev Containers on an SSH host', () => {
         let record: Awaited<ReturnType<typeof containerHosts>>[number] | undefined;
         await expect.poll(async () => (record = (await containerHosts(app))[0])).toBeDefined();
         keys.push(record!.container);
-        await expect.poll(async () => (await shellState(app)).projects.find((project) => project.key.startsWith(`${record!.authorityKey}|`))?.connection, { timeout: 600_000 }).toBe('connected');
+        await awaitContainerConnected(app, record!);
         await expect(connectDialog(overlay)).toBeHidden();
         const step = await lastConnectStep(app, record!.hostId);
         expect(step?.visited).toEqual(['building', 'connecting', 'checking', 'installing', 'starting']);
