@@ -1870,6 +1870,18 @@
             }
           },
           "maxItems": 256
+        },
+        "selection": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "outline"
+            },
+            {
+              "type": "string",
+              "const": "none"
+            }
+          ]
         }
       }
     },

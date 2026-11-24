@@ -12,7 +12,7 @@ import { failureText } from '../overlay/connect-text';
 import { shellI18n } from '../i18n';
 import en from '../locales/en.json' with { type: 'json' };
 import el from '../locales/el.json' with { type: 'json' };
-import { FakeResizeObserver, STATE, contentName, fakeOverlayApi, fakeShellApi, opened, type FakeOverlayApi, type FakeShellApi } from './fakes';
+import { FakeResizeObserver, PAGE_PROVIDE, STATE, contentName, fakeOverlayApi, fakeShellApi, opened, type FakeOverlayApi, type FakeShellApi } from './fakes';
 
 const mounted: VueWrapper[] = [];
 const track = <T extends VueWrapper>(wrapper: T): T => {
@@ -761,7 +761,7 @@ describe('Containers in the project menu', () => {
     const groups: ShellProjectGroups = { order: ['local'], collapsed: [] };
     return track(mount(ProjectsSection, {
       props: { api, projects: [WEB, PLAIN, IN_WSL, INSIDE, ATTACHED], selectedKey: 'web', hosts: HOSTS, view: 'flat', groups, platform: 'linux', collapsed: false, bodySize: 300 },
-      global: { plugins: [shellI18n], stubs: { transition: false, 'transition-group': false } },
+      global: { provide: PAGE_PROVIDE, plugins: [shellI18n], stubs: { transition: false, 'transition-group': false } },
       attachTo: document.body,
     }));
   }

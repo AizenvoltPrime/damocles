@@ -4,6 +4,9 @@ import {
   type ThemeCommitAnswer, type ThemeShot, type ThemeShowEnded, type ThemeStageAnswer, type UserThemeCalls, type UserThemeMethod,
 } from '../../../../shared/themes/relay';
 import type { ThemeInstallCommitted, ThemeInstallPrepared, ThemeInstallPreview, ThemeInstallProgress } from '../../../../shared/themes/install';
+import { SCREENSHOT_ANSWER_MS } from '../../../../shared/themes/agent';
+import type { ThemeFile } from '../../../../shared/themes/schema';
+import type { ThemeCaptureTaken } from '../../../core-protocol';
 import { allowRelayedInstallFlash, CONSENT_FRESH_MS, RelayedConsents, RelayedInstalls, RelayedPreviews, relayTheme, type RelayPage, type ThemeRelayDeps } from '../theme-relay';
 
 // A remote chat's theme tools on this computer (docs/invariants.md "Remote daemon and wire", user.theme): main refuses while
@@ -23,6 +26,8 @@ const PREVIEW = {
 } as unknown as ThemeInstallPreview;
 const SHOT: ThemeShot = { shotId: 'a'.repeat(32), url: `app://damocles/theme-shot/${'a'.repeat(32)}`, width: 1200, height: 800 };
 const OWNER = { kind: 'main' };
+const CHAT = { id: 'session-1', title: 'Warm' };
+const DRAFT_THEME = { schemaVersion: 1, id: '7c9e6679-7425-40de-944b-e07fc1f90ae7', name: 'Draft', looks: {} };
 
 const PAGE: RelayPage = { panelId: 'panel-1', authority: AUTHORITY };
 const SECOND_PAGE: RelayPage = { panelId: 'panel-2', authority: AUTHORITY };
@@ -52,25 +57,39 @@ function deps(enabled = true, previews = new RelayedPreviews({ features: () => [
     'themes.relay.installCommit': vi.fn(async (): Promise<ThemeInstallCommitted> => ({ installed: { themeId: 'aurora-2', name: 'Aurora', replaced: false } })),
     'themes.relay.installCancel': vi.fn(async () => undefined),
     'themes.relay.allowFlash': vi.fn(async () => ({ allowed: true })),
+    'themes.relay.draftTheme': vi.fn(async (): Promise<{ readonly name: string; readonly theme: unknown } | { readonly refused: string }> => ({ name: 'Draft', theme: DRAFT_THEME })),
   };
   let taken = 0;
   const screenshots = {
-    take: vi.fn(async (): Promise<ThemeShot> => {
+    take: vi.fn(async (_ask: { readonly chat: { readonly id: string }; readonly theme?: unknown; readonly granted: boolean }): Promise<ThemeCaptureTaken> => {
       taken += 1;
       const shotId = String(taken).repeat(32).slice(0, 32);
-      return taken === 1 ? SHOT : { shotId, url: `app://damocles/theme-shot/${shotId}`, width: 1200, height: 800 };
+      return { kind: 'shot', shot: taken === 1 ? SHOT : { shotId, url: `app://damocles/theme-shot/${shotId}`, width: 1200, height: 800 } };
     }),
     read: vi.fn(async (_shotId: string) => new Uint8Array([1])),
     drop: vi.fn(async (_shotId: string) => undefined),
   };
   const shotGone = vi.fn(async (_shotId: string) => undefined);
-  const consents = new RelayedConsents({ now: () => clock.now, log });
+  const published: Array<[string, boolean]> = [];
+  const served = new Map<string, unknown>();
+  // the session each page shows; a page absent here has none yet
+  const pageSessions = new Map<string, string>([[PAGE.panelId, CHAT.id], [SECOND_PAGE.panelId, CHAT.id]]);
+  // main's check of a draft's theme before it paints or serves it
+  const validated = vi.fn((theme: unknown) => theme as ThemeFile);
+  const consents = new RelayedConsents({
+    now: () => clock.now,
+    publishGrant: (panelId, granted) => published.push([panelId, granted]),
+    captureTheme: (captureId, theme) => (theme === undefined ? served.delete(captureId) : served.set(captureId, theme)),
+    pageSession: (panelId) => pageSessions.get(panelId),
+    log,
+  });
   const relay: ThemeRelayDeps = {
     authority: AUTHORITY,
     enabled: () => enabled,
     computer: () => 'DESKTOP-7Q2',
     project: (folder) => (folder === '/srv/app' ? { key: `${AUTHORITY}|/srv/app`, name: 'app' } : undefined),
     core,
+    validated,
     screenshots,
     shotGone,
     previews,
@@ -84,7 +103,14 @@ function deps(enabled = true, previews = new RelayedPreviews({ features: () => [
     return delivered === undefined ? undefined : JSON.parse(delivered) as Record<string, unknown>;
   };
   const press = (page: RelayPage, message: unknown, forwarded = true): void => consents.pressed(page, message, forwarded);
-  return { relay, core, screenshots, shotGone, log, consents, clock, show, press };
+  return { relay, core, screenshots, shotGone, log, consents, clock, show, press, published, served, pageSessions, validated };
+}
+
+// a plain screenshot of the window for CHAT, which must be taken
+async function takeShot(relay: ThemeRelayDeps): Promise<ThemeShot> {
+  const taken = await relayTheme(relay, 'screenshotTake', { chat: CHAT }, signal);
+  if (taken.kind !== 'shot') throw new Error(`no shot: ${taken.kind}`);
+  return taken.shot;
 }
 
 const stageRequest = { tool: 'set' as const, input: {}, toolCallId: 'c', chat: { id: 's' }, planMode: false };
@@ -94,14 +120,15 @@ const shotCard = (promptId: string, shot: ThemeShot = SHOT) => ({ type: 'request
 const installCard = (promptId: string, preview: unknown = PREVIEW) => ({ type: 'requestThemeInstall', promptId, toolUseId: 'tool-1', preview, owner: OWNER });
 
 const SAMPLE: { readonly [M in UserThemeMethod]: UserThemeCalls[M]['params'] } = {
-  read: { request: {} },
+  read: { request: {}, chat: 's' },
   uploadStart: { sessionId: 's', sha256: '0'.repeat(64), bytes: 1 },
   uploadChunk: { uploadId: 'up-1', offset: 0, data: new Uint8Array(1) },
   stage: stageRequest,
   commit: { stageId: 'stage-1' },
   discard: { stageId: 'stage-1' },
   preview: { stageId: 'stage-1', promptId: 'card-1', on: true },
-  screenshotTake: {},
+  screenshotTake: { chat: CHAT },
+  screenshotCapture: { captureId: 'capture-1' },
   screenshot: { shotId: SHOT.shotId },
   screenshotDrop: { shotId: SHOT.shotId },
   installPrepare: { url: 'https://themes.example/a.damocles-theme' },
@@ -128,6 +155,13 @@ describe('the theme relay on this computer', () => {
     expect(core['themes.relay.discard']).toHaveBeenLastCalledWith({ authority: AUTHORITY, stageId: 'stage-1', keepDraft: true }, signal);
   });
 
+  // the notice names the chat from this computer's chat list, so a host never names another chat
+  it("captures for the chat's id alone, whatever title the remote core put in the request", async () => {
+    const { relay, screenshots } = deps();
+    await relayTheme(relay, 'screenshotTake', { chat: { id: CHAT.id, title: 'Your bank chat' } } as UserThemeCalls['screenshotTake']['params'], signal);
+    expect(screenshots.take).toHaveBeenCalledWith({ chat: { id: CHAT.id }, granted: false }, signal);
+  });
+
   it("lets a preview's off through while the tools are off, so a proposal never stays painted", async () => {
     const { relay, core } = deps(false);
     await expect(relayTheme(relay, 'preview', { stageId: 'stage-1', promptId: 'card-1', on: false }, signal)).resolves.toEqual({ showing: false });
@@ -136,8 +170,8 @@ describe('the theme relay on this computer', () => {
 
   it('forwards with the authority and the host project the folder maps to, never a folder of another project', async () => {
     const { relay, core } = deps();
-    await relayTheme(relay, 'read', { request: { about: 'project' }, folder: '/srv/app' }, signal);
-    expect(core['themes.relay.read']).toHaveBeenCalledWith({ authority: AUTHORITY, request: { about: 'project' }, project: { key: `${AUTHORITY}|/srv/app`, name: 'app' } }, signal);
+    await relayTheme(relay, 'read', { request: { about: 'project' }, chat: 's', folder: '/srv/app' }, signal);
+    expect(core['themes.relay.read']).toHaveBeenCalledWith({ authority: AUTHORITY, request: { about: 'project' }, chat: 's', project: { key: `${AUTHORITY}|/srv/app`, name: 'app' } }, signal);
     await relayTheme(relay, 'stage', { tool: 'set', input: { undo: true }, toolCallId: 'c', chat: { id: 's' }, planMode: false, folder: '/elsewhere' }, signal);
     expect(core['themes.relay.stage']).toHaveBeenCalledWith({ authority: AUTHORITY, request: { tool: 'set', input: { undo: true }, toolCallId: 'c', chat: { id: 's' }, planMode: false } }, signal);
   });
@@ -165,14 +199,14 @@ describe('the theme relay on this computer', () => {
     await expect(relayTheme(relay, 'stage', stageRequest, signal)).rejects.toThrow('The change could not be prepared on the computer that shows this chat.');
     expect(log).toHaveBeenCalledWith(`[remote] user.theme.stage for ${AUTHORITY} failed on this computer: ${leak}`);
     core['themes.relay.read'].mockRejectedValueOnce(new Error(leak));
-    await expect(relayTheme(relay, 'read', { request: {} }, signal)).rejects.toThrow('The theme could not be read on the computer that shows this chat.');
+    await expect(relayTheme(relay, 'read', { request: {}, chat: 's' }, signal)).rejects.toThrow('The theme could not be read on the computer that shows this chat.');
     const stopped = new AbortController();
     core['themes.relay.read'].mockImplementationOnce(async () => {
       stopped.abort();
       throw new Error(leak);
     });
     // the remote core cancels as it likes, so a cancel never buys the original
-    await expect(relayTheme(relay, 'read', { request: {} }, stopped.signal)).rejects.toThrow(/^The request was cancelled\.$/);
+    await expect(relayTheme(relay, 'read', { request: {}, chat: 's' }, stopped.signal)).rejects.toThrow(/^The request was cancelled\.$/);
     expect(log).toHaveBeenLastCalledWith(`[remote] user.theme.read for ${AUTHORITY} failed on this computer: ${leak}`);
   });
 });
@@ -181,7 +215,7 @@ describe('the theme relay on this computer', () => {
 describe("a remote chat's screenshot of this window", () => {
   const allowed = async () => {
     const made = deps();
-    const shot = await relayTheme(made.relay, 'screenshotTake', {}, signal);
+    const shot = await takeShot(made.relay);
     expect(made.show(PAGE, shotCard('shot-card'))).toEqual(shotCard('shot-card'));
     return { ...made, shot };
   };
@@ -216,7 +250,7 @@ describe("a remote chat's screenshot of this window", () => {
     expect(screenshots.drop).not.toHaveBeenCalled();
     await expect(relayTheme(relay, 'screenshot', { shotId: SHOT.shotId }, signal)).resolves.toEqual({ png: new Uint8Array([1]) });
 
-    const again = await relayTheme(relay, 'screenshotTake', {}, signal);
+    const again = await takeShot(relay);
     // the other host's page is shown a card that names this host's shot: it binds nothing there and is not delivered
     expect(show(OTHER_PAGE, shotCard('shot-card-2', again))).toBeUndefined();
     press(OTHER_PAGE, { type: 'resolveThemeScreenshot', promptId: 'shot-card-2', choice: 'allow' });
@@ -245,8 +279,8 @@ describe("a remote chat's screenshot of this window", () => {
     const { relay, screenshots, press, show } = deps();
     const harmless = { ...SHOT, url: 'app://damocles/theme-shot/00000000000000000000000000000000' };
     expect(show(PAGE, shotCard('p', harmless))).toBeUndefined();
-    const first = await relayTheme(relay, 'screenshotTake', {}, signal);
-    const second = await relayTheme(relay, 'screenshotTake', {}, signal);
+    const first = await takeShot(relay);
+    const second = await takeShot(relay);
     expect(show(PAGE, shotCard('p', first))).toEqual(shotCard('p', first));
     // the page keeps showing the first image under this prompt id, so the second shot never takes its Allow
     expect(show(PAGE, shotCard('p', second))).toBeUndefined();
@@ -258,16 +292,16 @@ describe("a remote chat's screenshot of this window", () => {
 
   it("shows the card with this computer's record of the shot, whatever size the remote core wrote", async () => {
     const { relay, show } = deps();
-    await relayTheme(relay, 'screenshotTake', {}, signal);
+    await takeShot(relay);
     expect(show(PAGE, { ...shotCard('p'), width: 1, height: 1, extra: 'x' } as never)).toEqual(shotCard('p'));
   });
 
   it("keeps two shots per host, drops an evicted one from the store and tells the host's core, whose card still shows it, and drops only the caller's own", async () => {
     const { relay, screenshots, shotGone } = deps();
-    const first = await relayTheme(relay, 'screenshotTake', {}, signal);
-    const second = await relayTheme(relay, 'screenshotTake', {}, signal);
+    const first = await takeShot(relay);
+    const second = await takeShot(relay);
     expect(screenshots.drop).not.toHaveBeenCalled();
-    await relayTheme(relay, 'screenshotTake', {}, signal);
+    await takeShot(relay);
     expect(screenshots.drop.mock.calls).toEqual([[first.shotId]]);
     expect(shotGone.mock.calls).toEqual([[first.shotId]]);
     await relayTheme(relay, 'screenshotDrop', { shotId: 'f'.repeat(32) }, signal);
@@ -280,13 +314,328 @@ describe("a remote chat's screenshot of this window", () => {
 
   it("names the host whose shot the window's store let go of, once, and no host for a shot of this computer's own chat", async () => {
     const { relay, consents, press, show } = deps();
-    const shot = await relayTheme(relay, 'screenshotTake', {}, signal);
+    const shot = await takeShot(relay);
     show(PAGE, shotCard('shot-card'));
     press(PAGE, { type: 'resolveThemeScreenshot', promptId: 'shot-card', choice: 'allow' });
     expect(consents.shotGone('f'.repeat(32))).toBeUndefined();
     expect(consents.shotGone(shot.shotId)).toBe(AUTHORITY);
     expect(consents.shotGone(shot.shotId)).toBeUndefined();
     await expect(relayTheme(relay, 'screenshot', { shotId: shot.shotId }, signal)).rejects.toThrow(NOT_ALLOWED);
+  });
+});
+
+// docs/invariants.md "Desktop themes", the screenshot grant: this computer holds a remote chat's grant, set only by the Allow
+// for this chat main saw pressed on its own page.
+describe("a remote chat's screenshot grant on this computer", () => {
+  const NOT_ALLOWED = 'The screenshot was not sent: nobody allowed it on the computer that shows this chat.';
+  const CAPTURE_GONE = 'The draft was not captured: the computer that shows this chat no longer holds it. Ask for a new screenshot if it is still needed.';
+  const draftCard = (promptId: string, captureId: string) => ({ type: 'requestThemeScreenshot', promptId, toolUseId: 'tool-1', draft: { name: 'Forged', theme: { id: 'x' } }, captureId, owner: OWNER });
+  const allowChat = (promptId: string) => ({ type: 'resolveThemeScreenshot', promptId, choice: 'allowChat' });
+  // a shot of CHAT whose card the page shows
+  const shown = async (made: ReturnType<typeof deps>, promptId = 'shot-card') => {
+    const shot = await takeShot(made.relay);
+    made.show(PAGE, shotCard(promptId, shot));
+    return shot;
+  };
+
+  it('is set only by a forwarded Allow for this chat on a card bound to a shot of that host, and then covers the next screenshot with no card', async () => {
+    const made = deps();
+    const { relay, consents, press, published, screenshots } = made;
+    const first = await shown(made);
+    press(PAGE, allowChat('shot-card'), false);
+    press(OTHER_PAGE, allowChat('shot-card'));
+    press(PAGE, allowChat('no-such-card'));
+    press(PAGE, { type: 'resolveThemeScreenshot', promptId: 'shot-card', choice: 'allow' });
+    expect(consents.granted(AUTHORITY, CHAT.id)).toBe(false);
+    expect(published).toEqual([]);
+    press(PAGE, allowChat('shot-card'));
+    expect(consents.granted(AUTHORITY, CHAT.id)).toBe(true);
+    expect(consents.granted(OTHER, CHAT.id)).toBe(false);
+    expect(consents.granted(AUTHORITY, 'session-2')).toBe(false);
+    expect(published).toEqual([[PAGE.panelId, true]]);
+    // the press that granted also allows its own shot
+    await expect(relayTheme(relay, 'screenshot', { shotId: first.shotId }, signal)).resolves.toEqual({ png: new Uint8Array([1]) });
+    const next = await relayTheme(relay, 'screenshotTake', { chat: CHAT }, signal);
+    expect(next).toMatchObject({ kind: 'shot', granted: true });
+    expect(screenshots.take).toHaveBeenLastCalledWith({ chat: { id: CHAT.id }, granted: true }, signal);
+    await expect(relayTheme(relay, 'screenshot', { shotId: next.kind === 'shot' ? next.shot.shotId : '' }, signal)).resolves.toEqual({ png: new Uint8Array([1]) });
+    // another chat of the host is not covered
+    expect(await relayTheme(relay, 'screenshotTake', { chat: { id: 'session-2' } }, signal)).toMatchObject({ kind: 'shot', granted: false });
+  });
+
+  it('grants only the chat the page shows: a shot the daemon named for another chat of the host is allowed once', async () => {
+    const made = deps();
+    const { relay, consents, press, published, pageSessions } = made;
+    pageSessions.set(PAGE.panelId, 'session-2');
+    const shot = await shown(made);
+    press(PAGE, allowChat('shot-card'));
+    expect(consents.granted(AUTHORITY, CHAT.id)).toBe(false);
+    expect(published).toEqual([]);
+    await expect(relayTheme(relay, 'screenshot', { shotId: shot.shotId }, signal)).resolves.toEqual({ png: new Uint8Array([1]) });
+    pageSessions.set(PAGE.panelId, CHAT.id);
+    await shown(made, 'shot-card-2');
+    press(PAGE, allowChat('shot-card-2'));
+    expect(consents.granted(AUTHORITY, CHAT.id)).toBe(true);
+  });
+
+  it("ends when the page closes, its chat gets another session, the page's strip or the notice revokes it, or the host is forgotten", async () => {
+    const made = deps();
+    const { relay, consents, press, published } = made;
+    const grant = async (promptId: string): Promise<void> => {
+      await shown(made, promptId);
+      press(PAGE, allowChat(promptId));
+      expect(consents.granted(AUTHORITY, CHAT.id)).toBe(true);
+    };
+    await grant('card-1');
+    consents.pageClosed(PAGE.panelId);
+    expect(consents.granted(AUTHORITY, CHAT.id)).toBe(false);
+    await grant('card-2');
+    consents.pageSession(PAGE, CHAT.id);
+    expect(consents.granted(AUTHORITY, CHAT.id)).toBe(true);
+    consents.pageSession(PAGE, 'session-2');
+    expect(consents.granted(AUTHORITY, CHAT.id)).toBe(false);
+    expect(published.at(-1)).toEqual([PAGE.panelId, false]);
+    await grant('card-3');
+    // a strip that outlived its grant here still hears it ended
+    consents.revokePage(SECOND_PAGE);
+    expect(consents.granted(AUTHORITY, CHAT.id)).toBe(true);
+    expect(published.at(-1)).toEqual([SECOND_PAGE.panelId, false]);
+    published.length = 0;
+    consents.revokePage(PAGE);
+    expect(consents.granted(AUTHORITY, CHAT.id)).toBe(false);
+    expect(published).toEqual([[PAGE.panelId, false]]);
+    await grant('card-4');
+    consents.revoke(OTHER, CHAT.id);
+    consents.revoke(AUTHORITY, CHAT.id);
+    expect(consents.granted(AUTHORITY, CHAT.id)).toBe(false);
+    expect(published.at(-1)).toEqual([PAGE.panelId, false]);
+    await grant('card-5');
+    published.length = 0;
+    consents.forgetAuthority(AUTHORITY);
+    expect(consents.granted(AUTHORITY, CHAT.id)).toBe(false);
+    expect(published).toEqual([[PAGE.panelId, false]]);
+    // a shot taken under a grant that ended no longer leaves without a press
+    await grant('card-6');
+    const taken = await relayTheme(relay, 'screenshotTake', { chat: CHAT }, signal);
+    consents.revoke(AUTHORITY, CHAT.id);
+    await expect(relayTheme(relay, 'screenshot', { shotId: taken.kind === 'shot' ? taken.shot.shotId : '' }, signal)).rejects.toThrow(NOT_ALLOWED);
+  });
+
+  it('records no grant for a page whose chat session main does not know, and counts its Allow for this chat once', async () => {
+    const made = deps();
+    const { relay, consents, press, published, pageSessions, log } = made;
+    pageSessions.delete(PAGE.panelId);
+    const shot = await shown(made);
+    press(PAGE, allowChat('shot-card'));
+    expect(consents.granted(AUTHORITY, CHAT.id)).toBe(false);
+    expect(consents.pageGranted(PAGE.panelId)).toBe(false);
+    expect(published).toEqual([]);
+    expect(log).toHaveBeenLastCalledWith(`[remote] an Allow for this chat on ${AUTHORITY} counted once: this computer knows no chat session of the page`);
+    await expect(relayTheme(relay, 'screenshot', { shotId: shot.shotId }, signal)).resolves.toEqual({ png: new Uint8Array([1]) });
+  });
+
+  it('tells a reloaded page whether it granted its chat, until the grant ends', async () => {
+    const made = deps();
+    const { consents, press } = made;
+    expect(consents.pageGranted(PAGE.panelId)).toBe(false);
+    await shown(made);
+    press(PAGE, allowChat('shot-card'));
+    expect(consents.pageGranted(PAGE.panelId)).toBe(true);
+    expect(consents.pageGranted(SECOND_PAGE.panelId)).toBe(false);
+    consents.revoke(AUTHORITY, CHAT.id);
+    expect(consents.pageGranted(PAGE.panelId)).toBe(false);
+  });
+
+  it("keeps a chat's grant while another page that granted it is open, with that page's strip, and ends it with the last", async () => {
+    const made = deps();
+    const { relay, consents, show, press, published } = made;
+    await shown(made, 'card-1');
+    press(PAGE, allowChat('card-1'));
+    const second = await takeShot(relay);
+    show(SECOND_PAGE, shotCard('card-2', second));
+    press(SECOND_PAGE, allowChat('card-2'));
+    expect(published).toEqual([[PAGE.panelId, true], [SECOND_PAGE.panelId, true]]);
+    consents.pageClosed(PAGE.panelId);
+    expect(consents.granted(AUTHORITY, CHAT.id)).toBe(true);
+    expect(consents.pageGranted(SECOND_PAGE.panelId)).toBe(true);
+    expect(published).toEqual([[PAGE.panelId, true], [SECOND_PAGE.panelId, true]]);
+    consents.pageClosed(SECOND_PAGE.panelId);
+    expect(consents.granted(AUTHORITY, CHAT.id)).toBe(false);
+  });
+
+  it('sends a draft to its card when the grant ends while its core finds the draft, and a shot to its card when the grant ends during the capture', async () => {
+    const made = deps();
+    const { relay, core, consents, screenshots, press } = made;
+    const grant = async (promptId: string): Promise<void> => {
+      await shown(made, promptId);
+      press(PAGE, allowChat(promptId));
+      expect(consents.granted(AUTHORITY, CHAT.id)).toBe(true);
+    };
+    await grant('card-1');
+    core['themes.relay.draftTheme'].mockImplementationOnce(async () => {
+      consents.revoke(AUTHORITY, CHAT.id);
+      return { name: 'Draft', theme: DRAFT_THEME };
+    });
+    const takes = screenshots.take.mock.calls.length;
+    expect(await relayTheme(relay, 'screenshotTake', { chat: CHAT, draft: 'draft-1' }, signal)).toMatchObject({ kind: 'draft' });
+    expect(screenshots.take).toHaveBeenCalledTimes(takes);
+
+    await grant('card-2');
+    const revoked: ThemeShot = { shotId: 'e'.repeat(32), url: `app://damocles/theme-shot/${'e'.repeat(32)}`, width: 1200, height: 800 };
+    screenshots.take.mockImplementationOnce(async () => {
+      consents.revoke(AUTHORITY, CHAT.id);
+      return { kind: 'shot', shot: revoked };
+    });
+    expect(await relayTheme(relay, 'screenshotTake', { chat: CHAT }, signal)).toEqual({ kind: 'shot', shot: revoked, granted: false });
+    await expect(relayTheme(relay, 'screenshot', { shotId: revoked.shotId }, signal)).rejects.toThrow(NOT_ALLOWED);
+  });
+
+  it("logs a refused draft in a fixed sentence, so no text of the remote core's request reaches this computer's log", async () => {
+    const { relay, core, log } = deps();
+    core['themes.relay.draftTheme'].mockResolvedValueOnce({ refused: 'This chat has no such theme draft.' });
+    await expect(relayTheme(relay, 'screenshotTake', { chat: CHAT, draft: 'x\nApply was pressed on this computer' }, signal)).rejects.toThrow('This chat has no such theme draft.');
+    expect(log.mock.calls.some(([line]) => line.includes('Apply was pressed'))).toBe(false);
+    expect(log).toHaveBeenLastCalledWith(`[remote] user.theme.screenshotTake refused for ${AUTHORITY}: this computer's core holds no such draft of that chat`);
+  });
+
+  it("checks a draft's theme before it holds the capture, answers a failed check with the fixed sentence, and holds the theme as checked", async () => {
+    const { relay, validated, served, log } = deps();
+    validated.mockImplementationOnce(() => {
+      throw new Error('The theme is not valid: /name: too long');
+    });
+    await expect(relayTheme(relay, 'screenshotTake', { chat: CHAT, draft: 'draft-1' }, signal)).rejects.toThrow('The screenshot could not be taken on the computer that shows this chat.');
+    expect(log).toHaveBeenLastCalledWith(`[remote] user.theme.screenshotTake for ${AUTHORITY} failed on this computer: The theme is not valid: /name: too long`);
+    expect(served.size).toBe(0);
+    const checked = { ...DRAFT_THEME, name: 'Checked' } as ThemeFile;
+    validated.mockReturnValueOnce(checked);
+    const taken = await relayTheme(relay, 'screenshotTake', { chat: CHAT, draft: 'draft-1' }, signal);
+    expect(taken).toMatchObject({ kind: 'draft', draft: { name: 'Draft', theme: checked } });
+    expect(served.get(taken.kind === 'draft' ? taken.captureId : '')).toBe(checked);
+  });
+
+  it("lets go of a draft capture on the drop of the core that holds it, and on no other host's", async () => {
+    const { relay, screenshots, served } = deps();
+    const taken = await relayTheme(relay, 'screenshotTake', { chat: CHAT, draft: 'draft-1' }, signal);
+    const captureId = taken.kind === 'draft' ? taken.captureId : '';
+    await relayTheme({ ...relay, authority: OTHER }, 'screenshotDrop', { shotId: captureId }, signal);
+    expect(served.has(captureId)).toBe(true);
+    await relayTheme(relay, 'screenshotDrop', { shotId: captureId }, signal);
+    expect(served.has(captureId)).toBe(false);
+    expect(screenshots.drop).not.toHaveBeenCalled();
+    await expect(relayTheme(relay, 'screenshotCapture', { captureId }, signal)).rejects.toThrow(CAPTURE_GONE);
+  });
+
+  it("keeps two captures per host, tells the host's core of the one a third evicted, and answers its press that it is gone", async () => {
+    const { relay, shotGone, served, show, press } = deps();
+    const take = async (): Promise<string> => {
+      const taken = await relayTheme(relay, 'screenshotTake', { chat: CHAT, draft: 'draft-1' }, signal);
+      return taken.kind === 'draft' ? taken.captureId : '';
+    };
+    const first = await take();
+    show(PAGE, draftCard('draft-card', first));
+    press(PAGE, { type: 'resolveThemeScreenshot', promptId: 'draft-card', choice: 'allow' });
+    await take();
+    expect(shotGone).not.toHaveBeenCalled();
+    await take();
+    expect(shotGone.mock.calls).toEqual([[first]]);
+    expect(served.has(first)).toBe(false);
+    await expect(relayTheme(relay, 'screenshotCapture', { captureId: first }, signal)).rejects.toThrow(CAPTURE_GONE);
+  });
+
+  it("holds a capture past its card's wait by a press's freshness, tells its core when one expires, and refuses a stale press", async () => {
+    const { relay, shotGone, show, press, clock } = deps();
+    const take = async (): Promise<string> => {
+      const taken = await relayTheme(relay, 'screenshotTake', { chat: CHAT, draft: 'draft-1' }, signal);
+      return taken.kind === 'draft' ? taken.captureId : '';
+    };
+    const late = await take();
+    show(PAGE, draftCard('late-card', late));
+    clock.now += SCREENSHOT_ANSWER_MS + 1000;
+    press(PAGE, { type: 'resolveThemeScreenshot', promptId: 'late-card', choice: 'allow' });
+    expect(await relayTheme(relay, 'screenshotCapture', { captureId: late }, signal)).toMatchObject({ kind: 'shot', granted: false });
+
+    const expiring = await take();
+    clock.now += SCREENSHOT_ANSWER_MS + CONSENT_FRESH_MS + 1;
+    await take();
+    expect(shotGone.mock.calls).toEqual([[expiring]]);
+    await expect(relayTheme(relay, 'screenshotCapture', { captureId: expiring }, signal)).rejects.toThrow(CAPTURE_GONE);
+
+    const stale = await take();
+    show(PAGE, draftCard('stale-card', stale));
+    press(PAGE, { type: 'resolveThemeScreenshot', promptId: 'stale-card', choice: 'allow' });
+    clock.now += CONSENT_FRESH_MS + 1;
+    await expect(relayTheme(relay, 'screenshotCapture', { captureId: stale }, signal)).rejects.toThrow(NOT_ALLOWED);
+  });
+
+  it('ends the captures of a page that closed and of a host that was forgotten', async () => {
+    const { relay, consents, served, show } = deps();
+    const take = async (): Promise<string> => {
+      const taken = await relayTheme(relay, 'screenshotTake', { chat: CHAT, draft: 'draft-1' }, signal);
+      return taken.kind === 'draft' ? taken.captureId : '';
+    };
+    const onPage = await take();
+    show(PAGE, draftCard('draft-card', onPage));
+    const unshown = await take();
+    consents.pageClosed(PAGE.panelId);
+    expect(served.has(onPage)).toBe(false);
+    expect(served.has(unshown)).toBe(true);
+    consents.forgetAuthority(AUTHORITY);
+    expect(served.size).toBe(0);
+    await expect(relayTheme(relay, 'screenshotCapture', { captureId: unshown }, signal)).rejects.toThrow(CAPTURE_GONE);
+  });
+
+  it("holds a draft for its card's press, builds the card from this computer's record, and captures it once after the press", async () => {
+    const { relay, core, screenshots, show, press, served } = deps();
+    const taken = await relayTheme(relay, 'screenshotTake', { chat: CHAT, draft: 'draft-1' }, signal);
+    expect(core['themes.relay.draftTheme']).toHaveBeenCalledWith({ authority: AUTHORITY, chat: CHAT.id, draft: 'draft-1' }, signal);
+    expect(taken).toEqual({ kind: 'draft', captureId: expect.any(String), draft: { name: 'Draft', theme: DRAFT_THEME } });
+    expect(screenshots.take).not.toHaveBeenCalled();
+    const captureId = taken.kind === 'draft' ? taken.captureId : '';
+    // the miniature's blobs are served while the capture is held
+    expect(served.get(captureId)).toEqual(DRAFT_THEME);
+    await expect(relayTheme(relay, 'screenshotCapture', { captureId }, signal)).rejects.toThrow(NOT_ALLOWED);
+    expect(served.has(captureId)).toBe(false);
+
+    const again = await relayTheme(relay, 'screenshotTake', { chat: CHAT, draft: 'draft-1' }, signal);
+    const held = again.kind === 'draft' ? again.captureId : '';
+    expect(show(OTHER_PAGE, draftCard('draft-card', held))).toBeUndefined();
+    expect(show(PAGE, draftCard('draft-card', 'not-held'))).toBeUndefined();
+    expect(show(PAGE, draftCard('draft-card-2', held))).toEqual({ type: 'requestThemeScreenshot', promptId: 'draft-card-2', toolUseId: 'tool-1', draft: { name: 'Draft', theme: DRAFT_THEME }, owner: OWNER });
+    press(PAGE, { type: 'resolveThemeScreenshot', promptId: 'draft-card-2', choice: 'allow' });
+    // the card closes before the capture is asked for; the press keeps it
+    show(PAGE, { type: 'themeScreenshotClosed', promptId: 'draft-card-2' });
+    expect(await relayTheme(relay, 'screenshotCapture', { captureId: held }, signal)).toMatchObject({ kind: 'shot', granted: false });
+    expect(screenshots.take).toHaveBeenLastCalledWith({ chat: { id: CHAT.id }, theme: DRAFT_THEME, granted: false }, signal);
+    await expect(relayTheme(relay, 'screenshotCapture', { captureId: held }, signal)).rejects.toThrow(CAPTURE_GONE);
+    // the press that captured the draft also releases its shot
+    await expect(relayTheme(relay, 'screenshot', { shotId: SHOT.shotId }, signal)).resolves.toEqual({ png: new Uint8Array([1]) });
+  });
+
+  it("drops a draft whose card closed unpressed, and captures a draft at once under the chat's grant", async () => {
+    const made = deps();
+    const { relay, core, screenshots, show, press, served } = made;
+    const unpressed = await relayTheme(relay, 'screenshotTake', { chat: CHAT, draft: 'draft-1' }, signal);
+    const captureId = unpressed.kind === 'draft' ? unpressed.captureId : '';
+    show(PAGE, draftCard('draft-card', captureId));
+    show(PAGE, { type: 'themeScreenshotClosed', promptId: 'draft-card' });
+    expect(served.has(captureId)).toBe(false);
+
+    const granting = await relayTheme(relay, 'screenshotTake', { chat: CHAT, draft: 'draft-1' }, signal);
+    show(PAGE, draftCard('granting-card', granting.kind === 'draft' ? granting.captureId : ''));
+    press(PAGE, allowChat('granting-card'));
+    expect(made.consents.granted(AUTHORITY, CHAT.id)).toBe(true);
+    expect(await relayTheme(relay, 'screenshotTake', { chat: CHAT, draft: 'draft-2' }, signal)).toMatchObject({ kind: 'shot', granted: true });
+    expect(screenshots.take).toHaveBeenLastCalledWith({ chat: { id: CHAT.id }, theme: DRAFT_THEME, granted: true }, signal);
+
+    core['themes.relay.draftTheme'].mockResolvedValueOnce({ refused: "That draft is not this chat's." });
+    await expect(relayTheme(relay, 'screenshotTake', { chat: CHAT, draft: 'someone-else' }, signal)).rejects.toThrow("That draft is not this chat's.");
+  });
+
+  it("answers this window's refusal as it is, and holds no shot for it", async () => {
+    const { relay, screenshots, consents } = deps();
+    screenshots.take.mockResolvedValueOnce({ kind: 'refused', reason: 'windowHidden' });
+    expect(await relayTheme(relay, 'screenshotTake', { chat: CHAT }, signal)).toEqual({ kind: 'refused', reason: 'windowHidden' });
+    expect(consents.forgetAuthority(AUTHORITY)).toEqual([]);
   });
 });
 
@@ -416,7 +765,7 @@ describe("a remote chat's theme card on this computer", () => {
     await relayTheme(relay, 'commit', { stageId: 'stage-1' }, signal);
     expect(committedWith(core)).toMatchObject([{ pressed: false }, signal]);
 
-    await relayTheme(relay, 'screenshotTake', {}, signal);
+    await takeShot(relay);
     show(PAGE, changeCard('card-2'));
     press(PAGE, { ...apply, promptId: 'card-2' });
     expect(consents.forgetAuthority(AUTHORITY)).toEqual([SHOT.shotId]);

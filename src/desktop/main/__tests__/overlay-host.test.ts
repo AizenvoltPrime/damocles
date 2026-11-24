@@ -106,6 +106,7 @@ beforeEach(() => {
     awaitActivation: () => {
       activations++;
     },
+    modeChanged: () => undefined,
     popupsClosed: () => {
       closings++;
     },

@@ -48,7 +48,34 @@ ipcRenderer.on(PANEL_CHANNELS.message, (_event, payload: unknown) => {
 // The panel HTML carries the theme CSS from its creation; this brings a reloaded or crash-recreated page up to the current theme too.
 function applyTheme(): void {
   const theme = current()?.theme;
-  if (theme) applyHostTheme(theme);
+  if (!theme) return;
+  applyHostTheme(theme);
+  void acknowledgeTheme(theme.revision);
+}
+
+// The newest revision waiting to be acknowledged, and whether a wait for its frames runs. A hidden view draws no frame, so one
+// wait at most is held, and a newer theme that arrives meanwhile takes it over.
+let ackWanted: number | undefined;
+let ackWaiting = false;
+
+// Main captures the window only after this: the revision applied, its fonts loaded and two frames drawn since.
+async function acknowledgeTheme(revision: number | undefined): Promise<void> {
+  if (revision === undefined) return;
+  ackWanted = revision;
+  if (ackWaiting) return;
+  ackWaiting = true;
+  try {
+    while (ackWanted !== undefined) {
+      const wanted: number = ackWanted;
+      await document.fonts.ready;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      if (ackWanted !== wanted) continue;
+      ackWanted = undefined;
+      if (current()?.theme.revision === wanted) ipcRenderer.send(PANEL_CHANNELS.themeApplied, wanted);
+    }
+  } finally {
+    ackWaiting = false;
+  }
 }
 
 ipcRenderer.on(PANEL_CHANNELS.theme, (_event, next: PanelTheme) => {

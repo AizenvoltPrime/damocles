@@ -1,7 +1,7 @@
 // Reads the persisted `details` of a theme tool result, which another version or a remote host may have written. Apart from
 // agent.ts, so a bundle that takes only that file's constants does not take the theme schema.
 import { THEME_TOOLS } from '../tool-names';
-import { THEME_OUTCOMES, type ThemeLaterChange, type ThemeToolDetails } from './agent';
+import { THEME_CAPTURE_REFUSALS, THEME_OUTCOMES, type ThemeLaterChange, type ThemeToolDetails } from './agent';
 import { parseThemeActor, parseThemeHistoryChange } from './changes';
 import { USER_THEME_ID } from './limits';
 import { validateTheme } from './schema';
@@ -22,7 +22,7 @@ function laterChangeOf(raw: unknown): ThemeLaterChange | undefined {
  */
 export function parseThemeToolDetails(raw: unknown): ThemeToolDetails | undefined {
   if (!isRecord(raw)) return undefined;
-  const { tool, outcome, themeName, looks, note, undone, laterChange, droppedCss, droppedCssMore, theme, screenshot, useArrangement } = raw;
+  const { tool, outcome, themeName, looks, note, undone, laterChange, droppedCss, droppedCssMore, theme, screenshot, shotRefused, useArrangement } = raw;
   if (typeof tool !== 'string' || !THEME_TOOLS.has(tool)) return undefined;
   const checked = isRecord(theme) ? validateTheme(theme, { builtin: typeof theme['id'] === 'string' && !USER_THEME_ID.test(theme['id']) }) : undefined;
   const undoneChange = parseThemeHistoryChange(undone);
@@ -39,6 +39,7 @@ export function parseThemeToolDetails(raw: unknown): ThemeToolDetails | undefine
     ...(typeof droppedCssMore === 'number' && Number.isSafeInteger(droppedCssMore) && droppedCssMore > 0 ? { droppedCssMore } : {}),
     ...(checked?.ok === true ? { theme: checked.theme } : {}),
     ...(screenshot === 'sent' || screenshot === 'denied' ? { screenshot } : {}),
+    ...((THEME_CAPTURE_REFUSALS as readonly unknown[]).includes(shotRefused) ? { shotRefused: shotRefused as NonNullable<ThemeToolDetails['shotRefused']> } : {}),
     ...(useArrangement === true ? { useArrangement } : {}),
   };
 }

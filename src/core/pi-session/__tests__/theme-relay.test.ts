@@ -13,8 +13,9 @@ import { CORE_TO_MAIN } from '../../../desktop/core-protocol/messages';
 import { INVALID } from '../../../desktop/core-protocol/schema';
 import {
   CLIENT_THEMES_OFF, MAX_RELAYED_THEME_PNG_BYTES, MAX_THEME_UPLOAD_BYTES, RELAYED_DRAFT_TTL_MS, THEME_UPLOAD_CHUNK_BYTES, THEMES_FEATURE,
-  type UserThemeCalls, type UserThemeMethod,
+  type ThemeChat, type ThemeRendered, type UserThemeCalls, type UserThemeMethod,
 } from '../../../shared/themes/relay';
+import type { ThemeFile } from '../../../shared/themes/schema';
 import { writeThemeArchive } from '../../themes/archive';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
@@ -68,27 +69,38 @@ function fakeHost(): ThemeHostPort & { currentArrangement: ReturnType<typeof vi.
     applyArrangement: vi.fn(async () => undefined),
     // the device's main words a copy in its own language
     copyName: vi.fn(async () => 'Χρώματα συστήματος αντίγραφο'),
-    render: vi.fn(async () => PNG),
-    screenshotTake: vi.fn(async () => ({ shotId: '0123456789abcdef0123456789abcdef', url: 'app://damocles/theme-shot/0123456789abcdef0123456789abcdef', width: 1, height: 1 })),
+    render: vi.fn(async (): Promise<ThemeRendered> => ({ pngs: [PNG] })),
+    screenshotTake: vi.fn(async () => ({ kind: 'shot' as const, shot: { shotId: '0123456789abcdef0123456789abcdef', url: 'app://damocles/theme-shot/0123456789abcdef0123456789abcdef', width: 1, height: 1 } })),
     screenshotRead: vi.fn(async () => PNG),
     screenshotDrop: vi.fn(async () => undefined),
     applied: vi.fn(async () => 'kept' as const),
     showInWindow: vi.fn(async () => undefined),
     stopShowing: vi.fn(async () => undefined),
+    cardOpened: vi.fn(async () => undefined),
+    cardClosed: vi.fn(async () => undefined),
+    projectCharacter: vi.fn(async () => undefined),
     state: vi.fn(async () => ({ kind: 'dark' as const, themeId: 'damocles', decidedBy: 'system' })),
     onShowEnded: () => ({ dispose: () => undefined }),
     onScreenshotGone: () => ({ dispose: () => undefined }),
+    onScreenshotGrantRevoked: () => ({ dispose: () => undefined }),
   };
 }
 
 type Run = { content: Array<{ type: string; text?: string }>; details: ThemeToolDetails; isError?: boolean };
 const text = (result: Run): string => result.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
 
+// the draft captures main holds for their cards' Allow
+const captures = new Map<string, { readonly chat: ThemeChat; readonly theme: ThemeFile }>();
+beforeEach(() => captures.clear());
+
 /** This computer's side as main forwards to it: the host project, the computer's name, and its core's relay. */
 function forward(relay: ThemeRelayHost, host: ThemeHostPort, pressedStages: Set<string>, method: UserThemeMethod, params: unknown, signal: AbortSignal): Promise<unknown> {
   const project = { key: `${AUTHORITY}|/srv/app`, name: 'app' };
   switch (method) {
-    case 'read': return relay.read(AUTHORITY, (params as UserThemeCalls['read']['params']).request, project, signal);
+    case 'read': {
+      const { request, chat } = params as UserThemeCalls['read']['params'];
+      return relay.read(AUTHORITY, request, chat, project, signal);
+    }
     case 'uploadStart': return Promise.resolve(relay.uploadStart(AUTHORITY, params as UserThemeCalls['uploadStart']['params']));
     case 'uploadChunk': return Promise.resolve(relay.uploadChunk(AUTHORITY, params as UserThemeCalls['uploadChunk']['params']));
     case 'stage': {
@@ -103,10 +115,29 @@ function forward(relay: ThemeRelayHost, host: ThemeHostPort, pressedStages: Set<
       return relay.installPrepare(AUTHORITY, (params as UserThemeCalls['installPrepare']['params']).url, signal).then((answer) => ('preview' in answer ? { ...answer, computer: COMPUTER } : answer));
     case 'installCommit': return relay.installCommit(AUTHORITY, params as UserThemeCalls['installCommit']['params']);
     case 'installCancel': return relay.installCancel(AUTHORITY, (params as UserThemeCalls['installCancel']['params']).installId);
-    // main serves the window's screenshots itself
-    case 'screenshotTake': return host.screenshotTake(signal);
+    // main serves the window's screenshots itself, and asks its core for a draft only to paint it after the card's Allow
+    case 'screenshotTake': {
+      const { chat, draft } = params as UserThemeCalls['screenshotTake']['params'];
+      if (draft === undefined) return host.screenshotTake({ chat }, signal).then((taken) => (taken.kind === 'shot' ? { ...taken, granted: false } : taken));
+      return relay.draftTheme(AUTHORITY, chat.id, draft).then((found) => {
+        if ('refused' in found) throw new Error(found.refused);
+        captures.set('c'.repeat(32), { chat, theme: found.theme });
+        return { kind: 'draft', captureId: 'c'.repeat(32), draft: found };
+      });
+    }
+    case 'screenshotCapture': {
+      const { captureId } = params as UserThemeCalls['screenshotCapture']['params'];
+      const held = captures.get(captureId);
+      if (!held) return Promise.reject(new Error('no such capture'));
+      captures.delete(captureId);
+      return host.screenshotTake(held, signal).then((taken) => (taken.kind === 'shot' ? { ...taken, granted: false } : taken));
+    }
     case 'screenshot': return host.screenshotRead((params as UserThemeCalls['screenshot']['params']).shotId, signal).then((png) => ({ png }));
-    case 'screenshotDrop': return host.screenshotDrop((params as UserThemeCalls['screenshotDrop']['params']).shotId);
+    // a capture's id lets go of the capture; any other is a shot of the window's store
+    case 'screenshotDrop': {
+      const { shotId } = params as UserThemeCalls['screenshotDrop']['params'];
+      return captures.delete(shotId) ? Promise.resolve() : host.screenshotDrop(shotId);
+    }
     default: return Promise.reject(new Error(`no ${method} here`));
   }
 }
@@ -354,13 +385,35 @@ describe('the theme tools of a chat on a remote host', () => {
     expect(calls.filter(({ method }) => method === 'preview').map(({ params }) => (params as UserThemeCalls['preview']['params']).on)).toEqual([true]);
   });
 
+  it('draw a sprites batch and the characters that name it on the device core, which keeps the names with its draft and reads them back', async () => {
+    const { themes, calls, run } = setup();
+    themes.setSpriteAnalyzer(async () => ({ flash: { flagged: false } }));
+    const pip = { palette: ['#ffffff', '#000000'], frames: [['01', '10'], ['10', '01']], fps: 2 };
+    const staged = await run('ThemeSet', {
+      ...AMBER, stage: true,
+      sprites: [{ name: 'pip', pixels: pip }, { name: 'pop', recolor: { from: 'pip', map: { '#ffffff': '#ff0000' } } }],
+      characters: { name: 'Pals', characters: [{ name: 'Pip', idle: 'pip' }, { name: 'Pop', idle: 'pop' }] },
+    });
+    expect(staged.details).toMatchObject({ outcome: 'staged', changes: expect.arrayContaining([{ kind: 'sprites', added: 1, recolored: 1 }, { kind: 'characters', count: 2 }]) });
+    expect(calls.map(({ clientId, method }) => `${clientId} ${method}`)).toEqual(['client-a stage']);
+    const draft = (await themes.drafts.get(staged.details.draftId!))!;
+    expect(draft.owner.authority).toBe(AUTHORITY);
+    expect(Object.keys(draft.sprites!)).toEqual(['pip', 'pop']);
+    const read = await run('ThemeRead', { about: 'sprites', draft: draft.id, sprites: ['pop', 'Pip/idle'] });
+    const sent = calls.find(({ method }) => method === 'read')!;
+    expect(CORE_TO_MAIN.requests['user.theme.read'].params({ clientId: sent.clientId, ...(sent.params as object) })).not.toBe(INVALID);
+    const [pop, idle] = (JSON.parse(text(read)) as { sprites: Array<Record<string, unknown>> }).sprites;
+    expect(pop).toMatchObject({ palette: ['#ff0000', '#000000'], frames: pip.frames, fps: 2, usedBy: [{ character: 'Pop', state: 'idle', fps: 2 }] });
+    expect(idle).toMatchObject({ names: ['pip'], palette: pip.palette, frames: pip.frames });
+  });
+
   it("send ThemeRead's empty theme id as none, so the wire takes the request and the device answers as it answers its own chats", async () => {
     const { calls, run } = setup();
     const result = await run('ThemeRead', { about: 'theme', theme: '' });
     const sent = calls.find(({ method }) => method === 'read')!;
-    expect(sent.params).toEqual({ request: { about: 'theme' }, folder: '/srv/app' });
+    expect(sent.params).toEqual({ request: { about: 'theme' }, chat: expect.any(String), folder: '/srv/app' });
     expect(CORE_TO_MAIN.requests['user.theme.read'].params({ clientId: sent.clientId, ...(sent.params as object) })).not.toBe(INVALID);
-    expect(text(result)).toBe('about: theme needs theme, the id of an installed theme.');
+    expect(text(result)).toBe("about: theme needs theme, the id of an installed theme, or draft, one of this chat's drafts.");
   });
 
   it('refuse with the reason when the device has the tools off, predates the relay, or is not attached', async () => {
@@ -485,10 +538,10 @@ describe("this computer's side of the relay", () => {
       const old = draftOf(themes, AUTHORITY, start - RELAYED_DRAFT_TTL_MS * 2);
       const continued = draftOf(themes, AUTHORITY, start - RELAYED_DRAFT_TTL_MS * 2);
       const own = draftOf(themes, 'local', start - RELAYED_DRAFT_TTL_MS * 2);
-      for (const each of [old, continued, own]) await themes.drafts.put(each);
+      for (const each of [old, continued, own]) await themes.drafts.put(each, null);
       expect(await relay.expireDrafts()).toBe(0);
       vi.setSystemTime(start + RELAYED_DRAFT_TTL_MS - 60 * 60 * 1000);
-      await themes.drafts.put(continued);
+      await themes.drafts.put(continued, 1);
       vi.setSystemTime(start + RELAYED_DRAFT_TTL_MS + 1);
       expect(await relay.expireDrafts()).toBe(1);
       expect(await themes.drafts.get(old.id)).toBeUndefined();
@@ -564,22 +617,38 @@ describe("this computer's side of the relay", () => {
     }
   });
 
-  it('bounds its own answers: an image above 16 MiB leaves as a sentence, and a staged summary goes without it', async () => {
+  it('runs relayed staged calls on one draft one after another on this core, each keeping its change', async () => {
+    const { relay, themes } = setup();
+    const signal = new AbortController().signal;
+    const stage = (input: Record<string, unknown>) => relay.stage(AUTHORITY, { tool: 'set', input: { ...input, stage: true }, toolCallId: 'c', chat: { id: 's' }, planMode: false }, undefined, signal);
+    const first = await stage(AMBER);
+    if (first.kind !== 'done') throw new Error('not staged');
+    const draft = first.details.draftId!;
+    const both = await Promise.all([stage({ draft, colors: { accent: '#ff0000' } }), stage({ draft, style: { radius: 1.5 } })]);
+    for (const answer of both) expect(answer).toMatchObject({ kind: 'done' });
+    const stored = await themes.drafts.get(draft);
+    expect(stored?.theme.looks.dark?.colors.accent).toBe('#ff0000');
+    expect(stored?.theme.style?.radius).toBe(1.5);
+    expect(stored?.revision).toBe(3);
+  });
+
+  it('bounds its own answers: an image above 16 MiB leaves as a sentence, and a staged summary goes without it and says so', async () => {
     const { relay, host } = setup();
-    vi.mocked(host.render).mockResolvedValue(new Uint8Array(MAX_RELAYED_THEME_PNG_BYTES + 1));
-    const read = await relay.read(AUTHORITY, { about: 'current', preview: true }, undefined, new AbortController().signal);
+    vi.mocked(host.render).mockResolvedValue({ pngs: [new Uint8Array(MAX_RELAYED_THEME_PNG_BYTES + 1)] });
+    const read = await relay.read(AUTHORITY, { about: 'current', preview: 'window' }, 's', undefined, new AbortController().signal);
     expect(read.content.at(-1)).toEqual({ type: 'text', text: 'The image was too large to send.' });
     expect(read.content.some((part) => part.type === 'image')).toBe(false);
-    const staged = await relay.stage(AUTHORITY, { tool: 'set', input: AMBER, toolCallId: 'c', chat: { id: 's' }, planMode: false }, undefined, new AbortController().signal);
+    const staged = await relay.stage(AUTHORITY, { tool: 'set', input: { ...AMBER, preview: 'window' }, toolCallId: 'c', chat: { id: 's' }, planMode: false }, undefined, new AbortController().signal);
     if (staged.kind !== 'change') throw new Error('not staged');
-    expect(staged.summary.png).toBeUndefined();
+    expect(staged.summary.pngs).toBeUndefined();
     expect(staged.summary.text).toContain('Amber Night');
+    expect(staged.summary.text.endsWith('\nThe image was too large to send.')).toBe(true);
   });
 
   it('never names why a preview was not drawn, which could hold a path of this computer', async () => {
     const { relay, host } = setup();
     vi.mocked(host.render).mockRejectedValue(new Error("EACCES: permission denied, open 'C:\\Users\\me\\.damocles\\themes\\x'"));
-    const read = await relay.read(AUTHORITY, { about: 'current', preview: true }, undefined, new AbortController().signal);
+    const read = await relay.read(AUTHORITY, { about: 'current', preview: 'window' }, 's', undefined, new AbortController().signal);
     expect(read.content.at(-1)).toEqual({ type: 'text', text: 'No preview image: the preview could not be drawn.' });
   });
 
@@ -660,9 +729,9 @@ describe("this computer's side of the relay", () => {
       const theirs = await stage('ssh+other');
       if (mine.kind !== 'change' || theirs.kind !== 'change') throw new Error('not staged');
       const loose = draftOf(themes, AUTHORITY, Date.now(), 'another-chat');
-      await themes.drafts.put(loose);
+      await themes.drafts.put(loose, null);
       const own = draftOf(themes, 'local', Date.now());
-      await themes.drafts.put(own);
+      await themes.drafts.put(own, null);
       const { uploadId } = relay.uploadStart(AUTHORITY, { sessionId: 's', sha256: '0'.repeat(64), bytes: 10 });
       const prepared = await relay.installPrepare(AUTHORITY, URL, signal);
       if (!('preview' in prepared)) throw new Error('refused');
@@ -683,7 +752,7 @@ describe("this computer's side of the relay", () => {
       const kept = draftOf(themes, AUTHORITY, Date.now());
       const gone = draftOf(themes, 'ssh+gone', Date.now());
       const own = draftOf(themes, 'local', Date.now());
-      for (const each of [kept, gone, own]) await themes.drafts.put(each);
+      for (const each of [kept, gone, own]) await themes.drafts.put(each, null);
       await relay.keepAuthorities(new Set([AUTHORITY]));
       expect(await themes.drafts.get(gone.id)).toBeUndefined();
       expect(await themes.drafts.get(kept.id)).toBeDefined();
@@ -901,5 +970,72 @@ describe('a turn of a remote chat that stops, and a card that ends with Change',
     expect(await themes.drafts.get(done.details.draftId!)).toBeDefined();
     expect(await relay.expireDrafts(Date.now() + RELAYED_DRAFT_TTL_MS * 2)).toBe(1);
     expect(await themes.drafts.get(done.details.draftId!)).toBeUndefined();
+  });
+});
+
+describe("a screenshot of a remote chat's draft", () => {
+  it("the device's core gives main a draft only of that authority's chat", async () => {
+    const { relay, themes } = setup();
+    const staged = await relay.stage(AUTHORITY, { tool: 'set', input: { ...AMBER, stage: true }, toolCallId: 'c', chat: { id: 'remote-session-1' }, planMode: false }, undefined, new AbortController().signal);
+    const draft = staged.details.draftId!;
+    expect(await relay.draftTheme(AUTHORITY, 'remote-session-1', draft)).toEqual({ name: 'Amber Night', theme: expect.objectContaining({ name: 'Amber Night' }) });
+    // main logs that it was refused, so the sentence names no field of the request
+    const refused = { refused: 'This chat has no such theme draft.' };
+    expect(await relay.draftTheme(AUTHORITY, 'remote-session-2', draft)).toEqual(refused);
+    expect(await relay.draftTheme('ssh+other', 'remote-session-1', draft)).toEqual(refused);
+    expect(await relay.draftTheme(AUTHORITY, 'remote-session-1', 'nope')).toEqual(refused);
+    // a draft of this computer's own chat is never a remote authority's
+    const own = (await createThemeRelayHost({ themes, host: fakeHost(), settings: fileSettings(), authority: 'local' })
+      .stage('local', { tool: 'set', input: { ...AMBER, stage: true }, toolCallId: 'd', chat: { id: 'remote-session-1' }, planMode: false }, undefined, new AbortController().signal)).details.draftId!;
+    expect(await relay.draftTheme(AUTHORITY, 'remote-session-1', own)).toEqual(refused);
+  });
+
+  it("shows the draft card on the device with its capture, which a press there captures; that device's Allow for this chat grants nothing here", async () => {
+    const { fake, handler, host, calls, byDevice, posted, run } = setup();
+    const draft = (await run('ThemeSet', { ...AMBER, stage: true })).details.draftId!;
+    calls.length = 0;
+    const result = run('ThemeRead', { screenshot: true, draft });
+    await vi.waitFor(() => expect(byDevice['client-a']!.some((message) => message.type === 'requestThemeScreenshot')).toBe(true));
+    const card = byDevice['client-a']!.find((message) => message.type === 'requestThemeScreenshot') as Extract<ExtensionToWebviewMessage, { type: 'requestThemeScreenshot' }>;
+    expect(card).toMatchObject({ draft: { name: 'Amber Night' }, captureId: 'c'.repeat(32) });
+    expect(byDevice['client-b']!.some((message) => message.type === 'requestThemeScreenshot')).toBe(false);
+    // the chat by its id alone: the device names the chat its notice shows from its own records
+    expect(calls[1]).toEqual(expect.objectContaining({ method: 'screenshotTake', params: { chat: { id: 'remote-session-1' }, draft } }));
+    expect(host.screenshotTake).not.toHaveBeenCalled();
+    fake.setActor('client-a');
+    handler.resolveThemeScreenshot(card.promptId, 'allowChat');
+    fake.setActor(undefined);
+    const done = await result;
+    expect(done.details).toMatchObject({ screenshot: 'sent' });
+    expect(done.content.filter((part) => part.type === 'image')).toHaveLength(1);
+    expect(calls.map(({ clientId, method }) => `${clientId} ${method}`)).toEqual(['client-a read', 'client-a screenshotTake', 'client-a screenshotCapture', 'client-a screenshot', 'client-a screenshotDrop']);
+    expect(calls.at(-1)!.params).toEqual({ shotId: '0123456789abcdef0123456789abcdef' });
+    expect(handler.screenshotGranted('remote-session-1')).toBe(false);
+    expect(posted.some((message) => message.type === 'themeScreenshotGrant')).toBe(false);
+  });
+
+  it('captures nothing for a draft its card denied, and tells the device to let go of the capture', async () => {
+    const { fake, handler, host, calls, byDevice, run } = setup();
+    const draft = (await run('ThemeSet', { ...AMBER, stage: true })).details.draftId!;
+    calls.length = 0;
+    const result = run('ThemeRead', { screenshot: true, draft });
+    await vi.waitFor(() => expect(byDevice['client-a']!.some((message) => message.type === 'requestThemeScreenshot')).toBe(true));
+    const card = byDevice['client-a']!.find((message) => message.type === 'requestThemeScreenshot') as Extract<ExtensionToWebviewMessage, { type: 'requestThemeScreenshot' }>;
+    fake.setActor('client-a');
+    handler.resolveThemeScreenshot(card.promptId, 'deny');
+    fake.setActor(undefined);
+    expect((await result).details).toMatchObject({ screenshot: 'denied' });
+    expect(calls.map(({ clientId, method }) => `${clientId} ${method}`)).toEqual(['client-a read', 'client-a screenshotTake', 'client-a screenshotDrop']);
+    expect(calls.at(-1)!.params).toEqual({ shotId: 'c'.repeat(32) });
+    expect(captures.size).toBe(0);
+    expect(host.screenshotTake).not.toHaveBeenCalled();
+  });
+
+  it("answers a draft that is no draft id with the tool's own refusal, and sends nothing to the device", async () => {
+    const { calls, run } = setup();
+    const result = await run('ThemeRead', { about: 'theme', draft: 'x\ny', screenshot: true });
+    expect(result.isError).toBe(true);
+    expect(text(result)).toBe('This chat has no theme draft x\ny.');
+    expect(calls).toEqual([]);
   });
 });

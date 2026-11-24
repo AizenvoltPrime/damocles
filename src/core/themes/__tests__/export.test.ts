@@ -151,6 +151,12 @@ describe('export of a theme on this computer', () => {
     for (const secret of ['allowed', 'flagged', 'secret-project', 'Secret Project', 'installedHash', 'import']) expect(text).not.toContain(secret);
     expect([...archive.assets.keys()]).toEqual([sha]);
     expect([...archive.licenses.keys()]).toEqual([]);
+
+    fs.rmSync(path.join(root, 'themes', 'blobs', sha));
+    const failure = await themes.exportWrite(themeId, out, []).then(() => undefined, (err: unknown) => err);
+    expect(failure).toBeInstanceOf(LocalizedError);
+    expect(englishText((failure as LocalizedError).text)).toBe('The theme Mine was not exported: a file it names is missing.');
+    expect((failure as Error).cause).toMatchObject({ code: 'ENOENT' });
   });
 
   it.each([BUILTIN_THEME_ID, ...BUILTIN_EXAMPLE_IDS])('exports the built-in %s to a file the import accepts', async (id) => {

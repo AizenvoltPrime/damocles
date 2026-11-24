@@ -42,6 +42,18 @@ const tokens = computed(() => {
   }
 });
 
+// Where in a file a link points: :line, :line:column or :line-endLine. The one grammar for telling a file link from a
+// URL and for reading its line.
+const LOCATION = String.raw`:(\d+)(?::\d+|-\d+)?`;
+const BARE_FILE_AT = new RegExp(String.raw`^[A-Za-z][A-Za-z0-9+.-]*\.[A-Za-z0-9]+${LOCATION}$`);
+const PATH_AT = new RegExp(`^(.*?)${LOCATION}$`);
+
+// A local file written in a shape a URL parser reads as a scheme: a Windows drive path (one letter, a colon, then \ or a
+// single /), or a bare file name with an extension and a location. Such an href never reaches the browser as a URL.
+function isSchemeShapedLocalPath(href: string): boolean {
+  return /^[A-Za-z]:(?:\\|\/(?!\/))/.test(href) || BARE_FILE_AT.test(href);
+}
+
 function isLocalPath(href: string): boolean {
   return href.startsWith('file://') || href.startsWith('/') || !href.includes('://');
 }
@@ -58,12 +70,15 @@ function handleLinkClick(e: MouseEvent, href: string) {
     return;
   }
   if (!isLocalPath(href)) return;
+  openLocalPath(e, href);
+}
 
+function openLocalPath(e: MouseEvent, href: string) {
   e.preventDefault();
 
   let filePath = href.replace('file://', '');
 
-  const match = filePath.match(/(.*):(\d+)(-\d+)?$/);
+  const match = PATH_AT.exec(filePath);
   let values: { line: number } | undefined;
   if (match?.[1] !== undefined && match[2] !== undefined) {
     filePath = match[1];
@@ -129,7 +144,9 @@ function renderToken(token: Token): VNode | null {
 
     case 'link': {
       const linkToken = token as Tokens.Link;
-      const href = resolveUrl(linkToken.href);
+      // fetched web content (baseUrl) names no local file
+      const local = !props.baseUrl && isSchemeShapedLocalPath(linkToken.href);
+      const href = local ? '#' : resolveUrl(linkToken.href);
       return h(
         'a',
         {
@@ -137,7 +154,7 @@ function renderToken(token: Token): VNode | null {
           title: linkToken.title || undefined,
           target: isLocalPath(href) ? undefined : '_blank',
           rel: isLocalPath(href) ? undefined : 'noopener noreferrer',
-          onClick: (e: MouseEvent) => handleLinkClick(e, href),
+          onClick: (e: MouseEvent) => (local ? openLocalPath(e, linkToken.href) : handleLinkClick(e, href)),
         },
         renderInlineTokens(linkToken.tokens)
       );
@@ -256,146 +273,148 @@ function renderTokens(tokens: Token[]): VNode[] {
 </template>
 
 <style scoped>
-.markdown-renderer {
-  color: var(--d-text);
-}
+@layer app {
+  .markdown-renderer {
+    color: var(--d-text);
+  }
 
-.markdown-renderer :deep(.markdown-heading) {
-  margin-top: 1rem;
-  margin-bottom: 0.5rem;
-  font-weight: 600;
-  color: var(--d-text);
-}
+  .markdown-renderer :deep(.markdown-heading) {
+    margin-top: 1rem;
+    margin-bottom: 0.5rem;
+    font-weight: 600;
+    color: var(--d-text);
+  }
 
-.markdown-renderer :deep(h1) {
-  font-size: 1.5em;
-}
+  .markdown-renderer :deep(h1) {
+    font-size: 1.5em;
+  }
 
-.markdown-renderer :deep(h2) {
-  font-size: 1.3em;
-}
+  .markdown-renderer :deep(h2) {
+    font-size: 1.3em;
+  }
 
-.markdown-renderer :deep(h3) {
-  font-size: 1.1em;
-}
+  .markdown-renderer :deep(h3) {
+    font-size: 1.1em;
+  }
 
-.markdown-renderer :deep(.markdown-p) {
-  margin: 0.5rem 0;
-}
+  .markdown-renderer :deep(.markdown-p) {
+    margin: 0.5rem 0;
+  }
 
-.markdown-renderer :deep(.inline-code) {
-  background-color: var(--d-hover);
-  color: var(--d-accent-text);
-  padding: 0.0625rem 0.375rem;
-  border-radius: var(--radius-5);
-  font-family: var(--d-mono);
-  font-size: 0.89em;
-}
+  .markdown-renderer :deep(.inline-code) {
+    background-color: var(--d-hover);
+    color: var(--d-accent-text);
+    padding: 0.0625rem 0.375rem;
+    border-radius: var(--radius-5);
+    font-family: var(--d-mono);
+    font-size: 0.89em;
+  }
 
-.markdown-renderer :deep(a) {
-  color: var(--d-text);
-  text-decoration: underline;
-}
+  .markdown-renderer :deep(a) {
+    color: var(--d-text);
+    text-decoration: underline;
+  }
 
-.markdown-renderer :deep(a:hover) {
-  text-decoration: underline;
-  opacity: 0.8;
-}
+  .markdown-renderer :deep(a:hover) {
+    text-decoration: underline;
+    opacity: 0.8;
+  }
 
-.markdown-renderer :deep(ul) {
-  list-style-type: disc;
-  margin: 0.5rem 0;
-  padding-left: 1.25rem;
-}
+  .markdown-renderer :deep(ul) {
+    list-style-type: disc;
+    margin: 0.5rem 0;
+    padding-left: 1.25rem;
+  }
 
-.markdown-renderer :deep(ol) {
-  list-style-type: decimal;
-  margin: 0.5rem 0;
-  padding-left: 1.25rem;
-}
+  .markdown-renderer :deep(ol) {
+    list-style-type: decimal;
+    margin: 0.5rem 0;
+    padding-left: 1.25rem;
+  }
 
-.markdown-renderer :deep(li) {
-  margin: 0.25rem 0;
-}
+  .markdown-renderer :deep(li) {
+    margin: 0.25rem 0;
+  }
 
-.markdown-renderer :deep(ul > li::marker) {
-  color: var(--d-accent);
-}
+  .markdown-renderer :deep(ul > li::marker) {
+    color: var(--d-accent);
+  }
 
-.markdown-renderer :deep(.markdown-blockquote) {
-  border-left: 3px solid var(--d-border2);
-  margin: 0.5rem 0;
-  padding: 0.5rem 0.75rem;
-  color: var(--d-text);
-  background: var(--surface-code);
-  border-radius: 0 var(--radius-md) var(--radius-md) 0;
-}
+  .markdown-renderer :deep(.markdown-blockquote) {
+    border-left: 3px solid var(--d-border2);
+    margin: 0.5rem 0;
+    padding: 0.5rem 0.75rem;
+    color: var(--d-text);
+    background: var(--surface-code);
+    border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  }
 
-.markdown-renderer :deep(.table-wrapper) {
-  overflow-x: auto;
-  margin: 0.5rem 0;
-  background: var(--surface-code);
-  border-radius: var(--radius-xl);
-  border: 1px solid var(--d-border);
-  box-shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.25), 0 2px 6px -1px rgba(0, 0, 0, 0.2);
-}
+  .markdown-renderer :deep(.table-wrapper) {
+    overflow-x: auto;
+    margin: 0.5rem 0;
+    background: var(--surface-code);
+    border-radius: var(--radius-xl);
+    border: 1px solid var(--d-border);
+    box-shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.25), 0 2px 6px -1px rgba(0, 0, 0, 0.2);
+  }
 
-.markdown-renderer :deep(.markdown-table) {
-  border-collapse: collapse;
-  width: 100%;
-}
+  .markdown-renderer :deep(.markdown-table) {
+    border-collapse: collapse;
+    width: 100%;
+  }
 
-.markdown-renderer :deep(th),
-.markdown-renderer :deep(td) {
-  border: 1px solid var(--d-border);
-  padding: 0.5rem 0.75rem;
-  text-align: left;
-}
+  .markdown-renderer :deep(th),
+  .markdown-renderer :deep(td) {
+    border: 1px solid var(--d-border);
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+  }
 
-.markdown-renderer :deep(th) {
-  /* translucent, so the header shows the table's own ground at every surface opacity */
-  background-color: color-mix(in srgb, var(--d-text) 8%, transparent);
-  color: var(--d-text);
-  font-weight: 600;
-}
+  .markdown-renderer :deep(th) {
+    /* translucent, so the header shows the table's own ground at every surface opacity */
+    background-color: color-mix(in srgb, var(--d-text) 8%, transparent);
+    color: var(--d-text);
+    font-weight: 600;
+  }
 
-.markdown-renderer :deep(tr:nth-child(even)) {
-  background-color: color-mix(in srgb, var(--d-hover) 50%, transparent);
-}
+  .markdown-renderer :deep(tr:nth-child(even)) {
+    background-color: color-mix(in srgb, var(--d-hover) 50%, transparent);
+  }
 
-.markdown-renderer :deep(tr:hover) {
-  background-color: var(--d-hover);
-  transition: background-color 0.15s ease;
-}
+  .markdown-renderer :deep(tr:hover) {
+    background-color: var(--d-hover);
+    transition: background-color 0.15s ease;
+  }
 
-.markdown-renderer :deep(strong) {
-  color: var(--d-text);
-  font-weight: 600;
-}
+  .markdown-renderer :deep(strong) {
+    color: var(--d-text);
+    font-weight: 600;
+  }
 
-.markdown-renderer :deep(em) {
-  color: var(--d-text);
-}
+  .markdown-renderer :deep(em) {
+    color: var(--d-text);
+  }
 
-.markdown-renderer :deep(.markdown-hr) {
-  border: none;
-  border-top: 1px solid var(--d-border);
-  margin: 1rem 0;
-}
+  .markdown-renderer :deep(.markdown-hr) {
+    border: none;
+    border-top: 1px solid var(--d-border);
+    margin: 1rem 0;
+  }
 
-.markdown-renderer :deep(.markdown-image) {
-  max-width: 100%;
-  border-radius: var(--radius-md);
-}
+  .markdown-renderer :deep(.markdown-image) {
+    max-width: 100%;
+    border-radius: var(--radius-md);
+  }
 
-.markdown-renderer :deep(.markdown-image-blocked) {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.0625rem 0.375rem;
-  font-size: 0.85em;
-  color: var(--d-muted);
-  border: 1px dashed var(--d-border);
-  border-radius: var(--radius-md);
+  .markdown-renderer :deep(.markdown-image-blocked) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.0625rem 0.375rem;
+    font-size: 0.85em;
+    color: var(--d-muted);
+    border: 1px dashed var(--d-border);
+    border-radius: var(--radius-md);
+  }
 }
 </style>

@@ -8,7 +8,7 @@ import TitleBar from '../components/TitleBar.vue';
 import ProjectsSection from '../components/ProjectsSection.vue';
 import GitConsentDialog from '../overlay/components/GitConsentDialog.vue';
 import { shellI18n } from '../i18n';
-import { FakeResizeObserver, STATE, fakeShellApi } from './fakes';
+import { FakeResizeObserver, PAGE_PROVIDE, STATE, fakeShellApi } from './fakes';
 
 const mounted: VueWrapper[] = [];
 const track = (wrapper: VueWrapper): VueWrapper => {
@@ -46,7 +46,7 @@ const onRemote = (project: ShellProject): ShellState => ({ ...STATE, projects: [
 
 describe('title bar safety stripe', () => {
   it('shows the colored host\'s stripe and its name on the solid fill, and renames it at once', async () => {
-    const wrapper = track(mount(TitleBar, { props: { api: fakeShellApi(), state: onRemote(remote('prod-1', 'danger')) }, global: { plugins: [shellI18n] } }));
+    const wrapper = track(mount(TitleBar, { props: { api: fakeShellApi(), state: onRemote(remote('prod-1', 'danger')) }, global: { provide: PAGE_PROVIDE, plugins: [shellI18n] } }));
     const stripe = wrapper.get('[data-testid="title-bar-stripe"]');
     expect(stripe.attributes('data-tone')).toBe('danger');
     expect(stripe.classes()).toContain('d-tone-danger');
@@ -58,7 +58,7 @@ describe('title bar safety stripe', () => {
   });
 
   it('paints a custom color on the stripe and the chip through d-tone-custom and the color channels', async () => {
-    const wrapper = track(mount(TitleBar, { props: { api: fakeShellApi(), state: onRemote(remote('prod-1', canonicalHostColor('#00808099')!)) }, global: { plugins: [shellI18n] } }));
+    const wrapper = track(mount(TitleBar, { props: { api: fakeShellApi(), state: onRemote(remote('prod-1', canonicalHostColor('#00808099')!)) }, global: { provide: PAGE_PROVIDE, plugins: [shellI18n] } }));
     const stripe = wrapper.get<HTMLElement>('[data-testid="title-bar-stripe"]');
     const chip = wrapper.get<HTMLElement>('[data-testid="title-bar-host"]');
     const name = wrapper.get<HTMLElement>('[data-testid="title-bar-host-name"]');
@@ -73,7 +73,7 @@ describe('title bar safety stripe', () => {
 
   // The stripe and the chip are trusted roots, whose opacity is pinned: a fade would hold the old one fully opaque, then swap.
   it('eases a recolor in place, and shows, swaps and removes the stripe and the chip at once, never with a fade', async () => {
-    const wrapper = track(mount(TitleBar, { props: { api: fakeShellApi(), state: onRemote(remote('prod-1', 'danger')) }, global: { plugins: [shellI18n], stubs: { transition: false } }, attachTo: document.body }));
+    const wrapper = track(mount(TitleBar, { props: { api: fakeShellApi(), state: onRemote(remote('prod-1', 'danger')) }, global: { provide: PAGE_PROVIDE, plugins: [shellI18n], stubs: { transition: false } }, attachTo: document.body }));
     const stripes = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('[data-testid="title-bar-stripe"]')];
     const chips = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('[data-testid="title-bar-host"]')];
     const fades = (): boolean => [...stripes(), ...chips()].some((element) => /d-fade|o-fade-out/.test(element.className));
@@ -102,7 +102,7 @@ describe('title bar safety stripe', () => {
   });
 
   it('shows no stripe for a local project or a host without a color; the uncolored host keeps its chip, untinted', async () => {
-    const wrapper = track(mount(TitleBar, { props: { api: fakeShellApi(), state: STATE }, global: { plugins: [shellI18n] } }));
+    const wrapper = track(mount(TitleBar, { props: { api: fakeShellApi(), state: STATE }, global: { provide: PAGE_PROVIDE, plugins: [shellI18n] } }));
     expect(wrapper.find('[data-testid="title-bar-stripe"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="title-bar-host"]').exists()).toBe(false);
     await wrapper.setProps({ state: onRemote(remote('prod-1')) });
@@ -120,7 +120,7 @@ describe('title bar host chip', () => {
     vi.mocked(api.showHostCard).mockImplementation(() => new Promise<void>((resolve) => (closeCard = resolve)));
     const latency = { latencyMs: 38, slow: false, history: [38], measurements: 1 };
     const state: ShellState = { ...onRemote(remote('prod-1', 'danger')), hosts: [{ hostId: 'h1', kind: 'ssh', authorityKey: 'ssh+h1', name: 'prod-1', color: 'danger', connection: 'connected', signInNeeded: false, latency }] };
-    const wrapper = track(mount(TitleBar, { props: { api, state }, global: { plugins: [shellI18n] }, attachTo: document.body }));
+    const wrapper = track(mount(TitleBar, { props: { api, state }, global: { provide: PAGE_PROVIDE, plugins: [shellI18n] }, attachTo: document.body }));
     const chip = wrapper.get<HTMLButtonElement>('button[data-testid="title-bar-host"]');
     expect(chip.attributes('aria-haspopup')).toBe('dialog');
     expect(chip.attributes('aria-expanded')).toBe('false');
@@ -143,7 +143,7 @@ describe('host details from the Projects list', () => {
   const HOST = { hostId: 'h1', kind: 'ssh', authorityKey: 'ssh+h1', name: 'prod-1', connection: 'connected', signInNeeded: false } as const;
   const mountList = (api: ReturnType<typeof fakeShellApi>, view: 'flat' | 'grouped'): VueWrapper => track(mount(ProjectsSection, {
     props: { api, projects: [remote('prod-1')], selectedKey: undefined, hosts: [HOST], view, groups: { order: ['ssh+h1'], collapsed: [] }, platform: 'win32', collapsed: false, bodySize: 150 },
-    global: { plugins: [shellI18n] },
+    global: { provide: PAGE_PROVIDE, plugins: [shellI18n] },
     attachTo: document.body,
   }));
 
@@ -209,7 +209,7 @@ describe('host details from the Projects list', () => {
     const loopback: ShellProject = { ...remote('Local daemon'), key: 'loopback|/srv/api', authority: { kind: 'loopback', key: 'loopback', name: 'Local daemon' } };
     const wrapper = track(mount(ProjectsSection, {
       props: { api, projects: [loopback], selectedKey: undefined, hosts: [], view: 'flat', groups: { order: ['loopback'], collapsed: [] }, platform: 'win32', collapsed: false, bodySize: 150 },
-      global: { plugins: [shellI18n] },
+      global: { provide: PAGE_PROVIDE, plugins: [shellI18n] },
       attachTo: document.body,
     }));
     const badge = wrapper.get('[data-testid="host-badge"]');
@@ -236,7 +236,7 @@ describe('host details from the Projects list', () => {
 describe('host badge tone', () => {
   const mountProjects = (project: ShellProject): VueWrapper => track(mount(ProjectsSection, {
     props: { api: fakeShellApi(), projects: [project], selectedKey: project.key, hosts: [], view: 'flat', groups: STATE.projectGroups, platform: 'win32', collapsed: false, bodySize: 150 },
-    global: { plugins: [shellI18n] },
+    global: { provide: PAGE_PROVIDE, plugins: [shellI18n] },
     attachTo: document.body,
   }));
 

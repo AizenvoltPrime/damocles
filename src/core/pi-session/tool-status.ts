@@ -7,12 +7,13 @@ import { PI_NATIVE_ACTIVE_TOOLS, WEB_TOOLS } from './pi-models';
 import { CUSTOM_TOOL_NAMES, moduleToolNames } from './tools';
 import { TEAM_MAIN_PI_TOOL_NAMES } from './tools/team-tools';
 import { FULL_TOOL_CATALOG } from './tools/tool-catalog';
-import { deferredToolNames, initialActiveToolNames } from './tools/deferred-tools';
+import { BUILTIN_DEFERRED_GROUPS, deferredToolNames, initialActiveToolNames, type BuiltinDeferredGroup } from './tools/deferred-tools';
 import { MCP_RESOURCE_TOOL_NAMES, TOOL_DESIGN_PARITY, TOOL_ENTER_PLAN_MODE, TOOL_EXIT_PLAN_MODE, TOOL_START_DESIGN, TOOL_TOOL_SEARCH } from '../../shared/tool-names';
 import { designBrowserAllows } from './tools/browser-tools';
 import { MEMORY_WRITE_PI_TOOL_NAMES } from './tools/memory-tools';
 import { BUILT_DESIGN_TOOL_NAMES } from '../design/tools/design-tool-specs';
 import { THEME_PI_TOOL_NAMES } from './tools/theme-tool-specs';
+import type { ToolExclusion, ToolGroupInertReason } from './tools/inert-reason';
 import type { DesignRuleSet } from '../design/rule-set';
 
 /**
@@ -52,6 +53,8 @@ export interface ToolStatusDeps {
   themeAvailable: boolean;
   /** `damocles.desktop.themes.agentTools`. */
   themeEnabled: boolean;
+  /** A daemon's core: `themeEnabled` is the switch of the device the turn is pinned to, not this host's. */
+  themeSwitchOnDevice: boolean;
   /** Why the tools cannot reach the app they change, else undefined (`themeGroupUnavailable()`). */
   themeUnavailable: 'themeAppClosed' | 'themeAppOutdated' | undefined;
   /** `this.isMcpEnabled()`. */
@@ -122,13 +125,20 @@ export function fullActiveToolNames(deps: ToolStatusDeps): string[] {
     ...(deps.mcpEnabled && deps.mcpResourceExposure !== null ? MCP_RESOURCE_TOOL_NAMES : []),
     ...designToolNames(deps),
   ];
-  // A design chat's least privilege (PD-25); `loadableToolNames` and the gate's `designWriteBlock` narrow it too, and each must hold on its own.
-  const allowed = (name: string): boolean =>
-    !deps.disabled.has(name) && (!deps.designRole || (!DESIGN_CHAT_EXCLUDED.has(name) && designBrowserAllows(name)));
   // pi's setActiveToolsByName pushes one definition per name occurrence (no internal de-dup), so a
   // duplicate name would make the provider reject the request ("Tool names must be unique"). De-dup
   // defensively, mirroring pi's own `[...new Set(...)]` active-set contract.
-  return [...new Set(names.filter(allowed))];
+  return [...new Set(names.filter((name) => toolExclusion(name, deps) === undefined))];
+}
+
+/**
+ * Why a tool its subsystem offers is still not eligible: a design chat's least privilege (PD-25), which no setting lifts, or
+ * the user's TOOLS_DISABLED_SETTING. `loadableToolNames` and the gate's `designWriteBlock` narrow a design chat too, and each
+ * must hold on its own.
+ */
+function toolExclusion(name: string, deps: Pick<ToolStatusDeps, 'disabled' | 'designRole'>): ToolExclusion | undefined {
+  if (deps.designRole && (DESIGN_CHAT_EXCLUDED.has(name) || !designBrowserAllows(name))) return 'design';
+  return deps.disabled.has(name) ? 'disabled' : undefined;
 }
 
 /**
@@ -142,6 +152,69 @@ export function activeToolNamesWithDeferral(deps: ToolStatusDeps, activated: Rea
   const eligible = fullActiveToolNames(deps);
   const deferred = deferredToolNames(eligible, mcpDeferrableNames(deps));
   return initialActiveToolNames(eligible, deferred, activated);
+}
+
+const MCP_ENABLED_SETTING = 'damocles.mcp.enabled';
+
+/** Why `group` holds no tool of `eligible` (`fullActiveToolNames(deps)`), read from the deps it reads; undefined while it has one. */
+export function deferredGroupInert(group: BuiltinDeferredGroup, deps: ToolStatusDeps, eligible: ReadonlySet<string>): ToolGroupInertReason | undefined {
+  const names = BUILTIN_DEFERRED_GROUPS.find((g) => g.group === group)?.names ?? [];
+  if (names.some((name) => eligible.has(name))) return undefined;
+  const switched = (on: boolean, setting: string): ToolGroupInertReason | undefined => (on ? undefined : { kind: 'off', setting });
+  const gate = ((): ToolGroupInertReason | undefined => {
+    switch (group) {
+      case 'browser': return deps.browserAvailable ? switched(deps.browserEnabled, TOOL_GROUP_SETTINGS.browser) : { kind: 'host' };
+      case 'compass': return deps.compassService ? switched(deps.compassService.isEnabled, TOOL_GROUP_SETTINGS.compass) : { kind: 'host' };
+      case 'web': return switched(deps.webEnabled, TOOL_GROUP_SETTINGS.web);
+      case 'image': return switched(deps.imageEnabled, TOOL_GROUP_SETTINGS.image);
+      case 'forge': return deps.forgeAvailable ? switched(deps.forgeEnabled, TOOL_GROUP_SETTINGS.forge) : { kind: 'host' };
+      case 'theme':
+        if (!deps.themeAvailable) return { kind: 'host' };
+        if (deps.themeEnabled) return undefined;
+        return deps.themeSwitchOnDevice ? { kind: 'themeOffOnDevice' } : { kind: 'off', setting: TOOL_GROUP_SETTINGS.theme };
+      case 'mcp_resources': return switched(deps.mcpEnabled, MCP_ENABLED_SETTING);
+      default: {
+        const unknown: never = group;
+        throw new Error(`deferredGroupInert has no gate for the group ${String(unknown)}`);
+      }
+    }
+  })();
+  if (gate) return gate;
+  // the subsystem offers the group, so each of its tools is excluded by name, or the group needs a service it lacks
+  const byDesign = names.filter((name) => toolExclusion(name, deps) === 'design');
+  const disabled = names.filter((name) => toolExclusion(name, deps) === 'disabled');
+  if (byDesign.length + disabled.length === names.length) return byDesign.length > 0 ? { kind: 'design', disabled } : { kind: 'toolsOff', tools: disabled };
+  if (group === 'image' && !deps.imageAvailability.available) return { kind: 'unavailable', reason: deps.imageAvailability.reason };
+  if (group === 'mcp_resources' && deps.mcpResourceExposure === null) return { kind: 'unavailable', reason: 'noResourceServer' };
+  // unreachable while these cases mirror fullActiveToolNames' conditions; tool-search.test.ts checks every combination
+  return undefined;
+}
+
+/**
+ * Every built-in deferred group with no eligible tool, and every eligible one with no tool deferred or `active`, with its
+ * reason. `eligible` is `fullActiveToolNames(deps)`.
+ */
+export function deferredInertReasons(deps: ToolStatusDeps, eligible: readonly string[], active: ReadonlySet<string>): Map<BuiltinDeferredGroup, ToolGroupInertReason> {
+  const eligibleSet = new Set(eligible);
+  const deferred = new Set(deferredToolNames(eligible, mcpDeferrableNames(deps)));
+  const reasons = new Map<BuiltinDeferredGroup, ToolGroupInertReason>();
+  for (const { group, names } of BUILTIN_DEFERRED_GROUPS) {
+    const reason = deferredGroupInert(group, deps, eligibleSet) ?? (names.some((name) => deferred.has(name) || active.has(name)) ? undefined : { kind: 'notLoaded' as const });
+    if (reason) reasons.set(group, reason);
+  }
+  return reasons;
+}
+
+/** Each built-in deferred tool that is excluded by name, with why. A group with no eligible tool is answered by `deferredInertReasons` first. */
+export function deferredToolExclusions(deps: Pick<ToolStatusDeps, 'disabled' | 'designRole'>): Map<string, ToolExclusion> {
+  const excluded = new Map<string, ToolExclusion>();
+  for (const { names } of BUILTIN_DEFERRED_GROUPS) {
+    for (const name of names) {
+      const why = toolExclusion(name, deps);
+      if (why) excluded.set(name, why);
+    }
+  }
+  return excluded;
 }
 
 /** The MCP names ToolSearch may load: the deferred MCP tools, plus the resource tools while no resource server is Always loaded. */

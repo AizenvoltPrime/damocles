@@ -76,6 +76,8 @@ export interface ThemeWrites {
 export interface ThemeStore {
   // the built-in theme first, then System colors, the built-in examples, and every theme folder under themes/, broken ones included, by name
   list(): Promise<ThemeListEntry[]>;
+  // the built-in examples as list() reads them, read once a run
+  examples(): Promise<readonly BuiltinExample[]>;
   readonly lane: WriteLane;
   readonly unlocked: ThemeWrites;
   readonly newId: () => string;
@@ -407,6 +409,7 @@ export function createThemeStore(options: ThemeStoreOptions): ThemeStore {
         ...user,
       ];
     },
+    examples: readExamples,
     onDidChange(listener) {
       listeners.add(listener);
       return { dispose: () => listeners.delete(listener) };

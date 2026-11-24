@@ -29,6 +29,7 @@ beforeEach(() => {
 afterEach(() => {
   for (const wrapper of mounted.splice(0)) wrapper.unmount();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   document.body.innerHTML = '';
 });
 

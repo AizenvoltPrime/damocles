@@ -105,18 +105,20 @@ defineExpose({ addToast });
 </template>
 
 <style scoped>
-.toast-enter-active,
-.toast-leave-active {
-  transition: all 0.3s ease;
-}
+@layer app {
+  .toast-enter-active,
+  .toast-leave-active {
+    transition: all 0.3s ease;
+  }
 
-.toast-enter-from {
-  opacity: 0;
-  transform: translateX(100%);
-}
+  .toast-enter-from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
 
-.toast-leave-to {
-  opacity: 0;
-  transform: translateX(100%);
+  .toast-leave-to {
+    opacity: 0;
+    transform: translateX(100%);
+  }
 }
 </style>

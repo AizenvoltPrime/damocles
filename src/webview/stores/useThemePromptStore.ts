@@ -6,8 +6,10 @@ import { dropInstallThumbs, takeInstallThumbs } from '@/utils/install-thumbs';
 
 /** A raised theme preview prompt, as `requestThemeChange` carries it and `themeChangeUpdated` changes it. */
 export type ThemeChangePromptView = Omit<Extract<ExtensionToWebviewMessage, { type: 'requestThemeChange' }>, 'type'>;
-/** A raised screenshot consent prompt, as `requestThemeScreenshot` carries it. */
-export type ThemeScreenshotPromptView = Omit<Extract<ExtensionToWebviewMessage, { type: 'requestThemeScreenshot' }>, 'type'>;
+// Omit per member, so the screenshot prompt stays a union a card can narrow.
+type WithoutType<T> = T extends unknown ? Omit<T, 'type'> : never;
+/** A raised screenshot consent prompt, as `requestThemeScreenshot` carries it: a capture the card shows, or a draft. */
+export type ThemeScreenshotPromptView = WithoutType<Extract<ExtensionToWebviewMessage, { type: 'requestThemeScreenshot' }>>;
 /**
  * A raised install prompt, as `requestThemeInstall` carries it and `themeInstallUpdated` replaces its preview, without the
  * wallpaper thumbnails, which the page's image cache holds (utils/install-thumbs.ts); `progress` holds each running flash
@@ -21,6 +23,8 @@ export const useThemePromptStore = defineStore('themePrompts', () => {
   const changePrompts = ref<ThemeChangePromptView[]>([]);
   const screenshotPrompts = ref<ThemeScreenshotPromptView[]>([]);
   const installPrompts = ref<ThemeInstallPromptView[]>([]);
+  // this chat's screenshot grant as its publisher last sent it (themeScreenshotGrant): no conversation reset clears it
+  const screenshotGrant = ref(false);
 
   const put = <T extends { readonly promptId: string }>(list: readonly T[], prompt: T): T[] =>
     (list.some((held) => held.promptId === prompt.promptId) ? list.map((held) => (held.promptId === prompt.promptId ? prompt : held)) : [...list, prompt]);
@@ -39,6 +43,10 @@ export const useThemePromptStore = defineStore('themePrompts', () => {
 
   function setScreenshotPrompt(prompt: ThemeScreenshotPromptView): void {
     screenshotPrompts.value = put(screenshotPrompts.value, prompt);
+  }
+
+  function setScreenshotGrant(granted: boolean): void {
+    screenshotGrant.value = granted;
   }
 
   function removeScreenshotPrompt(promptId: string): void {
@@ -81,8 +89,8 @@ export const useThemePromptStore = defineStore('themePrompts', () => {
   }
 
   return {
-    changePrompts, screenshotPrompts, installPrompts,
-    setChangePrompt, updateChangePrompt, removeChangePrompt, setScreenshotPrompt, removeScreenshotPrompt,
+    changePrompts, screenshotPrompts, installPrompts, screenshotGrant,
+    setChangePrompt, updateChangePrompt, removeChangePrompt, setScreenshotPrompt, removeScreenshotPrompt, setScreenshotGrant,
     setInstallPrompt, updateInstallPrompt, updateInstallProgress, removeInstallPrompt, awaitedBy,
     $reset,
   };

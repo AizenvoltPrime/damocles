@@ -10,10 +10,9 @@ import { spriteIsAnimated, spriteStrip } from '../../shared/themes/characters';
 import type { AssetMeta } from '../../shared/themes/schema';
 import { THUMB_QUALITY, type WallpaperKind } from '../../shared/themes/wallpapers';
 import { MAX_ARCHIVE_BYTES, readCappedFile } from '../../core/themes/archive';
-import { APP_ORIGIN, registerAppScheme, THEME_RENDER_PAGE_URL } from '../main/protocol';
-import { fontFaceCss } from '../main/desktop-fonts';
+import { registerAppScheme, THEME_RENDER_PAGE_URL } from '../main/protocol';
 import { hardenWebContents } from '../main/security';
-import { openThemeBlob, readThemeBlob, type NamedBlob } from '../main/themes/theme-blobs';
+import { openThemeBlob, readThemeBlob } from '../main/themes/theme-blobs';
 import { createThemeRenderSession, openThemeRenderPage, themeRenderHtml } from '../main/themes/theme-render-page';
 import { ThemeRenderer } from '../main/themes/theme-renderer';
 import { STORE_THUMB_WIDTH, validateStoreTheme, type RenderJobs, type Verdict } from './validate';
@@ -117,17 +116,12 @@ async function run({ file, thumbs, work }: Args): Promise<number> {
     readBlob: async (sha256, mime, kind) => (await readThemeBlob(root, sha256, () => ({ kind, mime })))?.bytes,
     log: (line) => process.stderr.write(`${line}\n`),
   });
-  // the blob the running job decodes, as main's namedBlob names it to the theme-blob route
-  const named = (sha256: string): NamedBlob | undefined => {
-    const image = renderer.currentImage();
-    return image?.sha256 === sha256 ? { kind: image.kind, mime: image.mime } : undefined;
-  };
-  const renderSession = createThemeRenderSession(CHECKOUT_ROOT, {
-    themeBlob: (sha256) => openThemeBlob(root, sha256, named),
-    themeRender: () => themeRenderHtml(fontFaceCss(APP_ORIGIN)),
+  // as main's render session, which lets nothing reach the network: only the blob the running job decodes; no window job runs here, so no still frame is served
+  createThemeRenderSession(CHECKOUT_ROOT, {
+    themeBlob: (sha256) => openThemeBlob(root, sha256, (sha) => renderer.currentJobBlob(sha)),
+    themeCache: async () => undefined,
+    themeRender: () => themeRenderHtml(),
   });
-  // the render page loads only app:// files and its own data and blob URLs; nothing reaches the network
-  renderSession.webRequest.onBeforeRequest((details, answer) => answer({ cancel: !details.url.startsWith(`${APP_ORIGIN}/`) && !/^(data|blob):/.test(details.url) }));
   try {
     const verdict = await validateStoreTheme(bytes, file, async () => renderJobs(renderer, blobsDir), async (name, thumb) => {
       await fs.mkdir(thumbs, { recursive: true });

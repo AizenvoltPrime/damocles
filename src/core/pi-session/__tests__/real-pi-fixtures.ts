@@ -93,7 +93,7 @@ export function panelSession(emitted: ExtensionToWebviewMessage[]): PiSession {
     cwd: '/cwd',
     projectScope: true,
     platform: createFakePlatform(),
-    permissionHandler: { getPermissionMode: () => 'default', setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [], repostPendingPrompts: () => {} } as unknown as PermissionHandler,
+    permissionHandler: { getPermissionMode: () => 'default', setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [], endScreenshotGrantUnless: () => {}, repostPendingPrompts: () => {} } as unknown as PermissionHandler,
     onMessage: (message: ExtensionToWebviewMessage) => emitted.push(message),
     resolveThinking: () => ({ thinkingDisabled: true, effort: null }),
   } as unknown as SessionOptions;

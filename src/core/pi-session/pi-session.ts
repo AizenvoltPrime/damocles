@@ -271,11 +271,14 @@ import {
   activeToolNamesWithDeferral,
   buildToolStatus as buildToolStatusFrom,
   mcpDeferrableNames,
+  deferredInertReasons,
+  deferredToolExclusions,
   type ToolStatusDeps,
 } from "./tool-status";
+import type { ToolGroupInertReason } from "./tools/inert-reason";
 import { deferredToolNames, loadableToolNames, nestedAgentToolNames, nestedLoadableToolNames } from "./tools/deferred-tools";
 import { THEME_PI_TOOL_NAMES } from "./tools/theme-tool-specs";
-import { attachedImagesOf, createLocalThemeBackend, type ThemeBackend, type ThemeToolsHost } from "./tools/theme-tools";
+import { attachedImagesOf, createLocalThemeBackend, type ThemeAgentHost, type ThemeBackend, type ThemeToolsHost } from "./tools/theme-tools";
 import { relayedThemeBackend } from "./tools/theme-relay";
 import { forgeGroupUnavailable, themeGroupUnavailable, userScopeReach } from "../user-scope";
 import { resourceToolsExposure } from "./mcp/exposure";
@@ -624,6 +627,11 @@ function designForkSource(role: DesignRole, entry: CheckpointEntry | null): Desi
     : { kind: "copy" };
 }
 
+/** This computer's theme host, whose core alone holds its chats' screenshot grants; undefined for a relayed chat and in VS Code. */
+function localThemeHost(host: ThemeToolsHost | undefined): ThemeAgentHost | undefined {
+  return host && !("relayed" in host) ? host : undefined;
+}
+
 /**
  * `ChatSession` implementation backed by the pi harness (US-P1-4). Owns one `AgentSessionRuntime`
  * whose factory reuses its folder's `FolderRuntime.services` and a `PiStreamAdapter` that
@@ -692,6 +700,8 @@ export class PiSession implements ChatSession {
   private servedFiles: ChatServedFiles | undefined;
   private readonly servedPagesBinding: { dispose(): void } | undefined;
   private readonly designSettingSubscription: { dispose(): void };
+  // main's screenshot notice Revoke, which names the chat whose grant ends
+  private readonly screenshotGrantRevoked: { dispose(): void } | undefined;
   // D61's note not yet in the conversation (rule 11): delivered once the session runs, never by starting a turn.
   private pendingWorkingFolderNote: string | null = null;
   // The stored file a running switchSession opens, when it lies outside this folder's session directory.
@@ -956,6 +966,7 @@ export class PiSession implements ChatSession {
       this.publishDesignState();
       if (this.design.enabled()) this.design.idle();
     });
+    this.screenshotGrantRevoked = localThemeHost(options.themeTools)?.host.onScreenshotGrantRevoked((chat) => options.permissionHandler.revokeScreenshotGrant(chat));
     // a daemon's core has no browser: a remote chat's pages are in the client's
     const browser = options.browser;
     this.servedPagesBinding = browser && !options.platform.remote
@@ -3960,6 +3971,7 @@ export class PiSession implements ChatSession {
     this.worktree.dispose();
     this.design.dispose();
     this.designSettingSubscription.dispose();
+    this.screenshotGrantRevoked?.dispose();
     this.servedPagesBinding?.dispose();
     this.disposeThemeDrafts();
     // Before `_disposed`, which silences `emit`: nothing queued or still on its way to pi was sent, so it goes back to the composer.
@@ -4655,6 +4667,8 @@ export class PiSession implements ChatSession {
     this.design.forgetPublished();
     this.publishDesignState();
     this.options.permissionHandler.repostPendingPrompts();
+    // a remote chat's page hears its grant from the device's main, which holds it
+    if (localThemeHost(this.options.themeTools)) this.options.permissionHandler.republishScreenshotGrant();
     this.uiContext.repostPending();
     // The reloaded store starts at `idle`, so the cached key describes a webview that no longer exists
     // and would suppress the resync as a duplicate. Cleared before the republish, never after.
@@ -5189,6 +5203,7 @@ export class PiSession implements ChatSession {
       themeUnavailable: themeGroupUnavailable(),
       themeAvailable: this.options.themeTools !== undefined,
       themeEnabled: this.options.platform.settings.get<boolean>(TOOL_GROUP_SETTINGS.theme, true),
+      themeSwitchOnDevice: this.options.platform.remote !== undefined,
       mcpEnabled: this.isMcpEnabled(),
       mcpToolNames: this.mcpToolNames(),
       mcpDeferrableToolNames: this.mcpClientManager()?.deferrableToolNames() ?? [],
@@ -5263,10 +5278,13 @@ export class PiSession implements ChatSession {
       });
     }
     const mcpGroups = mcpGroupsOf(names, mcpDescriptions);
+    const loaded = new Set(session?.getActiveToolNames() ?? []);
     return {
       names,
-      loaded: new Set(session?.getActiveToolNames() ?? []),
+      loaded,
       mcpGroups,
+      inert: deferredInertReasons(deps, eligible, loaded),
+      excluded: deferredToolExclusions(deps),
       ...(directMcpGroups.size ? { directMcpGroups } : {}),
       ...(pendingMcpServers.length ? { pendingMcpServers } : {}),
       ...(mcpDescriptions.size ? { mcpDescriptions } : {}),
@@ -5658,7 +5676,14 @@ export class PiSession implements ChatSession {
       onSubagentCost: (delta) => this.adapter.addExternalCost(delta),
       onRunsChanged: () => this.publishSessionState(),
       getHooksDispatch: () => folder.getHooksDispatchDeps(),
+      deferredInert: () => this.deferredInert(),
+      deferredExcluded: () => deferredToolExclusions(this.toolStatusDeps()),
     };
+  }
+
+  private deferredInert(): ReadonlyMap<string, ToolGroupInertReason> {
+    const deps = this.toolStatusDeps();
+    return deferredInertReasons(deps, fullActiveToolNamesFrom(deps), new Set(this.runtime?.session.getActiveToolNames() ?? []));
   }
 
   /** The prompt an append-mode agent inherits: the transcript's, which outlives the run that set it, unlike `session.systemPrompt`. */
@@ -6996,6 +7021,8 @@ export class PiSession implements ChatSession {
         // `tools: [...toolNames, ...mcp.names]` the caller builds from the same snapshot. Always-loaded
         // tools are in `mcp.names` but not `mcp.deferrable`, so they are active and never on the menu.
         deferrableToolNames: this.teamAgentLoadableToolNames(mcp),
+        deferredInert: this.deferredInert(),
+        deferredExcluded: deferredToolExclusions(this.toolStatusDeps()),
         mcpDescriptions: mcp.descriptions,
         directMcpGroups: mcp.directGroups,
         isMcpReadOnly: mcp.isReadOnly,
@@ -7583,6 +7610,9 @@ export class PiSession implements ChatSession {
    */
   private publishSessionState(): void {
     const sessionId = this.runtime?.session.sessionId ?? "";
+    // The grant ends with the conversation it was given in. Only a live session with an id may end it: the panel's handler
+    // outlives a replaced session, and a chat move's successor resumes the same id once it starts.
+    if (!this._disposed && this.runtime) this.options.permissionHandler.endScreenshotGrantUnless(sessionId);
     // One read for both, so the kinds are exactly the kinds of the prompts reported.
     const raised = this.raisedPrompts();
     const pendingKinds = [...new Set(raised.map((prompt) => prompt.kind))].sort();

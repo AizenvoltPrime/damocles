@@ -73,8 +73,10 @@ export interface RemoteServicesDeps {
   readonly t: (message: string, ...args: string[]) => string;
 }
 
-// voice view state and this computer's usage, notes and global memories reach a remote chat's view only from this computer's core (foreign-view-relay.ts)
-export const REMOTE_CORE_REFUSED_POSTS: ReadonlySet<string> = new Set([...VOICE_VIEW_POSTS, ...REMOTE_CHAT_LOCAL_POSTS]);
+// voice view state and this computer's usage, notes and global memories reach a remote chat's view only from this computer's core
+// (foreign-view-relay.ts), and its screenshot grant only from this computer's main (RelayedConsents; docs/invariants.md
+// "Desktop themes", the screenshot grant)
+export const REMOTE_CORE_REFUSED_POSTS: ReadonlySet<string> = new Set([...VOICE_VIEW_POSTS, ...REMOTE_CHAT_LOCAL_POSTS, 'themeScreenshotGrant']);
 
 const refused = (what: string): Promise<never> => Promise.reject(new Error(`${what} is not available to a remote core`));
 

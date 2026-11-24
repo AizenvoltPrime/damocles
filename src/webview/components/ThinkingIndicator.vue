@@ -148,21 +148,23 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.thinking-content :deep(.markdown-renderer) {
-  color: var(--d-muted);
-}
+@layer app {
+  .thinking-content :deep(.markdown-renderer) {
+    color: var(--d-muted);
+  }
 
-.thinking-content :deep(.markdown-p) {
-  margin: 0.25rem 0;
-}
+  .thinking-content :deep(.markdown-p) {
+    margin: 0.25rem 0;
+  }
 
-.thinking-content :deep(.markdown-heading) {
-  margin-top: 0.5rem;
-  margin-bottom: 0.25rem;
-  font-size: 0.9em;
-}
+  .thinking-content :deep(.markdown-heading) {
+    margin-top: 0.5rem;
+    margin-bottom: 0.25rem;
+    font-size: 0.9em;
+  }
 
-.thinking-content :deep(.inline-code) {
-  font-size: 0.9em;
+  .thinking-content :deep(.inline-code) {
+    font-size: 0.9em;
+  }
 }
 </style>

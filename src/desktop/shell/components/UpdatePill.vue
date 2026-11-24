@@ -2,14 +2,15 @@
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch, type Component } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { ArrowDownToLine, ExternalLink, RotateCw } from 'lucide-vue-next';
-import type { DamoclesShellApi, ShellPlatform } from '../../preload/shell-channels';
+import type { ShellPlatform } from '../../preload/shell-channels';
 import type { OverlayIcon, OverlayMenuItem } from '../../preload/overlay-channels';
 import { isUpdateAction, type UpdateSnapshot } from '../../preload/updates';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { pillMenu, pillView, type PillMenuItem, type PillView } from '../update-view';
+import type { UpdatePillApi } from './title-bar-api';
 
-const props = defineProps<{ api: DamoclesShellApi; platform: ShellPlatform }>();
+const props = defineProps<{ api: UpdatePillApi; platform: ShellPlatform }>();
 const { t } = useI18n();
 
 const snapshot = shallowRef<UpdateSnapshot | null>(null);

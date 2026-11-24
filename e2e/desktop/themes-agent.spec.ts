@@ -7,21 +7,24 @@ import { killTree, mainLog } from './support/app';
 import { startDesignChat } from './support/design';
 import { readUserSettings, seedStubModel, writeAuth, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { agentRequests, call, chatRequests, startOpenAIStub, type OpenAIStub, type StubReply } from './support/openai-stub';
-import { hostMessage, setPageSize, settled } from './support/screenshots';
+import { hostMessage, openProjectChat, setPageSize, settled } from './support/screenshots';
 import { closeSettingsModal, setContentSize } from './support/settings';
 import { pressKeys, SHELL_URL, shellPage, shellState, viewFocused } from './support/shell';
-import { cssToken, HOOKS, loadThemeTools, openAppearance, readTheme, themeHooks, windowBackground, writeTheme } from './support/themes';
+import { auroraPng, controlReady, cssToken, HOOKS, loadThemeTools, openAppearance, readTheme, themeHooks, windowBackground, writeTheme } from './support/themes';
 import { awaitTurnEnd, chatInput, clickAnswer, clickMenu, postFromWebview, promptReady } from './support/ui';
+import { characterSheetLayout, SIDEBAR_AVATAR_PX, type SheetCharacterInput } from '../../src/shared/themes/character-sheet';
 
 // The agent's theme tools on this computer (docs/invariants.md "Desktop themes", "Permissions and plan mode"): the theme
 // cards are content decisions raised in every permission mode, the keep-changes banner settles an on-the-fly apply, and
 // the design journeys S2, S3 (screenshot) and S4 (keep, show in window) replay by role and accessible name. Every launch has
 // main's e2e hooks: a test that starts a keep-changes countdown holds its timer first and ends it itself, so no assertion
-// races the 15 s it runs for.
+// races the 15 s it runs for, a test that captures a draft holds the 5 s wait for its pages' paint, and a test that reads
+// or presses the screenshot notice holds its 6 s.
 
 const CHECKED = { timeout: 30_000 };
 const NEVER = new Promise<void>(() => {});
 const BUILTIN_DARK_BG = '#0b0f14';
+const BUILTIN_DARK_ACCENT = '#4cc2ff';
 const BUILTIN_LIGHT_BG = '#f7f9fb';
 const AMBER_BG = '#2a1a10';
 const AMBER = { theme: 'damocles', saveAs: 'new', name: 'Amber Night', look: 'dark', colors: { background: AMBER_BG, accent: '#e0a030' } } as const;
@@ -96,6 +99,7 @@ function offeredTools(openai: OpenAIStub): string[] {
 
 const previewCard = (tab: Page, name = 'Preview a new theme'): Locator => tab.getByRole('region', { name, exact: true });
 const shotCard = (tab: Page): Locator => tab.getByRole('region', { name: 'Send a screenshot of the window to the model?', exact: true });
+const draftShotCard = (tab: Page): Locator => tab.getByRole('region', { name: 'Send the model a screenshot of a draft on the window?', exact: true });
 const genericCard = (tab: Page): Locator => tab.getByTestId('permission-card');
 const answers = (tab: Page): Locator => tab.getByRole('listbox', { name: 'Answer the theme preview', exact: true });
 const lastToolCard = (tab: Page): Locator => tab.getByTestId('theme-tool-card').last();
@@ -216,9 +220,6 @@ test('a deny rule blocks ThemeSet with no card', async ({ home, launch }) => {
   expect(await windowBackground(run.app)).toBe(BUILTIN_DARK_BG);
 });
 
-// A real picture the theme renderer decodes: Aurora's smaller wallpaper (scripts/generate-theme-art.ts).
-const AURORA_DIR = path.resolve(import.meta.dirname, '..', '..', 'resources', 'themes', 'damocles-aurora');
-const auroraPng = (): Buffer => fs.readdirSync(AURORA_DIR).filter((file) => file.endsWith('.png')).map((file) => fs.readFileSync(path.join(AURORA_DIR, file))).sort((a, b) => a.length - b.length)[0]!;
 /** Claude Code's `//` absolute form of a native path, which a user settings rule names a folder by. */
 const absRule = (native: string): string => {
   const slashed = native.split(path.sep).join('/');
@@ -265,6 +266,174 @@ test('a file source is a Read of it: a Read deny rule blocks it with no card, an
   await expect(lastToolCard(tab)).toHaveAttribute('data-outcome', 'applied');
   expect(blobFiles(home)).toHaveLength(1);
   expect(projectFiles(home)).toEqual(before);
+});
+
+// A moving wallpaper the renderer decodes, and a pixel sprite in one exact color that no dimmed wallpaper pixel matches.
+const TIDE = path.resolve(import.meta.dirname, 'fixtures', 'wallpapers', 'moov-start.mp4');
+const MAGENTA_ROWS = Array.from({ length: 8 }, () => '00000000');
+const tideDraft = (file: string): Record<string, unknown> => ({
+  ...AMBER, name: 'Tide',
+  asset: { name: 'tide', from: { file } },
+  wallpapers: [{ panels: { sidebar: { image: 'tide', dim: 0.2, blur: 2 } } }],
+  sprites: [{ name: 'mag', pixels: { palette: ['#ff00ff'], frames: [MAGENTA_ROWS] } }],
+  characters: { characters: [{ name: 'Mag', idle: 'mag', running: 'mag', waiting: 'mag' }] },
+});
+
+/** Every PNG the agent's latest request carries, its history's included, as data URLs in order. */
+function images(openai: OpenAIStub): string[] {
+  return [...JSON.stringify(agentRequests(openai).at(-1)?.body ?? {}).matchAll(/data:image\/png;base64,[A-Za-z0-9+/=]+/g)].map((match) => match[0]);
+}
+
+interface PixelStats {
+  readonly width: number;
+  readonly height: number;
+  // the most common pixel value, and its share of the image
+  readonly common: number;
+  readonly commonShare: number;
+  // the share of the image that is `of`'s pixel value
+  readonly ofShare: number;
+  // pixels of the sprite's magenta, which reads alike as BGRA or RGBA
+  readonly magenta: number;
+}
+
+function pixelStats(app: ElectronApplication, dataUrl: string, of = -1): Promise<PixelStats> {
+  return app.evaluate(({ nativeImage }, [url, value]) => {
+    const image = nativeImage.createFromDataURL(url);
+    const { width, height } = image.getSize();
+    const bitmap = image.toBitmap();
+    const counts = new Map<number, number>();
+    let magenta = 0;
+    for (let at = 0; at < bitmap.length; at += 4) {
+      const pixel = bitmap.readUInt32LE(at);
+      counts.set(pixel, (counts.get(pixel) ?? 0) + 1);
+      if (bitmap[at]! >= 240 && bitmap[at + 1]! <= 15 && bitmap[at + 2]! >= 240) magenta++;
+    }
+    const [common, most] = [...counts.entries()].reduce((best, entry) => (entry[1] > best[1] ? entry : best));
+    return { width, height, common, commonShare: most / (width * height), ofShare: (counts.get(value) ?? 0) / (width * height), magenta };
+  }, [dataUrl, of] as const);
+}
+
+test("a draft's drawn preview is the real window themed by the draft: its video wallpaper's still under the sidebar and its new characters; its card loads a character's sprite and Show in window shows the character", async ({ home, launch }) => {
+  test.setTimeout(240_000);
+  const run = await start(launch, home, {}, () => {
+    fs.mkdirSync(path.join(home.project, 'img'), { recursive: true });
+    fs.copyFileSync(TIDE, path.join(home.project, 'img', 'tide.mp4'));
+  });
+  const { app } = run;
+  const shell = await shellPage(app);
+  // a project's chat, so the sidebar and the title bar show its character
+  const tab = await openProjectChat(app, home.project);
+  await loadThemeTools(run.openai, tab);
+
+  // the same colors with no wallpaper: its sidebar is mostly the bare pane color
+  ask(run, 'ThemeSet', { ...AMBER, name: 'Bare', stage: true, preview: 'sidebar' }, 'Bare sidebar.');
+  await send(tab, 'show me a bare sidebar');
+  await expect(tab.getByText('Bare sidebar.', { exact: true })).toBeVisible(CHECKED);
+  await awaitTurnEnd(tab);
+  expect(images(run.openai)).toHaveLength(1);
+  const bare = await pixelStats(app, images(run.openai)[0]!);
+  expect(bare.commonShare).toBeGreaterThan(0.5);
+  // the sidebar alone, at native resolution
+  expect(bare.width).toBeLessThan(1280);
+  expect(bare.height).toBeGreaterThan(400);
+
+  ask(run, 'ThemeSet', { ...tideDraft(path.join(home.project, 'img', 'tide.mp4')), stage: true }, 'Staged, no picture.');
+  await send(tab, 'make a tide theme');
+  await expect(tab.getByText('Staged, no picture.', { exact: true })).toBeVisible(CHECKED);
+  await awaitTurnEnd(tab);
+  // no image unless the call asks for one
+  expect(images(run.openai)).toHaveLength(1);
+  const draftId = /Draft ([^:\s]+):/.exec(toolResults(run.openai).at(-1) ?? '')?.[1];
+  expect(draftId).toBeDefined();
+
+  ask(run, 'ThemeSet', { draft: draftId, look: 'dark', stage: true, preview: 'sidebar' }, 'Here is the tide sidebar.');
+  await send(tab, 'show me the sidebar');
+  await expect(tab.getByText('Here is the tide sidebar.', { exact: true })).toBeVisible(CHECKED);
+  await awaitTurnEnd(tab);
+  expect(images(run.openai)).toHaveLength(2);
+  const tide = await pixelStats(app, images(run.openai)[1]!, bare.common);
+  // the video's still frame shows through the sidebar: hardly a pixel is the bare pane's color
+  expect(tide.ofShare).toBeLessThan(0.05);
+  // the sample projects show the draft's new character, not empty cells
+  expect(tide.magenta).toBeGreaterThan(16);
+  expect(bare.magenta).toBe(0);
+
+  ask(run, 'ThemeSet', { draft: draftId }, 'Proposed.');
+  await send(tab, 'propose it');
+  const card = previewCard(tab);
+  await expect(card).toBeVisible(CHECKED);
+  // the card's miniature draws the draft's character from a blob main serves the chat page while the card is open
+  const character = card.getByTestId('mini-character').first();
+  await expect(character).toHaveAttribute('href', /^app:\/\/damocles\/theme-blob\/[0-9a-f]{64}$/);
+  const href = (await character.getAttribute('href'))!;
+  expect(await tab.evaluate(async (src) => {
+    const image = new Image();
+    image.src = src;
+    await image.decode();
+    return image.naturalWidth;
+  }, href)).toBeGreaterThan(0);
+  const toggle = tab.getByRole('button', { name: 'Show in window', exact: true });
+  await controlReady(toggle);
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(shell.locator('[data-character="Mag"]').first()).toBeVisible(CHECKED);
+});
+
+// Pixel sprites with clear pixels, so the sheet's checkerboard shows through them: a 2-frame idle, a 4-frame run, a still wait.
+const SHEET_PALETTE = ['#ff00ff', '#00c8c8'];
+const sheetFrame = (shift: number): string[] => Array.from({ length: 8 }, (_, row) => Array.from({ length: 8 }, (_, col) => ((row + col + shift) % 4 === 0 ? '0' : (row + col + shift) % 4 === 2 ? '1' : '.')).join(''));
+const SHEET_SPRITES = [
+  { name: 'idle', pixels: { palette: SHEET_PALETTE, frames: [sheetFrame(0), sheetFrame(1)], fps: 2 } },
+  { name: 'walk', pixels: { palette: SHEET_PALETTE, frames: [sheetFrame(0), sheetFrame(1), sheetFrame(2), sheetFrame(3)], fps: 6 } },
+  { name: 'wait', pixels: { palette: SHEET_PALETTE, frames: [sheetFrame(2)] } },
+];
+const SHEET_NAMES = ['Ada', 'Bix', 'Cog', 'Dot', 'Eve'];
+const sheetInput = (index: number): SheetCharacterInput => ({
+  index,
+  states: [{ state: 'idle', frameWidth: 8, frameHeight: 8, frames: 2 }, { state: 'running', frameWidth: 8, frameHeight: 8, frames: 4 }, { state: 'waiting', frameWidth: 8, frameHeight: 8, frames: 1 }],
+});
+
+test("a draft's character sheets are pages of the sizes their layout gives, within 1280x768, and sheetCharacters asks for the ones named", async ({ home, launch }, testInfo) => {
+  test.setTimeout(240_000);
+  const run = await start(launch, home);
+  const { app, tab } = run;
+  await loadThemeTools(run.openai, tab);
+
+  const characters = { name: 'Crew', characters: SHEET_NAMES.map((name) => ({ name, idle: 'idle', running: 'walk', waiting: 'wait' })) };
+  ask(run, 'ThemeSet', { ...AMBER, name: 'Crew', stage: true, sprites: SHEET_SPRITES, characters, preview: 'characters' }, 'Here are the sheets.');
+  await send(tab, 'show me the character sheets');
+  await expect(tab.getByText('Here are the sheets.', { exact: true })).toBeVisible(CHECKED);
+  await awaitTurnEnd(tab);
+  const layout = characterSheetLayout(SHEET_NAMES.map((_, index) => sheetInput(index)), { wallpaper: false, sidebarAvatar: SIDEBAR_AVATAR_PX });
+  // two characters a page at 8x, the fifth on a third, shorter page
+  expect(layout.sheets.map((sheet) => sheet.rows.map((row) => row.character))).toEqual([[0, 1], [2, 3], [4]]);
+  const sheets = images(run.openai);
+  expect(sheets).toHaveLength(layout.sheets.length);
+  for (const [at, sheet] of sheets.entries()) {
+    const stats = await pixelStats(app, sheet);
+    expect({ width: stats.width, height: stats.height }).toEqual({ width: layout.sheets[at]!.width, height: layout.sheets[at]!.height });
+    expect(stats.width).toBeLessThanOrEqual(1280);
+    expect(stats.height).toBeLessThanOrEqual(768);
+    // the sprites' magenta, enlarged, in every cell of every line
+    expect(stats.magenta).toBeGreaterThan(1000);
+  }
+  await testInfo.attach('character-sheet-1.png', { body: Buffer.from(sheets[0]!.split(',')[1]!, 'base64'), contentType: 'image/png' });
+  const said = toolResults(run.openai).at(-1) ?? '';
+  expect(said).toContain('Character sheets, 3 images');
+  expect(said).toContain('Image 1: #0 "Ada", #1 "Bix". Image 2: #2 "Cog", #3 "Dot". Image 3: #4 "Eve".');
+  const draftId = /Draft ([^:\s]+):/.exec(said)?.[1];
+  expect(draftId).toBeDefined();
+
+  ask(run, 'ThemeRead', { draft: draftId, preview: 'characters', sheetCharacters: ['Eve', '1'] }, 'Here are two.');
+  await send(tab, 'show me Eve and Bix');
+  await expect(tab.getByText('Here are two.', { exact: true })).toBeVisible(CHECKED);
+  await awaitTurnEnd(tab);
+  const named = characterSheetLayout([sheetInput(4), sheetInput(1)], { wallpaper: false, sidebarAvatar: SIDEBAR_AVATAR_PX });
+  const two = images(run.openai).slice(sheets.length);
+  expect(two).toHaveLength(1);
+  const stats = await pixelStats(app, two[0]!);
+  expect({ width: stats.width, height: stats.height }).toEqual({ width: named.sheets[0]!.width, height: named.sheets[0]!.height });
+  expect(toolResults(run.openai).at(-1)).toContain('Image 1: #4 "Eve", #1 "Bix".');
 });
 
 test('a generated image asks on the image card in plan mode, naming no file; No generates nothing and leaves no file', async ({ home, launch }) => {
@@ -778,11 +947,11 @@ for (const [label, width] of [['1280 px', 1280], ['a 300 px chat column', 300]] 
     const image = shotCard(tab).getByRole('img', { name: /^Screenshot of this window, \d+ by \d+$/ });
     await expect(image).toHaveAttribute('src', /^app:\/\/damocles\/theme-shot\/[^/]+$/);
     await expect.poll(() => image.evaluate((node) => (node as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
-    await expect(shotCard(tab).getByRole('option')).toHaveText(['1Allow', '2Deny']);
+    await expect(shotCard(tab).getByRole('option')).toHaveText(['1Allow once', /^2Allow for this chat/, '3Deny']);
     // a digit typed in the composer is text, so the answers take focus first
     await shotCard(tab).getByRole('listbox').focus();
     await promptReady(shotCard(tab));
-    await tab.keyboard.press('2');
+    await tab.keyboard.press('3');
     await expect(shotCard(tab)).toBeHidden();
     await expect(tab.getByText('I will judge from the drawn preview.', { exact: true })).toBeVisible(CHECKED);
     await awaitTurnEnd(tab);
@@ -800,8 +969,184 @@ for (const [label, width] of [['1280 px', 1280], ['a 300 px chat column', 300]] 
     await awaitTurnEnd(tab);
     await expect(lastToolCard(tab)).toHaveAttribute('data-outcome', 'sent');
     expect(JSON.stringify(agentRequests(run.openai).at(-1)?.body)).toContain('image_url');
+    // Allow once grants nothing for the chat
+    await expect(grantStrip(tab)).toHaveCount(0);
   });
 }
+
+const grantStrip = (tab: Page): Locator => tab.getByRole('region', { name: 'Screenshots allowed for this chat.', exact: true });
+const screenshotNotice = (shell: Page): Locator => shell.getByRole('region', { name: 'Screenshot taken.', exact: true });
+
+/** The agent's screenshot of the window answered on its card with the option of `digit`, and its reply once sent. */
+async function answerShot(run: Run, digit: '1' | '2' | '3'): Promise<void> {
+  await expect(shotCard(run.tab)).toBeVisible(CHECKED);
+  await shotCard(run.tab).getByRole('listbox').focus();
+  await promptReady(shotCard(run.tab));
+  await run.tab.keyboard.press(digit);
+  await expect(shotCard(run.tab)).toBeHidden();
+}
+
+test("Allow for this chat: later screenshots raise no card and show in their tool card; one taken while another chat shows raises the notice, whose Revoke ends the grant", async ({ home, launch }) => {
+  test.setTimeout(300_000);
+  const run = await start(launch, home);
+  const { tab, app } = run;
+  await loadThemeToolsTitled(run);
+  // the notice closes on its own 6 s after it shows, so the clicks on it below never race its clock
+  await themeHooks(app).holdScreenshotNotice();
+
+  ask(run, 'ThemeRead', { screenshot: true }, 'First look taken.');
+  await send(tab, 'Look at the window.');
+  await answerShot(run, '2');
+  await expect(tab.getByText('First look taken.', { exact: true })).toBeVisible(CHECKED);
+  await awaitTurnEnd(tab);
+  await expect(grantStrip(tab)).toBeVisible(CHECKED);
+
+  // under the grant: no card, the image goes to the model and shows in the tool card, and no notice for the chat on screen
+  ask(run, 'ThemeRead', { screenshot: true }, 'Second look taken.');
+  await send(tab, 'Look again.');
+  await expect(tab.getByText('Second look taken.', { exact: true })).toBeVisible(CHECKED);
+  await awaitTurnEnd(tab);
+  await expect(shotCard(tab)).toHaveCount(0);
+  await expect(lastToolCard(tab)).toHaveAttribute('data-outcome', 'sent');
+  const thumbnail = lastToolCard(tab).getByTestId('tool-result-image').locator('img');
+  await expect(thumbnail).toBeVisible(CHECKED);
+  await expect.poll(() => thumbnail.evaluate((node) => (node as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  expect(JSON.stringify(agentRequests(run.openai).at(-1)?.body)).toContain('image_url');
+  // none was raised at all, which a read of the notice showing now would miss once its time ran out
+  expect(await themeHooks(app).screenshotNotices()).toEqual([]);
+
+  // the chat's next turn waits after its first words while another chat takes the window, then screenshots under the grant
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  run.openai.replies.push({ chunks: ['Checking from the background.'], toolCalls: [{ name: 'ThemeRead', arguments: { screenshot: true } }], holdAfterFirst: held }, { chunks: ['Background look taken.'] });
+  await send(tab, 'Keep checking while I work elsewhere.');
+  await expect(tab.getByText('Checking from the background.', { exact: true })).toBeVisible(CHECKED);
+  await clickMenu(app, 'damocles.newChat');
+  const other = await nextChat(app, [tab]);
+  await expect(chatInput(other)).toBeVisible();
+  release();
+  const shell = await shellPage(app);
+  const notice = screenshotNotice(shell);
+  await expect(notice).toBeVisible(CHECKED);
+  await expect(notice).toContainText(`“${CHAT_TITLE}” took a screenshot of this window for the model`);
+  expect(await themeHooks(app).screenshotNotices()).toEqual([expect.objectContaining({ chat: CHAT_TITLE, origin: 'local' })]);
+  const revoke = notice.getByRole('button', { name: 'Revoke', exact: true });
+  await expect(revoke).not.toHaveAttribute('aria-disabled', 'true');
+  await revoke.click();
+  // the grant ended: the chat's own strip goes, and only then the notice, which no clock closes here
+  await expect(grantStrip(tab)).toBeHidden(CHECKED);
+  await expect(notice).toBeHidden();
+
+  await selectChatPage(app, tab);
+  await expect(tab.getByText('Background look taken.', { exact: true })).toBeVisible(CHECKED);
+  await awaitTurnEnd(tab);
+  await expect(grantStrip(tab)).toBeHidden();
+  // the grant ended: the next screenshot asks on its card again
+  ask(run, 'ThemeRead', { screenshot: true }, 'Asked again.');
+  await send(tab, 'One more look.');
+  await answerShot(run, '3');
+  await expect(tab.getByText('Asked again.', { exact: true })).toBeVisible(CHECKED);
+});
+
+/** How many pixels of the newest image the agent was sent are within 3 of `hex` in each channel, decoded by Electron. */
+async function pixelsOf(run: Run, hex: string): Promise<number> {
+  const url = [...JSON.stringify(agentRequests(run.openai).at(-1)?.body ?? {}).matchAll(/data:image\/[a-z]+;base64,[A-Za-z0-9+/=]+/g)].at(-1)?.[0];
+  if (url === undefined) throw new Error('The agent was sent no image');
+  const rgb = [1, 3, 5].map((at) => Number.parseInt(hex.slice(at, at + 2), 16));
+  return run.app.evaluate(({ nativeImage }, { url, rgb }) => {
+    // BGRA, as Electron gives a bitmap on every desktop platform
+    const bitmap = nativeImage.createFromDataURL(url).toBitmap();
+    let count = 0;
+    for (let at = 0; at + 3 < bitmap.length; at += 4) {
+      if (Math.abs(bitmap[at + 2]! - rgb[0]!) <= 3 && Math.abs(bitmap[at + 1]! - rgb[1]!) <= 3 && Math.abs(bitmap[at]! - rgb[2]!) <= 3) count += 1;
+    }
+    return count;
+  }, { url, rgb });
+}
+
+test("a draft's screenshot: Allow once paints the draft on the window for the capture, sends that image, and the window's own look comes back", async ({ home, launch }) => {
+  test.setTimeout(240_000);
+  const run = await start(launch, home);
+  const { tab, app } = run;
+  await themeHooks(app).holdThemeAcks();
+  await loadThemeTools(run.openai, tab);
+  run.openai.replies.push(call('ThemeSet', AMBER));
+  await send(tab, 'Make me something warmer.');
+  await expect(previewCard(tab)).toBeVisible(CHECKED);
+  await expect.poll(() => draftFiles(home).length).toBe(1);
+  const draft = draftFiles(home)[0]!.replace(/\.json$/, '');
+  ask(run, 'ThemeRead', { screenshot: true, draft }, 'The draft reads well on the window.');
+  await clickAnswer(tab.getByRole('option', { name: 'Change…', exact: true }));
+  await tab.getByLabel('What should change?', { exact: true }).fill(NOTE);
+  await tab.getByRole('button', { name: 'Send to agent', exact: true }).click();
+
+  // the card names the draft and shows no capture: nothing is painted or taken before the Allow
+  await expect(shotCard(tab)).toBeHidden();
+  const draftCard = draftShotCard(tab);
+  await expect(draftCard).toBeVisible(CHECKED);
+  await expect(draftCard).toContainText('Amber Night');
+  await expect(draftCard.getByRole('img', { name: /^Screenshot of this window/ })).toHaveCount(0);
+  expect(await windowBackground(app)).toBe(BUILTIN_DARK_BG);
+  await draftCard.getByRole('listbox').focus();
+  await promptReady(draftCard);
+  await tab.keyboard.press('1');
+  await expect(tab.getByText('The draft reads well on the window.', { exact: true })).toBeVisible(CHECKED);
+  await awaitTurnEnd(tab);
+  await expect(lastToolCard(tab)).toHaveAttribute('data-outcome', 'sent');
+  // the image shows the draft's background, and the window shows its own look again
+  expect(await pixelsOf(run, AMBER_BG)).toBeGreaterThan(1000);
+  // and its accent, not the built-in one: the capture holds no color still fading from the window's own look
+  expect(await pixelsOf(run, AMBER.colors.accent)).toBeGreaterThan(100);
+  expect(await pixelsOf(run, BUILTIN_DARK_ACCENT)).toBe(0);
+  await expect.poll(() => windowBackground(app)).toBe(BUILTIN_DARK_BG);
+  await expect.poll(() => cssToken(tab, '--d-bg')).toBe(BUILTIN_DARK_BG);
+});
+
+test("under Allow for this chat a draft's screenshot raises no card and the window's own look comes back; the chat strip's Revoke ends the grant, and the next screenshot asks on its card again", async ({ home, launch }) => {
+  test.setTimeout(300_000);
+  const run = await start(launch, home);
+  const { tab, app } = run;
+  await themeHooks(app).holdThemeAcks();
+  await loadThemeTools(run.openai, tab);
+
+  ask(run, 'ThemeRead', { screenshot: true }, 'First look taken.');
+  await send(tab, 'Look at the window.');
+  await answerShot(run, '2');
+  await expect(tab.getByText('First look taken.', { exact: true })).toBeVisible(CHECKED);
+  await awaitTurnEnd(tab);
+  await expect(grantStrip(tab)).toBeVisible(CHECKED);
+
+  ask(run, 'ThemeSet', { ...AMBER, stage: true }, 'Staged.');
+  await send(tab, 'Draft something warmer.');
+  await expect(tab.getByText('Staged.', { exact: true })).toBeVisible(CHECKED);
+  await awaitTurnEnd(tab);
+  expect(draftFiles(home)).toHaveLength(1);
+  const draft = draftFiles(home)[0]!.replace(/\.json$/, '');
+
+  // under the grant the draft is painted, captured and sent with no card of either kind
+  ask(run, 'ThemeRead', { screenshot: true, draft }, 'The draft reads well on the window.');
+  await send(tab, 'Look at the draft on the window.');
+  await expect(tab.getByText('The draft reads well on the window.', { exact: true })).toBeVisible(CHECKED);
+  await awaitTurnEnd(tab);
+  await expect(shotCard(tab)).toHaveCount(0);
+  await expect(draftShotCard(tab)).toHaveCount(0);
+  await expect(lastToolCard(tab)).toHaveAttribute('data-outcome', 'sent');
+  expect(await pixelsOf(run, AMBER_BG)).toBeGreaterThan(1000);
+  await expect.poll(() => windowBackground(app)).toBe(BUILTIN_DARK_BG);
+  await expect.poll(() => cssToken(tab, '--d-bg')).toBe(BUILTIN_DARK_BG);
+
+  const revoke = grantStrip(tab).getByRole('button', { name: 'Revoke', exact: true });
+  await controlReady(revoke);
+  await revoke.click();
+  await expect(grantStrip(tab)).toBeHidden(CHECKED);
+  // the grant ended: the next screenshot asks on its card again
+  ask(run, 'ThemeRead', { screenshot: true }, 'Asked again.');
+  await send(tab, 'One more look.');
+  await answerShot(run, '3');
+  await expect(tab.getByText('Asked again.', { exact: true })).toBeVisible(CHECKED);
+  await awaitTurnEnd(tab);
+  await expect(lastToolCard(tab)).toHaveAttribute('data-outcome', 'denied');
+});
 
 // The banner lives in the shell, so its narrow size is the window's 900 px minimum rather than a chat column.
 for (const width of [1280, 900]) test(`S4 keep journey at a ${width} px window: the banner asks, counts down and keeps; F6 reaches Keep, and Enter on it leaves focus on a part`, async ({ foreground: _foreground, home, launch }) => {

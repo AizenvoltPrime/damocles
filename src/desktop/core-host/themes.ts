@@ -201,22 +201,33 @@ export function startCoreThemes(platform: CorePlatform, log?: (line: string) => 
   themes.onInstallUpdated((preview) => endpoint.emit('themes.install.updated', { preview }));
   themes.onInstallExpired((installId) => endpoint.emit('themes.install.expired', { installId }));
 
+  // one listener that throws is logged, and neither keeps the others from hearing nor fails main's request
+  const tellEach = <A extends unknown[]>(listeners: ReadonlySet<(...args: A) => void>, what: string, ...args: A): void => {
+    for (const listener of [...listeners]) {
+      try {
+        listener(...args);
+      } catch (err) {
+        failed(what)(err);
+      }
+    }
+  };
   const showEnded = new Set<(promptId: string, reason: ThemeShowEndReason) => void>();
-  endpoint.serve('themes.showEnded', ({ promptId, reason }) => {
-    for (const listener of [...showEnded]) listener(promptId, reason);
-  });
+  endpoint.serve('themes.showEnded', ({ promptId, reason }) => tellEach(showEnded, 'a listener for the end of a shown theme failed', promptId, reason));
   const screenshotGone = new Set<(shotId: string) => void>();
-  endpoint.serve('themes.screenshotGone', ({ shotId }) => {
-    for (const listener of [...screenshotGone]) listener(shotId);
-  });
+  endpoint.serve('themes.screenshotGone', ({ shotId }) => tellEach(screenshotGone, 'a listener for a screenshot gone failed', shotId));
+  const grantRevoked = new Set<(chat: string) => void>();
+  endpoint.serve('themes.screenshotGrantRevoke', ({ chat }) => tellEach(grantRevoked, 'a listener for a revoked screenshot grant failed', chat));
   const host: ThemeHostPort = {
-    render: async (theme, mode, signal) => (await endpoint.request('themes.render', { theme, mode }, signal)).png,
-    screenshotTake: (signal) => endpoint.request('themes.screenshotTake', {}, signal),
+    render: (theme, { view, look, characters }, signal) => endpoint.request('themes.render', { theme, view, ...(look !== undefined ? { look } : {}), ...(characters !== undefined ? { characters } : {}) }, signal),
+    screenshotTake: ({ chat, theme, granted }, signal) => endpoint.request('themes.screenshotTake', { chat: { id: chat.id }, ...(theme !== undefined ? { theme } : {}), ...(granted === true ? { granted } : {}) }, signal),
     screenshotRead: async (shotId, signal) => (await endpoint.request('themes.screenshotRead', { shotId }, signal)).png,
     screenshotDrop: (shotId) => endpoint.request('themes.screenshotDrop', { shotId }),
     applied: async (ask, signal) => (await endpoint.request('themes.applied', ask, signal)).outcome,
     showInWindow: async (promptId, chatTitle, theme) => (await endpoint.request('themes.showInWindow', { promptId, ...(chatTitle !== undefined ? { chatTitle } : {}), theme })).refused,
     stopShowing: (promptId) => endpoint.request('themes.stopShowing', { promptId }),
+    cardOpened: (stageId, theme, signal) => endpoint.request('themes.cardOpened', { stageId, theme }, signal),
+    cardClosed: (stageId) => endpoint.request('themes.cardClosed', { stageId }),
+    projectCharacter: async (key, signal) => (await endpoint.request('themes.projectCharacter', { key }, signal)).character,
     state: (signal) => endpoint.request('themes.state', {}, signal),
     currentArrangement: async (signal) => (await endpoint.request('themes.currentArrangement', {}, signal)).arrangement,
     applyArrangement: (arrangement, density) => endpoint.request('themes.applyArrangement', { arrangement, ...(density !== undefined ? { density } : {}) }),
@@ -228,6 +239,10 @@ export function startCoreThemes(platform: CorePlatform, log?: (line: string) => 
     onScreenshotGone(listener) {
       screenshotGone.add(listener);
       return { dispose: () => screenshotGone.delete(listener) };
+    },
+    onScreenshotGrantRevoked(listener) {
+      grantRevoked.add(listener);
+      return { dispose: () => grantRevoked.delete(listener) };
     },
   };
   const agent: ThemeAgentHost = { themes, host, settings: platform.settings, authority: LOCAL_CLIENT_ID };
@@ -243,7 +258,7 @@ export function startCoreThemes(platform: CorePlatform, log?: (line: string) => 
     if (dropped.length > 0) log?.(`[themes] dropped the project looks and pins of forgotten hosts: ${dropped.join(', ')}`);
     await relay.keepAuthorities(kept);
   });
-  endpoint.serve('themes.relay.read', ({ authority, request, project }, signal) => relay.read(authority, request, project, signal));
+  endpoint.serve('themes.relay.read', ({ authority, request, chat, project }, signal) => relay.read(authority, request, chat, project, signal));
   endpoint.serve('themes.relay.uploadStart', ({ authority, ...start }) => relay.uploadStart(authority, start));
   endpoint.serve('themes.relay.uploadChunk', ({ authority, ...chunk }) => relay.uploadChunk(authority, chunk));
   endpoint.serve('themes.relay.stage', ({ authority, request, project }, signal) => relay.stage(authority, request, project, signal));
@@ -254,6 +269,7 @@ export function startCoreThemes(platform: CorePlatform, log?: (line: string) => 
   endpoint.serve('themes.relay.installCommit', ({ authority, ...commit }) => relay.installCommit(authority, commit));
   endpoint.serve('themes.relay.installCancel', ({ authority, installId }) => relay.installCancel(authority, installId));
   endpoint.serve('themes.relay.allowFlash', ({ authority, installId, sha256 }) => relay.allowFlash(authority, installId, sha256));
+  endpoint.serve('themes.relay.draftTheme', ({ authority, chat, draft }) => relay.draftTheme(authority, chat, draft));
   const expiring = setInterval(() => {
     relay.expireDrafts().catch(failed('the relayed drafts could not be expired'));
   }, RELAYED_DRAFT_SWEEP_MS);

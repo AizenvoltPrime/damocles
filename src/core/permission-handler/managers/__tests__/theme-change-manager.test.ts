@@ -21,7 +21,11 @@ const ASK: ThemeChangeAsk = {
   canShowInWindow: true,
 };
 
-const SHOT: ThemeScreenshotAsk = { toolUseId: 'call-2', url: 'app://damocles/theme-shot/0123456789abcdef0123456789abcdef', width: 1600, height: 1000 };
+const SHOT: ThemeScreenshotAsk = { toolUseId: 'call-2', chat: 'chat-a', url: 'app://damocles/theme-shot/0123456789abcdef0123456789abcdef', width: 1600, height: 1000 };
+// the tool always passes the capture main holds; only a device's card carries it
+const DRAFT: ThemeScreenshotAsk = { toolUseId: 'call-3', chat: 'chat-a', draft: { name: 'Amber Night', theme: ASK.theme! }, captureId: 'd'.repeat(32) };
+type ShotRequest = Extract<ExtensionToWebviewMessage, { type: 'requestThemeScreenshot' }>;
+const grants = (posted: readonly ExtensionToWebviewMessage[]): boolean[] => posted.flatMap((m) => (m.type === 'themeScreenshotGrant' ? [m.granted] : []));
 
 function setup(attached = true) {
   const state = new PermissionState();
@@ -230,7 +234,7 @@ describe('ThemeScreenshotManager', () => {
     const { state, posted, shots } = setup();
     const allow = shots.requestThemeScreenshot(SHOT, new AbortController().signal);
     const sent = posted.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'requestThemeScreenshot' }> => m.type === 'requestThemeScreenshot')!;
-    expect(sent).toEqual({ type: 'requestThemeScreenshot', promptId: sent.promptId, ...SHOT, owner: { kind: 'main' } });
+    expect(sent).toEqual({ type: 'requestThemeScreenshot', promptId: sent.promptId, toolUseId: 'call-2', url: SHOT.url, width: 1600, height: 1000, owner: { kind: 'main' } });
     expect(state.pendingPrompts().map((p) => p.kind)).toEqual(['themeScreenshot']);
     shots.resolveThemeScreenshot(sent.promptId, 'allow');
     expect(await allow).toBe('allow');
@@ -280,6 +284,83 @@ describe('ThemeScreenshotManager', () => {
     expect(state.devicePrompts.size).toBe(0);
   });
 
+  it("a draft's card carries its name and theme for the miniature, and no capture or url", async () => {
+    const { posted, shots } = setup();
+    const answer = shots.requestThemeScreenshot(DRAFT, new AbortController().signal);
+    const sent = posted.find((m): m is ShotRequest => m.type === 'requestThemeScreenshot')!;
+    expect(sent).toEqual({ type: 'requestThemeScreenshot', promptId: sent.promptId, toolUseId: 'call-3', draft: { name: 'Amber Night', theme: ASK.theme }, owner: { kind: 'main' } });
+    shots.resolveThemeScreenshot(sent.promptId, 'deny');
+    expect(await answer).toBe('deny');
+  });
+
+  it("Allow for this chat grants that chat alone until Revoke, a new session or the panel's end, and only the user's press grants it", async () => {
+    const { posted, shots } = setup();
+    const once = shots.requestThemeScreenshot(SHOT, new AbortController().signal);
+    shots.resolveThemeScreenshot(posted.find((m): m is ShotRequest => m.type === 'requestThemeScreenshot')!.promptId, 'allow');
+    expect(await once).toBe('allow');
+    expect(shots.screenshotGranted('chat-a')).toBe(false);
+    expect(grants(posted)).toEqual([]);
+
+    const forChat = shots.requestThemeScreenshot(DRAFT, new AbortController().signal);
+    shots.resolveThemeScreenshot(posted.filter((m): m is ShotRequest => m.type === 'requestThemeScreenshot')[1]!.promptId, 'allowChat');
+    expect(await forChat).toBe('allowChat');
+    expect(shots.screenshotGranted('chat-a')).toBe(true);
+    expect(shots.screenshotGranted('chat-b')).toBe(false);
+    expect(grants(posted)).toEqual([true]);
+    // a page that loaded again hears of the grant that holds
+    shots.republish();
+    expect(grants(posted)).toEqual([true, true]);
+    // main's notice names another chat: this one keeps its grant
+    shots.revokeScreenshotGrant('chat-b');
+    shots.endScreenshotGrantUnless('chat-a');
+    expect(shots.screenshotGranted('chat-a')).toBe(true);
+    shots.revokeScreenshotGrant('chat-a');
+    expect(shots.screenshotGranted('chat-a')).toBe(false);
+    expect(grants(posted)).toEqual([true, true, false]);
+    shots.republish();
+    expect(grants(posted)).toEqual([true, true, false, false]);
+    // the strip's Revoke is answered even when no grant is held, so a page that showed one hears it ended
+    shots.revokeScreenshotGrant();
+    expect(grants(posted)).toEqual([true, true, false, false, false]);
+
+    const again = shots.requestThemeScreenshot(SHOT, new AbortController().signal);
+    shots.resolveThemeScreenshot(posted.filter((m): m is ShotRequest => m.type === 'requestThemeScreenshot')[2]!.promptId, 'allowChat');
+    await again;
+    expect(shots.screenshotGranted('chat-a')).toBe(true);
+    // the panel moved to a new conversation
+    shots.endScreenshotGrantUnless('chat-new');
+    expect(shots.screenshotGranted('chat-a')).toBe(false);
+    expect(grants(posted)).toEqual([true, true, false, false, false, true, false]);
+
+    const last = shots.requestThemeScreenshot(SHOT, new AbortController().signal);
+    shots.resolveThemeScreenshot(posted.filter((m): m is ShotRequest => m.type === 'requestThemeScreenshot')[3]!.promptId, 'allowChat');
+    await last;
+    expect(shots.screenshotGranted('chat-a')).toBe(true);
+    // the panel's end
+    shots.dispose();
+    expect(shots.screenshotGranted('chat-a')).toBe(false);
+  });
+
+  it("a device's Allow for this chat resolves as Allow and grants nothing here, since that device's main holds the grant", async () => {
+    const state = new PermissionState();
+    const posted: ExtensionToWebviewMessage[] = [];
+    const byDevice: ExtensionToWebviewMessage[] = [];
+    state.postMessageToWebview = (m) => posted.push(m);
+    state.postToDevices = (messageFor) => {
+      const message = messageFor('device-a');
+      if (message) byDevice.push(message);
+    };
+    const shots = new ThemeScreenshotManager(state, () => state.postMessageToWebview, () => 'device-a');
+    const answer = shots.requestThemeScreenshot({ ...DRAFT, captureId: 'c'.repeat(32), device: { clientId: 'device-a' } }, new AbortController().signal);
+    const sent = byDevice[0] as ShotRequest;
+    // the device's main binds the card to the capture it holds
+    expect(sent).toMatchObject({ draft: { name: 'Amber Night' }, captureId: 'c'.repeat(32) });
+    shots.resolveThemeScreenshot(sent.promptId, 'allowChat');
+    expect(await answer).toBe('allow');
+    expect(shots.screenshotGranted('chat-a')).toBe(false);
+    expect(grants(posted)).toEqual([]);
+  });
+
   it('closes unanswered on abort', async () => {
     const { state, shots } = setup();
     const stop = new AbortController();
@@ -313,8 +394,11 @@ describe('PermissionHandler and the theme cards', () => {
     handler.resolveThemeChange(card.promptId, 'discard', undefined);
     expect(await answer).toEqual({ choice: 'discard' });
     const promptId = handler.pendingPrompts().find((p) => p.kind === 'themeScreenshot')!.id;
-    handler.resolveThemeScreenshot(promptId, 'deny');
-    expect(await shot).toBe('deny');
+    handler.resolveThemeScreenshot(promptId, 'allowChat');
+    expect(await shot).toBe('allowChat');
+    expect(handler.screenshotGranted('chat-a')).toBe(true);
+    await handler.dispose();
+    expect(handler.screenshotGranted('chat-a')).toBe(false);
   });
 
   it('reposts the open cards to a webview that came back, and closes them on every view on dispose', async () => {

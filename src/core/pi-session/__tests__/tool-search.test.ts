@@ -19,15 +19,20 @@ import {
   type ToolSearchDetails,
   type ToolSearchInventory,
 } from '../tools/tool-search-tool';
-import { BROWSER_PI_TOOL_NAMES, BROWSER_TOOL_CATALOG } from '../tools/browser-tools';
+import { BROWSER_PI_TOOL_NAMES, BROWSER_TOOL_CATALOG, DESIGN_BROWSER_TOOL_NAMES } from '../tools/browser-tools';
 import { COMPASS_PI_TOOL_NAMES, COMPASS_TOOL_CATALOG } from '../tools/compass-tools';
 // The declaration leaf, not the `web-access` barrel — the same specifier `deferred-tools.ts` uses, so
 // this file's universe is built from the identical source the shipped group composes.
 import { WEB_PI_TOOL_NAMES, WEB_TOOL_CATALOG } from '../web-access/web-tool-specs';
 import { IMAGE_PI_TOOL_NAMES, IMAGE_TOOL_CATALOG } from '../tools/image-tool-specs';
 import { FORGE_PI_TOOL_NAMES, FORGE_TOOL_GUIDANCE } from '../tools/forge-tool-specs';
-import { setLocalForgeAccounts } from '../../user-scope';
+import { setLocalForgeAccounts, themeOffReason } from '../../user-scope';
+import { englishText } from '../../../shared/localized-text';
 import { MCP_RESOURCE_TOOL_NAMES, TOOL_TOOL_SEARCH } from '../../../shared/tool-names';
+import { deferredGroupInert, deferredInertReasons, deferredToolExclusions, fullActiveToolNames, mcpDeferrableNames, type ToolStatusDeps } from '../tool-status';
+import type { ToolGroupInertReason } from '../tools/inert-reason';
+import { designRuleSet } from '../../design/rule-set';
+import type { CompassService } from '../../compass';
 
 /** The n-th entry of a name list, failing loudly rather than widening to `undefined`. */
 function nth(names: readonly string[], i: number): string {
@@ -493,6 +498,7 @@ function snapshot(overrides: Partial<DeferrableSnapshot> = {}): DeferrableSnapsh
     names: [...ALL_DEFERRABLE],
     loaded: new Set<string>(),
     mcpGroups: new Map<string, string[]>([['ctx7', [...MCP_CTX7]], ['git', [...MCP_GIT]]]),
+    inert: new Map(),
     ...overrides,
   };
 }
@@ -675,10 +681,10 @@ describe('createToolSearchTool — execute', () => {
   // therefore the only place the caller can learn why, and a bare "No new tools were loaded" leaves it
   // to retry the same inert call indefinitely.
   it('says WHY nothing loaded when a known group is inert in this session', async () => {
-    const { text, activate } = await run(['compass'], snapshot({ names: [...BROWSER_PI_TOOL_NAMES], mcpGroups: new Map() }));
+    const inert = new Map([['compass', { kind: 'off' as const, setting: 'damocles.compass.enabled' }]]);
+    const { text, activate } = await run(['compass'], snapshot({ names: [...BROWSER_PI_TOOL_NAMES], mcpGroups: new Map(), inert }));
     expect(activate).not.toHaveBeenCalled();
-    expect(text).toContain('Not available in this session');
-    expect(text).toContain('compass');
+    expect(text).toContain('Not available in this session: compass. The setting damocles.compass.enabled is off; the user turns it on in Settings.');
   });
 
   it('offers only groups that are actually loadable here when it lists the alternatives', async () => {
@@ -990,5 +996,198 @@ describe('the advertised menu never exceeds what the session can load', () => {
     expect(text).toContain('Always loaded, no loading needed: ctx7 — its tools are already active; call them directly.');
     expect(text).toContain('Unknown entries: nope');
     expect(text).not.toContain('Unknown entries: ctx7');
+  });
+});
+
+describe('createToolSearchTool — names why a built-in group cannot load', () => {
+  function statusDeps(overrides: Partial<ToolStatusDeps> = {}): ToolStatusDeps {
+    return {
+      webEnabled: true,
+      teamEnabled: false,
+      teamAvailable: false,
+      compassService: { isEnabled: true } as unknown as CompassService,
+      browserAvailable: true,
+      browserEnabled: true,
+      imageEnabled: true,
+      imageAvailability: { available: true },
+      forgeAvailable: true,
+      forgeEnabled: true,
+      forgeUnavailable: undefined,
+      themeAvailable: true,
+      themeEnabled: true,
+      themeSwitchOnDevice: false,
+      themeUnavailable: undefined,
+      mcpEnabled: true,
+      mcpToolNames: [],
+      mcpDeferrableToolNames: [],
+      mcpResourceExposure: 'deferred',
+      disabled: new Set<string>(),
+      designEnabled: false,
+      designRole: false,
+      ruleSet: designRuleSet({ designPreview: true }),
+      ...overrides,
+    };
+  }
+
+  /** The panel's snapshot, composed as `PiSession.deferrableToolsSnapshot` composes it. */
+  async function runWith(entries: string[], deps: ToolStatusDeps, loaded: ReadonlySet<string> = new Set()) {
+    const eligible = fullActiveToolNames(deps);
+    const names = deferredToolNames(eligible, mcpDeferrableNames(deps));
+    return run(entries, snapshot({ names, loaded: new Set(loaded), mcpGroups: new Map(), inert: deferredInertReasons(deps, eligible, loaded), excluded: deferredToolExclusions(deps) }));
+  }
+
+  it('names the setting of a group that is off', async () => {
+    const { text, activate } = await runWith(['theme'], statusDeps({ themeEnabled: false }));
+    expect(text).toContain('Not available in this session: theme. The setting damocles.desktop.themes.agentTools is off; the user turns it on in Settings.');
+    expect(activate).not.toHaveBeenCalled();
+  });
+
+  it("names the device's theme switch on a daemon's core, which reads it from the turn's device", async () => {
+    const { text } = await runWith(['theme'], statusDeps({ themeEnabled: false, themeSwitchOnDevice: true }));
+    expect(text).toContain(`Not available in this session: theme. ${englishText(themeOffReason())}`);
+    expect(text).not.toContain('damocles.desktop.themes.agentTools');
+  });
+
+  it('names damocles.tools.disabled and the tools when every tool of a group is turned off', async () => {
+    const { text } = await runWith(['browser'], statusDeps({ disabled: new Set(BROWSER_PI_TOOL_NAMES) }));
+    expect(text).toContain(`Not available in this session: browser. Every browser tool is listed in damocles.tools.disabled (${BROWSER_PI_TOOL_NAMES.join(', ')}); the user turns them on in the Tools panel.`);
+  });
+
+  it('says this host has no such tools when it has no theme host', async () => {
+    const { text } = await runWith(['theme'], statusDeps({ themeAvailable: false }));
+    expect(text).toContain('Not available in this session: theme. This host has no such tools.');
+  });
+
+  it('names the setting before a missing account', async () => {
+    const { text } = await runWith(['forge'], statusDeps({ forgeEnabled: false }));
+    expect(text).toContain('Not available in this session: forge. The setting damocles.desktop.forge.agentTools is off');
+    expect(text).not.toContain('No GitHub or GitLab account');
+  });
+
+  it("gives the image model's own reason", async () => {
+    const { text } = await runWith(['image'], statusDeps({ imageAvailability: { available: false, reason: 'noModel' } }));
+    expect(text).toContain('Not available in this session: image. Image generation has no model');
+  });
+
+  it("answers an exact tool name of a switched-off group with that group's reason, not as unknown", async () => {
+    const { text } = await runWith(['ThemeSet', 'compass', 'ThemeRead'], statusDeps({ themeEnabled: false, compassService: { isEnabled: false } as unknown as CompassService }));
+    expect(text).toContain('Not available in this session: ThemeSet, ThemeRead. The setting damocles.desktop.themes.agentTools is off; the user turns it on in Settings.');
+    expect(text).toContain('Not available in this session: compass. The setting damocles.compass.enabled is off');
+    expect(text).not.toContain('Unknown entries');
+  });
+
+  it('names damocles.tools.disabled for an exact name the user turned off while its group has other tools', async () => {
+    const off = nth(BROWSER_PI_TOOL_NAMES, 0);
+    const { text } = await runWith([off], statusDeps({ disabled: new Set([off]) }));
+    expect(text.split('\n')).toContain(`Not available in this session: ${off}. ${off} is listed in damocles.tools.disabled; the user turns it on in the Tools panel. The other browser tools load as usual.`);
+    expect(text).not.toContain('Unknown entries');
+  });
+
+  it('answers several turned-off names of one group on one line, and loads the rest of the group', async () => {
+    const { text, activate } = await runWith(['ThemeSet', 'ThemeSchedule', 'ThemeRead'], statusDeps({ disabled: new Set(['ThemeSet', 'ThemeSchedule']) }));
+    expect(text.split('\n')).toContain('Not available in this session: ThemeSet, ThemeSchedule. ThemeSet, ThemeSchedule are listed in damocles.tools.disabled; the user turns them on in the Tools panel. The other theme tools load as usual.');
+    expect(activate).toHaveBeenCalledWith(expect.anything(), ['ThemeRead']);
+    expect(text).not.toContain('Unknown entries');
+  });
+
+  it("names a design chat's rules for an exact name they leave out while its group has other tools", async () => {
+    const deps = statusDeps({ designRole: true });
+    const eligible = new Set(fullActiveToolNames(deps));
+    const out = BROWSER_PI_TOOL_NAMES.find((name) => !eligible.has(name));
+    if (out === undefined || !BROWSER_PI_TOOL_NAMES.some((name) => eligible.has(name))) throw new Error('a design chat no longer keeps part of the browser group');
+    const { text } = await runWith([out], deps);
+    expect(text.split('\n')).toContain(`Not available in this session: ${out}. A design chat's tool rules leave out ${out}. The other browser tools load as usual.`);
+    expect(text).not.toContain('Unknown entries');
+  });
+
+  it('tells a nested agent that turning a tool back on reaches only agents started after it', async () => {
+    const off = nth(BROWSER_PI_TOOL_NAMES, 0);
+    const { text } = await run([off], snapshot({ names: BROWSER_PI_TOOL_NAMES.slice(1), mcpGroups: new Map(), inert: new Map(), excluded: new Map([[off, 'disabled' as const]]), nested: true }));
+    expect(text).toContain(`${off} is listed in damocles.tools.disabled; the user turns it on in the Tools panel. The other browser tools load as usual. The change reaches only agents started after it.`);
+  });
+
+  it('says why an eligible group with no deferred and no active tool cannot load', async () => {
+    const { text } = await runWith(['mcp_resources'], statusDeps({ mcpResourceExposure: 'direct' }));
+    expect(text).toContain('Not available in this session: mcp_resources. The mcp_resources tools are neither deferred nor active in this session, so ToolSearch has nothing to load.');
+    const active = await runWith(['mcp_resources'], statusDeps({ mcpResourceExposure: 'direct' }), new Set(MCP_RESOURCE_TOOL_NAMES));
+    expect(active.text).not.toContain('Not available in this session');
+    expect(active.text).toContain('Always loaded, no loading needed: mcp_resources');
+  });
+
+  it('chooses is or are by how many tools the user turned off', async () => {
+    const reason = (disabled: string[]) => new Map([['browser', { kind: 'design' as const, disabled }]]);
+    const one = await run(['browser'], snapshot({ names: [], mcpGroups: new Map(), inert: reason(['BrowserSnapshot']) }));
+    expect(one.text).toContain("A design chat's tool rules leave out the other browser tools, and BrowserSnapshot is listed in damocles.tools.disabled; the user turns it on in the Tools panel.");
+    const two = await run(['browser'], snapshot({ names: [], mcpGroups: new Map(), inert: reason(['BrowserSnapshot', 'BrowserQuery']) }));
+    expect(two.text).toContain("A design chat's tool rules leave out the other browser tools, and BrowserSnapshot, BrowserQuery are listed in damocles.tools.disabled; the user turns them on in the Tools panel.");
+  });
+
+  it('tells a nested agent that a change the user makes reaches only agents started after it', async () => {
+    const inert = new Map<string, ToolGroupInertReason>([['compass', { kind: 'off', setting: 'damocles.compass.enabled' }], ['forge', { kind: 'host' }]]);
+    const { text } = await run(['compass', 'forge'], snapshot({ names: [...BROWSER_PI_TOOL_NAMES], mcpGroups: new Map(), inert, nested: true }));
+    expect(text).toContain('Not available in this session: compass. The setting damocles.compass.enabled is off; the user turns it on in Settings. The change reaches only agents started after it.');
+    expect(text.split('\n')).toContain('Not available in this session: forge. This host has no such tools.');
+  });
+
+  it('keeps every model-facing reason line free of an em dash', async () => {
+    const { text } = await runWith(BUILTIN_DEFERRED_GROUPS.map((g) => g.group), statusDeps({ webEnabled: false, browserAvailable: false, imageAvailability: { available: false, reason: 'noOpenRouterKey' }, forgeEnabled: false, themeEnabled: false, mcpResourceExposure: null }));
+    for (const line of text.split('\n').filter((l) => l.startsWith('Not available in this session'))) expect(line).not.toContain('\u2014');
+  });
+
+  it('gives a specific reason for every built-in deferred group', async () => {
+    const off = statusDeps({
+      webEnabled: false,
+      compassService: { isEnabled: false } as unknown as CompassService,
+      browserEnabled: false,
+      imageEnabled: false,
+      forgeEnabled: false,
+      themeEnabled: false,
+      mcpEnabled: false,
+    });
+    const groups = BUILTIN_DEFERRED_GROUPS.map((g) => g.group);
+    const { text } = await runWith(groups, off);
+    for (const group of groups) expect(text, group).toMatch(new RegExp(`Not available in this session: ${group}\\. The setting [\\w.]+ is off`));
+    expect(text).not.toContain('the subsystem is disabled or every tool in it is turned off');
+  });
+
+  it("names a design chat's rules, and the tools the user turned off, when together they leave a group no tool", async () => {
+    const designAllowed = BROWSER_PI_TOOL_NAMES.filter((name) => DESIGN_BROWSER_TOOL_NAMES.has(name));
+    const { text } = await runWith(['browser'], statusDeps({ designRole: true, disabled: new Set(designAllowed) }));
+    expect(text).toContain(`Not available in this session: browser. A design chat's tool rules leave out the other browser tools, and ${designAllowed.join(', ')} ${designAllowed.length === 1 ? 'is' : 'are'} listed in damocles.tools.disabled`);
+  });
+
+  it('gives every built-in group with no eligible tool a reason, whatever turned it off', () => {
+    const noCompass = (deps: ToolStatusDeps): ToolStatusDeps => {
+      const { compassService: _absent, ...rest } = deps;
+      return rest;
+    };
+    const switches: Array<readonly [string, (deps: ToolStatusDeps) => ToolStatusDeps]> = [
+      ...([
+        {}, { webEnabled: false }, { browserEnabled: false }, { browserAvailable: false }, { imageEnabled: false },
+        { imageAvailability: { available: false, reason: 'noOpenRouterKey' } }, { compassService: { isEnabled: false } as unknown as CompassService },
+        { forgeEnabled: false }, { forgeAvailable: false }, { themeEnabled: false }, { themeAvailable: false },
+        { mcpEnabled: false }, { mcpResourceExposure: null },
+      ] satisfies Array<Partial<ToolStatusDeps>>).map((flip) => [JSON.stringify(flip), (deps: ToolStatusDeps) => ({ ...deps, ...flip })] as const),
+      ['no compass service', noCompass],
+    ];
+    for (const { group, names } of BUILTIN_DEFERRED_GROUPS) {
+      const offs = [new Set<string>(), new Set(names), new Set(names.slice(0, 1)), new Set(names.filter((name) => DESIGN_BROWSER_TOOL_NAMES.has(name)))];
+      for (const designRole of [false, true]) {
+        for (const disabled of offs) {
+          for (const [label, flip] of switches) {
+            const deps = flip(statusDeps({ designRole, disabled }));
+            const eligible = new Set(fullActiveToolNames(deps));
+            const inert = !names.some((name) => eligible.has(name));
+            expect(deferredGroupInert(group, deps, eligible) !== undefined, `${group} design=${designRole} off=${[...disabled].join(',')} ${label}`).toBe(inert);
+          }
+        }
+      }
+    }
+  });
+
+  it("says a nested agent's tool list leaves a group out when the panel has it", async () => {
+    const { text } = await run(['compass', 'CompassSearch'], snapshot({ names: [...BROWSER_PI_TOOL_NAMES], mcpGroups: new Map(), nested: true }));
+    expect(text).toContain("Not available in this session: compass, CompassSearch. This agent's tool list does not include it.");
+    expect(text).not.toContain('Unknown entries');
   });
 });

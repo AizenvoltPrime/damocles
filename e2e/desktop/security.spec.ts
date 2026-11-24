@@ -1,9 +1,13 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { ElectronApplication, Page } from '@playwright/test';
 import { activeChat, expect, panelIdOf, test } from './support/fixtures';
 import { writeUserSettings } from './support/hermetic';
 import { openSettingsModal } from './support/settings';
 import { NOTIFIER_URL, onMainWindow, OVERLAY_URL, overlayPage, popupPage, SHELL_URL, shellPage, shellState, THEME_RENDER_URL } from './support/shell';
-import { openThemeEditor, writeTheme } from './support/themes';
+import { auroraPng, openThemeEditor, storeBlob, writeTheme } from './support/themes';
+import { THEME_RENDER_PARTITION } from '../../src/desktop/preload/page-paths';
+import { png, webpLossy } from '../../src/shared/themes/testing/image-fixtures';
 import { chatInput, postFromWebview } from './support/ui';
 
 // Records shell.openExternal in main instead of launching the OS browser.
@@ -258,6 +262,36 @@ test.describe('renderer security at runtime', () => {
       expect(await userStyle(page), page.url()).toBeNull();
       expect(await page.evaluate(() => [...document.querySelectorAll('style')].some((style) => (style.textContent ?? '').includes('damocles-user'))), page.url()).toBe(false);
     }
+  });
+
+  test("the theme renderer's session serves no theme blob, thumbnail or still frame outside its running job, though the window's session serves the shown theme's", async ({ home, launch }) => {
+    const id = '7e1d2b5f-3c8e-4d2f-9b30-6e7f8091ab2d';
+    const colors = { background: '#141413', panel: '#1f1e1c', text: '#ece8df', accent: '#d97757', success: '#7fb069', warning: '#f0b429', danger: '#f2555a', info: '#6a9bcc' };
+    // a picture the theme renderer decodes, so core's analysis at start ends with its stats written: Aurora's smaller wallpaper
+    const wallpaper = auroraPng();
+    const sha = storeBlob(home, wallpaper);
+    const cache = path.join(home.damoclesDir, 'themes', 'cache', sha);
+    fs.mkdirSync(cache, { recursive: true });
+    fs.writeFileSync(path.join(cache, 'thumb-480.webp'), webpLossy(4, 4));
+    fs.writeFileSync(path.join(cache, 'still.png'), png(4, 4));
+    writeTheme(home, id, {
+      schemaVersion: 1, id, name: 'Walled',
+      looks: { dark: { colors, wallpapers: [{ panels: { chat: { asset: sha, fit: 'fill', dim: 0.3, blur: 0 } } }] } },
+      assets: { [sha]: { kind: 'image', mime: 'image/png', bytes: wallpaper.length, width: wallpaper.readUInt32BE(16), height: wallpaper.readUInt32BE(20), license: {} } },
+    });
+    writeUserSettings(home, { 'damocles.desktop.theme': 'dark', 'damocles.desktop.themes.dark': id });
+    const { app } = await launch();
+    await expect(chatInput(await activeChat(app))).toBeVisible();
+    const urls = [`app://damocles/theme-blob/${sha}`, `app://damocles/theme-cache/${sha}/thumb-480.webp`, `app://damocles/theme-cache/${sha}/still.png`];
+    // the same requests through each session's own app:// handler: the default session's, and the render page's partition
+    const statuses = (partition: string | undefined): Promise<number[]> => app.evaluate(async ({ session }, [from, all]) => {
+      const served = from === undefined ? session.defaultSession : session.fromPartition(from);
+      return Promise.all(all.map(async (url) => (await served.fetch(url)).status));
+    }, [partition, urls] as const);
+    await expect.poll(() => statuses(undefined)).toEqual([200, 200, 200]);
+    // core analyzes the wallpaper at its start in the theme renderer, whose session serves the file while that job runs
+    await expect.poll(() => fs.existsSync(path.join(cache, 'stats.json')), { timeout: 60_000 }).toBe(true);
+    expect(await statuses(THEME_RENDER_PARTITION)).toEqual([404, 404, 404]);
   });
 
   test('IPC sent to a chat channel from another view is rejected', async ({ launch }) => {

@@ -8,6 +8,8 @@ import { getHighlighter } from '@/composables/useShikiHighlighter';
 import { damoclesShikiTheme } from '@/composables/damoclesShikiTheme';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { VSCODE_HOST_CAPABILITIES } from '@shared/types/messages';
+import { CHAT_VIEW_PROVIDE } from '@/__tests__/code-highlighter';
+import { CODE_HIGHLIGHTER, type CodeHighlighter } from '@/composables/code-highlighter';
 
 const shiki = vi.hoisted(() => {
   const instance = {
@@ -39,12 +41,17 @@ afterEach(() => {
 });
 
 function mountBlock(code = 'const x = 1;') {
-  const wrapper = mount(CodeBlock, { props: { code, language: 'ts' }, global: { plugins: [i18n] } });
+  const wrapper = mount(CodeBlock, { props: { code, language: 'ts' }, global: { provide: CHAT_VIEW_PROVIDE, plugins: [i18n] } });
   mounted.push(wrapper);
   return wrapper;
 }
 
 describe('CodeBlock', () => {
+  it('refuses to render in an app that provides no code highlighter', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(() => mount(CodeBlock, { props: { code: 'x', language: 'ts' }, global: { plugins: [i18n] } })).toThrow('No app provides CODE_HIGHLIGHTER');
+  });
+
   it('shows the plain code while a theme it needs is still loading', async () => {
     await getHighlighter('ts', 'github-dark');
     shiki.instance.loadTheme.mockImplementationOnce(() => new Promise(() => {}));
@@ -90,6 +97,34 @@ describe('CodeBlock', () => {
     useSettingsStore().setHostCapabilities({ ...VSCODE_HOST_CAPABILITIES });
     await flushPromises();
     expect(shiki.instance.codeToHtml).not.toHaveBeenCalled();
+  });
+
+  it('shows the code it was last given when an earlier highlight resolves after a later one, or fails after it', async () => {
+    type Loaded = Awaited<ReturnType<CodeHighlighter['get']>>;
+    const pending: { resolve: (loaded: Loaded) => void; reject: (reason: Error) => void }[] = [];
+    const slow: CodeHighlighter = {
+      normalizeLanguage: (language) => language ?? 'txt',
+      isReady: () => false,
+      get: () => new Promise<Loaded>((resolve, reject) => { pending.push({ resolve, reject }); }),
+    };
+    const loaded = (label: string) => ({ codeToHtml: () => `<pre><code>${label}</code></pre>` }) as unknown as Loaded;
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const wrapper = mount(CodeBlock, { props: { code: 'one', language: 'ts' }, global: { provide: { [CODE_HIGHLIGHTER as symbol]: slow }, plugins: [i18n] } });
+    mounted.push(wrapper);
+    await wrapper.setProps({ code: 'two', language: 'py' });
+    await wrapper.setProps({ code: 'three' });
+    expect(pending).toHaveLength(3);
+
+    pending[2]!.resolve(loaded('for three'));
+    await flushPromises();
+    expect(wrapper.find('.code-block-content').text()).toBe('for three');
+    pending[0]!.resolve(loaded('for one'));
+    await flushPromises();
+    expect(wrapper.find('.code-block-content').text()).toBe('for three');
+    pending[1]!.reject(new Error('no grammar'));
+    await flushPromises();
+    expect(wrapper.find('.code-block-content').text()).toBe('for three');
   });
 
   it('colors the Damocles theme only through design and syntax tokens', () => {

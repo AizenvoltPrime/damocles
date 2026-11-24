@@ -286,14 +286,14 @@ function userMessageText(message: ChatMessage): string {
       <AgentChip
         v-if="totalTokens > 0"
         :icon="Database"
-        data-part="tokens"
+        data-usage="tokens"
         :value="formatTokenCount(totalTokens, locale)"
         :unit="t('overlays.agent.unit.tokens', totalTokens)"
       />
       <AgentChip
         v-if="cachePct > 0"
         :icon="Zap"
-        data-part="cache"
+        data-usage="cache"
         :value="`${cachePct}%`"
         :unit="t('overlays.agent.unit.cache')"
         :title="t('agentUsage.cacheHitTooltip')"
@@ -301,7 +301,7 @@ function userMessageText(message: ChatMessage): string {
       <AgentChip
         v-if="subagent.usage && subagent.usage.costUsd > 0"
         :icon="Receipt"
-        data-part="cost"
+        data-usage="cost"
         :value="costLabel(subagent.usage.costUsd, subagent.dollarBilled)"
         mono
         :title="costTitle(subagent.dollarBilled)"

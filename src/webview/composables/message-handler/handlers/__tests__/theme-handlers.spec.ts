@@ -49,6 +49,18 @@ describe('the theme card messages', () => {
     expect(store.screenshotPrompts).toEqual([]);
   });
 
+  // core is the grant's one publisher: a conversation reset of the page's stores leaves what it last said
+  it('hold the chat\'s screenshot grant as core publishes it, and only as core does', () => {
+    const store = useThemePromptStore();
+    expect(store.screenshotGrant).toBe(false);
+    deliver({ type: 'themeScreenshotGrant', granted: true });
+    expect(store.screenshotGrant).toBe(true);
+    store.$reset();
+    expect(store.screenshotGrant).toBe(true);
+    deliver({ type: 'themeScreenshotGrant', granted: false });
+    expect(store.screenshotGrant).toBe(false);
+  });
+
   it('raise an install card whose thumbnails go to the page\'s image cache, follow its updates and progress, and close it', () => {
     const store = useThemePromptStore();
     const preview = installPreview();

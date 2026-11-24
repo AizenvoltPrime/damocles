@@ -198,7 +198,7 @@ export interface HostServicesDeps {
 /** What main does for this computer's core's theme tools; every request names its own params, as the protocol table parses them. */
 export type ThemeHostServices = {
   readonly [M in 'themes.render' | 'themes.screenshotTake' | 'themes.screenshotRead' | 'themes.screenshotDrop' | 'themes.applied' | 'themes.pendingSettled' | 'themes.pendingElsewhere' | 'themes.pendingExtended'
-    | 'themes.currentArrangement' | 'themes.applyArrangement' | 'themes.copyName' | 'themes.showInWindow' | 'themes.stopShowing' | 'themes.state' | 'themes.analyze' | 'themes.analyzeSprite']:
+    | 'themes.currentArrangement' | 'themes.applyArrangement' | 'themes.copyName' | 'themes.showInWindow' | 'themes.stopShowing' | 'themes.cardOpened' | 'themes.cardClosed' | 'themes.projectCharacter' | 'themes.state' | 'themes.analyze' | 'themes.analyzeSprite']:
     (params: Params<CoreRequests, M>, signal: AbortSignal) => Promise<Result<CoreRequests, M>> | Result<CoreRequests, M>;
 };
 
@@ -443,7 +443,8 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
     endpoint.serve('user.theme.commit', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('commit', params, signal));
     endpoint.serve('user.theme.discard', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('discard', params, signal));
     endpoint.serve('user.theme.preview', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('preview', params, signal));
-    endpoint.serve('user.theme.screenshotTake', (_params, signal) => deps.user.theme('screenshotTake', {}, signal));
+    endpoint.serve('user.theme.screenshotTake', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('screenshotTake', params, signal));
+    endpoint.serve('user.theme.screenshotCapture', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('screenshotCapture', params, signal));
     endpoint.serve('user.theme.screenshot', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('screenshot', params, signal));
     endpoint.serve('user.theme.screenshotDrop', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('screenshotDrop', params, signal));
     endpoint.serve('user.theme.installPrepare', ({ clientId: _clientId, ...params }, signal) => deps.user.theme('installPrepare', params, signal));
@@ -476,6 +477,9 @@ export function createHostServices(deps: HostServicesDeps): HostServices {
       endpoint.serve('themes.copyName', (params, signal) => themes['themes.copyName'](params, signal));
       endpoint.serve('themes.showInWindow', (params, signal) => themes['themes.showInWindow'](params, signal));
       endpoint.serve('themes.stopShowing', (params, signal) => themes['themes.stopShowing'](params, signal));
+      endpoint.serve('themes.cardOpened', (params, signal) => themes['themes.cardOpened'](params, signal));
+      endpoint.serve('themes.cardClosed', (params, signal) => themes['themes.cardClosed'](params, signal));
+      endpoint.serve('themes.projectCharacter', (params, signal) => themes['themes.projectCharacter'](params, signal));
       endpoint.serve('themes.state', (params, signal) => themes['themes.state'](params, signal));
       endpoint.serve('themes.analyze', (params, signal) => themes['themes.analyze'](params, signal));
       endpoint.serve('themes.analyzeSprite', (params, signal) => themes['themes.analyzeSprite'](params, signal));

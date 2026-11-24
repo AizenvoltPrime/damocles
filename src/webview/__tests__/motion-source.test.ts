@@ -45,7 +45,7 @@ describe('motion source', () => {
   });
 
   it('is imported by the stylesheet the webview, the shell page and the overlay all load', () => {
-    expect(read('src/webview/style.css')).toContain('@import "./styles/motion.css";');
+    expect(read('src/webview/style.css')).toContain('@import "./styles/motion.css" layer(app);');
     expect(read('src/desktop/shell/style.css')).toContain('@import "../../webview/style.css";');
     expect(read('src/desktop/shell/overlay/overlay.css')).toContain('@import "../style.css";');
   });
@@ -62,11 +62,13 @@ describe('motion source', () => {
     }
   });
 
-  // d-draw moves a sparkline's stroke-dashoffset, the one way an SVG line draws itself (the mockup's keyframe)
-  it('animates only opacity and transform, except the reference shimmer and the sparkline draw', () => {
+  // d-draw moves a sparkline's stroke-dashoffset, the one way an SVG line draws itself (the mockup's keyframe); a trusted strip
+  // under the title bar opens and closes by its height, since a fade or a scale would hold its visibility check and the rows
+  // under it would jump
+  it('animates only opacity and transform, except the reference shimmer, the sparkline draw and the trusted strip', () => {
     const motion = read('src/webview/styles/motion.css');
     const offenders = [...motion.matchAll(/@keyframes ([\w-]+)\{(.*)\}\s*$/gm)]
-      .filter(([, name]) => name !== 'd-shimmer' && name !== 'd-draw')
+      .filter(([, name]) => !['d-shimmer', 'd-draw', 'd-strip-open', 'd-strip-close'].includes(name!))
       .flatMap(([, name, body = '']) => [...body.matchAll(/([a-z-]+):/g)].map(([, prop]) => prop).filter((prop) => prop !== 'opacity' && prop !== 'transform').map((prop) => `${name}: ${prop}`));
     expect(offenders).toEqual([]);
   });
@@ -86,7 +88,7 @@ describe('motion source', () => {
     expect(offenders).toEqual([]);
   });
 
-  // motion.css is unlayered, so its position beats any Tailwind position utility on the same element whatever the order
+  // motion.css sits in the app layer, after the utilities, so its position beats any Tailwind position utility on the same element
   it('puts no other Tailwind position utility on an element whose motion class sets position', () => {
     const motion = read('src/webview/styles/motion.css');
     const positioned = new Map([...motion.matchAll(/(?:^|[},])\s*\.([\w-]+)\{[^}]*\bposition:(\w+)/gm)].map(([, name, value]) => [name!, value!]));
@@ -101,33 +103,47 @@ describe('motion source', () => {
     expect(offenders).toEqual([]);
   });
 
-  // Each rule is matched with every space taken out, so a reformat of the stylesheet changes nothing here.
-  const squeezed = (path: string): string => read(path).replace(/\s+/g, '');
+  // Each rule is matched with its spacing made uniform, so a reformat of the stylesheet changes nothing here: one space
+  // wherever the source has any, and none around braces, semicolons and commas, after a colon or inside parentheses. The
+  // space left between two selectors is the descendant combinator, which a compound selector lacks.
+  const squeezed = (path: string): string => read(path).replace(/\s+/g, ' ').replace(/ ?([{};,]) ?/g, '$1').replace(/([:(]) /g, '$1').replace(/ \)/g, ')');
 
   it('steps a character strip by its whole width, and nothing else', () => {
     const motion = squeezed('src/webview/styles/motion.css');
-    expect(motion).toContain('@keyframesd-sprite{from{transform:translateX(0)}to{transform:translateX(-100%)}}');
-    expect(motion).toContain('.d-sprite{animation:d-spritevar(--sprite-duration,1s)steps(var(--sprite-frames,1))infinite}');
+    expect(motion).toContain('@keyframes d-sprite{from{transform:translateX(0)}to{transform:translateX(-100%)}}');
+    expect(motion).toContain('.d-sprite{animation:d-sprite var(--sprite-duration,1s) steps(var(--sprite-frames,1)) infinite}');
   });
 
   it('stops a character strip under reduce motion, either source, under forced colors, and away from the pointer in hover mode', () => {
     const motion = squeezed('src/webview/styles/motion.css');
-    expect(motion).toContain('@media(prefers-reduced-motion:reduce){.d-sprite{animation:none}}');
-    expect(motion).toContain('[data-reduced-motion].d-sprite{animation:none}');
-    expect(motion).toContain('@media(forced-colors:active){.d-sprite{animation:none}}');
-    expect(motion).toContain('.d-sprite[data-sprite-hover]:not(:hover,[data-character-host]:hover.d-sprite){animation:none}');
+    expect(motion).toContain('@media (prefers-reduced-motion:reduce){.d-sprite{animation:none}}');
+    expect(motion).toContain('[data-reduced-motion] .d-sprite{animation:none}');
+    expect(motion).toContain('@media (forced-colors:active){.d-sprite{animation:none}}');
+    expect(motion).toContain('.d-sprite[data-sprite-hover]:not(:hover,[data-character-host]:hover .d-sprite){animation:none}');
   });
 
   // the shell's own stylesheet swaps an animated image for its still frame under the pointer; the same three conditions hold it
   it('keeps an animated character on its still frame under reduce motion, either source, and under forced colors', () => {
     const shell = squeezed('src/desktop/shell/style.css');
-    const still = '.project-character:hover.project-character-still,[data-character-host]:hover.project-character-still{display:block;}';
-    const moving = '.project-character:hover.project-character-moving,[data-character-host]:hover.project-character-moving{display:none;}';
-    expect(shell).toContain(`@media(prefers-reduced-motion:reduce),(forced-colors:active){${still}${moving}}`);
-    expect(shell).toContain('[data-reduced-motion].project-character:hover.project-character-still,[data-reduced-motion][data-character-host]:hover.project-character-still{display:block;}');
-    expect(shell).toContain('[data-reduced-motion].project-character:hover.project-character-moving,[data-reduced-motion][data-character-host]:hover.project-character-moving{display:none;}');
+    const still = '.project-character:hover .project-character-still,[data-character-host]:hover .project-character-still{display:block;}';
+    const moving = '.project-character:hover .project-character-moving,[data-character-host]:hover .project-character-moving{display:none;}';
+    expect(shell).toContain(`@media (prefers-reduced-motion:reduce),(forced-colors:active){${still}${moving}}`);
+    expect(shell).toContain('[data-reduced-motion] .project-character:hover .project-character-still,[data-reduced-motion] [data-character-host]:hover .project-character-still{display:block;}');
+    expect(shell).toContain('[data-reduced-motion] .project-character:hover .project-character-moving,[data-reduced-motion] [data-character-host]:hover .project-character-moving{display:none;}');
     // the holds come after the swap they hold, which has the same specificity
-    expect(shell.indexOf('@media(prefers-reduced-motion:reduce),(forced-colors:active){.project-character:hover')).toBeGreaterThan(shell.indexOf('[data-character-host]:hover.project-character-moving{display:block;}'));
+    expect(shell.indexOf('@media (prefers-reduced-motion:reduce),(forced-colors:active){.project-character:hover')).toBeGreaterThan(shell.indexOf('[data-character-host]:hover .project-character-moving{display:block;}'));
+  });
+
+  // reduce motion, either source, is the page stylesheet's rule for every transition; forced colors has no such rule
+  it('eases the selected character\'s outline and the letter\'s ring with --ease-out, and not at all under forced colors or reduce motion', () => {
+    const shell = squeezed('src/desktop/shell/style.css');
+    expect(shell).toContain('.project-character{transition:filter 0.2s var(--ease-out);}');
+    // the letter's own rule, not one of a descendant or of another state
+    expect(shell).toMatch(/(?:^|[}/] ?)\.project-avatar\{[^}]*transition:box-shadow 0\.2s var\(--ease-out\);\}/);
+    expect(shell).toContain('@media (forced-colors:active){.project-avatar,.project-character{--avatar-mark:Highlight;transition:none;}');
+    const page = squeezed('src/webview/style.css');
+    expect(page).toMatch(/@media \(prefers-reduced-motion:reduce\)\{\*,\*::before,\*::after\{[^}]*transition-duration:0\.001ms !important;/);
+    expect(page).toMatch(/\[data-reduced-motion\] \*,\[data-reduced-motion\] \*::before,\[data-reduced-motion\] \*::after\{[^}]*transition-duration:0\.001ms !important;/);
   });
 
   it('keeps the easing curves outside the --d- token family', () => {

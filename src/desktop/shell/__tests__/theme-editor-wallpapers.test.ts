@@ -98,6 +98,7 @@ beforeEach(() => {
 afterEach(() => {
   for (const wrapper of mounted.splice(0)) wrapper.unmount();
   document.body.innerHTML = '';
+  vi.restoreAllMocks();
 });
 
 describe('the panel map', () => {

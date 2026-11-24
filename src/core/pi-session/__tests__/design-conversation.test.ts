@@ -25,7 +25,7 @@ function panel(design?: DesignSeed): PiSession {
     cwd: CWD,
     projectScope: true,
     platform: createFakePlatform(),
-    permissionHandler: { getPermissionMode: () => 'default', setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [], repostPendingPrompts: () => {} } as unknown as PermissionHandler,
+    permissionHandler: { getPermissionMode: () => 'default', setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [], endScreenshotGrantUnless: () => {}, repostPendingPrompts: () => {} } as unknown as PermissionHandler,
     onMessage: () => undefined,
     resolveThinking: () => ({ thinkingDisabled: true, effort: null }),
     ...(design ? { design } : {}),

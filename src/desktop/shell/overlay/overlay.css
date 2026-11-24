@@ -2,6 +2,9 @@
 /* Tailwind emits only the utilities it finds in scanned files, and the overlay renders webview components outside this directory. */
 @source "../../../webview/components";
 
+/* The app layer runs to the end of the file, unindented; a rule outside every layer fails the build (scripts/protected-layer.ts). */
+@layer app {
+
 /* The overlay view lies over the whole window and the popup window over the desktop; only their popups and toasts paint. */
 html,
 body {
@@ -849,4 +852,6 @@ body {
 .folder-row {
   animation: d-slide 0.2s var(--ease-out) both;
   animation-delay: calc(var(--row-index, 0) * 25ms);
+}
+
 }

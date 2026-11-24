@@ -21,10 +21,10 @@ import { createEditorStore, EDITOR_STORE } from '../editor/editor-store';
 import { createScmStore, SCM_STORE } from '../scm/scm-store';
 import { markupSession, startMarkupSession, tabMarkupSessions } from '../editor/markup-session';
 import { ensureTweaksSession, tweaksSession } from '../editor/tweaks-session';
-import { EDITOR_STATE, FakeResizeObserver, STATE, chat, fakePortsApi, fakeShellApi } from './fakes';
+import { EDITOR_STATE, FakeResizeObserver, PAGE_PROVIDE, STATE, chat, fakePortsApi, fakeShellApi } from './fakes';
 
 // The sidebar's Files and Search sections read the editor store App provides.
-const sidebarGlobal = (api: DamoclesShellApi) => ({ plugins: [shellI18n], provide: { [EDITOR_STORE]: createEditorStore(api), [SCM_STORE]: createScmStore(api.scm) } });
+const sidebarGlobal = (api: DamoclesShellApi) => ({ plugins: [shellI18n], provide: { ...PAGE_PROVIDE, [EDITOR_STORE]: createEditorStore(api), [SCM_STORE]: createScmStore(api.scm) } });
 
 const mounted: Array<VueWrapper> = [];
 function track<T extends VueWrapper>(wrapper: T): T {
@@ -752,7 +752,7 @@ describe('App and title bar', () => {
 function mountProjects(api: DamoclesShellApi, selectedKey = 'p1', hosts: readonly ShellHost[] = []) {
   return track(mount(ProjectsSection, {
     props: { api, projects: STATE.projects, selectedKey, hosts, view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
-    global: { plugins: [shellI18n] },
+    global: { provide: PAGE_PROVIDE, plugins: [shellI18n] },
     attachTo: document.body,
   }));
 }
@@ -820,7 +820,7 @@ describe('projects section', () => {
     const projects = [{ ...STATE.projects[0]!, look: 'full' as const }, { ...STATE.projects[1]!, look: 'touches' as const }];
     const wrapper = track(mount(ProjectsSection, {
       props: { api, projects, selectedKey: 'p1', hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
-      global: { plugins: [shellI18n] },
+      global: { provide: PAGE_PROVIDE, plugins: [shellI18n] },
       attachTo: document.body,
     }));
     const [alpha, beta] = wrapper.findAll('[role="option"]');
@@ -842,7 +842,7 @@ describe('projects section', () => {
     const api = fakeShellApi();
     const wrapper = track(mount(ProjectsSection, {
       props: { api, projects: STATE.projects, selectedKey: 'p1', hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
-      global: { plugins: [shellI18n] },
+      global: { provide: PAGE_PROVIDE, plugins: [shellI18n] },
       attachTo: document.body,
     }));
     const beta = wrapper.findAll('[role="option"]')[1]!;
@@ -865,7 +865,7 @@ describe('projects section', () => {
     const projects = [{ ...STATE.projects[0]!, presence: 'missing' as const }, { ...STATE.projects[1]!, presence: 'unavailable' as const }];
     const wrapper = track(mount(ProjectsSection, {
       props: { api, projects, selectedKey: 'p1', hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
-      global: { plugins: [shellI18n] },
+      global: { provide: PAGE_PROVIDE, plugins: [shellI18n] },
       attachTo: document.body,
     }));
     const [alpha, beta] = wrapper.findAll('[role="option"]');
@@ -888,7 +888,7 @@ describe('projects section', () => {
     const base = { ...STATE.projects[0]!, presence: 'missing' as const };
     const mountWith = (project: ShellProject) => track(mount(ProjectsSection, {
       props: { api, projects: [project], selectedKey: 'p1', hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
-      global: { plugins: [shellI18n] },
+      global: { provide: PAGE_PROVIDE, plugins: [shellI18n] },
       attachTo: document.body,
     }));
     const absent = mountWith(base).get('[data-testid="project-locate"]');
@@ -920,7 +920,7 @@ describe('projects section', () => {
     const base = { ...STATE.projects[0]!, presence: 'missing' as const };
     const progress = (relocation: ShellRelocation) => track(mount(ProjectsSection, {
       props: { api, projects: [{ ...base, relocation }], selectedKey: 'p1', hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
-      global: { plugins: [shellI18n] },
+      global: { provide: PAGE_PROVIDE, plugins: [shellI18n] },
       attachTo: document.body,
     })).get('[data-testid="project-locate-progress"]').text();
     expect(progress({ state: 'running', step: 'worktrees', done: 3, total: 3 })).toBe('Updating chat worktrees: 3 of 3 chats');
@@ -935,7 +935,7 @@ describe('projects section', () => {
     const base = { ...STATE.projects[1]!, presence: 'missing' as const };
     const wrapper = track(mount(ProjectsSection, {
       props: { api, projects: [STATE.projects[0]!, base], selectedKey: 'p1', hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
-      global: { plugins: [shellI18n] },
+      global: { provide: PAGE_PROVIDE, plugins: [shellI18n] },
       attachTo: document.body,
     }));
     const alert = () => document.querySelector('[role="alert"][data-testid="project-locate-alert"][data-project-key="p2"]');
@@ -961,7 +961,7 @@ describe('projects section', () => {
     const missing: ShellProject = { ...STATE.projects[1]!, presence: 'missing' };
     const wrapper = track(mount(ProjectsSection, {
       props: { api, projects: [paused, missing], selectedKey: 'p1', hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
-      global: { plugins: [shellI18n] },
+      global: { provide: PAGE_PROVIDE, plugins: [shellI18n] },
       attachTo: document.body,
     }));
     const [alpha, beta] = wrapper.findAll('[role="option"]');
@@ -983,7 +983,7 @@ describe('projects section', () => {
     const missing: ShellProject = { ...STATE.projects[0]!, presence: 'missing' };
     const wrapper = track(mount(ProjectsSection, {
       props: { api, projects: [missing], selectedKey: 'p1', hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
-      global: { plugins: [shellI18n], stubs: { transition: false } },
+      global: { provide: PAGE_PROVIDE, plugins: [shellI18n], stubs: { transition: false } },
       attachTo: document.body,
     }));
     const unit = () => wrapper.find('[role="none"][data-flip="p:p1"]');
@@ -999,7 +999,7 @@ describe('projects section', () => {
     const remote: ShellProject = { ...STATE.projects[0]!, key: 'ssh+h1|/srv/app', fsPath: '/srv/app', authority: { kind: 'ssh', key: 'ssh+h1', hostId: 'h1', name: 'prod-1' }, platform: 'linux', connection: 'connected', trash: false, presence: 'missing' };
     const wrapper = track(mount(ProjectsSection, {
       props: { api: fakeShellApi(), projects: [remote], selectedKey: remote.key, hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
-      global: { plugins: [shellI18n] },
+      global: { provide: PAGE_PROVIDE, plugins: [shellI18n] },
       attachTo: document.body,
     }));
     const row = wrapper.get('[role="option"]');
@@ -1012,7 +1012,7 @@ describe('projects section', () => {
     const project: ShellProject = { ...STATE.projects[0]!, presence: 'missing', relocation: { state: 'paused', step: 'sessions', done: 1, total: 3, reason: { code: 'conflict', text: 'The move paused.' }, to: '/w/alpha-new', abandonable: true } };
     const wrapper = track(mount(ProjectsSection, {
       props: { api, projects: [project], selectedKey: 'p1', hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
-      global: { plugins: [shellI18n] },
+      global: { provide: PAGE_PROVIDE, plugins: [shellI18n] },
       attachTo: document.body,
     }));
     const stop = wrapper.get('[data-testid="project-locate-abandon"]');
@@ -1047,7 +1047,7 @@ describe('projects section', () => {
     const api = fakeShellApi();
     const wrapper = track(mount(ProjectsSection, {
       props: { api, projects: [project], selectedKey: project.key, hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
-      global: { plugins: [shellI18n] },
+      global: { provide: PAGE_PROVIDE, plugins: [shellI18n] },
       attachTo: document.body,
     }));
     const notice = wrapper.get('[data-testid="project-locate"]');
@@ -1077,7 +1077,7 @@ describe('projects section', () => {
     const remote: ShellProject = { ...STATE.projects[0]!, key: 'ssh+h1|/srv/app', authority: { kind: 'ssh', key: 'ssh+h1', hostId: 'h1', name: 'prod-1' }, platform: 'linux', connection: 'connected', trash: false, presence: 'missing' };
     const mountWith = (project: ShellProject) => track(mount(ProjectsSection, {
       props: { api, projects: [project], selectedKey: project.key, hosts: [], view: 'flat' as const, groups: STATE.projectGroups, platform: 'win32' as const, collapsed: false, bodySize: 150 },
-      global: { plugins: [shellI18n] },
+      global: { provide: PAGE_PROVIDE, plugins: [shellI18n] },
       attachTo: document.body,
     }));
     const supported = mountWith(remote).get('[data-testid="project-locate"]');

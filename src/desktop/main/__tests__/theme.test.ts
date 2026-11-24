@@ -3,6 +3,7 @@ import { BUILTIN_PALETTES } from '../../../shared/themes/builtin';
 import type { LookColors, ThemeFile } from '../../../shared/themes/schema';
 import type { FlashRecord } from '../../../shared/themes/wallpapers';
 import type { LibraryEntry, ThemeLibrary } from '../themes/theme-files';
+import { transientPreviewOf } from '../themes/appearance';
 
 const H = vi.hoisted(() => ({
   native: { themeSource: 'system', shouldUseDarkColors: true, inForcedColorsMode: false, prefersReducedTransparency: false, on: vi.fn(), off: vi.fn() },
@@ -212,6 +213,85 @@ describe('the blobs a held before-look names', () => {
   });
 });
 
+describe('projectCharacter', () => {
+  it("names the character a project shows as if it were selected, and what decided it: the key, a theme pin or an every-theme pin", async () => {
+    const t = await freshTheme();
+    const sprites = { [OLD_SPRITE]: { kind: 'sprite' as const, mime: 'image/png', bytes: 10, width: 16, height: 16, license: {} } };
+    const idle = { idle: { asset: OLD_SPRITE } };
+    const pals = theme(AFTER_ID, COLORS, { characters: { name: 'Pals', characters: [{ name: 'Pip', states: idle }, { name: 'Pop', states: idle }] }, assets: sprites });
+    t.followThemeSettings(settings({ 'damocles.desktop.theme': 'dark', 'damocles.desktop.themes.dark': AFTER_ID }), library(pals));
+    const key = 'c:/work/app';
+    expect(t.projectCharacter(key)).toMatchObject({ themeId: AFTER_ID, by: 'projectKey' });
+    t.setProjectPins({ version: 1, pins: { [key]: { byTheme: { [AFTER_ID]: 'Pop' } } } });
+    expect(t.projectCharacter(key)).toEqual({ themeId: AFTER_ID, character: 'Pop', by: 'themePin' });
+    t.setProjectPins({ version: 1, pins: { [key]: { everyTheme: { name: 'Kept', states: idle, assets: sprites } } } });
+    expect(t.projectCharacter(key)).toEqual({ themeId: AFTER_ID, character: 'Kept', by: 'everyTheme' });
+    t.followThemeSettings(settings({ 'damocles.desktop.theme': 'dark' }), library(pals));
+    t.setProjectPins({ version: 1, pins: {} });
+    expect(t.projectCharacter(key)).toBeUndefined();
+  });
+
+  it("keys a project's characters by the theme they come from when its touches borrow another theme's set", async () => {
+    const t = await freshTheme();
+    const sprites = { [OLD_SPRITE]: { kind: 'sprite' as const, mime: 'image/png', bytes: 10, width: 16, height: 16, license: {} } };
+    const idle = { idle: { asset: OLD_SPRITE } };
+    const shownTheme = theme(SHOWN_ID, COLORS, { characters: { name: 'Own', characters: [{ name: 'Pop', states: idle }] }, assets: sprites });
+    const pals = theme(AFTER_ID, OTHER, { characters: { name: 'Pals', characters: [{ name: 'Pip', states: idle }, { name: 'Pop', states: idle }] }, assets: sprites });
+    t.followThemeSettings(settings({ 'damocles.desktop.theme': 'dark', 'damocles.desktop.themes.dark': SHOWN_ID }), library(shownTheme, pals));
+    const key = 'c:/work/app';
+    t.setProjectLooks({ [key]: { mode: 'touches', characterSet: AFTER_ID } });
+    t.setProjectPins({ version: 1, pins: { [key]: { byTheme: { [AFTER_ID]: 'Pip' } } } });
+    expect(t.projectCharacter(key)).toEqual({ themeId: AFTER_ID, character: 'Pip', by: 'themePin' });
+    t.setSelectedProject(key);
+    expect(t.currentCharacters()?.pins[key]).toBe(0);
+    // a pin of the theme on screen names a character of its own set, not of the borrowed one
+    t.setProjectPins({ version: 1, pins: { [key]: { byTheme: { [SHOWN_ID]: 'Pop' } } } });
+    expect(t.projectCharacter(key)).toMatchObject({ themeId: AFTER_ID, by: 'projectKey' });
+    expect(t.currentCharacters()?.pins[key]).toBeUndefined();
+  });
+});
+
+describe("the blobs an open theme card's theme names", () => {
+  it('are served only between cardOpened and cardClosed, and none after the core that opened them ended', async () => {
+    const t = await freshTheme();
+    const card = theme(AFTER_ID, COLORS, {
+      characters: { name: 'Pals', characters: [{ name: 'Pip', states: { idle: { asset: OLD_SPRITE } } }] },
+      assets: {
+        [OLD_WALL]: { kind: 'image', mime: 'image/png', bytes: 30, width: 1600, height: 1000, license: {} },
+        [OLD_SPRITE]: { kind: 'sprite', mime: 'image/png', bytes: 10, width: 16, height: 16, license: {} },
+      },
+    });
+    t.followThemeSettings(settings({ 'damocles.desktop.theme': 'dark' }), library());
+    expect(t.namedSpriteBlob(OLD_SPRITE)).toBeUndefined();
+    t.setCardTheme('local', 'stage-1', card);
+    expect(t.namedSpriteBlob(OLD_SPRITE)).toEqual({ mime: 'image/png' });
+    expect(t.namedImageBlob(OLD_WALL)).toEqual({ kind: 'image', mime: 'image/png' });
+    t.setCardTheme('local', 'stage-1', undefined);
+    expect(t.namedSpriteBlob(OLD_SPRITE)).toBeUndefined();
+    expect(t.namedImageBlob(OLD_WALL)).toBeUndefined();
+    t.setCardTheme('local', 'stage-2', card);
+    t.clearCardThemes('local');
+    expect(t.namedSpriteBlob(OLD_SPRITE)).toBeUndefined();
+  });
+
+  it("keeps a remote chat's draft capture past the end of this computer's core, until the capture itself ends", async () => {
+    const t = await freshTheme();
+    const card = theme(AFTER_ID, COLORS, {
+      characters: { name: 'Pals', characters: [{ name: 'Pip', states: { idle: { asset: OLD_SPRITE } } }] },
+      assets: { [OLD_SPRITE]: { kind: 'sprite', mime: 'image/png', bytes: 10, width: 16, height: 16, license: {} } },
+    });
+    t.followThemeSettings(settings({ 'damocles.desktop.theme': 'dark' }), library());
+    t.setCardTheme('relayed', 'capture-1', card);
+    // one id under each origin: the local card's end leaves the capture
+    t.setCardTheme('local', 'capture-1', card);
+    t.setCardTheme('local', 'capture-1', undefined);
+    t.clearCardThemes('local');
+    expect(t.namedSpriteBlob(OLD_SPRITE)).toEqual({ mime: 'image/png' });
+    t.setCardTheme('relayed', 'capture-1', undefined);
+    expect(t.namedSpriteBlob(OLD_SPRITE)).toBeUndefined();
+  });
+});
+
 describe('motion before the shell page reports the OS setting', () => {
   const SPRITE = 'f'.repeat(64);
   const lively = theme(AFTER_ID, COLORS, {
@@ -253,5 +333,68 @@ describe('motion before the shell page reports the OS setting', () => {
     H.native.inForcedColorsMode = false;
     t.reevaluateTheme();
     expect(t.currentCharacters()?.motion).toBe('always');
+  });
+});
+
+describe('the theme revision pages acknowledge', () => {
+  it('bumps only when what a renderer gets changes, and every currentTheme carries it', async () => {
+    const t = await freshTheme();
+    t.followThemeSettings(settings({ 'damocles.desktop.theme': 'dark', 'damocles.desktop.themes.dark': AFTER_ID }), library(theme(AFTER_ID, COLORS)));
+    const first = t.currentThemeRevision();
+    expect(t.currentTheme().revision).toBe(first);
+    t.reevaluateTheme();
+    expect(t.currentThemeRevision()).toBe(first);
+    t.setThemePreview({ themeId: SHOWN_ID, kind: 'dark', look: { colors: THIRD } });
+    expect(t.currentThemeRevision()).toBe(first + 1);
+    expect(t.currentTheme('root').revision).toBe(first + 1);
+    t.reevaluateTheme();
+    expect(t.currentThemeRevision()).toBe(first + 1);
+  });
+});
+
+describe("a draft capture's wallpaper records", () => {
+  const draft = theme(AFTER_ID, COLORS, {
+    looks: { dark: { colors: COLORS, wallpapers: [{ panels: { chat: { asset: OLD_WALL, fit: 'fill', dim: 0.1, blur: 0 } } }] } },
+    assets: { [OLD_WALL]: { kind: 'image', mime: 'image/png', bytes: 30, width: 1600, height: 1000, license: {} } },
+  });
+
+  it('are read before the draft paints, so it paints once with its readable dim and no read lands after the paint', async () => {
+    const t = await freshTheme();
+    const reads: string[] = [];
+    t.setWallpaperStatsReader(async (sha) => {
+      reads.push(sha);
+      return { p10: 0.2, p90: 0.9, mean: 0.5 };
+    });
+    t.setWallpaperFlashReader(async () => undefined);
+    t.followThemeSettings(settings({ 'damocles.desktop.theme': 'dark' }), library());
+    const preview = transientPreviewOf(draft, 'dark')!;
+    await t.readPreviewRecords(preview);
+    t.setThemePreview(preview);
+    const painted = t.currentThemeRevision();
+    expect(t.currentWallpapers()?.regions[0]?.dim).toBeGreaterThan(0.1);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(t.currentThemeRevision()).toBe(painted);
+    expect(reads).toEqual([OLD_WALL]);
+  });
+});
+
+describe('the themes of open cards', () => {
+  it('serves the blobs of at most 64 cards of one origin, the oldest card leaving first', async () => {
+    const t = await freshTheme();
+    t.followThemeSettings(settings({ 'damocles.desktop.theme': 'dark' }), library());
+    const sprite = (index: number): string => index.toString(16).padStart(64, '0');
+    const card = (index: number): ThemeFile => theme(AFTER_ID, COLORS, {
+      characters: { name: 'Pals', characters: [{ name: 'Pip', states: { idle: { asset: sprite(index) } } }] },
+      assets: { [sprite(index)]: { kind: 'sprite', mime: 'image/png', bytes: 10, width: 16, height: 16, license: {} } },
+    });
+    for (let index = 0; index < 65; index += 1) t.setCardTheme('local', `stage-${index}`, card(index));
+    expect(t.namedSpriteBlob(sprite(0))).toBeUndefined();
+    expect(t.namedSpriteBlob(sprite(1))).toEqual({ mime: 'image/png' });
+    expect(t.namedSpriteBlob(sprite(64))).toEqual({ mime: 'image/png' });
+    // a card opened again counts as the newest
+    t.setCardTheme('local', 'stage-1', card(1));
+    t.setCardTheme('local', 'stage-65', card(65));
+    expect(t.namedSpriteBlob(sprite(1))).toEqual({ mime: 'image/png' });
+    expect(t.namedSpriteBlob(sprite(2))).toBeUndefined();
   });
 });

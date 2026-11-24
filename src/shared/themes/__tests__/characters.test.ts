@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { englishText } from '../../localized-text';
-import { frameView, MAX_SPRITE_FPS, parseProjectsFile, SAFE_STRIP_FPS, spriteFrame, spriteStrip, svgHeader, type FrameSources } from '../characters';
+import { characterChoice, characterFor, characterIndex, frameView, MAX_SPRITE_FPS, parseProjectsFile, SAFE_STRIP_FPS, spriteFrame, spriteStrip, svgHeader, type FrameSources } from '../characters';
 import { validateTheme, type AssetMeta } from '../schema';
 
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
@@ -162,6 +162,27 @@ describe('frameView', () => {
     expect(view(strip(4, fast), { kind: 'sprite', mime: 'image/png', bytes: 100, width: 64, height: 16, license: {} }, { flagged: false })?.playable).toBe(false);
     // slow enough to need no check
     expect(view(strip(4, SAFE_STRIP_FPS), { kind: 'sprite', mime: 'image/png', bytes: 100, width: 64, height: 16, license: {} })?.playable).toBe(true);
+  });
+});
+
+describe('characterChoice', () => {
+  const view = (name: string) => ({ name, states: { idle: { url: `u/${name}`, moves: false, playable: false } } });
+  const shown = { characters: [view('A'), view('B'), view('C')], pins: { pinned: 2, every: view('Kept') }, motion: 'always' as const, selection: 'outline' as const };
+
+  it('names what decided: a pin of the shown theme, a character kept in every theme, or the key', () => {
+    expect(characterChoice(shown, 'pinned')).toEqual({ view: view('C'), by: 'themePin' });
+    expect(characterChoice(shown, 'every')).toEqual({ view: view('Kept'), by: 'everyTheme' });
+    expect(characterChoice(shown, 'other')).toEqual({ view: shown.characters[characterIndex('other', 3)], by: 'projectKey' });
+    expect(characterFor(shown, 'pinned')).toEqual(view('C'));
+  });
+
+  it('reads no pin off the prototype for the key __proto__', () => {
+    expect(characterChoice(shown, '__proto__')).toEqual({ view: shown.characters[characterIndex('__proto__', 3)], by: 'projectKey' });
+  });
+
+  it('is undefined with no characters, and for a project with no pin when the set is empty', () => {
+    expect(characterChoice(undefined, 'any')).toBeUndefined();
+    expect(characterChoice({ characters: [], pins: {}, motion: 'always', selection: 'outline' }, 'any')).toBeUndefined();
   });
 });
 

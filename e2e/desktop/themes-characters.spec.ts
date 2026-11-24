@@ -19,6 +19,7 @@ import { answerOpenDialog } from './support/ui';
 const ARCADE = 'damocles-arcade';
 const PIXEL = '3c2a9d1e-5b7f-4c8a-9e21-6d4b8a7c1f02';
 const PLAIN = '8e4b2c1d-7a6f-4e3b-9c5d-2f1a0b9e8d7c';
+const BARE = '4d7e9a12-6c3b-4f8e-a1d5-9b2c7e6f0a34';
 const COLORS = { background: '#0b1020', panel: '#10172a', text: '#e4ecf5', accent: '#5ee6b0', success: '#4fd18b', warning: '#f2c14e', danger: '#ff6b7a', info: '#8ab4ff' };
 const WIDTHS = [1280, 900] as const;
 
@@ -32,12 +33,12 @@ const characterImage = (scope: Locator): Locator => scope.locator('[data-testid=
 const animationName = (image: Locator): Promise<string> => image.evaluate((element) => getComputedStyle(element).animationName);
 
 /** A user theme whose one character is the 2-frame strip, its blob stored as core stores blobs. */
-function writePixelTheme(home: HermeticHome): string {
+function writePixelTheme(home: HermeticHome, id = PIXEL, selection?: 'outline' | 'none'): string {
   const asset = storeBlob(home, STRIP_SVG);
-  writeTheme(home, PIXEL, {
-    schemaVersion: 1, id: PIXEL, name: 'Pixel', origin: { kind: 'created', installedAt: 1 },
+  writeTheme(home, id, {
+    schemaVersion: 1, id, name: id === PIXEL ? 'Pixel' : 'Bare', origin: { kind: 'created', installedAt: 1 },
     looks: { dark: { colors: COLORS } },
-    characters: { name: 'Pixel', characters: [{ name: 'Blink', states: { idle: { strip: { asset, frameWidth: 8, frameHeight: 8, frames: 2, fps: 2 } } } }] },
+    characters: { name: 'Pixel', characters: [{ name: 'Blink', states: { idle: { strip: { asset, frameWidth: 8, frameHeight: 8, frames: 2, fps: 2 } } } }], ...(selection ? { selection } : {}) },
     assets: { [asset]: { kind: 'sprite', mime: 'image/svg+xml', bytes: STRIP_SVG.length, width: 16, height: 8, frames: 2, durationMs: 1000, license: {} } },
   });
   return asset;
@@ -192,3 +193,75 @@ for (const width of WIDTHS) {
     });
   });
 }
+
+// The outline follows the sprite's opaque pixels, so a sprite on a clear background gets no box around it.
+test('outlines the selected project\'s character along its pixels with no box, drops the outline under selection none, and keeps a letter\'s ring', async ({ home, launch }) => {
+  writePixelTheme(home);
+  writePixelTheme(home, BARE, 'none');
+  writeTheme(home, PLAIN, { schemaVersion: 1, id: PLAIN, name: 'Plain', origin: { kind: 'created', installedAt: 1 }, looks: { dark: { colors: COLORS } } });
+  writeUserSettings(home, { 'damocles.desktop.theme': 'dark', 'damocles.desktop.themes.dark': PIXEL });
+  const { app } = await launch();
+  await openProjectChat(app, home.project);
+  const key = await selectedProjectKey(app);
+  const website = path.join(path.dirname(home.project), 'website');
+  fs.mkdirSync(website, { recursive: true });
+  await openProjectChat(app, website);
+  const selected = await selectedProjectKey(app);
+  expect(selected).not.toBe(key);
+  const shell = await shellPage(app);
+  const style = (locator: Locator, property: string): Promise<string> => locator.evaluate((element, name) => getComputedStyle(element).getPropertyValue(name), property);
+  const shadows = async (locator: Locator): Promise<number> => (await style(locator, 'filter')).match(/drop-shadow\(/g)?.length ?? 0;
+  const character = (project: string): Locator => projectRow(shell, project).getByTestId('project-character');
+
+  await expect(character(selected)).toHaveAttribute('data-selection', 'outline');
+  await expect.poll(() => shadows(character(selected))).toBe(4);
+  expect(await style(character(selected), 'box-shadow')).toBe('none');
+  await expect.poll(() => style(character(key), 'filter')).toBe('none');
+  // the outline is the project's avatar hue, as a letter's ring is
+  const hue = (await style(character(selected), '--avatar-hue')).trim();
+  expect(hue).toMatch(/^\d+$/);
+  const outline = await character(selected).evaluate((element, expected) => {
+    // Chromium may serialize a computed color in another notation than its source, so both sides are painted and read as sRGB bytes
+    const context = document.createElement('canvas').getContext('2d', { willReadFrequently: true })!;
+    const painted = (color: string): number[] => {
+      context.clearRect(0, 0, 1, 1);
+      context.fillStyle = color;
+      context.fillRect(0, 0, 1, 1);
+      return [...context.getImageData(0, 0, 1, 1).data];
+    };
+    const colors = [...getComputedStyle(element).filter.matchAll(/drop-shadow\(((?:[a-z-]+\([^()]*\)|#[0-9a-f]+|[a-z]+))\s/gi)].map((match) => match[1]!);
+    return { shadows: colors.map(painted), expected: painted(expected) };
+  }, `oklch(0.72 0.14 ${hue})`);
+  expect(outline.shadows).toHaveLength(4);
+  expect(outline.expected[3]).toBe(255);
+  for (const shadow of outline.shadows) {
+    for (const [at, channel] of shadow.entries()) expect(Math.abs(channel - outline.expected[at]!), `${shadow.join(',')} against ${outline.expected.join(',')}`).toBeLessThanOrEqual(2);
+  }
+  // under forced colors, the system highlight
+  await shell.emulateMedia({ forcedColors: 'active' });
+  const highlight = await shell.evaluate(() => {
+    const probe = document.createElement('span');
+    probe.style.color = 'Highlight';
+    probe.style.forcedColorAdjust = 'none';
+    document.body.append(probe);
+    const color = getComputedStyle(probe).color;
+    probe.remove();
+    return color;
+  });
+  await expect.poll(() => style(character(selected), 'filter')).toContain(highlight);
+  await shell.emulateMedia({ forcedColors: 'none' });
+
+  writeUserSettings(home, { 'damocles.desktop.themes.dark': BARE });
+  await expect(character(selected)).toHaveAttribute('data-selection', 'none');
+  await expect.poll(() => style(character(selected), 'filter')).toBe('none');
+  expect(await style(character(selected), 'box-shadow')).toBe('none');
+  // the row alone marks the selection
+  await expect(projectRow(shell, selected)).toHaveAttribute('aria-selected', 'true');
+  expect(await style(projectRow(shell, selected), 'background-color')).not.toBe(await style(projectRow(shell, key), 'background-color'));
+
+  writeUserSettings(home, { 'damocles.desktop.themes.dark': PLAIN });
+  const letter = projectRow(shell, selected).locator('[data-avatar="letter"]');
+  await expect(letter).toBeVisible();
+  await expect.poll(() => style(letter, 'box-shadow')).toMatch(/1\.5px/);
+  expect(await style(projectRow(shell, key).locator('[data-avatar="letter"]'), 'box-shadow')).toBe('none');
+});

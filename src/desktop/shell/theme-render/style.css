@@ -1,11 +1,28 @@
-@import "tailwindcss" source(none);
-/* The page draws only the miniature, so Tailwind emits only the utilities it uses. */
-@source "../../../webview/components/theme/ThemeMiniature.vue";
-@source "../../../webview/components/theme/theme-view.ts";
+/* The shell's stylesheet, so the sample window's shell components look as they do in the window; it opens with the page
+   layers' @layer statement. */
+@import "../style.css";
+/* The sample transcript renders the chat view's own components; Tailwind emits only the utilities it finds in scanned files. */
+@source "../../../webview";
 
-html,
-body {
-  margin: 0;
-  overflow: hidden;
-  background: transparent;
+/* A rule outside every layer fails the build (scripts/protected-layer.ts). */
+@layer app {
+  html,
+  body {
+    margin: 0;
+    overflow: hidden;
+    background: transparent;
+  }
+
+  /* A character sheet's cell: the sidebar pane color without the alpha a wallpaper gives it, as the wallpaper layer paints a region's ground. */
+  .sheet-cell {
+    background-color: rgb(from var(--d-pane-sidebar) r g b);
+  }
+
+  /* Two shades of the text color over the background, so clear pixels show in either look. */
+  .sheet-checker {
+    background-image: repeating-conic-gradient(
+      color-mix(in oklab, var(--d-text) 16%, var(--d-bg)) 0 25%,
+      color-mix(in oklab, var(--d-text) 6%, var(--d-bg)) 0 50%
+    );
+  }
 }

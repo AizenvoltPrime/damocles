@@ -5,6 +5,8 @@ const H = vi.hoisted(() => ({
   exposed: undefined as DamoclesShellApi | undefined,
   invoked: [] as Array<[string, unknown]>,
   sent: [] as Array<[string, unknown]>,
+  handlers: new Map<string, (event: unknown, payload: unknown) => void>(),
+  applied: [] as unknown[],
 }));
 
 vi.mock('electron', () => ({
@@ -14,13 +16,17 @@ vi.mock('electron', () => ({
       H.invoked.push([channel, payload]);
       return undefined;
     },
-    on: () => undefined,
+    on: (channel: string, handler: (event: unknown, payload: unknown) => void) => {
+      H.handlers.set(channel, handler);
+    },
     send: (channel: string, payload: unknown) => {
       H.sent.push([channel, payload]);
     },
     removeListener: () => undefined,
   },
 }));
+
+vi.mock('../apply-theme', () => ({ applyHostTheme: (theme: unknown) => H.applied.push(theme) }));
 
 describe('shell preload', () => {
   it('sends a worktree action and a folder switch as their own fields only, so a proxy or an extra key never reaches main', async () => {
@@ -127,5 +133,23 @@ describe('shell preload', () => {
     H.sent.length = 0;
     api.filesCollapsed({ projectKey: 'p', relativePath: 'linked/sub', extra: 1 } as never);
     expect(H.sent).toEqual([[SHELL_CHANNELS.filesCollapsed, { projectKey: 'p', relativePath: 'linked/sub' }]]);
+  });
+  it("applies each theme main sends, tells the page its revision, and sends the page's acknowledgement as a number", async () => {
+    await import('../shell');
+    const api = H.exposed!;
+    const heard: number[] = [];
+    const stop = api.onThemeRevision((revision) => heard.push(revision));
+    const theme = H.handlers.get(SHELL_CHANNELS.theme)!;
+    theme({}, { kind: 'dark', css: 'a', reducedMotion: false, revision: 4 });
+    theme({}, { kind: 'dark', css: 'b', reducedMotion: false });
+    expect(H.applied).toHaveLength(2);
+    expect(heard).toEqual([4]);
+    stop();
+    theme({}, { kind: 'dark', css: 'c', reducedMotion: false, revision: 5 });
+    expect(heard).toEqual([4]);
+    H.sent.length = 0;
+    api.reportThemeApplied(5);
+    api.reportThemeApplied('6' as never);
+    expect(H.sent).toEqual([[SHELL_CHANNELS.themeApplied, 5], [SHELL_CHANNELS.themeApplied, 6]]);
   });
 });

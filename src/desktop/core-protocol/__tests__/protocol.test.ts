@@ -5,7 +5,8 @@ import { CORE_TO_MAIN, MAIN_TO_CORE, MAX_KEY_CHARS, type CoreToMain, type MainTo
 import { MAX_DESIGN_ID_CHARS } from '../../../shared/design-paths';
 import { MAX_CHANGED_PATHS } from '../../../shared/design-render';
 import { MAX_MARKUP_JSON_CHARS } from '../../../shared/design-markup';
-import { MAX_RELAYED_THEME_PNG_BYTES } from '../../../shared/themes/relay';
+import { MAX_READ_SPRITE_REF_CHARS, MAX_READ_SPRITES, MAX_RELAYED_THEME_PNG_BYTES, MAX_SHEET_REFS } from '../../../shared/themes/relay';
+import { MAX_THEME_NAME_CHARS } from '../../../shared/themes/limits';
 import type { ThemeHistoryChange } from '../../../shared/themes/changes';
 import { MAX_PROJECT_KEY_CHARS, MAX_PROJECT_LOOKS } from '../../../shared/themes/project-looks';
 import { arr, data, INVALID, obj, opt, str } from '../schema';
@@ -193,6 +194,7 @@ describe('the theme history on the wire', () => {
     rename: { taken: { kind: 'rename', theme: 'Night', was: 'Dusk' }, refused: { kind: 'rename', theme: 'x'.repeat(257), was: 'Dusk' } },
     delete: { taken: { kind: 'delete', theme: 'Night' }, refused: { kind: 'delete', theme: '' } },
     projectLook: { taken: { kind: 'projectLook', project: '', look: 'touches' }, refused: { kind: 'projectLook', project: 'app', look: 'some' } },
+    projectPin: { taken: { kind: 'projectPin', project: 'app', theme: 'Arcade', character: null, everyTheme: true }, refused: { kind: 'projectPin', project: 'app', theme: 'Arcade', character: '' } },
     storeRemoved: { taken: { kind: 'storeRemoved', themes: ['Aurora'] }, refused: { kind: 'storeRemoved', themes: [''] } },
     wallpapersOff: { taken: { kind: 'wallpapersOff' }, refused: { kind: 'wallpapers-off' } },
     reset: { taken: { kind: 'reset' }, refused: { kind: 7 } },
@@ -303,13 +305,101 @@ describe('the theme requests main sends', () => {
 });
 
 describe("a remote chat's theme relay on the wire", () => {
-  it('takes about only as one of its five words, so no other text of a remote core reaches a log or the store', () => {
+  const DRAFT = '0f8fad5b-d9cb-469f-a165-70867728950e';
+
+  it('takes about only as one of its seven words, which main logs, so no other text in that field reaches a log or the store', () => {
     const read = CORE_TO_MAIN.requests['user.theme.read'].params;
-    for (const about of ['current', 'installed', 'theme', 'schedule', 'project']) expect(read({ clientId: 'c', request: { about } })).toEqual({ clientId: 'c', request: { about } });
-    expect(read({ clientId: 'c', request: {} })).toEqual({ clientId: 'c', request: {} });
-    expect(read({ clientId: 'c', request: { about: 'x\ny' } })).toBe(INVALID);
-    expect(read({ clientId: 'c', request: { about: 'other' } })).toBe(INVALID);
-    expect(MAIN_TO_CORE.requests['themes.relay.read'].params({ authority: 'ssh+h1', request: { about: 'x\ny' } })).toBe(INVALID);
+    for (const about of ['current', 'installed', 'theme', 'schedule', 'project', 'sprites', 'css']) expect(read({ clientId: 'c', request: { about }, chat: 's' })).toEqual({ clientId: 'c', request: { about }, chat: 's' });
+    expect(read({ clientId: 'c', request: {}, chat: 's' })).toEqual({ clientId: 'c', request: {}, chat: 's' });
+    expect(read({ clientId: 'c', request: {} })).toBe(INVALID);
+    expect(read({ clientId: 'c', request: { about: 'x\ny' }, chat: 's' })).toBe(INVALID);
+    expect(read({ clientId: 'c', request: { about: 'other' }, chat: 's' })).toBe(INVALID);
+    expect(MAIN_TO_CORE.requests['themes.relay.read'].params({ authority: 'ssh+h1', request: { about: 'x\ny' }, chat: 's' })).toBe(INVALID);
+  });
+
+  it('carries a screenshot ask with its chat and an optional draft, and answers a shot, a draft to capture or a refusal', () => {
+    const take = CORE_TO_MAIN.requests['user.theme.screenshotTake'];
+    expect(take.params({ clientId: 'c', chat: { id: 's' }, draft: DRAFT })).toEqual({ clientId: 'c', chat: { id: 's' }, draft: DRAFT });
+    // the device names the chat its notice shows from its own records, never by the remote core's word
+    expect(take.params({ clientId: 'c', chat: { id: 's', title: 'Your bank chat' } })).toEqual({ clientId: 'c', chat: { id: 's' } });
+    expect(take.params({ clientId: 'c' })).toBe(INVALID);
+    const shot = { shotId: 'a', url: 'app://damocles/theme-shot/a', width: 10, height: 10 };
+    expect(take.result({ kind: 'shot', shot, granted: true })).toEqual({ kind: 'shot', shot, granted: true });
+    expect(take.result({ kind: 'refused', reason: 'windowHidden' })).toEqual({ kind: 'refused', reason: 'windowHidden' });
+    expect(take.result({ kind: 'refused', reason: 'bored' })).toBe(INVALID);
+    expect(take.result({ kind: 'draft', captureId: 'k', draft: { name: 'Warm', theme: { id: 'x' } } })).toEqual({ kind: 'draft', captureId: 'k', draft: { name: 'Warm', theme: { id: 'x' } } });
+    const local = CORE_TO_MAIN.requests['themes.screenshotTake'];
+    expect(local.params({ chat: { id: 's' }, theme: { id: 'x' }, granted: true })).toEqual({ chat: { id: 's' }, theme: { id: 'x' }, granted: true });
+    expect(local.params({ chat: { id: 's' }, granted: false })).toBe(INVALID);
+    expect(local.result({ kind: 'shot', shot })).toEqual({ kind: 'shot', shot });
+    expect(local.result({ kind: 'draft', captureId: 'k' })).toBe(INVALID);
+    const draft = MAIN_TO_CORE.requests['themes.relay.draftTheme'];
+    expect(draft.params({ authority: 'ssh+h1', chat: 's', draft: DRAFT })).toEqual({ authority: 'ssh+h1', chat: 's', draft: DRAFT });
+    expect(draft.result({ refused: 'Not this chat\'s draft.' })).toEqual({ refused: 'Not this chat\'s draft.' });
+    expect(draft.result({ name: 'Draft', theme: { id: 'x' } })).toEqual({ name: 'Draft', theme: { id: 'x' } });
+    expect(MAIN_TO_CORE.requests['themes.screenshotGrantRevoke'].params({ chat: 's' })).toEqual({ chat: 's' });
+  });
+
+  it("takes a draft only as a draft id wherever a remote core's request names one, so no other text in it reaches a log", () => {
+    const forged = 'x\ny';
+    expect(CORE_TO_MAIN.requests['user.theme.read'].params({ clientId: 'c', request: { about: 'theme', draft: forged }, chat: 's' })).toBe(INVALID);
+    expect(CORE_TO_MAIN.requests['user.theme.screenshotTake'].params({ clientId: 'c', chat: { id: 's' }, draft: forged })).toBe(INVALID);
+    expect(MAIN_TO_CORE.requests['themes.relay.read'].params({ authority: 'ssh+h1', request: { draft: forged }, chat: 's' })).toBe(INVALID);
+    expect(MAIN_TO_CORE.requests['themes.relay.draftTheme'].params({ authority: 'ssh+h1', chat: 's', draft: forged })).toBe(INVALID);
+    for (const draft of ['d1', DRAFT.toUpperCase(), `${DRAFT}x`]) expect(CORE_TO_MAIN.requests['user.theme.screenshotTake'].params({ clientId: 'c', chat: { id: 's' }, draft }), draft).toBe(INVALID);
+  });
+
+  it("answers a draft capture with a shot no grant cleared, or a refusal: never another draft, never a grant's shot", () => {
+    const capture = CORE_TO_MAIN.requests['user.theme.screenshotCapture'];
+    expect(capture.params({ clientId: 'c', captureId: 'k' })).toEqual({ clientId: 'c', captureId: 'k' });
+    const shot = { shotId: 'a', url: 'app://damocles/theme-shot/a', width: 10, height: 10 };
+    expect(capture.result({ kind: 'shot', shot, granted: false })).toEqual({ kind: 'shot', shot, granted: false });
+    expect(capture.result({ kind: 'refused', reason: 'windowHidden' })).toEqual({ kind: 'refused', reason: 'windowHidden' });
+    expect(capture.result({ kind: 'shot', shot, granted: true })).toBe(INVALID);
+    expect(capture.result({ kind: 'shot', shot })).toBe(INVALID);
+    expect(capture.result({ kind: 'draft', captureId: 'k', draft: { name: 'Warm', theme: { id: 'x' } } })).toBe(INVALID);
+  });
+
+  it("drops a remote core's granted on a screenshot ask: this computer's record decides the grant", () => {
+    const take = CORE_TO_MAIN.requests['user.theme.screenshotTake'].params;
+    expect(take({ clientId: 'c', chat: { id: 's' }, granted: true })).toEqual({ clientId: 'c', chat: { id: 's' } });
+  });
+
+  it('refuses a relayed shot answer without granted', () => {
+    const shot = { shotId: 'a', url: 'app://damocles/theme-shot/a', width: 10, height: 10 };
+    expect(CORE_TO_MAIN.requests['user.theme.screenshotTake'].result({ kind: 'shot', shot })).toBe(INVALID);
+    expect(CORE_TO_MAIN.requests['user.theme.screenshotTake'].result({ kind: 'shot', shot, granted: 'yes' })).toBe(INVALID);
+  });
+
+  it('bounds the sprites, the region and the draft a ThemeRead names', () => {
+    const read = (request: Record<string, unknown>): unknown => CORE_TO_MAIN.requests['user.theme.read'].params({ clientId: 'c', request, chat: 's' });
+    expect(read({ about: 'sprites', draft: DRAFT, sprites: Array.from({ length: MAX_READ_SPRITES }, () => 'x'.repeat(MAX_READ_SPRITE_REF_CHARS)) })).not.toBe(INVALID);
+    expect(read({ about: 'sprites', theme: 't', sprites: Array.from({ length: MAX_READ_SPRITES + 1 }, () => 'x') })).toBe(INVALID);
+    expect(read({ about: 'sprites', theme: 't', sprites: ['x'.repeat(MAX_READ_SPRITE_REF_CHARS + 1)] })).toBe(INVALID);
+    expect(read({ about: 'sprites', theme: 't', sprites: [] })).toBe(INVALID);
+    expect(read({ about: 'sprites', theme: 't', sprites: [''] })).toBe(INVALID);
+    expect(read({ about: 'css', theme: 't', region: 'sidebar' })).not.toBe(INVALID);
+    expect(read({ about: 'css', theme: 't', region: 'everywhere' })).toBe(INVALID);
+    expect(read({ about: 'theme', draft: '' })).toBe(INVALID);
+  });
+
+  it('parses the theme card requests and the project character of this computer\'s core', () => {
+    const opened = CORE_TO_MAIN.requests['themes.cardOpened'].params;
+    expect(opened({ stageId: 's', theme: { id: 'x' } })).toEqual({ stageId: 's', theme: { id: 'x' } });
+    expect(opened({ stageId: '', theme: { id: 'x' } })).toBe(INVALID);
+    expect(opened({ theme: { id: 'x' } })).toBe(INVALID);
+    const closed = CORE_TO_MAIN.requests['themes.cardClosed'].params;
+    expect(closed({ stageId: 's', extra: 1 })).toEqual({ stageId: 's' });
+    expect(closed({})).toBe(INVALID);
+    const character = CORE_TO_MAIN.requests['themes.projectCharacter'];
+    expect(character.params({ key: 'a' })).toEqual({ key: 'a' });
+    expect(character.params({})).toBe(INVALID);
+    expect(character.result({})).toEqual({});
+    const name = 'n'.repeat(MAX_THEME_NAME_CHARS);
+    expect(character.result({ character: { themeId: 'damocles-arcade', name, by: 'themePin' } })).toEqual({ character: { themeId: 'damocles-arcade', name, by: 'themePin' } });
+    expect(character.result({ character: { themeId: 'damocles-arcade', name: `${name}n`, by: 'themePin' } })).toBe(INVALID);
+    expect(character.result({ character: { themeId: 'Arcade', name: 'Pip', by: 'themePin' } })).toBe(INVALID);
+    expect(character.result({ character: { themeId: 'damocles-arcade', name: 'Pip', by: 'guess' } })).toBe(INVALID);
   });
 
   it('bounds a screenshot answer at 16 MiB', () => {
@@ -330,10 +420,11 @@ describe("a remote chat's theme relay on the wire", () => {
 
   it('takes a ThemeRead theme id only as the tool sends it: never empty, at most 64 characters', () => {
     const read = CORE_TO_MAIN.requests['user.theme.read'].params;
-    expect(read({ clientId: 'c', request: { about: 'theme', theme: 'x'.repeat(64) } })).not.toBe(INVALID);
-    expect(read({ clientId: 'c', request: { about: 'theme', theme: '' } })).toBe(INVALID);
-    expect(read({ clientId: 'c', request: { about: 'theme', theme: 'x'.repeat(65) } })).toBe(INVALID);
-    expect(MAIN_TO_CORE.requests['themes.relay.read'].params({ authority: 'ssh+h1', request: { theme: '' } })).toBe(INVALID);
+    expect(read({ clientId: 'c', request: { about: 'theme', theme: 'x'.repeat(64) }, chat: 's' })).not.toBe(INVALID);
+    expect(read({ clientId: 'c', request: { about: 'theme', theme: '' }, chat: 's' })).toBe(INVALID);
+    expect(read({ clientId: 'c', request: { about: 'theme', theme: 'x'.repeat(65) }, chat: 's' })).toBe(INVALID);
+    expect(MAIN_TO_CORE.requests['themes.relay.read'].params({ authority: 'ssh+h1', request: { theme: '' }, chat: 's' })).toBe(INVALID);
+    expect(read({ clientId: 'c', request: { about: 'theme', draft: '0f8fad5b-d9cb-469f-a165-70867728950e' }, chat: 's' })).not.toBe(INVALID);
   });
 
   it("bounds a remote chat's id as the history actor it becomes, where the remote core's request arrives", () => {
@@ -371,6 +462,36 @@ describe("a remote chat's theme relay on the wire", () => {
     expect(CORE_TO_MAIN.events['themes.install.expired']({})).toBe(INVALID);
     expect(MAIN_TO_CORE.requests['user.theme.installExpired'].params({ installId: 'i' })).toEqual({ installId: 'i' });
     expect(MAIN_TO_CORE.requests['user.theme.installExpired'].params({ installId: '' })).toBe(INVALID);
+  });
+
+  it('takes a drawn preview as a view of window or sidebar with an optional look, on themes.render and on a relayed read', () => {
+    const render = CORE_TO_MAIN.requests['themes.render'].params;
+    expect(render({ theme: {}, view: 'sidebar', look: 'light' })).toEqual({ theme: {}, view: 'sidebar', look: 'light' });
+    expect(render({ theme: {}, view: 'window' })).toEqual({ theme: {}, view: 'window' });
+    for (const bad of [{ theme: {}, mode: 'dark' }, { theme: {}, view: 'split' }, { theme: {}, view: 'window', look: 'auto' }]) expect(render(bad)).toBe(INVALID);
+    const read = CORE_TO_MAIN.requests['user.theme.read'].params;
+    const sheet = { clientId: 'c', chat: 's', request: { preview: 'characters', sheetCharacters: ['Pip', '3'] } };
+    expect(read(sheet)).toEqual(sheet);
+    expect(read({ ...sheet, request: { preview: 'characters', sheetCharacters: [] } })).toBe(INVALID);
+    expect(read({ ...sheet, request: { preview: 'characters', sheetCharacters: Array.from({ length: MAX_SHEET_REFS + 1 }, (_, at) => String(at)) } })).toBe(INVALID);
+    expect(read({ clientId: 'c', chat: 's', request: { about: 'current', preview: 'window', look: 'dark' } })).toEqual({ clientId: 'c', chat: 's', request: { about: 'current', preview: 'window', look: 'dark' } });
+    expect(read({ clientId: 'c', chat: 's', request: { preview: true } })).toBe(INVALID);
+    expect(MAIN_TO_CORE.requests['themes.relay.read'].params({ authority: 'ssh+h1', chat: 's', request: { preview: 'sidebar' } })).toEqual({ authority: 'ssh+h1', chat: 's', request: { preview: 'sidebar' } });
+  });
+
+  it("takes a character sheet's characters by index in the set, and answers its pages with what they show", () => {
+    const render = CORE_TO_MAIN.requests['themes.render'];
+    expect(render.params({ theme: {}, view: 'characters', characters: [4, 0] })).toEqual({ theme: {}, view: 'characters', characters: [4, 0] });
+    for (const characters of [[], [-1], [256], ['Pip'], Array.from({ length: MAX_SHEET_REFS + 1 }, (_, at) => at)]) expect(render.params({ theme: {}, view: 'characters', characters })).toBe(INVALID);
+    const png = new Uint8Array([1, 2, 3]);
+    const facts = { sheets: [[0, 1]], omitted: [2], unfit: [3], undrawn: [], stills: [{ character: 1, state: 'idle' }], clipped: [{ character: 0, state: 'running', shown: 48, frames: 60 }], selection: 'outline', wallpaper: true };
+    expect(render.result({ pngs: [png], sheet: facts })).toEqual({ pngs: [png], sheet: facts });
+    expect(render.result({ pngs: [] })).toEqual({ pngs: [] });
+    expect(render.result({ pngs: [png, png, png, png, png] })).toBe(INVALID);
+    expect(render.result({ pngs: [png], sheet: { ...facts, stills: [{ character: 1, state: 'asleep' }] } })).toBe(INVALID);
+    expect(render.result({ pngs: [png], sheet: { ...facts, unfit: [256] } })).toBe(INVALID);
+    const { unfit: _unfit, ...withoutUnfit } = facts;
+    expect(render.result({ pngs: [png], sheet: withoutUnfit })).toBe(INVALID);
   });
 
   it('takes keepDraft on a discard only as a boolean, and a discard without it', () => {

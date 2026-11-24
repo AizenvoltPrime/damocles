@@ -12,6 +12,7 @@ import type { HandlerContext } from '@/composables/message-handler/types';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { VSCODE_HOST_CAPABILITIES } from '@shared/types/messages';
 import { installVisibilityObserver } from '@/__tests__/visibility-observer';
+import { BUILTIN_THEME } from '@shared/themes/builtin';
 
 const posted = vi.hoisted(() => [] as unknown[]);
 vi.mock('@/composables/usePlatformBridge', () => ({ usePlatformBridge: () => ({ postMessage: (message: unknown) => void posted.push(message) }) }));
@@ -55,7 +56,8 @@ async function raised(request: ExtensionToWebviewMessage = REQUEST): Promise<Vue
 }
 
 const card = (w: VueWrapper) => w.find('[data-testid="theme-screenshot-card"]');
-const options = (w: VueWrapper) => w.findAll('[role="option"]').map((option) => option.text().replace(/^\d/, ''));
+// each option's label, without its digit and hint
+const options = (w: VueWrapper) => w.findAll('[role="option"]').map((option) => option.get('[data-testid="theme-screenshot-option-label"]').text());
 
 function press(key: string): void {
   document.body.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
@@ -73,13 +75,15 @@ describe('the screenshot consent card', () => {
     expect(image.attributes('alt')).toBe('Screenshot of this window, 1280 by 800');
     expect(card(w).text()).toContain('Only this image is sent, once. It may show file names and chat text.');
     expect(w.get('[role="listbox"]').attributes('aria-label')).toBe('Answer the screenshot request');
-    expect(options(w)).toEqual(['Allow', 'Deny']);
+    expect(options(w)).toEqual(['Allow once', 'Allow for this chat', 'Deny']);
+    expect(w.get('[data-testid="theme-screenshot-option-hint"]').text()).toBe('Later screenshots in this chat are sent without asking. A draft may show on the window for a moment while one is taken.');
     expect(posted).toEqual([]);
   });
 
   it.each([
     ['allow', 0],
-    ['deny', 1],
+    ['allowChat', 1],
+    ['deny', 2],
   ] as const)('answers %s from its option and stays, saying so, until core closes the card', async (choice, index) => {
     const w = await raised();
     await w.findAll('[role="option"]')[index]!.trigger('click');
@@ -89,9 +93,14 @@ describe('the screenshot consent card', () => {
     expect(card(w).exists()).toBe(true);
     expect(useThemePromptStore().screenshotPrompts).toHaveLength(1);
     expect(w.get('#theme-screenshot-status').text()).toBe('Sending your answer…');
-    // Allow is never sent twice, and not after another answer went out
+    // no answer is sent twice, nor after another answer went out
+    expect(w.get('[role="listbox"]').attributes('aria-disabled')).toBe('true');
     await w.get('[data-testid="theme-screenshot-option-allow"]').trigger('click');
+    await w.get('[data-testid="theme-screenshot-option-allowChat"]').trigger('click');
+    await w.get('[data-testid="theme-screenshot-option-deny"]').trigger('click');
     press('1');
+    press('2');
+    press('3');
     expect(posted).toHaveLength(1);
 
     deliver({ type: 'themeScreenshotClosed', promptId: 'ts-1' });
@@ -112,10 +121,11 @@ describe('the screenshot consent card', () => {
 
   it.each([
     ['1', 'allow'],
-    ['2', 'deny'],
+    ['2', 'allowChat'],
+    ['3', 'deny'],
   ] as const)('answers digit %s as %s and ignores a digit past its answers', async (digit, choice) => {
     const w = await raised();
-    press('3');
+    press('4');
     await flushPromises();
     expect(posted).toEqual([]);
 
@@ -134,7 +144,9 @@ describe('the screenshot consent card', () => {
 
     press('1');
     press('2');
+    press('3');
     await w.get('[data-testid="theme-screenshot-option-allow"]').trigger('click');
+    await w.get('[data-testid="theme-screenshot-option-allowChat"]').trigger('click');
     await w.get('[data-testid="theme-screenshot-option-allow"]').trigger('keydown', { key: 'Enter' });
     // the option's own handler, reached past the card's event hold
     w.findComponent({ name: 'ListboxItem' }).vm.$emit('select', new Event('select'));
@@ -205,11 +217,32 @@ describe('the screenshot consent card', () => {
     expect(posted).toEqual([]);
   });
 
+  it('shows a draft\'s name, isolated, and its miniature and no capture, and offers the three answers', async () => {
+    const name = 'Amber \u2069\u2068night';
+    const w = await raised({ type: 'requestThemeScreenshot', promptId: 'ts-2', toolUseId: 'call_3', owner: { kind: 'main' }, draft: { name, theme: BUILTIN_THEME } });
+
+    expect(card(w).attributes('aria-label')).toBe('Send the model a screenshot of a draft on the window?');
+    expect(card(w).attributes('data-trusted')).toBeDefined();
+    expect(w.find('img').exists()).toBe(false);
+    expect(w.find('[data-testid="theme-screenshot-gone"]').exists()).toBe(false);
+    expect(w.get('[data-testid="theme-screenshot-draft"] [data-testid="theme-miniature"]').attributes('aria-label')).toContain('Amber');
+    // the draft's name is the agent's text: one bdi with no isolate marks of its own, inside the card's sentence
+    const caption = w.get('[data-testid="theme-screenshot-draft-name"]');
+    expect(caption.text()).toBe('Draft Amber night');
+    expect(caption.findAll('bdi').map((bdi) => bdi.text())).toEqual(['Amber night']);
+    expect(w.get('[data-testid="theme-screenshot-note"]').text()).toContain('the window shows the draft for a moment');
+    expect(options(w)).toEqual(['Allow once', 'Allow for this chat', 'Deny']);
+
+    press('2');
+    await flushPromises();
+    expect(posted).toEqual([{ type: 'resolveThemeScreenshot', promptId: 'ts-2', choice: 'allowChat' }]);
+  });
+
   it('speaks Greek in the el locale', async () => {
     expect(await loadLocale('el')).toBe(true);
     i18n.global.locale.value = 'el';
     const w = await raised();
     expect(card(w).attributes('aria-label')).toBe('Αποστολή στιγμιότυπου του παραθύρου στο μοντέλο;');
-    expect(options(w)).toEqual(['Να επιτραπεί', 'Άρνηση']);
+    expect(options(w)).toEqual(['Να επιτραπεί μία φορά', 'Να επιτρέπεται σε αυτή τη συνομιλία', 'Άρνηση']);
   });
 });

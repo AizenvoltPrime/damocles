@@ -4,7 +4,7 @@ import { mount, type VueWrapper } from '@vue/test-utils';
 import { PROJECT_CONNECTIONS, type ProjectConnection, type ShellProject } from '../../preload/shell-channels';
 import ProjectsSection from '../components/ProjectsSection.vue';
 import { shellI18n } from '../i18n';
-import { FakeResizeObserver, STATE, fakeShellApi } from './fakes';
+import { FakeResizeObserver, PAGE_PROVIDE, STATE, fakeShellApi } from './fakes';
 
 const mounted: VueWrapper[] = [];
 
@@ -33,7 +33,7 @@ const loopback = (connection: ProjectConnection): ShellProject => ({
 });
 
 function mountWith(projects: readonly ShellProject[]): VueWrapper {
-  const wrapper = mount(ProjectsSection, { props: { api: fakeShellApi(), projects, selectedKey: 'p1', hosts: [], view: 'flat', groups: STATE.projectGroups, platform: 'win32', collapsed: false, bodySize: 150 }, global: { plugins: [shellI18n] }, attachTo: document.body });
+  const wrapper = mount(ProjectsSection, { props: { api: fakeShellApi(), projects, selectedKey: 'p1', hosts: [], view: 'flat', groups: STATE.projectGroups, platform: 'win32', collapsed: false, bodySize: 150 }, global: { provide: PAGE_PROVIDE, plugins: [shellI18n] }, attachTo: document.body });
   mounted.push(wrapper);
   return wrapper;
 }

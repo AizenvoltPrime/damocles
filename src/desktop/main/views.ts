@@ -220,6 +220,10 @@ interface PanelViewsDeps {
   readonly onRendererGone: (panel: DesktopPanel) => void;
   // The stored session a chat's saved state names changed.
   readonly onSavedSessionChange: (chat: DesktopPanel) => void;
+  // A page painted the theme of this revision (PANEL_CHANNELS.themeApplied).
+  readonly onThemeApplied: (panel: DesktopPanel, revision: number) => void;
+  // A page's document is going: a navigation of its main frame to another document started, or its renderer ended.
+  readonly onDocumentGone: (panel: DesktopPanel) => void;
   // A chat's page opened its first modal layer or closed its last (DesktopPanel.modalOpen).
   readonly onModalChange: (chat: DesktopPanel) => void;
   // An overlay popup is open, and so holds keyboard focus.
@@ -354,6 +358,13 @@ export class DesktopPanel implements PanelHost {
       }
       deps.onQueueAction(this, { action, id });
     });
+    this.onIpc(PANEL_CHANNELS.themeApplied, (_event, payload) => {
+      if (!Number.isSafeInteger(payload) || (payload as number) < 0) {
+        deps.log(`[views] panel ${this.panelId}: dropped a malformed theme acknowledgement`);
+        return;
+      }
+      deps.onThemeApplied(this, payload as number);
+    });
     this.onIpc(PANEL_CHANNELS.modal, (_event, payload) => {
       if (this.kind !== 'chat' || typeof payload !== 'boolean') {
         deps.log(`[views] panel ${this.panelId}: dropped a malformed modal report`);
@@ -387,6 +398,9 @@ export class DesktopPanel implements PanelHost {
       });
       contents.on('blur', () => this.yoloGesture.clear());
     }
+    contents.on('did-start-navigation', (details) => {
+      if (details.isMainFrame && !details.isSameDocument) deps.onDocumentGone(this);
+    });
     contents.on('did-navigate', () => {
       this.setModal(false);
       owner.committed(this);
@@ -394,6 +408,7 @@ export class DesktopPanel implements PanelHost {
     contents.on('dom-ready', () => owner.domReady(this));
     contents.on('render-process-gone', (_event, details) => {
       deps.log(`[views] panel ${this.panelId} renderer gone (${details.reason})`);
+      deps.onDocumentGone(this);
       this.setModal(false);
       if (this.disposed || details.reason === 'clean-exit') return;
       if (this.kind === 'chat') deps.onRendererGone(this);

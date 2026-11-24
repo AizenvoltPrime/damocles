@@ -11,6 +11,7 @@ import { createProjectLooks } from '../project-looks';
 import { createWriteLane } from '../write-lane';
 import { checkProjectLook, MAX_PROJECT_LOOKS, parseProjectLooks, type ProjectLook } from '../../../shared/themes/project-looks';
 import type { ThemeFile } from '../../../shared/themes/schema';
+import { MAX_PINNED_PROJECTS } from '../../../shared/themes/characters';
 
 // Project looks and character pins in projects.json: how they follow a relocation, leave with Remove Project and Forget host,
 // map through a pending relocation's aliases, and change as history entries.
@@ -188,5 +189,57 @@ describe('a project look as a theme change', () => {
     expect(await themes.projectLooks.shownLooks()).toEqual({ [NEW]: TOUCHES });
     await themes.undo();
     expect(await themes.projectLooks.shownLooks()).toEqual({});
+  });
+
+  it('says whether a look would change anything, as the change judges it, writing nothing', async () => {
+    const themes = createThemeService({ root, settings: fakeSettings(), relocations: () => ({ aliases: NO_ALIASES, pendingKeys: new Set() }) });
+    expect(await themes.projectLookChanges(OLD, null)).toBe(false);
+    expect(await themes.projectLookChanges(OLD, TOUCHES)).toBe(true);
+    expect(fs.existsSync(file())).toBe(false);
+    await themes.setProjectLook(OLD, TOUCHES, { name: 'old-site' });
+    expect(await themes.projectLookChanges(OLD, { accent: '#3A86FF', mode: 'touches' } as ProjectLook)).toBe(false);
+    await expect(themes.projectLookChanges(OLD, { mode: 'touches', accent: 'red' })).rejects.toThrow(/not valid/);
+  });
+});
+
+describe('a character pin as a theme change', () => {
+  const SPRITE = 'e'.repeat(64);
+  function pals(): ReturnType<typeof createThemeService> {
+    const folder = path.join(root, 'themes', THEME);
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, 'theme.json'), JSON.stringify({
+      schemaVersion: 1, id: THEME, name: 'Pals', origin: { kind: 'created', installedAt: 1 },
+      looks: { dark: { colors: { background: '#101418', panel: '#151a20', text: '#e6edf3', accent: '#4cc2ff', success: '#3fcf8e', warning: '#f0b429', danger: '#f2555a', info: '#8ab4ff' } } },
+      characters: { name: 'Pals', characters: [{ name: 'Pip', states: { idle: { asset: SPRITE } } }] },
+      assets: { [SPRITE]: { kind: 'sprite', mime: 'image/png', bytes: 10, width: 16, height: 16, license: {} } },
+    }));
+    return createThemeService({ root, settings: fakeSettings(), relocations: () => ({ aliases: NO_ALIASES, pendingKeys: new Set() }) });
+  }
+
+  it("records the pinned theme's id beside its name, and says whether a pin would change anything, writing nothing", async () => {
+    const themes = pals();
+    expect(await themes.projectPinChanges(OLD, { themeId: THEME, character: null })).toBe(false);
+    expect(await themes.projectPinChanges(OLD, { themeId: THEME, character: 'Pip' })).toBe(true);
+    expect(fs.existsSync(file())).toBe(false);
+    const saved = await themes.setProjectPin(OLD, { themeId: THEME, character: 'Pip' }, { name: 'old-site' });
+    expect(saved?.change).toEqual({ kind: 'projectPin', project: 'old-site', theme: 'Pals', themeId: THEME, character: 'Pip' });
+    expect(await themes.projectPinChanges(OLD, { themeId: THEME, character: 'Pip' })).toBe(false);
+    expect(await themes.projectPinChanges(OLD, { themeId: THEME, character: 'Pip', everyTheme: true })).toBe(true);
+    await expect(themes.projectPinChanges(OLD, { themeId: THEME, character: 'Nobody' })).rejects.toThrow('has no character');
+  });
+
+  it(`refuses a new project's pin once ${MAX_PINNED_PROJECTS} projects have pins, and still changes a pinned one's`, async () => {
+    const themes = pals();
+    const others = Array.from({ length: MAX_PINNED_PROJECTS - 1 }, (_, at) => [`/work/other-${at}`, { byTheme: { [THEME]: 'Pip' } }]);
+    write({ version: 1, pins: Object.fromEntries([[OLD, { byTheme: { [THEME]: 'Pip' } }], ...others]) });
+    const refusal = `Damocles keeps character pins for at most ${MAX_PINNED_PROJECTS} projects; remove the pin of another project first.`;
+    await expect(themes.setProjectPin(NEW, { themeId: THEME, character: 'Pip' }, { name: 'new-site' })).rejects.toThrow(refusal);
+    await expect(themes.projectPinChanges(NEW, { themeId: THEME, character: 'Pip' })).rejects.toThrow(refusal);
+    expect(await themes.setProjectPin(NEW, { themeId: THEME, character: null }, { name: 'new-site' })).toBeUndefined();
+    expect(await themes.history()).toEqual([]);
+    expect(await themes.setProjectPin(OLD, { themeId: THEME, character: 'Pip', everyTheme: true }, { name: 'old-site' })).toMatchObject({ change: { everyTheme: true } });
+    await themes.setProjectPin(OLD, { themeId: THEME, character: null, everyTheme: true }, { name: 'old-site' });
+    await themes.setProjectPin(OLD, { themeId: THEME, character: null }, { name: 'old-site' });
+    expect(await themes.setProjectPin(NEW, { themeId: THEME, character: 'Pip' }, { name: 'new-site' })).toMatchObject({ change: { project: 'new-site', character: 'Pip' } });
   });
 });

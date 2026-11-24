@@ -193,8 +193,13 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
 
     resolveThemeScreenshot: (msg, ctx) => {
       if (msg.type !== "resolveThemeScreenshot" || typeof msg.promptId !== "string") return;
-      if (msg.choice !== "allow" && msg.choice !== "deny") return;
+      if (msg.choice !== "allow" && msg.choice !== "allowChat" && msg.choice !== "deny") return;
       ctx.permissionHandler.resolveThemeScreenshot(msg.promptId, msg.choice);
+    },
+
+    revokeThemeScreenshotGrant: (msg, ctx) => {
+      if (msg.type !== "revokeThemeScreenshotGrant") return;
+      ctx.permissionHandler.revokeScreenshotGrant();
     },
 
     resolveThemeInstall: (msg, ctx) => {

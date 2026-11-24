@@ -175,6 +175,50 @@ describe('the theme editor\'s Characters section', () => {
     expect(assetKeys(draft())).toEqual([SHA(5)]);
   });
 
+  it('marks the selected project\'s character with an outline or nothing, drawn on the set\'s first character, and keeps the choice through other edits', async () => {
+    const api = fakeOverlayApi();
+    vi.mocked(api.themeEditor.importSpriteFile).mockResolvedValue({ ok: true, sprite: IMPORTED, name: 'new.svg' });
+    const { wrapper, draft } = section({}, api);
+    await flushPromises();
+    const group = wrapper.get('[data-testid="character-selection"]');
+    expect(group.attributes('aria-labelledby')).toBe('theme-character-selection');
+    expect(wrapper.get('#theme-character-selection').text()).toBe('Selected project');
+    const options = group.findAll('label');
+    expect(options.map((option) => option.text())).toEqual(['Outline', 'None']);
+    expect(options.map((option) => option.get('.project-character').attributes('data-selection'))).toEqual(['outline', 'none']);
+    expect(wrapper.get<HTMLButtonElement>('#theme-character-selection-outline').attributes('data-state')).toBe('checked');
+
+    await wrapper.get('#theme-character-selection-none').trigger('click');
+    await flushPromises();
+    expect(draft().characters?.selection).toBe('none');
+    expect(wrapper.get('#theme-character-selection-none').attributes('data-state')).toBe('checked');
+    // a character added afterwards keeps the set's choice
+    await wrapper.get('#theme-character-name').setValue('Bun');
+    await wrapper.get('[data-testid="character-add"]').trigger('click');
+    await flushPromises();
+    expect(draft().characters?.characters.map((character) => character.name)).toEqual(['Pip', 'Mochi', 'Bun']);
+    expect(draft().characters?.selection).toBe('none');
+    // outline is the default, so choosing it writes no field
+    await wrapper.get('#theme-character-selection-outline').trigger('click');
+    await flushPromises();
+    expect(draft().characters).not.toHaveProperty('selection');
+  });
+
+  it('offers no selection choice without a set, and none to change while read-only', async () => {
+    const { characters: _none, ...bare } = THEME;
+    expect(section({ draft: bare }).wrapper.find('[data-testid="character-selection"]').exists()).toBe(false);
+    const { wrapper, draft } = section({ readOnly: true });
+    await flushPromises();
+    await wrapper.get('#theme-character-selection-none').trigger('click');
+    await flushPromises();
+    expect(draft().characters).not.toHaveProperty('selection');
+    // an option that cannot be chosen invites no click
+    const classes = (w: typeof wrapper): string[] => w.findAll('[data-testid="character-selection"] label').flatMap((option) => option.classes());
+    expect(classes(wrapper)).not.toContain('cursor-pointer');
+    expect(classes(wrapper)).not.toContain('hover:bg-(--d-hover)');
+    expect(classes(section().wrapper)).toEqual(expect.arrayContaining(['cursor-pointer', 'hover:bg-(--d-hover)']));
+  });
+
   it('gives a state the chosen image and drops the sprite it replaced', async () => {
     const api = fakeOverlayApi();
     vi.mocked(api.themeEditor.importSpriteFile).mockResolvedValue({ ok: true, sprite: IMPORTED, name: 'run.svg' });

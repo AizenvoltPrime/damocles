@@ -2,17 +2,18 @@
 // loading app://damocles/theme-render/index.html, which draws a job main hands it through window.damoclesRender; main then
 // captures the window, or for a wallpaper analysis checks the data the page answers. Jobs run one at a time, each within
 // RENDER_TIMEOUT_MS (a video's flash check within VIDEO_ANALYSIS_TIMEOUT_MS); a renderer that dies fails its job and is made
-// again for the next one, and a page that decoded a file is closed before any other job. The window itself is
-// theme-render-page.ts's.
-import { THEME_RENDER_SIZE, type ThemeRenderAnswer, type ThemeRenderJob } from '../../../shared/themes/agent';
-import type { ThemeFile } from '../../../shared/themes/schema';
+// again for the next one, and a page that loaded theme files is closed, and gone, before any other job is served. The window
+// itself is theme-render-page.ts's.
+import type { RenderAppearance, ThemeRenderAnswer, ThemeRenderJob } from '../../../shared/themes/agent';
+import { SHEET_MAX_HEIGHT, SHEET_MAX_WIDTH, type CharacterSheetLayout } from '../../../shared/themes/character-sheet';
 import { LOOK_SEEDS, type LookColors } from '../../../shared/themes/schema';
 import {
   isFlashRecord, isImageStats, isWallpaperPalette, MAX_STILL_BYTES, MAX_THUMB_BYTES, STILL_SIDE, THUMB_SIDE, type FlashRecord, type ImageStats, type WallpaperKind, type WallpaperPalette,
 } from '../../../shared/themes/wallpapers';
-import { MAX_SPRITE_SIDE, SVG_MIME, type CharacterStrip } from '../../../shared/themes/characters';
+import { MAX_SPRITE_SIDE, SVG_MIME, type CharacterStrip, type CharacterView } from '../../../shared/themes/characters';
 import { APP_ORIGIN } from '../../app-urls';
 import { readImageHeader } from '../../../shared/themes/image-header';
+import type { NamedBlob } from './theme-blobs';
 
 export const RENDER_TIMEOUT_MS = 60_000;
 // a video's flash check decodes every frame in software, which for the largest video allowed takes about as long as it plays
@@ -128,13 +129,14 @@ export interface RenderPage {
   // window.damoclesRender(json)'s answer
   render(json: string): Promise<unknown>;
   resize(width: number, height: number): Promise<void>;
-  // a PNG of the page at width x height, from a frame rendered after the call
-  capture(width: number, height: number): Promise<Uint8Array>;
+  // a PNG of the page at width x height, from a frame rendered after the call; with `crop`, only that rectangle of the frame
+  capture(width: number, height: number, crop?: RenderRegion): Promise<Uint8Array>;
   // window.damoclesFeed(chunk): one piece of a moving image's bytes, as base64, ahead of its analysis
   feed?(chunk: string): Promise<void>;
   // window.damoclesProgress(): how far the running analysis is, 0 to 1
   progress?(): Promise<unknown>;
-  close(): void;
+  // settles once the page is destroyed, at once when it already is
+  close(): Promise<void>;
 }
 
 export interface ThemeRendererDeps {
@@ -157,8 +159,23 @@ export function pngSize(bytes: Uint8Array): { readonly width: number; readonly h
   return { width: view.getUint32(16), height: view.getUint32(20) };
 }
 
-/** The page's answer, checked: drawn at exactly the job's size. */
-export function checkAnswer(raw: unknown, job: Pick<ThemeRenderJob, 'width' | 'height'>): ThemeRenderAnswer {
+export type RenderRegion = NonNullable<ThemeRenderAnswer['region']>;
+
+// A region of whole CSS px inside the job's drawing; the page draws at device scale 1, so it is the frame's pixels too.
+function checkRegion(region: unknown, job: Pick<ThemeRenderJob, 'width' | 'height'>): RenderRegion {
+  if (typeof region !== 'object' || region === null) throw new Error('The theme renderer gave no sidebar region');
+  const { x, y, width, height } = region as Record<string, unknown>;
+  const whole = [x, y, width, height].every((value) => Number.isSafeInteger(value));
+  if (!whole) throw new Error('The sidebar region is not whole pixels');
+  const rect = { x: x as number, y: y as number, width: width as number, height: height as number };
+  if (rect.x < 0 || rect.y < 0 || rect.width < 1 || rect.height < 1 || rect.x + rect.width > job.width || rect.y + rect.height > job.height) {
+    throw new Error(`The sidebar region ${rect.width}x${rect.height} at ${rect.x},${rect.y} is not inside ${job.width}x${job.height}`);
+  }
+  return rect;
+}
+
+/** The page's answer, checked: drawn at exactly the job's size; a sidebar view's with the sidebar's region inside it. */
+export function checkAnswer(raw: unknown, job: Pick<ThemeRenderJob, 'width' | 'height'> & { readonly view?: 'window' | 'sidebar' }): ThemeRenderAnswer {
   let answer: unknown;
   try {
     answer = typeof raw === 'string' && raw.length <= 1024 ? JSON.parse(raw) : undefined;
@@ -166,17 +183,18 @@ export function checkAnswer(raw: unknown, job: Pick<ThemeRenderJob, 'width' | 'h
     throw new Error('The theme renderer answered with text that is not JSON');
   }
   if (typeof answer !== 'object' || answer === null || (answer as Record<string, unknown>)['drawn'] !== true) throw new Error('The theme renderer did not say it drew the job');
-  const { width, height } = answer as Record<string, unknown>;
+  const { width, height, region } = answer as Record<string, unknown>;
   if (width !== job.width || height !== job.height) throw new Error(`The theme renderer drew ${String(width)}x${String(height)}, not ${job.width}x${job.height}`);
-  return { drawn: true, width, height };
+  return { drawn: true, width, height, ...(job.view === 'sidebar' ? { region: checkRegion(region, job) } : {}) };
 }
 
-/** The capture, checked: a PNG of exactly the job's size and within MAX_RENDER_PNG_BYTES. */
-export function checkCapture(png: Uint8Array, job: Pick<ThemeRenderJob, 'width' | 'height'>): Uint8Array {
+/** The capture, checked: a PNG of exactly the job's size, or of the crop's when it was cropped, and within MAX_RENDER_PNG_BYTES. */
+export function checkCapture(png: Uint8Array, job: Pick<ThemeRenderJob, 'width' | 'height'>, crop?: RenderRegion): Uint8Array {
   if (png.length > MAX_RENDER_PNG_BYTES) throw new Error(`The theme render is ${png.length} bytes, more than ${MAX_RENDER_PNG_BYTES}`);
   const size = pngSize(png);
   if (!size) throw new Error('The theme render is not a PNG');
-  if (size.width !== job.width || size.height !== job.height) throw new Error(`The theme render is ${size.width}x${size.height}, not ${job.width}x${job.height}`);
+  const want = crop ?? job;
+  if (size.width !== want.width || size.height !== want.height) throw new Error(`The theme render is ${size.width}x${size.height}, not ${want.width}x${want.height}`);
   return png;
 }
 
@@ -187,11 +205,28 @@ export interface RenderImage {
   readonly kind: WallpaperKind | 'sprite';
 }
 
+/** What a window job draws, which the render session serves while it runs: blobs by sha256, and the files whose still frame shows. */
+export interface RenderServed {
+  readonly blobs: ReadonlyMap<string, NamedBlob>;
+  readonly stills: ReadonlySet<string>;
+}
+
+// the files the render session serves while a job runs: an analysis's image, or what a window job draws
+interface JobFiles {
+  readonly image?: RenderImage;
+  readonly served?: RenderServed;
+}
+
 export class ThemeRenderer {
   private page: Promise<RenderPage> | undefined;
+  // settles once every page let go of is destroyed; a closing page still shares the render session
+  private closing: Promise<unknown> = Promise.resolve();
   private tail: Promise<unknown> = Promise.resolve();
   private job: ThemeRenderJob | undefined;
   private image: RenderImage | undefined;
+  private served: RenderServed | undefined;
+  // the open page ran a composite, so it holds captures of the real window
+  private pageHoldsCaptures = false;
   private onGone: ((reason: string) => void) | undefined;
   private queued = 0;
   // counts the closes of the main window: a job queued before one died with that window
@@ -204,9 +239,37 @@ export class ThemeRenderer {
     this.deps = deps;
   }
 
-  /** A drawn preview: ThemeMiniature of `theme` with sample content, 1280x800. */
-  preview(theme: ThemeFile, mode: 'dark' | 'light' | 'split', signal?: AbortSignal): Promise<Uint8Array> {
-    return this.draw({ kind: 'preview', theme, mode, width: THEME_RENDER_SIZE.width, height: THEME_RENDER_SIZE.height }, signal);
+  /**
+   * A drawn preview: the sample window themed with the job's appearance, whole or cropped to its sidebar, while the render
+   * session serves only `served`. The page closes after it, pass or fail.
+   */
+  window(job: Extract<ThemeRenderJob, { kind: 'window' }>, served: RenderServed, signal?: AbortSignal): Promise<Uint8Array> {
+    return this.run(job, { served }, async (page, raw) => {
+      const answer = checkAnswer(raw, job);
+      return checkCapture(await page.capture(job.width, job.height, answer.region), job, answer.region);
+    }, undefined, signal);
+  }
+
+  /**
+   * A character sheet: one job per page of `layout`, each sized as the layout gives it and drawing the views of the characters its
+   * rows name, while the render session serves only `served`. Each page's job closes its page, pass or fail.
+   */
+  async characterSheets(appearance: RenderAppearance, layout: CharacterSheetLayout, views: ReadonlyMap<number, CharacterView>, served: RenderServed, signal?: AbortSignal): Promise<Uint8Array[]> {
+    const pngs: Uint8Array[] = [];
+    for (const sheet of layout.sheets) {
+      if (sheet.width > SHEET_MAX_WIDTH || sheet.height > SHEET_MAX_HEIGHT) throw new Error(`The character sheet is ${sheet.width}x${sheet.height}, larger than ${SHEET_MAX_WIDTH}x${SHEET_MAX_HEIGHT}`);
+      const characters = [...new Set(sheet.rows.map((row) => row.character))].map((index) => {
+        const view = views.get(index);
+        if (!view) throw new Error(`The character sheet names character ${index}, which it has no view of`);
+        return { index, view };
+      });
+      const job: Extract<ThemeRenderJob, { kind: 'characters' }> = { kind: 'characters', appearance, sheet, characters, width: sheet.width, height: sheet.height };
+      pngs.push(await this.run(job, { served }, async (page, raw) => {
+        checkAnswer(raw, job);
+        return checkCapture(await page.capture(job.width, job.height), job);
+      }, undefined, signal));
+    }
+    return pngs;
   }
 
   /** The chat view's capture drawn over the shell's at `bounds`, as one PNG of the shell's size. */
@@ -215,7 +278,11 @@ export class ThemeRenderer {
     if (!size || !pngSize(chat)) return Promise.reject(new Error('A capture of the window is not a PNG'));
     if (size.width > MAX_COMPOSITE_SIDE || size.height > MAX_COMPOSITE_SIDE) return Promise.reject(new Error(`The window capture is ${size.width}x${size.height}, larger than ${MAX_COMPOSITE_SIDE} px`));
     const dataUrl = (png: Uint8Array): string => `data:image/png;base64,${Buffer.from(png).toString('base64')}`;
-    return this.draw({ kind: 'composite', shell: dataUrl(shell), chat: dataUrl(chat), bounds, width: size.width, height: size.height }, signal);
+    const job: ThemeRenderJob = { kind: 'composite', shell: dataUrl(shell), chat: dataUrl(chat), bounds, width: size.width, height: size.height };
+    return this.run(job, {}, async (page, answer) => {
+      checkAnswer(answer, job);
+      return checkCapture(await page.capture(job.width, job.height), job);
+    }, undefined, signal);
   }
 
   /**
@@ -230,7 +297,7 @@ export class ThemeRenderer {
       bytes = await this.deps.readBlob?.(sha256, mime, kind);
       if (!bytes) throw new Error('The moving wallpaper could not be read for its flash check');
     }
-    return this.run(job, { sha256, mime, kind }, (_page, answer) => Promise.resolve(checkAnalysis(answer, image, moving !== undefined)), bytes, signal);
+    return this.run(job, { image: { sha256, mime, kind } }, (_page, answer) => Promise.resolve(checkAnalysis(answer, image, moving !== undefined)), bytes, signal);
   }
 
   /**
@@ -246,17 +313,19 @@ export class ThemeRenderer {
       if (!bytes) throw new Error('The animated sprite could not be read for its flash check');
     }
     const wantsStill = sprite.strip === undefined && (sprite.animated || sprite.mime === SVG_MIME);
-    return this.run(job, { sha256, mime: sprite.mime, kind: 'sprite' }, (_page, answer) => Promise.resolve(checkSpriteAnalysis(answer, image, wantsStill)), bytes, signal);
+    return this.run(job, { image: { sha256, mime: sprite.mime, kind: 'sprite' } }, (_page, answer) => Promise.resolve(checkSpriteAnalysis(answer, image, wantsStill)), bytes, signal);
   }
 
-  /** The theme of the job running now, whose bundled fonts the theme-blob route serves to the page. */
-  currentTheme(): ThemeFile | undefined {
-    return this.job?.kind === 'preview' ? this.job.theme : undefined;
+  /** A blob the job running now draws or decodes, with its kind and type, which the render session serves; undefined otherwise. */
+  currentJobBlob(sha256: string): NamedBlob | undefined {
+    if (this.job?.kind === 'window' || this.job?.kind === 'characters') return this.served?.blobs.get(sha256);
+    if (this.job?.kind !== 'analyze' && this.job?.kind !== 'sprite') return undefined;
+    return this.image?.sha256 === sha256 ? { kind: this.image.kind, mime: this.image.mime } : undefined;
   }
 
-  /** The wallpaper or sprite the job running now decodes, which the theme-blob route serves to the page. */
-  currentImage(): RenderImage | undefined {
-    return this.job?.kind === 'analyze' || this.job?.kind === 'sprite' ? this.image : undefined;
+  /** Whether the window or sheet job running now shows the still frame of the file `sha256`, which the render session then serves. */
+  currentJobStill(sha256: string): boolean {
+    return (this.job?.kind === 'window' || this.job?.kind === 'characters') && this.served?.stills.has(sha256) === true;
   }
 
   /** Ends the renderer: the running job and every queued one fail, and the page closes. */
@@ -277,32 +346,24 @@ export class ThemeRenderer {
     this.recycle();
   }
 
-  // A drawing's end: the page said it drew the job, and main captures the window at its size.
-  private draw(job: ThemeRenderJob, signal?: AbortSignal): Promise<Uint8Array> {
-    return this.run(job, undefined, async (page, answer) => {
-      checkAnswer(answer, job);
-      return checkCapture(await page.capture(job.width, job.height), job);
-    }, undefined, signal);
-  }
-
   // `signal` ends the job: one still queued never starts, and a running one fails, so the page goes to the next job.
-  private run<T>(job: ThemeRenderJob, image: RenderImage | undefined, finish: (page: RenderPage, answer: unknown) => Promise<T>, bytes?: Uint8Array, signal?: AbortSignal): Promise<T> {
+  private run<T>(job: ThemeRenderJob, files: JobFiles, finish: (page: RenderPage, answer: unknown) => Promise<T>, bytes?: Uint8Array, signal?: AbortSignal): Promise<T> {
     this.queued++;
     const closes = this.closes;
     const next = this.tail.then(() => {
       if (closes !== this.closes) throw new Error(`The theme renderer ended: ${this.closeReason}`);
-      return this.runNow(job, image, finish, bytes, signal);
+      return this.runNow(job, files, finish, bytes, signal);
     }).finally(() => {
       this.queued--;
-      // An idle page is a hidden window, so none stays open between jobs; and a page that decoded a file may be compromised by
-      // it, so it gets no later job, whose captures or theme it could read.
-      if (this.queued === 0 || job.kind === 'analyze' || job.kind === 'sprite') this.recycle();
+      // An idle page is a hidden window, so none stays open between jobs; and a page that loaded theme files may be compromised
+      // by them, so it gets no later job, whose captures or theme it could read: only a composite's page takes another job.
+      if (this.queued === 0 || job.kind !== 'composite') this.recycle();
     });
     this.tail = next.catch(() => undefined);
     return next;
   }
 
-  private async runNow<T>(job: ThemeRenderJob, image: RenderImage | undefined, finish: (page: RenderPage, answer: unknown) => Promise<T>, bytes?: Uint8Array, signal?: AbortSignal): Promise<T> {
+  private async runNow<T>(job: ThemeRenderJob, { image, served }: JobFiles, finish: (page: RenderPage, answer: unknown) => Promise<T>, bytes?: Uint8Array, signal?: AbortSignal): Promise<T> {
     if (this.disposed) throw new Error('The theme renderer is closed');
     if (signal?.aborted) throw new Error('The theme render was cancelled');
     const timeoutMs = this.deps.timeoutMs ?? (job.kind === 'analyze' && job.moving?.kind === 'video' ? VIDEO_ANALYSIS_TIMEOUT_MS : RENDER_TIMEOUT_MS);
@@ -313,14 +374,20 @@ export class ThemeRenderer {
     // every step races `failed`, which reports its rejection; this only keeps one after the last step from going unhandled
     failed.catch(() => undefined);
     const timer = setTimeout(() => fail(new Error(`The theme render took longer than ${Math.round(timeoutMs / 1000)} s`)), timeoutMs);
-    this.job = job;
-    this.image = image;
     this.onGone = (reason) => fail(new Error(`The theme renderer ended: ${reason}`));
     const cancelled = (): void => fail(new Error('The theme render was cancelled'));
     signal?.addEventListener('abort', cancelled, { once: true });
     let polling: ReturnType<typeof setInterval> | undefined;
     try {
+      // theme files never load into a page that holds window captures, which they could read
+      if (job.kind !== 'composite' && this.pageHoldsCaptures) this.recycle();
+      // the session answers by the running job, so the job is named only once no earlier page is left to ask
+      await Promise.race([this.closing, failed]);
+      this.job = job;
+      this.image = image;
+      this.served = served;
       const page = await Promise.race([this.open(), failed]);
+      if (job.kind === 'composite') this.pageHoldsCaptures = true;
       await Promise.race([page.resize(job.width, job.height), failed]);
       if (bytes) {
         if (!page.feed) throw new Error('The theme renderer cannot take a moving image');
@@ -347,6 +414,7 @@ export class ThemeRenderer {
       signal?.removeEventListener('abort', cancelled);
       this.job = undefined;
       this.image = undefined;
+      this.served = undefined;
       this.onGone = undefined;
     }
   }
@@ -372,6 +440,9 @@ export class ThemeRenderer {
   private recycle(): void {
     const page = this.page;
     this.page = undefined;
-    page?.then((open) => open.close(), () => undefined);
+    this.pageHoldsCaptures = false;
+    if (!page) return;
+    const closed = page.then((open) => open.close(), () => undefined);
+    this.closing = Promise.all([this.closing, closed]);
   }
 }

@@ -1,4 +1,4 @@
-import { getHighlighter, normalizeLanguage, type HighlightTheme } from '@/composables/useShikiHighlighter';
+import type { CodeHighlighter, HighlightTheme } from '@/composables/code-highlighter';
 import type { DiffLine } from './parseUnifiedDiff';
 import { escapeHtml } from '@shared/utils';
 
@@ -16,7 +16,8 @@ function isCode(line: DiffLine): boolean {
 export async function highlightDiffLines(
   lines: DiffLine[],
   language: string,
-  theme: HighlightTheme
+  theme: HighlightTheme,
+  highlighter: CodeHighlighter,
 ): Promise<HighlightedDiffLine[]> {
   if (lines.length > MAX_HIGHLIGHT_LINES || lines.length === 0) {
     return lines.map((line) => ({
@@ -26,8 +27,8 @@ export async function highlightDiffLines(
   }
 
   try {
-    const normalizedLang = normalizeLanguage(language);
-    const highlighter = await getHighlighter(normalizedLang, theme);
+    const normalizedLang = highlighter.normalizeLanguage(language);
+    const loaded = await highlighter.get(normalizedLang, theme);
 
     const contentLines = lines
       .filter(isCode)
@@ -41,7 +42,7 @@ export async function highlightDiffLines(
     }
 
     const fullCode = contentLines.join('\n');
-    const html = highlighter.codeToHtml(fullCode, {
+    const html = loaded.codeToHtml(fullCode, {
       lang: normalizedLang,
       theme,
       transformers: [

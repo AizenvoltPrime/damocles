@@ -3,7 +3,7 @@
 import { ident, parse, tokenize, tokenTypes, type CssNode, type List, type StyleSheet } from 'css-tree';
 import type { Plugin } from 'vite';
 
-export const PAGE_LAYERS = ['damocles-protected', 'theme', 'base', 'components', 'utilities', 'damocles-user'] as const;
+export const PAGE_LAYERS = ['damocles-protected', 'theme', 'base', 'components', 'utilities', 'vendor', 'app', 'damocles-user'] as const;
 const PROTECTED = PAGE_LAYERS[0];
 const USER = PAGE_LAYERS[PAGE_LAYERS.length - 1]!;
 
@@ -68,7 +68,67 @@ export function protectedLayerRefusal(css: string): string | undefined {
   return important.has(PROTECTED) ? undefined : `${PROTECTED} holds no !important declaration`;
 }
 
-/** Fails the build when the stylesheets an entry chunk named in `entries` loads, read in the order they load, are refused. */
+// Their blocks hold keyframe selectors or descriptors, never a rule that styles an element.
+const NO_STYLE_RULES: ReadonlySet<string> = new Set(['layer', 'font-face', 'property', 'counter-style', 'font-feature-values', 'font-palette-values', 'page']);
+const KEYFRAMES = /^(?:-[a-z]+-)?keyframes$/;
+const holdsNoStyleRule = (atrule: string): boolean => NO_STYLE_RULES.has(atrule) || KEYFRAMES.test(atrule);
+
+function firstUnlayeredRule(nodes: List<CssNode> | undefined): string | undefined {
+  let found: string | undefined;
+  nodes?.some((node) => {
+    if (node.type === 'Rule') found = node.prelude.type === 'Raw' ? node.prelude.value.trim() : '';
+    else if (node.type === 'Atrule' && !holdsNoStyleRule(node.name.toLowerCase())) found = firstUnlayeredRule(node.block?.children);
+    return found !== undefined;
+  });
+  return found;
+}
+
+/**
+ * Why `css` holds a rule outside every cascade layer, which would beat every layer a theme's CSS is in, or undefined when it
+ * holds none: a style rule at the top level or inside a top-level conditional rule (@media, @supports, @container, @scope,
+ * @starting-style) is refused, and @font-face, @property, @keyframes, @counter-style and layer statements are not.
+ */
+export function unlayeredRuleRefusal(css: string): string | undefined {
+  const ast = parse(css, { parseAtrulePrelude: false, parseRulePrelude: false, parseValue: false }) as StyleSheet;
+  const selector = firstUnlayeredRule(ast.children);
+  return selector === undefined ? undefined : `it holds a rule outside every layer: ${selector}`;
+}
+
+// Tailwind's own layer of custom property fallbacks, which its build names ahead of the page's.
+const KNOWN_LAYERS: ReadonlySet<string> = new Set([...PAGE_LAYERS, 'properties']);
+
+// Layers at the top level or inside a conditional rule; a layer inside another layer ranks within it and is not read.
+function firstForeignLayer(nodes: List<CssNode> | undefined): string | undefined {
+  let found: string | undefined;
+  nodes?.some((node) => {
+    if (node.type !== 'Atrule') return false;
+    const name = node.name.toLowerCase();
+    if (name === 'import') found = 'it holds an @import, whose layers and rules cannot be read';
+    else if (name === 'layer') {
+      const names = (node.prelude?.type === 'Raw' ? node.prelude.value : '').split(',').map((layer) => layer.trim().split('.')[0]!).filter((layer) => layer !== '');
+      const foreign = names.find((layer) => !KNOWN_LAYERS.has(layer));
+      if (names.length === 0) found = 'it holds a layer without a name, which ranks after every named one';
+      else if (foreign !== undefined) found = `it names the layer ${foreign}, which is not a page layer`;
+    } else found = firstForeignLayer(node.block?.children);
+    return found !== undefined;
+  });
+  return found;
+}
+
+/**
+ * Why `css` could rank a layer after damocles-user, whose rules would beat a theme's, or undefined when it cannot: it holds
+ * no @import, no layer without a name and no layer but the page's own and Tailwind's properties, whichever stylesheet of the
+ * page loads first.
+ */
+export function foreignLayerRefusal(css: string): string | undefined {
+  return firstForeignLayer((parse(css, { parseAtrulePrelude: false, parseRulePrelude: false, parseValue: false }) as StyleSheet).children);
+}
+
+/**
+ * Fails the build when the stylesheets an entry chunk named in `entries` loads, read in the order they load, are refused, or
+ * when any stylesheet in the bundle, a lazy chunk's included, holds a rule outside every layer or could rank a layer after
+ * damocles-user.
+ */
 export function protectedLayerOrder(entries: readonly string[]): Plugin {
   return {
     name: 'damocles-protected-layer-order',
@@ -82,6 +142,12 @@ export function protectedLayerOrder(entries: readonly string[]): Plugin {
         if (sheets.length === 0 || sources.includes(undefined)) this.error(`the ${entry} entry loads no stylesheet emitted as text to check its layer order in`);
         const refusal = protectedLayerRefusal(sources.join('\n'));
         if (refusal !== undefined) this.error(`${sheets.join(', ')}, which the ${entry} entry loads: ${refusal}`);
+      }
+      for (const file of Object.values(bundle)) {
+        if (file.type !== 'asset' || !file.fileName.endsWith('.css')) continue;
+        const source = typeof file.source === 'string' ? file.source : new TextDecoder().decode(file.source);
+        const refusal = unlayeredRuleRefusal(source) ?? foreignLayerRefusal(source);
+        if (refusal !== undefined) this.error(`${file.fileName}: ${refusal}`);
       }
     },
   };

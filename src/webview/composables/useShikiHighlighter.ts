@@ -2,19 +2,14 @@ import {
   createHighlighter,
   type Highlighter,
   type BundledLanguage,
-  type BundledTheme,
   bundledLanguages,
 } from 'shiki';
 import { perfSpan, resourceFields } from '@/utils/perf';
 import { ownEntry } from '@/utils/ownEntry';
+import type { CodeHighlighter, HighlightTheme, SupportedTheme } from './code-highlighter';
 import { DAMOCLES_SHIKI_THEME, damoclesShikiTheme } from './damoclesShikiTheme';
 
 export type ExtendedLanguage = BundledLanguage | 'txt';
-
-type SupportedTheme = Extract<BundledTheme,
-  'github-dark' | 'github-light' | 'solarized-dark' | 'solarized-light' | 'nord' | 'min-dark' | 'min-light'>;
-
-export type HighlightTheme = SupportedTheme | typeof DAMOCLES_SHIKI_THEME;
 
 function themeInput(theme: HighlightTheme): SupportedTheme | typeof damoclesShikiTheme {
   return theme === DAMOCLES_SHIKI_THEME ? damoclesShikiTheme : theme;
@@ -165,28 +160,5 @@ export async function getHighlighter(language: string | undefined, theme: Highli
   }
 }
 
-/** The desktop's token-fed theme (HostCapabilities.damoclesTheme), else one matched to the VS Code theme. */
-export function codeHighlightTheme(damoclesTheme: boolean): HighlightTheme {
-  return damoclesTheme ? DAMOCLES_SHIKI_THEME : getShikiTheme();
-}
-
-export function getShikiTheme(): SupportedTheme {
-  const bodyClass = document.body.className.toLowerCase();
-  const isLight = bodyClass.includes('light');
-
-  const themeName = (document.body.dataset.vscodeThemeName || '').toLowerCase();
-
-  if (themeName.includes('solarized')) {
-    return isLight ? 'solarized-light' : 'solarized-dark';
-  }
-
-  if (themeName.includes('nord')) {
-    return 'nord';
-  }
-
-  if (themeName.includes('min') || themeName.includes('minimal')) {
-    return isLight ? 'min-light' : 'min-dark';
-  }
-
-  return isLight ? 'github-light' : 'github-dark';
-}
+/** The chat view's highlighter: every grammar and theme Shiki bundles, each loaded on first use. */
+export const SHIKI_HIGHLIGHTER: CodeHighlighter = { normalizeLanguage, isReady: isHighlighterReady, get: getHighlighter };

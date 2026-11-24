@@ -41,6 +41,15 @@ describe('the theme cards\' words', () => {
     expect(changeItemText({ t, locale: 'el' }, { kind: 'radius', value: 0.6 })).toBe('themeAgent.change.radius {"value":"0,6"}');
     expect(changeItemText({ t, locale: 'el' }, { kind: 'chatColumn', value: 52.5 })).toBe('themeAgent.change.chatColumn {"value":"52,5"}');
   });
+
+  it('word sprites and character edits by the counts that are not 0, and a change of the set alone', () => {
+    expect(changeItemText({ t, locale: 'en' }, { kind: 'sprites', added: 3, recolored: 1 })).toBe('themeAgent.change.spritesDrawn {"n":3} and themeAgent.change.spritesRecolored {"n":1}');
+    expect(changeItemText({ t, locale: 'en' }, { kind: 'sprites', added: 0, recolored: 2 })).toBe('themeAgent.change.spritesRecolored {"n":2}');
+    expect(changeItemText({ t, locale: 'el' }, { kind: 'characterEdits', added: 1, changed: 0, removed: 2 })).toBe('themeAgent.change.charactersAdded {"n":1} και themeAgent.change.charactersRemoved {"n":2}');
+    expect(changeItemText({ t, locale: 'en' }, { kind: 'characterEdits', added: 0, changed: 0, removed: 0 })).toBe('themeAgent.change.characterSet');
+    const english = createI18n({ legacy: false, locale: 'en', messages: { en } }).global;
+    expect(changeItemText({ t: english.t as Words['t'], locale: 'en' }, { kind: 'characterEdits', added: 1, changed: 2, removed: 0 })).toBe('1 project character added and 2 project characters changed');
+  });
 });
 
 describe('a removed part of a theme\'s CSS', () => {
@@ -84,5 +93,46 @@ describe('a theme\'s name on a card', () => {
     expect(historyChangeText(greek, { kind: 'restore', before: { kind: 'hold', theme: 'System colors', themeId: SYSTEM_THEME_ID, look: 'light' } }))
       .toContain('\u2068Χρώματα συστήματος\u2069');
     expect(historyChangeText(greek, { kind: 'pick', look: 'dark', theme: 'System colors', was: 'Damocles' })).toBe('επέλεξε το \u2068System colors\u2069 για την σκούρα εμφάνιση');
+  });
+
+  it('names a pinned built-in by its id, and keeps the name of a pin stored without one', () => {
+    const pin = { kind: 'projectPin', project: 'site', theme: 'System colors', character: 'Pip' } as const;
+    expect(historyChangeText(greek, { ...pin, themeId: SYSTEM_THEME_ID })).toBe('καρφίτσωσε τον χαρακτήρα \u2068Pip\u2069 για το \u2068site\u2069 στο θέμα \u2068Χρώματα συστήματος\u2069');
+    expect(changeItemText(greek, { ...pin, themeId: SYSTEM_THEME_ID })).toBe('Το \u2068site\u2069 δείχνει τον χαρακτήρα \u2068Pip\u2069 στο θέμα \u2068Χρώματα συστήματος\u2069');
+    expect(historyChangeText(greek, pin)).toContain('\u2068System colors\u2069');
+  });
+});
+
+describe("a project pin's words", () => {
+  const i18n = createI18n({ legacy: false, locale: 'en', messages: { en, el } });
+  const words = (locale: 'en' | 'el'): Words => {
+    i18n.global.locale.value = locale;
+    return { t: i18n.global.t as Words['t'], locale };
+  };
+  const pins = {
+    theme: { kind: 'projectPin', project: 'site', theme: 'Night', character: 'Pip' },
+    every: { kind: 'projectPin', project: 'site', theme: 'Night', character: 'Pip', everyTheme: true },
+    themeCleared: { kind: 'projectPin', project: 'site', theme: 'Night', character: null },
+    everyCleared: { kind: 'projectPin', project: 'site', theme: 'Night', character: null, everyTheme: true },
+  } as const;
+  const named = (text: string): string => text.replace(/\u2068|\u2069/g, '');
+
+  it('has every form in history and on a card, in both languages, with its names in place', () => {
+    const expected = {
+      en: {
+        history: { theme: 'pinned Pip to site in Night', every: 'kept Pip for site in every theme', themeCleared: 'unpinned the character of site in Night', everyCleared: 'stopped keeping a character for site in every theme' },
+        change: { theme: 'site shows Pip in Night', every: 'site shows Pip in every theme', themeCleared: "site shows the theme's own pick of character in Night", everyCleared: 'site no longer keeps a character in every theme' },
+      },
+      el: {
+        history: { theme: 'καρφίτσωσε τον χαρακτήρα Pip για το site στο θέμα Night', every: 'κράτησε τον χαρακτήρα Pip για το site σε κάθε θέμα', themeCleared: 'ξεκαρφίτσωσε τον χαρακτήρα του site στο θέμα Night', everyCleared: 'σταμάτησε να κρατά χαρακτήρα για το site σε κάθε θέμα' },
+        change: { theme: 'Το site δείχνει τον χαρακτήρα Pip στο θέμα Night', every: 'Το site δείχνει τον χαρακτήρα Pip σε κάθε θέμα', themeCleared: 'Το site δείχνει στο θέμα Night τον χαρακτήρα που διαλέγει το ίδιο το θέμα', everyCleared: 'Το site δεν κρατά πλέον χαρακτήρα σε κάθε θέμα' },
+      },
+    } as const;
+    for (const locale of ['en', 'el'] as const) {
+      for (const form of Object.keys(pins) as (keyof typeof pins)[]) {
+        expect(named(historyChangeText(words(locale), pins[form])), `${locale} history ${form}`).toBe(expected[locale].history[form]);
+        expect(named(changeItemText(words(locale), pins[form])), `${locale} change ${form}`).toBe(expected[locale].change[form]);
+      }
+    }
   });
 });

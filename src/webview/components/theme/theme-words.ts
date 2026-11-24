@@ -72,6 +72,8 @@ export function historyChangeText({ t, locale }: Words, change: ThemeHistoryChan
       return t('themeAgent.history.resume');
     case 'projectLook':
       return t(`themeAgent.history.projectLook.${change.look}`, { project: isolated(change.project) });
+    case 'projectPin':
+      return t(`themeAgent.history.projectPin.${pinWords(change)}`, pinValues(t, change));
     case 'storeRemoved':
       return t('themeAgent.history.storeRemoved', { themes: listText(locale, change.themes.map(isolated)) });
     case 'wallpapersOff':
@@ -82,6 +84,14 @@ export function historyChangeText({ t, locale }: Words, change: ThemeHistoryChan
       return t('themeAgent.history.other');
   }
 }
+
+type PinChange = Extract<ThemeHistoryChange, { kind: 'projectPin' }>;
+const pinWords = (pin: PinChange): string => `${pin.everyTheme === true ? 'every' : 'theme'}${pin.character === null ? 'Cleared' : ''}`;
+const pinValues = (t: Translate, pin: PinChange): Record<string, string> => ({
+  project: isolated(pin.project),
+  theme: isolated(themeNameText(t, pin.themeId === undefined ? undefined : { id: pin.themeId }, pin.theme) ?? pin.theme),
+  character: isolated(pin.character ?? ''),
+});
 
 /** One line of a proposal in words, each name in it marked as user text (isolated): show it through IsolatedText. */
 export function changeItemText({ t, locale }: Words, item: ThemeChangeItem): string {
@@ -129,12 +139,27 @@ export function changeItemText({ t, locale }: Words, item: ThemeChangeItem): str
       return t(item.cleared ? 'themeAgent.change.cssCleared' : 'themeAgent.change.css', { region: t(`themeAgent.cssRegion.${item.region}`) });
     case 'characters':
       return item.count === 0 ? t('themeAgent.change.charactersNone') : t('themeAgent.change.characters', { n: item.count }, item.count);
+    case 'sprites':
+      return listText(locale, [
+        ...(item.added > 0 ? [t('themeAgent.change.spritesDrawn', { n: item.added }, item.added)] : []),
+        ...(item.recolored > 0 ? [t('themeAgent.change.spritesRecolored', { n: item.recolored }, item.recolored)] : []),
+      ]);
+    case 'characterEdits': {
+      const parts = [
+        ...(item.added > 0 ? [t('themeAgent.change.charactersAdded', { n: item.added }, item.added)] : []),
+        ...(item.changed > 0 ? [t('themeAgent.change.charactersChanged', { n: item.changed }, item.changed)] : []),
+        ...(item.removed > 0 ? [t('themeAgent.change.charactersRemoved', { n: item.removed }, item.removed)] : []),
+      ];
+      return parts.length === 0 ? t('themeAgent.change.characterSet') : listText(locale, parts);
+    }
     case 'schedule':
       return item.enabled ? t('themeAgent.change.scheduleOn', { n: item.rules }, item.rules) : t('themeAgent.change.scheduleOff');
     case 'projectLook':
       if (item.look === 'none') return t('themeAgent.change.projectLookNone', { project: isolated(item.project) });
       if (item.look === 'full') return t(`themeAgent.change.projectLookFull.${item.themeLook ?? 'auto'}`, { project: isolated(item.project), theme: isolated(item.theme ?? '') });
       return t('themeAgent.change.projectLookTouches', { project: isolated(item.project), touches: listText(locale, (item.touches ?? []).map((touch) => t(`themeAgent.change.touch.${touch}`))) });
+    case 'projectPin':
+      return t(`themeAgent.change.projectPin.${pinWords(item)}`, pinValues(t, item));
     case 'undo':
       return t('themeAgent.change.undo', { change: historyChangeText({ t, locale }, item.change) });
   }

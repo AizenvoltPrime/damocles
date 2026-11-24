@@ -4,12 +4,13 @@ import { useI18n } from "vue-i18n";
 import { Button } from "@/components/ui/button";
 import { IconCheck, IconCopy } from "@/components/icons";
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard";
-import { getHighlighter, codeHighlightTheme, normalizeLanguage, isHighlighterReady } from "@/composables/useShikiHighlighter";
+import { codeHighlightTheme, useCodeHighlighter } from "@/composables/code-highlighter";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { escapeHtml } from "@shared/utils";
 
 const { t } = useI18n();
 const settingsStore = useSettingsStore();
+const highlighter = useCodeHighlighter();
 
 const props = defineProps<{
   code: string;
@@ -22,8 +23,10 @@ const { hasCopied, copyToClipboard } = useCopyToClipboard();
 const highlightedHtml = ref<string>("");
 const isHovering = ref(false);
 const isMounted = ref(true);
+// Counts highlight runs: only the latest one writes, so a slower earlier run never lands last.
+let highlightRun = 0;
 
-const normalizedLang = computed(() => normalizeLanguage(props.language));
+const normalizedLang = computed(() => highlighter.normalizeLanguage(props.language));
 
 const displayLanguage = computed(() => {
   const lang = props.language?.toLowerCase();
@@ -33,19 +36,20 @@ const displayLanguage = computed(() => {
 
 async function highlight() {
   if (!isMounted.value) return;
+  const run = ++highlightRun;
 
   const fallbackHtml = `<pre style="padding:0;margin:0;color:inherit;"><code class="hljs">${escapeHtml(props.code)}</code></pre>`;
 
   const theme = codeHighlightTheme(settingsStore.hostCapabilities.damoclesTheme);
-  if (!isHighlighterReady(normalizedLang.value, theme)) {
+  if (!highlighter.isReady(normalizedLang.value, theme)) {
     highlightedHtml.value = fallbackHtml;
   }
 
   try {
-    const highlighter = await getHighlighter(normalizedLang.value, theme);
-    if (!isMounted.value) return;
+    const loaded = await highlighter.get(normalizedLang.value, theme);
+    if (!isMounted.value || run !== highlightRun) return;
 
-    const html = highlighter.codeToHtml(props.code, {
+    const html = loaded.codeToHtml(props.code, {
       lang: normalizedLang.value,
       theme,
       transformers: [
@@ -72,7 +76,7 @@ async function highlight() {
     }
   } catch (e) {
     console.error("[CodeBlock] Highlighting failed:", e);
-    if (isMounted.value) {
+    if (isMounted.value && run === highlightRun) {
       highlightedHtml.value = fallbackHtml;
     }
   }
@@ -145,35 +149,38 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.code-block-container {
-  box-shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.25), 0 2px 6px -1px rgba(0, 0, 0, 0.2);
-}
+@layer app {
+  .code-block-container {
+    box-shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.25), 0 2px 6px -1px rgba(0, 0, 0, 0.2);
+  }
 
-.code-block-content {
-  background: var(--surface-code);
-  padding: 0.75rem 1rem;
-  color: var(--d-text);
-}
+  .code-block-content {
+    background: var(--surface-code);
+    padding: 0.75rem 1rem;
+    color: var(--d-text);
+  }
 
-.code-block-content :deep(pre) {
-  margin: 0;
-  padding: 0;
-  background: transparent !important;
-}
+  /* Important against Shiki's inline backgrounds; it also beats a theme's important background (docs/themes.md "Custom CSS"). */
+  .code-block-content :deep(pre) {
+    margin: 0;
+    padding: 0;
+    background: transparent !important;
+  }
 
-.code-block-content :deep(code) {
-  font-size: 0.85em;
-  font-family: var(--d-mono);
-  white-space: pre;
-  background: transparent !important;
-}
+  .code-block-content :deep(code) {
+    font-size: 0.85em;
+    font-family: var(--d-mono);
+    white-space: pre;
+    background: transparent !important;
+  }
 
-.code-block-content :deep(.line) {
-  display: block;
-  background: transparent !important;
-}
+  .code-block-content :deep(.line) {
+    display: block;
+    background: transparent !important;
+  }
 
-.code-block-content :deep(span) {
-  background: transparent !important;
+  .code-block-content :deep(span) {
+    background: transparent !important;
+  }
 }
 </style>

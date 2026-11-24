@@ -2,7 +2,7 @@
 // a renderer draws. Pure: core, main and the renderers import it.
 import { l, type LocalizedText } from '../localized-text';
 import { MAX_TRANSITIONS_PER_WINDOW } from './flash';
-import { stripRefusal, validateTheme, type AssetMeta, type CharFrame, type CharacterSet, type ThemeFile } from './schema';
+import { stripRefusal, validateTheme, type AssetMeta, type CharFrame, type CharacterSelection, type CharacterSet, type ThemeFile } from './schema';
 import { flashPlayable, stillUrl, type FlashRecord } from './wallpapers';
 
 export const CHARACTER_STATES = ['idle', 'running', 'waiting'] as const;
@@ -234,6 +234,13 @@ export function checkEveryThemePin(value: unknown): EveryThemePin | undefined {
   return { ...checked, assets };
 }
 
+/** One sprite's asset entry checked as a theme's assets are; undefined unless it holds up and is a sprite. */
+export function checkSpriteAsset(sha256: string, value: unknown): AssetMeta | undefined {
+  const result = validateTheme({ schemaVersion: 1, id: PIN_CHECK_ID, name: 'pin', looks: { dark: { colors: PIN_CHECK_COLORS } }, assets: { [sha256]: value } });
+  const asset = result.ok ? result.theme.assets?.[sha256] : undefined;
+  return asset?.kind === 'sprite' ? asset : undefined;
+}
+
 /** projects.json as read: an entry that does not check is dropped, never thrown. */
 export function parseProjectsFile(json: unknown): ProjectsFile {
   if (!isRecord(json) || json['version'] !== PROJECTS_FILE_VERSION || !isRecord(json['pins'])) return EMPTY_PROJECTS;
@@ -327,6 +334,8 @@ export interface ShownCharacters {
   // project key → an index into characters (a pin of the shown theme) or the project's every-theme character
   readonly pins: Readonly<Record<string, number | CharacterView>>;
   readonly motion: ShownCharacterMotion;
+  // the shown set's mark of the selected project's character; outline when the shown theme has no set
+  readonly selection: CharacterSelection;
 }
 
 export interface FrameSources {
@@ -373,8 +382,8 @@ export function characterView(character: Character, assets: Readonly<Record<stri
 }
 
 /**
- * The characters of `set` (undefined: the shown theme has none) and of every project's pins. A pin of the shown theme wins, then
- * a character kept in every theme, then the project key's hash over the set.
+ * The characters of `set` (undefined: the shown theme has none) and of every project's pins. A pin of the set's own theme
+ * (`set.themeId`) wins, then a character kept in every theme, then the project key's hash over the set.
  */
 export function shownCharacters(
   set: { readonly themeId: string; readonly characters?: CharacterSet; readonly assets?: Readonly<Record<string, AssetMeta>> } | undefined,
@@ -397,16 +406,27 @@ export function shownCharacters(
     if (every) pins[key] = every;
   }
   if (characters.length === 0 && Object.keys(pins).length === 0) return undefined;
-  return { characters, pins, motion };
+  return { characters, pins, motion, selection: set?.characters?.selection ?? 'outline' };
 }
 
 /** The character a project shows; undefined: its letter. */
 export function characterFor(shown: ShownCharacters | undefined, projectKey: string | undefined): CharacterView | undefined {
-  if (!shown || projectKey === undefined) return undefined;
-  const pin = shown.pins[projectKey];
-  if (typeof pin === 'object') return pin;
-  if (typeof pin === 'number') return shown.characters[pin];
-  return shown.characters.length > 0 ? shown.characters[characterIndex(projectKey, shown.characters.length)] : undefined;
+  return projectKey === undefined ? undefined : characterChoice(shown, projectKey)?.view;
+}
+
+/** Why a project shows its character: a pin of the shown theme, a character kept in every theme, or its key's hash. */
+export const CHARACTER_CHOICE_BY = ['themePin', 'everyTheme', 'projectKey'] as const;
+export type CharacterChoiceBy = (typeof CHARACTER_CHOICE_BY)[number];
+
+/** The character a project shows and what decided it; undefined: its letter. */
+export function characterChoice(shown: ShownCharacters | undefined, projectKey: string): { readonly view: CharacterView; readonly by: CharacterChoiceBy } | undefined {
+  if (!shown) return undefined;
+  const pin = Object.hasOwn(shown.pins, projectKey) ? shown.pins[projectKey] : undefined;
+  if (typeof pin === 'object') return { view: pin, by: 'everyTheme' };
+  const pinned = typeof pin === 'number' ? shown.characters[pin] : undefined;
+  if (pinned) return { view: pinned, by: 'themePin' };
+  const hashed = shown.characters.length > 0 ? shown.characters[characterIndex(projectKey, shown.characters.length)] : undefined;
+  return hashed ? { view: hashed, by: 'projectKey' } : undefined;
 }
 
 /** The state's image, falling back to idle for a state the character does not draw. */

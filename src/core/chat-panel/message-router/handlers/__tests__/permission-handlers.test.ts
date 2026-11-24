@@ -361,6 +361,7 @@ describe("the theme cards' answers", () => {
       resolveThemeChange: vi.fn(),
       setThemeShowInWindow: vi.fn(),
       resolveThemeScreenshot: vi.fn(),
+      revokeScreenshotGrant: vi.fn(),
       resolveThemeInstall: vi.fn(),
       allowThemeInstallFlash: vi.fn(),
     };
@@ -407,13 +408,20 @@ describe("the theme cards' answers", () => {
     expect(permissionHandler.setThemeShowInWindow.mock.calls).toEqual([["p", true], ["p", false]]);
   });
 
-  it("resolveThemeScreenshot passes Allow and Deny on, and no other choice", async () => {
+  it("resolveThemeScreenshot passes Allow, Allow for this chat and Deny on, and no other choice", async () => {
     const { permissionHandler, send } = themeHandlers();
     for (const bad of [{ promptId: 7, choice: "allow" }, { promptId: "p", choice: "yes" }, { promptId: "p", choice: true }, { promptId: "p" }]) await send({ type: "resolveThemeScreenshot", ...bad });
     expect(permissionHandler.resolveThemeScreenshot).not.toHaveBeenCalled();
     await send({ type: "resolveThemeScreenshot", promptId: "p", choice: "allow" });
+    await send({ type: "resolveThemeScreenshot", promptId: "p", choice: "allowChat" });
     await send({ type: "resolveThemeScreenshot", promptId: "p", choice: "deny" });
-    expect(permissionHandler.resolveThemeScreenshot.mock.calls).toEqual([["p", "allow"], ["p", "deny"]]);
+    expect(permissionHandler.resolveThemeScreenshot.mock.calls).toEqual([["p", "allow"], ["p", "allowChat"], ["p", "deny"]]);
+  });
+
+  it("revokeThemeScreenshotGrant ends the panel's grant, whichever chat it names", async () => {
+    const { permissionHandler, send } = themeHandlers();
+    await send({ type: "revokeThemeScreenshotGrant", chat: "another" });
+    expect(permissionHandler.revokeScreenshotGrant.mock.calls).toEqual([[]]);
   });
 
   it("resolveThemeInstall passes Cancel on as the choice alone, and Install only with a boolean arrangement and a known clash choice", async () => {

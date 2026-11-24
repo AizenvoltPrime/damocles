@@ -1,4 +1,6 @@
 // @vitest-environment happy-dom
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { applyHostTheme } from '../apply-theme';
 import type { PanelTheme } from '../panel-channels';
@@ -24,6 +26,41 @@ describe('the preload\'s theme CSS', () => {
     applyHostTheme({ ...THEME, customCss: SCOPED.replace('#123456', '#654321') });
     expect(document.querySelectorAll(`#${HOST_THEME_USER_STYLE_ID}`)).toHaveLength(1);
     expect(document.getElementById(HOST_THEME_USER_STYLE_ID)!.textContent).toContain('#654321');
+  });
+
+  it('mirrors main\'s theme revision, which the page acknowledges, and leaves it for a theme that carries none', () => {
+    applyHostTheme({ ...THEME, revision: 7 });
+    expect(document.documentElement.dataset['themeRevision']).toBe('7');
+    applyHostTheme(THEME);
+    expect(document.documentElement.dataset['themeRevision']).toBe('7');
+  });
+
+  it('holds transitions off for the one style flush of a change, so the page paints the new theme at once', () => {
+    const flushes: { switching: boolean; css: string | null; light: boolean }[] = [];
+    Object.defineProperty(document.body, 'offsetHeight', {
+      configurable: true,
+      get: () => {
+        flushes.push({
+          switching: document.documentElement.hasAttribute('data-theme-switching'),
+          css: document.getElementById(HOST_THEME_STYLE_ID)!.textContent,
+          light: document.body.classList.contains('vscode-light'),
+        });
+        return 0;
+      },
+    });
+    try {
+      applyHostTheme({ ...THEME, kind: 'light', css: ':root{--d-bg:#fff}' });
+    } finally {
+      delete (document.body as unknown as { offsetHeight?: number }).offsetHeight;
+    }
+    expect(flushes).toEqual([{ switching: true, css: ':root{--d-bg:#fff}', light: true }]);
+    expect(document.documentElement.hasAttribute('data-theme-switching')).toBe(false);
+  });
+
+  it('has the rule that holds transitions off, important in the app layer so a theme cannot bring them back', () => {
+    const css = readFileSync(join(__dirname, '..', '..', '..', 'webview', 'style.css'), 'utf8').replace(/\r\n/g, '\n');
+    expect(css).toContain('  [data-theme-switching],\n  [data-theme-switching] *,\n  [data-theme-switching] *::before,\n  [data-theme-switching] *::after {\n    transition: none !important;\n  }');
+    expect(css.lastIndexOf('@layer app {', css.indexOf('[data-theme-switching]'))).toBeGreaterThan(css.lastIndexOf('\n}\n', css.indexOf('[data-theme-switching]')));
   });
 
   it('never parses the CSS as markup', () => {

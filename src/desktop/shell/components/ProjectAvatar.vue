@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { characterFor, frameFor, type CharacterState } from '@shared/themes/characters';
-import { pageCharacters } from '../characters';
+import { usePageCharacters } from '../characters';
 import { avatarHue, avatarInitial } from '../project-avatar';
 import CharacterImage from './CharacterImage.vue';
 
@@ -16,11 +16,13 @@ const props = withDefaults(defineProps<{
   active?: boolean | undefined;
   // the project's name and state are in text beside the avatar, so the character says nothing more
   decorative?: boolean;
+  // marked as the selected project of a list: a ring around a letter, the set's selection on a character
+  selected?: boolean;
 }>(), { projectKey: undefined, state: undefined, active: undefined });
 const { t } = useI18n();
 
 const style = computed(() => ({ '--avatar-hue': String(avatarHue(props.name)) }));
-const page = computed(() => pageCharacters());
+const page = usePageCharacters();
 const character = computed(() => characterFor(page.value.shown, props.projectKey));
 const state = computed<CharacterState>(() => props.state ?? (props.projectKey !== undefined ? page.value.states[props.projectKey] : undefined) ?? 'idle');
 const active = computed(() => props.active ?? (props.projectKey !== undefined && page.value.selected === props.projectKey));
@@ -39,6 +41,8 @@ watch(() => `${frame.value?.url ?? ''} ${frame.value?.still ?? ''}`, () => (fail
     v-if="!frame || failed"
     aria-hidden="true"
     class="project-avatar flex shrink-0 items-center justify-center font-bold"
+    data-avatar="letter"
+    :data-selected="selected ? '' : undefined"
     :style="style"
   >{{ avatarInitial(name) }}</span>
   <!-- the name sits on the wrapper: the image under it changes with the pointer, and its own text would come and go -->
@@ -49,12 +53,16 @@ watch(() => `${frame.value?.url ?? ''} ${frame.value?.still ?? ''}`, () => (fail
     :role="decorative ? undefined : 'img'"
     :aria-label="decorative ? undefined : label"
     :aria-hidden="decorative ? 'true' : undefined"
+    data-avatar="character"
+    :data-character="character?.name"
+    :data-selection="page.shown?.selection"
+    :data-selected="selected ? '' : undefined"
     :data-character-state="state"
     :data-character-moving="moves ? 'true' : 'false'"
     :style="style"
   >
     <CharacterImage
-      :frame="frame"
+      :image="frame"
       alt=""
       :moves="moves"
       :hover="motion === 'hover'"

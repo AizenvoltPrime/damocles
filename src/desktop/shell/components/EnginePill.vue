@@ -2,10 +2,11 @@
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { RotateCw } from 'lucide-vue-next';
-import type { DamoclesShellApi, ShellEngine } from '../../preload/shell-channels';
+import type { ShellEngine } from '../../preload/shell-channels';
 import { Button } from '@/components/ui/button';
+import type { EnginePillApi } from './title-bar-api';
 
-const props = defineProps<{ api: DamoclesShellApi; halted: boolean; engines: readonly ShellEngine[] }>();
+const props = defineProps<{ api: EnginePillApi; halted: boolean; engines: readonly ShellEngine[] }>();
 const { t } = useI18n();
 
 // A host's pill shows while its engine is halted and while the Restart it offered is in flight.

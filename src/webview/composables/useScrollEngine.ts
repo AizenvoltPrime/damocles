@@ -20,7 +20,8 @@ const OVERSCAN = 5;
 
 const LEVEL_GAPS_REM = [1, 0.75, 0.5] as const;
 
-function getGap(prev: VirtualItem, curr: VirtualItem): number {
+/** The px between two consecutive transcript rows. */
+export function getGap(prev: VirtualItem, curr: VirtualItem): number {
   if (prev.spacingLevel === 0 || curr.spacingLevel === 0) return remPx(LEVEL_GAPS_REM[0]);
   if (prev.sourceMessageId !== curr.sourceMessageId) return remPx(LEVEL_GAPS_REM[0]);
   return remPx(prev.spacingLevel === 1 || curr.spacingLevel === 1 ? LEVEL_GAPS_REM[1] : LEVEL_GAPS_REM[2]);

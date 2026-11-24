@@ -26,6 +26,9 @@
 @keyframes o-grow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
 /* o-grow's reverse: a banner collapses back into its top edge. */
 @keyframes o-shrink{from{opacity:1;transform:scaleY(1)}to{opacity:0;transform:scaleY(0)}}
+/* A strip in flow opens from no height and collapses back to none, so the rows under it slide rather than jump. */
+@keyframes d-strip-open{from{height:0;padding-block:0;border-block-width:0}}
+@keyframes d-strip-close{to{height:0;padding-block:0;border-block-width:0}}
 /* A line draws itself from its start; --len is at least the path's length, set with stroke-dasharray to the same value. */
 @keyframes d-draw{from{stroke-dashoffset:var(--len,120)}to{stroke-dashoffset:0}}
 @keyframes o-bar{from{transform:scaleX(0)}to{transform:scaleX(1)}}
@@ -108,6 +111,10 @@
 /* A connection banner opens from its top edge and collapses back into it. */
 .t-banner-enter-active{transform-origin:top;animation:o-grow .16s var(--ease-out)}
 .t-banner-leave-active{transform-origin:top;animation:o-shrink .16s ease-in both}
+/* A trusted strip under the title bar animates its height alone: a fade or a scale would hold its visibility check
+   (docs/invariants.md "Theme CSS and trusted regions"). interpolate-size lets the height run to and from auto. */
+.t-strip-enter-active{interpolate-size:allow-keywords;overflow:clip;animation:d-strip-open .18s var(--ease-out)}
+.t-strip-leave-active{interpolate-size:allow-keywords;overflow:clip;animation:d-strip-close .16s ease-in both}
 /* A host's latency sparkline draws itself (stroke-dasharray: var(--len)); replayed by re-keying the path. */
 .d-draw{stroke-dasharray:var(--len,120);animation:d-draw .7s var(--ease-out) both}
 /* A host that came back: a glow over its dot lights up and fades once. */

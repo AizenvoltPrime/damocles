@@ -107,6 +107,9 @@ function onRenameKeydown(event: KeyboardEvent): void {
   <div
     v-if="renaming"
     role="none"
+    data-chat-row
+    :data-selected="selected ? '' : undefined"
+    :data-chat-state="chat.status"
     class="flex h-full d-fade-in items-center gap-1.5 rounded-lg bg-(--d-hover) px-1.5"
     data-testid="chat-rename"
     @keydown.stop
@@ -159,6 +162,9 @@ function onRenameKeydown(event: KeyboardEvent): void {
     role="option"
     :aria-selected="selected"
     :data-chat-id="chat.id"
+    data-chat-row
+    :data-selected="selected ? '' : undefined"
+    :data-chat-state="chat.status"
     :data-status="chat.status"
     :data-loaded="chat.loaded"
     :data-worktree="chat.worktree?.status"

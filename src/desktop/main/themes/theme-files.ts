@@ -118,7 +118,7 @@ export function shownChange(change: ThemeHistoryChange, localization: { t(messag
     if (plain.kind === 'pick') {
       return { ...plain, theme: shownStoredName(plain.themeId, plain.theme, localization), ...(plain.was !== undefined ? { was: shownStoredName(plain.wasId, plain.was, localization) } : {}) };
     }
-    if (plain.kind === 'hold') return { ...plain, theme: shownStoredName(plain.themeId, plain.theme, localization) };
+    if (plain.kind === 'hold' || plain.kind === 'projectPin') return { ...plain, theme: shownStoredName(plain.themeId, plain.theme, localization) };
     return plain;
   };
   return change.kind === 'restore' ? { kind: 'restore', before: shown(change.before) } : shown(change);

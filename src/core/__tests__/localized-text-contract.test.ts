@@ -59,6 +59,7 @@ const ALLOWED: Readonly<Record<string, string>> = {
   // a theme file's own texts: its description as its author wrote it, a chat's title as an agent change's author, and the
   // license text a font file carries
   'ExtensionToWebviewMessage[type="requestThemeChange"].theme.description': THIRD_PARTY,
+  'ExtensionToWebviewMessage[type="requestThemeScreenshot"].draft.theme.description': THIRD_PARTY,
   'MainRequests.themes.history.result.entries[].actor[kind="agent"].title': NAME,
   'MainRequests.themes.importFont.result.asset.license.text': THIRD_PARTY,
   'MainRequests.themes.importImage.result.asset.license.text': THIRD_PARTY,
@@ -100,6 +101,7 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'MainRequests.themes.install.prepare.result.preview.theme.origin.removedFromStore.reason': THIRD_PARTY,
   'MainRequests.themes.install.commit.result.preview.theme.origin.removedFromStore.reason': THIRD_PARTY,
   'ExtensionToWebviewMessage[type="requestThemeChange"].theme.origin.removedFromStore.reason': THIRD_PARTY,
+  'ExtensionToWebviewMessage[type="requestThemeScreenshot"].draft.theme.origin.removedFromStore.reason': THIRD_PARTY,
   'ExtensionToWebviewMessage[type="requestThemeInstall"].preview.theme.origin.removedFromStore.reason': THIRD_PARTY,
   'ExtensionToWebviewMessage[type="themeInstallUpdated"].preview.theme.origin.removedFromStore.reason': THIRD_PARTY,
   'MainRequests.themes.relay.stage.result[kind="change"].card.theme.origin.removedFromStore.reason': THIRD_PARTY,

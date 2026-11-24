@@ -352,6 +352,25 @@ describe('core routes', () => {
     expect(MAIN_REQUEST_ROUTES['user.memory.list']).toBe('refused');
   });
 
+  it("send a remote chat's screenshot and draft capture only to the pinned device, and refuse a client's grant revoke or draft read", () => {
+    expect(CORE_REQUEST_ROUTES['user.theme.screenshotTake']).toEqual({ to: 'pinnedClient', needs: THEMES_FEATURE });
+    expect(CORE_REQUEST_ROUTES['user.theme.screenshotCapture']).toEqual({ to: 'pinnedClient', needs: THEMES_FEATURE });
+    // this computer's core alone answers them, for its own main
+    expect(MAIN_REQUEST_ROUTES['themes.relay.draftTheme']).toBe('refused');
+    expect(MAIN_REQUEST_ROUTES['themes.screenshotGrantRevoke']).toBe('refused');
+    expect(CORE_REQUEST_ROUTES['themes.screenshotTake']).toEqual({ to: 'refused' });
+  });
+
+  // docs/invariants.md "Data scopes": a daemon's core builds no theme store and refuses every themes.* request
+  it('refuse every themes.* request in both directions, and drop every themes.* event of a daemon\'s core', () => {
+    const themes = (keys: readonly string[]): string[] => keys.filter((key) => key.startsWith('themes.'));
+    expect(themes(Object.keys(CORE_REQUEST_ROUTES)).length).toBeGreaterThan(0);
+    for (const method of themes(Object.keys(CORE_REQUEST_ROUTES))) expect(CORE_REQUEST_ROUTES[method as keyof typeof CORE_REQUEST_ROUTES], method).toEqual({ to: 'refused' });
+    expect(themes(Object.keys(MAIN_REQUEST_ROUTES)).length).toBeGreaterThan(0);
+    for (const method of themes(Object.keys(MAIN_REQUEST_ROUTES))) expect(MAIN_REQUEST_ROUTES[method as keyof typeof MAIN_REQUEST_ROUTES], method).toBe('refused');
+    for (const event of themes(Object.keys(CORE_EVENT_ROUTES))) expect(CORE_EVENT_ROUTES[event as keyof typeof CORE_EVENT_ROUTES], event).toBe('dropped');
+  });
+
   it('ask a remote core\'s Locate only of the clicking device, and only when its attach listed projects.relocate', async () => {
     const h = setUp();
     const asked: unknown[] = [];

@@ -1,19 +1,14 @@
-import { createApp } from 'vue';
-import { createPinia } from 'pinia';
-import App from './App.vue';
-import { i18n, mountInInitialLocale } from './i18n';
+// First, so the bundle opens with its @layer statement, ahead of every layered block the components' CSS adds.
 import './style.css';
+import { createChatApp } from './chat-app';
+import { mountInInitialLocale } from './i18n';
 import { logBootResources } from './utils/perf';
 import { mirrorVsCodeReduceMotion } from './utils/reducedMotion';
 
 // Desktop's preload sets data-reduced-motion from damocles.desktop.reduceMotion; VS Code reports its own setting on body.
 if (typeof acquireVsCodeApi === 'function') mirrorVsCodeReduceMotion();
 
-const app = createApp(App);
-const pinia = createPinia();
-
-app.use(pinia);
-app.use(i18n);
+const app = createChatApp();
 void mountInInitialLocale(() => {
   app.mount('#app');
   logBootResources();

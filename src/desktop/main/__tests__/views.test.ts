@@ -29,6 +29,7 @@ let restacks: number;
 let revealed: DesktopPanel[];
 let savedSessionChanges: DesktopPanel[];
 let modalChanges: string[];
+let themeAcks: string[];
 let pageEvents: string[];
 let popupOpen: boolean;
 // the chats main withholds, read at every layout
@@ -78,6 +79,8 @@ function views(width = 1200): PanelViews {
     onRendererGaveUp: (panel) => gaveUp.push(panel),
     onRendererGone: () => undefined,
     onSavedSessionChange: (chat) => savedSessionChanges.push(chat),
+    onThemeApplied: (panel, revision) => themeAcks.push(`${panel.panelId}:${revision}`),
+    onDocumentGone: (panel) => themeAcks.push(`${panel.panelId}:gone`),
     onModalChange: (chat) => modalChanges.push(`${chat.panelId}:${chat.modalOpen}`),
     popupOpen: () => popupOpen,
     withholds: (chat) => withheld.has(chat),
@@ -103,6 +106,7 @@ beforeEach(() => {
   revealed = [];
   savedSessionChanges = [];
   modalChanges = [];
+  themeAcks = [];
   pageEvents = [];
   popupOpen = false;
   withheld = new Set();
@@ -709,6 +713,26 @@ describe('panel IPC', () => {
     send(local, { action: 'cancel', id: 'q1' });
     expect(queueActions).toEqual(['ssh+h1:cancel:q1', 'ssh+h1:discard:q2']);
     expect(lines.filter((line) => line.includes('dropped a malformed queue action'))).toHaveLength(4);
+  });
+
+  it("takes a page's theme acknowledgement as a non-negative safe integer from its own frame, and says when its document goes", () => {
+    const tabs = views();
+    const chat = tabs.create({ options: CHAT });
+    const contents = contentsOf(chat);
+    const ack = (payload: unknown, sender: unknown = contents): void => {
+      contents.ipc.emit(PANEL_CHANNELS.themeApplied, { sender, senderFrame: { url: chat.pageUrl, parent: null } }, payload);
+    };
+    ack(2, contentsOf(tabs.create({ options: CHAT })));
+    for (const malformed of [-1, 2.5, '2', Number.MAX_SAFE_INTEGER + 1, null]) ack(malformed);
+    expect(themeAcks).toEqual([]);
+    expect(lines.filter((line) => line.includes('dropped a malformed theme acknowledgement'))).toHaveLength(5);
+    ack(0);
+    ack(2);
+    contents.emit('did-start-navigation', { url: chat.pageUrl, isMainFrame: false, isSameDocument: false });
+    contents.emit('did-start-navigation', { url: `${chat.pageUrl}#x`, isMainFrame: true, isSameDocument: true });
+    contents.emit('did-start-navigation', { url: chat.pageUrl, isMainFrame: true, isSameDocument: false });
+    contents.emit('render-process-gone', {}, { reason: 'crashed' });
+    expect(themeAcks).toEqual([`${chat.panelId}:0`, `${chat.panelId}:2`, `${chat.panelId}:gone`, `${chat.panelId}:gone`]);
   });
 
   it("follows a chat page's modal layer from its own reports, each change once, and drops it when the page navigates or goes away", () => {

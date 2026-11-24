@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { createTwoFilesPatch, FILE_HEADERS_ONLY } from 'diff';
 import { buildFileDiff } from '../parseUnifiedDiff';
 import { highlightDiffLines } from '../highlightDiff';
+import { SHIKI_HIGHLIGHTER } from '@/composables/useShikiHighlighter';
 
 /** The text a highlighted row shows, without Shiki's markup. */
 function shownText(html: string): string {
@@ -24,7 +25,7 @@ describe('highlightDiffLines', () => {
     expect(diff.lines.map((l) => l.type)).toContain('gap');
     expect(diff.lines.slice(-5).map((l) => l.type)).toEqual(['deletion', 'noNewline', 'addition', 'addition', 'addition']);
 
-    const highlighted = await highlightDiffLines(diff.lines, 'typescript', 'github-dark');
+    const highlighted = await highlightDiffLines(diff.lines, 'typescript', 'github-dark', SHIKI_HIGHLIGHTER);
 
     expect(highlighted.map((line) => shownText(line.highlightedContent))).toEqual(
       diff.lines.map((line) => (line.type === 'gap' || line.type === 'noNewline' ? '' : line.content)),

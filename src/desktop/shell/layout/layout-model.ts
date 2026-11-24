@@ -42,6 +42,27 @@ export function clampSlotSize(sizePx: number, roomPx: number, minPx: number): nu
   return Math.round(Math.min(Math.max(sizePx, minPx), slotMax(roomPx, minPx, sizePx)));
 }
 
+export interface SlotSizes {
+  readonly sideWidth: number;
+  readonly bottomHeight: number;
+  // each sash's range
+  readonly sideMin: number;
+  readonly sideMax: number;
+  readonly bottomMin: number;
+  readonly bottomMax: number;
+}
+
+/** The side and bottom slots' sizes and their sashes' ranges in a grid of `widthPx` x `heightPx`, a sash `sashPx` thick. */
+export function slotSizes(sizes: Pick<ShellGridLayout, 'sideWidth' | 'bottomHeight'>, widthPx: number, heightPx: number, sashPx: number, columnMinPx: number, rowMinPx: number): SlotSizes {
+  const sideRoom = widthPx - sashPx;
+  const bottomRoom = heightPx - sashPx;
+  const sideMin = slotMin(sideRoom, columnMinPx);
+  const bottomMin = slotMin(bottomRoom, rowMinPx);
+  const sideWidth = clampSlotSize(sizes.sideWidth, sideRoom, sideMin);
+  const bottomHeight = clampSlotSize(sizes.bottomHeight, bottomRoom, bottomMin);
+  return { sideWidth, bottomHeight, sideMin, sideMax: slotMax(sideRoom, sideMin, sideWidth), bottomMin, bottomMax: slotMax(bottomRoom, bottomMin, bottomHeight) };
+}
+
 /** The grid's minimum width: one column's minimum, or both columns' and the sash between them when both show. */
 export function gridMinWidth(areas: GridAreas, columnMinPx: number, sashPx: number): number {
   return areas.main && areas.side ? 2 * columnMinPx + sashPx : columnMinPx;
@@ -55,6 +76,26 @@ export interface GridAreas {
   // a sash shows only between two shown slots
   readonly sideSash: boolean;
   readonly bottomSash: boolean;
+}
+
+// a type, not an interface, so it is a Vue StyleValue
+export type GridTemplate = {
+  readonly gridTemplateColumns: string;
+  readonly gridTemplateRows: string;
+  readonly gridTemplateAreas: string;
+};
+
+/**
+ * The grid's tracks: the side slot `sideWidthPx` wide and the bottom slot `bottomHeightPx` high beside a `sashRem` sash, both
+ * already clamped; a hidden slot's track collapses to 0 and its neighbour takes the room.
+ */
+export function gridTemplate(areas: GridAreas, sashRem: number, sideWidthPx: number, bottomHeightPx: number): GridTemplate {
+  const { main, side, bottom } = areas;
+  const sash = `${sashRem}rem`;
+  const columns = main && side ? `minmax(0, 1fr) ${sash} ${sideWidthPx}px` : side && !main ? '0px 0rem minmax(0, 1fr)' : 'minmax(0, 1fr) 0rem 0px';
+  const top = main || side;
+  const rows = top && bottom ? `minmax(0, 1fr) ${sash} ${bottomHeightPx}px` : bottom ? '0px 0rem minmax(0, 1fr)' : 'minmax(0, 1fr) 0rem 0px';
+  return { gridTemplateColumns: columns, gridTemplateRows: rows, gridTemplateAreas: '"main vs side" "hs hs hs" "bottom bottom bottom"' };
 }
 
 /** The slots that show: a maximized pane alone, else every slot whose pane shows. */

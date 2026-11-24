@@ -110,6 +110,7 @@ watch([() => crumbs.value.join('\n'), placeLabel, () => props.place?.kind, rowRe
         <BreadcrumbItem
           v-if="place"
           data-testid="editor-breadcrumb-place"
+          data-breadcrumb-item="place"
           :data-place="place.kind"
           class="flex max-w-36 min-w-2.75 gap-1"
           :class="[measuring ? 'shrink-0' : 'shrink-1000000', place.kind === 'worktree' ? 'text-(--d-accent-text)' : '', place.kind === 'worktree' && place.label !== undefined ? 'font-mono' : '']"
@@ -176,6 +177,7 @@ watch([() => crumbs.value.join('\n'), placeLabel, () => props.place?.kind, rowRe
           </BreadcrumbItem>
           <BreadcrumbItem
             v-else-if="crumb.index < crumbs.length - 1"
+            data-breadcrumb-item="path"
             class="min-w-0"
             :class="measuring ? 'shrink-0' : crumb.index === 0 ? 'shrink-10000' : 'shrink-100000000'"
             :style="crumb.index === 0 && !measuring ? { minWidth: firstMinWidth } : undefined"
@@ -187,6 +189,7 @@ watch([() => crumbs.value.join('\n'), placeLabel, () => props.place?.kind, rowRe
           </BreadcrumbItem>
           <BreadcrumbItem
             v-else
+            data-breadcrumb-item="current"
             class="min-w-0"
             :class="measuring ? 'shrink-0' : ''"
           >

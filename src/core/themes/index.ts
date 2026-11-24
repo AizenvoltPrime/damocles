@@ -11,7 +11,7 @@ import { arrangementApplies, copiedLayoutOptIn } from '../../shared/themes/arran
 import { BUILTIN_EXAMPLE_IDS, BUILTIN_THEME, BUILTIN_THEME_ID, DEFAULT_THEME_ID } from '../../shared/themes/builtin';
 import { restoredChange, USER_ACTOR, type ThemeActor, type ThemeHistoryChange, type ThemeHistoryEntry, type ThemeModeValue } from '../../shared/themes/changes';
 import type { SystemLooks } from '../../shared/themes/system-theme';
-import { characterAssets, PROJECTS_FILE, spriteIsAnimated, spriteNeedsAnalysis, spriteStrip, type CharacterStrip, type SpriteImport } from '../../shared/themes/characters';
+import { characterAssets, MAX_PINNED_PROJECTS, MAX_SPRITE_BYTES, parseProjectsFile, PROJECTS_FILE, spriteIsAnimated, spriteNeedsAnalysis, spriteStrip, type CharacterStrip, type ProjectPins, type SpriteImport } from '../../shared/themes/characters';
 import { bundledFonts, fontNameOf, MAX_FONT_BYTES, type FontImport } from '../../shared/themes/fonts';
 import type { ThemeExportFontBytes, ThemeExportPlan, ThemeInstallClash, ThemeInstallCommit, ThemeInstallCommitted, ThemeInstallFrom, ThemeInstallPreview, ThemeInstallProgress } from '../../shared/themes/install';
 import { THEME_ID } from '../../shared/themes/limits';
@@ -35,7 +35,8 @@ import { BLOB_GRACE_MS, BLOBS_FOLDER, createBlobStore, SHA256 } from './blobs';
 import { readBuiltinAsset, readBuiltinExamples, readBuiltinLicense } from './builtins';
 import { createWallpaperCache, type SpriteAnalysis, type WallpaperAnalysis } from './cache';
 import { applyPinEdits, checkSprite, createProjectsStore, spriteAsset, type PinEdit } from './characters';
-import { createDraftStore, type DraftOwner, type ThemeDraft } from './drafts';
+import { createDraftStore, type DraftBody, type DraftOwner, type ThemeDraft } from './drafts';
+import { createKeyedLock } from './keyed-lock';
 import { buildExport, checkExportPath, planExport, type ExportSource } from './export';
 import { FontInfoError, readFontInfo, shareableLicense } from './font-info';
 import { createThemeHistory, HISTORY_FILE, HISTORY_FOLDER, MAX_HISTORY_BYTES, touchedItems, type Snapshot, type SnapshotIo, type StoredEntry } from './history';
@@ -52,7 +53,7 @@ import { untilAborted } from './until-aborted';
 import type { WriteLane } from './write-lane';
 
 export { createThemeStore, isUserThemeId, type ThemeListEntry, type ThemeStore } from './store';
-export { DraftLimitError, MAX_DRAFTS, MAX_DRAFTS_PER_CHAT, type DraftOwner, type ThemeDraft } from './drafts';
+export { DraftConflictError, DraftLimitError, MAX_DRAFT_SPRITES, MAX_DRAFTS, MAX_DRAFTS_PER_CHAT, SPRITE_NAME, type DraftBody, type DraftOwner, type DraftSprite, type ThemeDraft } from './drafts';
 export { WEEKDAYS, type ThemeScheduleData, type Weekday } from './appearance-store';
 export type { SpriteAnalysis, WallpaperAnalysis } from './cache';
 export type { PinEdit } from './characters';
@@ -104,6 +105,15 @@ export interface ThemeService {
   // the project's own look, or none for null, as one history entry; on the fly, marked for the keep-changes banner. `name`
   // is the project's name, which the entry keeps. Undefined when the look was already that.
   setProjectLook(projectKey: string, look: ProjectLook | null, options: { readonly name: string; readonly actor?: ThemeActor; readonly onTheFly?: boolean }): Promise<(Recorded & { readonly change: ThemeHistoryChange }) | undefined>;
+  // the project's character pinned to a character of the installed theme `themeId`, or unpinned for null, in that theme or with
+  // everyTheme in every theme, as one history entry; on the fly, marked for the keep-changes banner. Throws a LocalizedError for
+  // a theme that is not installed, a character its set lacks, or a new project's pin once MAX_PINNED_PROJECTS projects have
+  // pins; undefined when the pins were already that.
+  setProjectPin(projectKey: string, pin: ProjectPinChange, options: { readonly name: string; readonly actor?: ThemeActor; readonly onTheFly?: boolean }): Promise<(Recorded & { readonly change: ThemeHistoryChange }) | undefined>;
+  // whether setProjectLook and setProjectPin would change anything now, judged as they judge it and throwing as they throw;
+  // nothing is written
+  projectLookChanges(projectKey: string, look: ProjectLook | null): Promise<boolean>;
+  projectPinChanges(projectKey: string, pin: ProjectPinChange): Promise<boolean>;
   // damocles.desktop.themes.showWallpapers turned off as one history entry; on the fly, marked for the keep-changes banner.
   // Undefined when the user settings already have it off.
   wallpapersOff(actor: AgentActor, onTheFly: boolean): Promise<(Recorded & { readonly change: ThemeHistoryChange }) | undefined>;
@@ -170,6 +180,8 @@ export interface ThemeService {
   // still frame); refused past the sprite caps. Not a history entry: the save that names it is.
   // `signal` ends the wait for the renderer.
   importSprite(source: { readonly file: string } | { readonly bytes: Uint8Array; readonly name?: string }, strip?: StripCut, signal?: AbortSignal): Promise<SpriteImport>;
+  // a stored sprite's bytes, from blobs or packed with a built-in example, at most MAX_SPRITE_BYTES and checked against its sha256
+  readSprite(sha256: string, asset: AssetMeta): Promise<Uint8Array>;
   setSpriteAnalyzer(analyze: SpriteAnalyzer | undefined): void;
   // what the renderer derived from a wallpaper, undefined before its analysis
   wallpaperStats(sha256: string): Promise<ImageStats | undefined>;
@@ -292,6 +304,12 @@ export interface AppliedDraft {
   readonly arrangement?: { readonly layout: Arrangement; readonly density: number };
 }
 
+export interface ProjectPinChange {
+  readonly themeId: string;
+  readonly character: string | null;
+  readonly everyTheme?: boolean;
+}
+
 export interface AgentPick {
   readonly themeId: string;
   readonly kind: LookKind;
@@ -329,7 +347,9 @@ export type AgentUndoResult =
 /** The drafts, each write under the lane. */
 export interface ThemeDrafts {
   get(id: string): Promise<ThemeDraft | undefined>;
-  put(draft: ThemeDraft): Promise<void>;
+  put(draft: DraftBody, expected: number | null): Promise<ThemeDraft>;
+  // one body at a time per draft id on this core, local and relayed calls alike; an abort of `signal` ends a wait
+  exclusive<T>(id: string, signal: AbortSignal | undefined, body: () => Promise<T>): Promise<T>;
   remove(id: string): Promise<void>;
   removeOwnedBy(owner: Pick<DraftOwner, 'authority' | 'sessionId'>): Promise<number>;
   removeRelayedBefore(localAuthority: string, before: number, keep?: ReadonlySet<string>): Promise<number>;
@@ -433,6 +453,34 @@ export function createThemeService(options: ThemeServiceOptions): ThemeService {
     return projects.readText();
   };
   const projectLooks = createProjectLooks({ projects, lane: store.lane, changed: () => store.changed(), relocations: options.relocations ?? currentRelocations, history: () => history });
+  // a project look as every reader checks it, so it is compared and stored in one form whatever the caller's key order or case
+  const checkedLook = (given: ProjectLook | null): ProjectLook | null => {
+    const look = given === null ? null : checkProjectLook(given);
+    if (look === undefined) throw new LocalizedError(l('This project look is not valid, so it was not saved.'));
+    return look;
+  };
+  const lookChanges = async (projectKey: string, look: ProjectLook | null): Promise<boolean> => !isDeepStrictEqual((await projectLooks.projectLookOf(projectKey)) ?? null, look);
+  // projects.json's object (as `read` gives it) with `pin` applied, and whether the project's pins change
+  const pinned = async (projectKey: string, pin: ProjectPinChange, read: () => Promise<unknown>): Promise<{ readonly entry: Extract<ThemeListEntry, { status: 'ok' }>; readonly next: Record<string, unknown>; readonly changed: boolean }> => {
+    const entry = (await store.list()).find((candidate) => candidate.id === pin.themeId);
+    if (entry?.status !== 'ok') throw new LocalizedError(l('No theme {0} is installed.', pin.themeId));
+    if (pin.character !== null && entry.theme.characters?.characters.some((character) => character.name === pin.character) !== true) {
+      throw new LocalizedError(l('The theme {0} has no character {1}.', entry.name, pin.character));
+    }
+    const raw = await read();
+    const pinsOf = (file: unknown): ProjectPins | undefined => {
+      const pins = parseProjectsFile(file).pins;
+      return Object.hasOwn(pins, projectKey) ? pins[projectKey] : undefined;
+    };
+    const had = pinsOf(raw);
+    // a pin past the limit would be dropped by every read of the file
+    if (pin.character !== null && had === undefined && Object.keys(parseProjectsFile(raw).pins).length >= MAX_PINNED_PROJECTS) {
+      throw new LocalizedError(l('Damocles keeps character pins for at most {0} projects; remove the pin of another project first.', String(MAX_PINNED_PROJECTS)));
+    }
+    const edit: PinEdit = pin.everyTheme === true ? { projectKey, everyTheme: pin.character } : { projectKey, character: pin.character };
+    const next = applyPinEdits(raw, entry.theme, [edit]);
+    return { entry, next, changed: !isDeepStrictEqual(had, pinsOf(next)) };
+  };
   const now = options.now ?? Date.now;
   const { settings } = options;
   const userFile = (): string => {
@@ -518,6 +566,7 @@ export function createThemeService(options: ThemeServiceOptions): ThemeService {
   const history = createThemeHistory({ root: options.root, io, writeText: writeFile, rule, ...(options.now ? { now: options.now } : {}), ...(options.log ? { log: options.log } : {}) });
 
   const drafts = createDraftStore(options.root, writeFile, store.newId, options.log, rule);
+  const draftLock = createKeyedLock();
   const countdown = createCountdownLock(options.root, options.owner ?? randomUUID().replaceAll('-', ''), options.log);
   // Inside the lane: the countdown's mark. This app lets go of its countdown lock once no mark names it.
   const readMark = async (): Promise<PendingConfirm | undefined> => {
@@ -776,7 +825,7 @@ export function createThemeService(options: ThemeServiceOptions): ThemeService {
     };
     await rule.readable(themesDir);
     const ids = await namesIn(themesDir);
-    const draftTexts = (await drafts.list()).map((draft) => JSON.stringify(draft.theme));
+    const draftTexts = (await drafts.list()).map((draft) => JSON.stringify({ theme: draft.theme, sprites: draft.sprites }));
     const themeTexts = await eachLimited(ids, READ_CONCURRENCY, (id) => read(path.join(themesDir, id, THEME_FILE), MAX_THEME_FILE_BYTES));
     const historyText = await read(historyFile, MAX_HISTORY_BYTES);
     const projectsText = await read(path.join(options.root, PROJECTS_FILE), MAX_STATE_FILE_BYTES);
@@ -918,30 +967,40 @@ export function createThemeService(options: ThemeServiceOptions): ThemeService {
     return true;
   };
 
+  // An asset's bytes, packed with a built-in example or from blobs; a blob that is not there is refused as `missing`. Past
+  // `cap.bytes` it is refused as `cap.refusal`, a blob before it is read.
+  const readAsset = async (sha256: string, asset: AssetMeta, missing: LocalizedText, cap?: { readonly bytes: number; readonly refusal: LocalizedText }): Promise<Uint8Array> => {
+    const example = (await store.examples()).find((candidate) => 'theme' in candidate && candidate.theme.assets?.[sha256] !== undefined)?.id;
+    if (example !== undefined && resourceRoot !== undefined) {
+      const packed = await readBuiltinAsset(resourceRoot, example, sha256, asset.mime);
+      if (packed && cap !== undefined && packed.length > cap.bytes) throw new LocalizedError(cap.refusal);
+      if (packed) return packed;
+    }
+    await rule.readable(blobFile(sha256));
+    let handle: fs.FileHandle;
+    try {
+      handle = await fs.open(blobFile(sha256), 'r');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw new LocalizedError(missing, { cause: err });
+      throw err;
+    }
+    try {
+      if (cap !== undefined && (await handle.stat()).size > cap.bytes) throw new LocalizedError(cap.refusal);
+      return await handle.readFile();
+    } finally {
+      await handle.close();
+    }
+  };
+
   // The theme an export reads, with its assets from blobs or packed with a built-in example.
   const exportSource = async (themeId: string): Promise<ExportSource> => {
     const entries = await store.list();
     const entry = entries.find((candidate) => candidate.id === themeId);
     if (entry?.status !== 'ok') throw new LocalizedError(l('The theme {0} is missing, broken or needs a newer Damocles.', entry?.name ?? themeId));
-    const packedBy = (sha256: string): string | undefined =>
-      entries.find((candidate) => candidate.status === 'ok' && BUILTIN_EXAMPLE_IDS.includes(candidate.id) && candidate.theme.assets?.[sha256] !== undefined)?.id;
-    const readAsset = async (sha256: string, asset: AssetMeta): Promise<Uint8Array> => {
-      const example = packedBy(sha256);
-      if (example !== undefined && resourceRoot !== undefined) {
-        const packed = await readBuiltinAsset(resourceRoot, example, sha256, asset.mime);
-        if (packed) return packed;
-      }
-      await rule.readable(blobFile(sha256));
-      try {
-        return await fs.readFile(blobFile(sha256));
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw new LocalizedError(l('The theme {0} was not exported: a file it names is missing.', entry.name), { cause: err });
-        throw err;
-      }
-    };
+    const readExported = (sha256: string, asset: AssetMeta): Promise<Uint8Array> => readAsset(sha256, asset, l('The theme {0} was not exported: a file it names is missing.', entry.name));
     // only a packed example has a license file: Damocles and System colors have no folder
     const licenseText = BUILTIN_EXAMPLE_IDS.includes(entry.id) && resourceRoot !== undefined ? await readBuiltinLicense(resourceRoot, entry.id) : undefined;
-    return { theme: entry.theme, builtin: entry.builtin, readAsset, ...(licenseText !== undefined ? { licenseText } : {}) };
+    return { theme: entry.theme, builtin: entry.builtin, readAsset: readExported, ...(licenseText !== undefined ? { licenseText } : {}) };
   };
 
   // Inside the lane: the staged theme under its id, as one history entry; Replace keeps an edited theme as a copy first.
@@ -1078,14 +1137,11 @@ export function createThemeService(options: ThemeServiceOptions): ThemeService {
     }),
     projectLooks,
     async setProjectLook(projectKey, given, lookOptions) {
-      // the look as every reader checks it, so it is compared and stored in one form whatever the caller's key order or case
-      const look = given === null ? null : checkProjectLook(given);
-      if (look === undefined) throw new LocalizedError(l('This project look is not valid, so it was not saved.'));
+      const look = checkedLook(given);
       const done = await store.lane.run(async (): Promise<Changed<ThemeHistoryChange> | undefined> => {
         const text = await projectsBefore();
         const raw = await projects.editable();
-        const was = await projectLooks.projectLookOf(projectKey);
-        if (isDeepStrictEqual(was ?? null, look)) return undefined;
+        if (!(await lookChanges(projectKey, look))) return undefined;
         return changeLocked(lookOptions.actor ?? USER_ACTOR, lookOptions.onTheFly === true, async (taking) => {
           const before: Snapshot = { projects: text };
           taking(before);
@@ -1098,6 +1154,28 @@ export function createThemeService(options: ThemeServiceOptions): ThemeService {
       finished(done);
       return { entryId: done.entryId, ...(done.pending !== undefined ? { pending: done.pending } : {}), change: done.result };
     },
+    async setProjectPin(projectKey, pin, pinOptions) {
+      const done = await store.lane.run(async (): Promise<Changed<ThemeHistoryChange> | undefined> => {
+        let text: string | null = null;
+        const { entry, next, changed } = await pinned(projectKey, pin, async () => {
+          text = await projectsBefore();
+          return projects.editable();
+        });
+        if (!changed) return undefined;
+        return changeLocked(pinOptions.actor ?? USER_ACTOR, pinOptions.onTheFly === true, async (taking) => {
+          const before: Snapshot = { projects: text };
+          taking(before);
+          await projects.writeText(`${JSON.stringify(next, null, 2)}\n`);
+          const made: ThemeHistoryChange = { kind: 'projectPin', project: pinOptions.name, theme: entry.name, themeId: entry.id, character: pin.character, ...(pin.everyTheme === true ? { everyTheme: true as const } : {}) };
+          return { result: made, change: made, before };
+        });
+      });
+      if (!done) return undefined;
+      finished(done);
+      return { entryId: done.entryId, ...(done.pending !== undefined ? { pending: done.pending } : {}), change: done.result };
+    },
+    projectLookChanges: async (projectKey, look) => lookChanges(projectKey, checkedLook(look)),
+    projectPinChanges: async (projectKey, pin) => (await pinned(projectKey, pin, () => projects.read())).changed,
     async wallpapersOff(actor, onTheFly) {
       const done = await store.lane.run(async (): Promise<Changed<ThemeHistoryChange> | undefined> => {
         if (settings.get<unknown>(SHOW_WALLPAPERS_SETTING, true) === false) return undefined;
@@ -1168,7 +1246,8 @@ export function createThemeService(options: ThemeServiceOptions): ThemeService {
     appearance: () => appearance.read(),
     drafts: {
       get: (id) => drafts.get(id),
-      put: (draft) => store.lane.run(() => drafts.put(draft)),
+      put: (draft, expected) => store.lane.run(() => drafts.put(draft, expected)),
+      exclusive: (id, signal, body) => draftLock.run(id, signal, body),
       remove: (id) => store.lane.run(() => drafts.remove(id)),
       removeOwnedBy: (owner) => store.lane.run(() => drafts.removeOwnedBy(owner)),
       removeRelayedBefore: (localAuthority, before, keep) => store.lane.run(() => drafts.removeRelayedBefore(localAuthority, before, keep)),
@@ -1180,6 +1259,8 @@ export function createThemeService(options: ThemeServiceOptions): ThemeService {
     async applyDraft(apply) {
       const { draft, actor, onTheFly } = apply;
       const done = await store.lane.run(async (): Promise<Changed<AppliedDraft> | undefined> => {
+        // a later call of the chat moved the draft since the card showed it
+        if ((await drafts.get(draft.id))?.revision !== draft.revision) return undefined;
         const { editing, text, created, origin } = await draftOrigin(draft);
         if (editing && hashText(text) !== draft.baseHash) return undefined;
         // the window arrangement applies on the agent's pick exactly as on a manual one
@@ -1333,6 +1414,13 @@ export function createThemeService(options: ThemeServiceOptions): ThemeService {
       const asset: AssetMeta = moves ? { ...stored, flash: { flagged: flash.flagged, ...(flash.atMs !== undefined ? { atMs: flash.atMs } : {}) } } : stored;
       const record = moves ? await wallpaperCache.flash(sha256) : undefined;
       return { sha256, asset, ...(cut ? { strip: cut } : {}), ...(record ? { flash: record } : {}) };
+    },
+    async readSprite(sha256, asset) {
+      if (asset.kind !== 'sprite') throw new LocalizedError(l('No sprite {0} is stored.', sha256));
+      const tooLarge = l('The stored file {0} is larger than {1} KB, the most a character sprite may be.', sha256, String(MAX_SPRITE_BYTES / 1024));
+      const bytes = await readAsset(sha256, asset, l('No sprite {0} is stored.', sha256), { bytes: MAX_SPRITE_BYTES, refusal: tooLarge });
+      if (createHash('sha256').update(bytes).digest('hex') !== sha256) throw new LocalizedError(l('The stored file {0} is not the file its name says.', sha256));
+      return bytes;
     },
     setSpriteAnalyzer(next) {
       spriteAnalyzer = next;

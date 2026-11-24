@@ -41,6 +41,7 @@ import {
   parsePageMotion,
   SHELL_CHANNELS,
   SHELL_FOCUS_PARTS,
+  SCREENSHOT_NOTICE_HOLDS,
   WINDOW_CONTROLS,
   type BrowserActionRequest,
   type BrowserNavigateRequest,
@@ -128,6 +129,7 @@ import {
   type ShownFolder,
   type WorktreeFinishAction,
   type WorktreeFinishRequest,
+  type ScreenshotNoticeHold,
   MAX_EDITOR_LINK_CHARS,
   type EditorOpenLink,
 } from '../preload/shell-channels';
@@ -290,6 +292,15 @@ export interface ShellActions {
   keepThemeChanges(): Promise<void>;
   revertThemeChanges(): Promise<void>;
   stopShowingProposal(): Promise<void>;
+  // the screenshot notice's Revoke and Dismiss, for the notice of that id only
+  revokeScreenshotGrant(id: string): Promise<void>;
+  dismissScreenshotNotice(id: string): void;
+  // the pointer or keyboard focus entered or left the notice of that id
+  holdScreenshotNotice(id: string, reason: ScreenshotNoticeHold, held: boolean): void;
+  // the page painted the theme of this revision (ShellState.themeRevision)
+  themeApplied(revision: number): void;
+  // the page's document is going: a navigation of its main frame to another document started, or its renderer ended
+  documentGone(): void;
   // the shell's renderer went away other than by a clean exit (the theme crash loop counts it)
   rendererGone(): void;
   setSidebarLayout(layout: ShellSidebarLayout): void;
@@ -715,6 +726,24 @@ const MAX_TYPED_HOST_NAME_LENGTH = MAX_HOST_NAME_LENGTH * 8;
 // A copy of an array of ids within MAX_REORDER_KEYS; undefined for anything else.
 function keyList(raw: unknown): string[] | undefined {
   return Array.isArray(raw) && raw.length <= MAX_REORDER_KEYS && raw.every(isShellId) ? [...raw] : undefined;
+}
+
+// A screenshot notice's id as main issued it (randomUUID).
+function noticeId(raw: unknown): string {
+  const value = exactRecord(raw, ['id']);
+  const id = value?.['id'];
+  if (typeof id !== 'string' || id.length === 0 || id.length > 64) throw new Error('Malformed screenshot notice id from the shell');
+  return id;
+}
+
+function noticeHold(raw: unknown): { readonly id: string; readonly reason: ScreenshotNoticeHold; readonly held: boolean } | undefined {
+  const value = exactRecord(raw, ['id', 'reason', 'held']);
+  const id = value?.['id'];
+  const reason = value?.['reason'];
+  const held = value?.['held'];
+  if (typeof id !== 'string' || id.length === 0 || id.length > 64 || typeof held !== 'boolean') return undefined;
+  if (!SCREENSHOT_NOTICE_HOLDS.includes(reason as ScreenshotNoticeHold)) return undefined;
+  return { id, reason: reason as ScreenshotNoticeHold, held };
 }
 
 // A plain object with exactly these keys.
@@ -1621,6 +1650,17 @@ export class ShellHost {
     this.handle(SHELL_CHANNELS.keepThemeChanges, () => this.actions.keepThemeChanges());
     this.handle(SHELL_CHANNELS.revertThemeChanges, () => this.actions.revertThemeChanges());
     this.handle(SHELL_CHANNELS.stopShowingProposal, () => this.actions.stopShowingProposal());
+    this.handle(SHELL_CHANNELS.revokeScreenshotGrant, (raw) => this.actions.revokeScreenshotGrant(noticeId(raw)));
+    this.handle(SHELL_CHANNELS.dismissScreenshotNotice, (raw) => this.actions.dismissScreenshotNotice(noticeId(raw)));
+    this.on(SHELL_CHANNELS.holdScreenshotNotice, (raw) => {
+      const hold = noticeHold(raw);
+      if (hold) this.actions.holdScreenshotNotice(hold.id, hold.reason, hold.held);
+      else this.log('[shell] ignoring a malformed screenshot notice hold');
+    });
+    this.on(SHELL_CHANNELS.themeApplied, (raw) => {
+      if (Number.isSafeInteger(raw) && (raw as number) >= 0) this.actions.themeApplied(raw as number);
+      else this.log('[shell] ignoring a malformed theme acknowledgement');
+    });
     this.on(SHELL_CHANNELS.sidebarLayout, (raw) => {
       const layout = parseSidebarLayout(raw);
       if (!layout) {
@@ -1674,6 +1714,9 @@ export class ShellHost {
       this.appMenuGrant.clear();
       this.actions.gestures.blurred();
     });
+    contents.on('did-start-navigation', (details) => {
+      if (details.isMainFrame && !details.isSameDocument) this.actions.documentGone();
+    });
     // A reload by any route commits a new document, which refetches what it shows once it has loaded.
     contents.on('did-navigate', () => {
       this.loaded = false;
@@ -1699,6 +1742,7 @@ export class ShellHost {
     contents.on('render-process-gone', (_event, details) => {
       this.loaded = false;
       this.log(`[shell] renderer gone (${details.reason})`);
+      this.actions.documentGone();
       this.actions.setFocusedPart(null);
       this.actions.terminal.setInputFocused(null);
       this.actions.editor.setFocusOverlay(false);

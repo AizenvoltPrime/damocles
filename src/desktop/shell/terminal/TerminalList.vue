@@ -332,6 +332,7 @@ const tabLabel = (terminal: TerminalInfo): string => [terminal.title, terminal.d
           data-testid="terminal-row"
           :data-terminal-id="terminal.id"
           :data-status="terminal.status"
+          :data-active="terminal.id === activeId ? '' : undefined"
           role="tab"
           :aria-selected="terminal.id === activeId"
           :aria-controls="`terminal-panel-${terminal.id}`"

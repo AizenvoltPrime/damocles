@@ -1,9 +1,11 @@
 // The agent's theme drafts (docs/invariants.md "Desktop themes"): drafts/<draftId>.json under the theme store, each owned by one
-// chat ({authority, sessionId}). Every method runs inside the store's write lane.
+// chat ({authority, sessionId}). Every write runs inside the store's write lane.
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
-import { validateTheme, type ThemeFile } from '../../shared/themes/schema';
+import { checkSpriteAsset } from '../../shared/themes/characters';
+import { DRAFT_ID } from '../../shared/themes/limits';
+import { validateTheme, type AssetMeta, type ThemeFile } from '../../shared/themes/schema';
 import { createThemePathRule, type ThemePathRule } from './network-rule';
 import { MAX_STATE_FILE_BYTES, readCappedOrNull, UnreadableFile } from './state-file';
 import { eachLimited, READ_CONCURRENCY } from './store';
@@ -11,8 +13,9 @@ import { eachLimited, READ_CONCURRENCY } from './store';
 export const DRAFTS_FOLDER = 'drafts';
 export const MAX_DRAFTS_PER_CHAT = 3;
 export const MAX_DRAFTS = 20;
-
-const DRAFT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// The sprite names one draft keeps (ThemeSet sprites), each as ThemeSet's schema writes it.
+export const MAX_DRAFT_SPRITES = 96;
+export const SPRITE_NAME: RegExp = /^(?!__proto__$)[A-Za-z0-9_-]{1,32}$/;
 
 export interface DraftOwner {
   // the core's authority: 'local' on this computer
@@ -32,6 +35,24 @@ export interface ThemeDraft {
   // sha256 of the base's theme.json text when the draft was made; null when the draft makes a new theme
   readonly baseHash: string | null;
   readonly theme: ThemeFile;
+  // 1 on the first write, one more on each; put refuses a write made from an older one
+  readonly revision: number;
+  // the sprites ThemeSet drew or recolored for this draft, by the names later calls use; the theme holds only those its set names
+  readonly sprites?: Readonly<Record<string, DraftSprite>>;
+}
+
+export interface DraftSprite {
+  readonly sha256: string;
+  readonly asset: AssetMeta;
+}
+
+// what a caller writes; put stamps the revision and the time
+export type DraftBody = Omit<ThemeDraft, 'revision' | 'updatedAt'>;
+
+export class DraftConflictError extends Error {
+  constructor(id: string) {
+    super(`The draft ${id} changed since it was read`);
+  }
 }
 
 export class DraftLimitError extends Error {
@@ -46,8 +67,10 @@ export class DraftLimitError extends Error {
 export interface DraftStore {
   get(id: string): Promise<ThemeDraft | undefined>;
   list(): Promise<ThemeDraft[]>;
-  // writes `draft`, refused past MAX_DRAFTS_PER_CHAT of its chat or MAX_DRAFTS in all; a draft that replaces itself counts once
-  put(draft: ThemeDraft): Promise<void>;
+  // writes `draft` as the revision after `expected` (null: a new draft), refused with DraftConflictError when the file's
+  // revision is another, and past MAX_DRAFTS_PER_CHAT of its chat or MAX_DRAFTS in all; a draft that replaces itself counts once.
+  // A draft get would not read back is never written.
+  put(draft: DraftBody, expected: number | null): Promise<ThemeDraft>;
   remove(id: string): Promise<void>;
   // every draft of the chat; how many went
   removeOwnedBy(owner: Pick<DraftOwner, 'authority' | 'sessionId'>): Promise<number>;
@@ -74,8 +97,24 @@ function draftOf(raw: unknown, id: string): ThemeDraft | undefined {
   if ((baseThemeId !== null && typeof baseThemeId !== 'string') || (baseHash !== null && typeof baseHash !== 'string')) return undefined;
   const theme = validateTheme(raw['theme']);
   if (!theme.ok) return undefined;
+  const revision = raw['revision'];
+  if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 1) return undefined;
   const updatedAt = typeof raw['updatedAt'] === 'number' ? { updatedAt: raw['updatedAt'] } : {};
-  return { id, owner: { authority: owner['authority'], sessionId: owner['sessionId'], toolCallId: owner['toolCallId'] }, createdAt: raw['createdAt'], ...updatedAt, baseThemeId, baseHash, theme: theme.theme };
+  const sprites = raw['sprites'] === undefined ? {} : draftSpritesOf(raw['sprites']);
+  if (sprites === undefined) return undefined;
+  return { id, owner: { authority: owner['authority'], sessionId: owner['sessionId'], toolCallId: owner['toolCallId'] }, createdAt: raw['createdAt'], ...updatedAt, baseThemeId, baseHash, theme: theme.theme, revision, ...sprites };
+}
+
+function draftSpritesOf(raw: unknown): { readonly sprites: Record<string, DraftSprite> } | undefined {
+  if (!isRecord(raw) || Object.keys(raw).length > MAX_DRAFT_SPRITES) return undefined;
+  const sprites: Record<string, DraftSprite> = {};
+  for (const [name, value] of Object.entries(raw)) {
+    if (!SPRITE_NAME.test(name) || !isRecord(value) || typeof value['sha256'] !== 'string') return undefined;
+    const asset = checkSpriteAsset(value['sha256'], value['asset']);
+    if (!asset) return undefined;
+    sprites[name] = { sha256: value['sha256'], asset };
+  }
+  return { sprites };
 }
 
 const sameChat = (a: Pick<DraftOwner, 'authority' | 'sessionId'>, b: Pick<DraftOwner, 'authority' | 'sessionId'>): boolean =>
@@ -146,13 +185,19 @@ export function createDraftStore(root: string, writeText: (file: string, text: s
   return {
     get,
     list,
-    async put(draft) {
+    async put(draft, expected) {
       await rule.writable(fileOf(draft.id));
-      const others = (await list()).filter((other) => other.id !== draft.id);
+      const all = await list();
+      if ((all.find((other) => other.id === draft.id)?.revision ?? null) !== expected) throw new DraftConflictError(draft.id);
+      const others = all.filter((other) => other.id !== draft.id);
       if (others.filter((other) => sameChat(other.owner, draft.owner)).length >= MAX_DRAFTS_PER_CHAT) throw new DraftLimitError('chat');
       if (others.length >= MAX_DRAFTS) throw new DraftLimitError('total');
+      const written: ThemeDraft = { ...draft, revision: (expected ?? 0) + 1, updatedAt: Date.now() };
+      const text = `${JSON.stringify(written)}\n`;
+      if (Buffer.byteLength(text) > MAX_STATE_FILE_BYTES || draftOf(JSON.parse(text), draft.id) === undefined) throw new Error(`The draft ${draft.id} is not one the store reads back`);
       await fs.mkdir(folder, { recursive: true, mode: 0o700 });
-      await writeText(fileOf(draft.id), `${JSON.stringify({ ...draft, updatedAt: Date.now() })}\n`);
+      await writeText(fileOf(draft.id), text);
+      return written;
     },
     remove,
     // by the owner fields alone, so a draft whose theme no longer validates goes too

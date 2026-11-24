@@ -83,6 +83,7 @@ const SkillApprovalPrompt = defineAsyncComponent(() => import("./components/Skil
 const ThemeChangePrompt = defineAsyncComponent(() => import("./components/theme/ThemeChangePrompt.vue"));
 const ThemeScreenshotPrompt = defineAsyncComponent(() => import("./components/theme/ThemeScreenshotPrompt.vue"));
 const ThemeInstallPrompt = defineAsyncComponent(() => import("./components/theme/ThemeInstallPrompt.vue"));
+const ThemeScreenshotGrantStrip = defineAsyncComponent(() => import("./components/theme/ThemeScreenshotGrantStrip.vue"));
 const MemoryPanel = defineAsyncComponent(() => import("./components/MemoryPanel.vue"));
 const MemoryAuditOverlay = defineAsyncComponent(() => import("./components/memory-audit/MemoryAuditOverlay.vue"));
 const ConsolidationOverlay = defineAsyncComponent(() => import("./components/ConsolidationOverlay.vue"));
@@ -1266,6 +1267,14 @@ provideSendPrompt(handleSuggestion);
             @release-focus="focusComposer"
           />
         </div>
+
+        <!-- Outside the dimmed prompts: Revoke ends the grant whether or not the chat's host is connected. -->
+        <Transition name="t-up">
+          <ThemeScreenshotGrantStrip
+            v-if="themePromptStore.screenshotGrant"
+            @release-focus="focusComposer"
+          />
+        </Transition>
 
         <PlanReadyBanner />
 

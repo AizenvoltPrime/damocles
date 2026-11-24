@@ -57,9 +57,12 @@ const OUTCOMES: Record<ThemeOutcome, { tone: Tone; icon: Component }> = {
 };
 const TONE_TEXT: Record<Tone, string> = { success: 'text-(--d-success)', danger: 'text-(--d-danger)', warning: 'text-(--d-warning)' };
 
-// A finished ThemeRead that asked for a screenshot and has no answer recorded: nobody answered its card, or the window let go of the image.
+// Why main took no screenshot (forced colors, safe start, no window to take): recorded in place of an answer.
+const shotRefused = computed(() => details.value?.shotRefused);
+// A finished ThemeRead that asked for a screenshot and has no answer or refusal recorded: nobody answered its card, or the
+// window let go of the image.
 const shotNotSent = computed(() => props.toolCall.name === TOOL_THEME_READ && props.toolCall.input['screenshot'] === true && props.toolCall.status === 'completed'
-  && details.value !== undefined && details.value.screenshot === undefined);
+  && details.value !== undefined && details.value.screenshot === undefined && details.value.shotRefused === undefined);
 
 const mark = computed(() => {
   if (awaiting.value) return undefined;
@@ -68,6 +71,7 @@ const mark = computed(() => {
   const shot = details.value?.screenshot;
   if (shot === 'sent') return { tone: 'success' as const, icon: CircleCheck, label: t('themeAgent.result.sentLabel') };
   if (shot === 'denied') return { tone: 'danger' as const, icon: CircleX, label: t('themeAgent.result.deniedLabel') };
+  if (shotRefused.value) return { tone: 'warning' as const, icon: ImageOff, label: t('themeAgent.result.notTakenLabel') };
   if (shotNotSent.value) return { tone: 'warning' as const, icon: ImageOff, label: t('themeAgent.result.notSentLabel') };
   return undefined;
 });
@@ -141,7 +145,8 @@ const lines = computed<{ lead: string; quote?: string; sub?: string; more?: stri
     return { lead: t('themeAgent.result.undoRefused', { change: historyChangeText(words.value, value.laterChange.change), actor }) };
   }
   if (value.screenshot === 'sent') return { lead: t('themeAgent.result.sent'), sub: t('themeAgent.result.sentSub') };
-  if (value.screenshot === 'denied') return { lead: t('themeAgent.result.denied'), sub: t('themeAgent.result.deniedSub') };
+  if (value.screenshot === 'denied') return { lead: t('themeAgent.result.denied'), sub: t(typeof props.toolCall.input['preview'] === 'string' ? 'themeAgent.result.deniedSub' : 'themeAgent.result.deniedNoPreviewSub') };
+  if (value.shotRefused) return { lead: t('themeAgent.result.notTaken'), sub: t(`themeAgent.result.shotRefused.${value.shotRefused}`) };
   if (shotNotSent.value) return { lead: t('themeAgent.result.notSent'), sub: t('themeAgent.result.notSentSub') };
   return undefined;
 });
@@ -169,7 +174,7 @@ const errorText = computed(() => (props.toolCall.status === 'failed' && !lines.v
     :status-note="!mark"
     :abandon-reason="toolCall.abandonReason"
     :tool="toolCall.name"
-    :data-outcome="outcome ?? details?.screenshot ?? (shotNotSent ? 'notSent' : undefined)"
+    :data-outcome="outcome ?? details?.screenshot ?? (shotRefused ? 'notTaken' : shotNotSent ? 'notSent' : undefined)"
     data-testid="theme-tool-card"
     @expand="uiStore.expandTool(toolCall.id, 'session')"
   >

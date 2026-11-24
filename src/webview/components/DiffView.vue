@@ -3,12 +3,13 @@ import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { getLanguageFromPath, type DiffLine, type FileDiff } from '@/utils/parseUnifiedDiff';
 import { highlightDiffLines, type HighlightedDiffLine } from '@/utils/highlightDiff';
-import { codeHighlightTheme } from '@/composables/useShikiHighlighter';
+import { codeHighlightTheme, useCodeHighlighter } from '@/composables/code-highlighter';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { escapeHtml } from '@shared/utils';
 
 const { t } = useI18n();
 const settingsStore = useSettingsStore();
+const highlighter = useCodeHighlighter();
 
 const props = withDefaults(
   defineProps<{
@@ -23,6 +24,8 @@ const props = withDefaults(
 
 const highlightedLines = ref<HighlightedDiffLine[]>([]);
 const isMounted = ref(true);
+// Counts highlight runs: only the latest one writes, so a slower earlier run never lands last.
+let highlightRun = 0;
 
 const language = computed(() => getLanguageFromPath(props.fileName));
 // The sign and code columns, plus both line number columns when the lines have real numbers.
@@ -30,15 +33,16 @@ const columnCount = computed(() => (props.diff.numbered ? 4 : 2));
 
 async function highlightLines() {
   if (!isMounted.value) return;
+  const run = ++highlightRun;
 
   const lines = props.diff.lines;
   try {
-    const result = await highlightDiffLines(lines, language.value, codeHighlightTheme(settingsStore.hostCapabilities.damoclesTheme));
-    if (isMounted.value) {
+    const result = await highlightDiffLines(lines, language.value, codeHighlightTheme(settingsStore.hostCapabilities.damoclesTheme), highlighter);
+    if (isMounted.value && run === highlightRun) {
       highlightedLines.value = result;
     }
   } catch {
-    if (isMounted.value) {
+    if (isMounted.value && run === highlightRun) {
       highlightedLines.value = lines.map((l) => ({
         ...l,
         highlightedContent: escapeHtml(l.content),
@@ -156,14 +160,14 @@ onUnmounted(() => {
                 <td
                   class="w-8 pr-1 text-right align-top select-none"
                   :class="getLineNumberClass(line.type)"
-                  data-part="old-line"
+                  data-diff-line="old"
                 >
                   {{ line.oldLineNum ?? '' }}
                 </td>
                 <td
                   class="w-8 pr-2 text-right align-top select-none"
                   :class="getLineNumberClass(line.type)"
-                  data-part="new-line"
+                  data-diff-line="new"
                 >
                   {{ line.newLineNum ?? '' }}
                 </td>
@@ -189,7 +193,10 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.diff-code :deep(span) {
-  background: transparent !important;
+@layer app {
+  /* Important against Shiki's inline backgrounds; it also beats a theme's important background (docs/themes.md "Custom CSS"). */
+  .diff-code :deep(span) {
+    background: transparent !important;
+  }
 }
 </style>

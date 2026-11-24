@@ -5,26 +5,27 @@ import {
   CHARACTER_MOTION_SETTING, FILE_ICON_THEME_SETTING, type FileIconTheme, parseFileIconTheme, REDUCE_MOTION_SETTING, SHOW_WALLPAPERS_SETTING, TEXT_SIZE_SETTING, THEME_PREFERENCES, THEME_SETTING, THEMES_DARK_SETTING, THEMES_LIGHT_SETTING,
   type ThemePreference, WALLPAPER_CONTRAST_SETTING,
 } from '../local-services/desktop-configuration';
-import { fontFaceCss } from './desktop-fonts';
-import { APP_ORIGIN } from './protocol';
 import { BUILTIN_PALETTES, BUILTIN_THEME, BUILTIN_THEME_ID } from '../../shared/themes/builtin';
 import { bundledFonts } from '../../shared/themes/fonts';
 import { parseTextSize, styleTokens, TEXT_SIZE_RANGE } from '../../shared/themes/style';
 import type { ThemePalette } from '../../shared/themes/tokens';
-import { resolveShown, themeSourceFor, wallpaperMotion, type AppearanceInputs, type MotionInputs, type MotionPause, type SafeStartReason, type ShownTheme, type TransientPreview } from './themes/appearance';
+import { characterSetOf, resolveShown, themeSourceFor, transientPreviewOf, wallpaperMotion, type AppearanceInputs, type MotionInputs, type MotionPause, type SafeStartReason, type ShownTheme, type TransientPreview } from './themes/appearance';
 import { NO_APPEARANCE_SCHEDULE, type AppearanceSchedule } from '../../shared/themes/schedule';
 import type { LibraryEntry, ThemeLibrary } from './themes/theme-files';
 import type { CycleLook } from './themes/theme-state';
-import { opaqueBackground, pageCss, pageCustomCss, scopedThemeCss, shownPalette, trustedCss, trustedPalette, type CustomCssPage, type TrustedScope } from './themes/theme-css';
+import { opaqueBackground, pageCss, pageCustomCss, type CustomCssPage, type TrustedScope } from './themes/theme-css';
 import type { CssRegion } from '../../shared/themes/schema';
-import { shownWallpapers, wallpapersOff, type ShownWallpapers, type WallpaperContrast, type WallpapersOff } from './themes/wallpapers';
-import { isWallpaperAsset, type FlashRecord, type ImageStats, type WallpaperKind } from '../../shared/themes/wallpapers';
-import { SURFACE_ALPHA_TOKEN } from '../../shared/themes/tokens';
+import { wallpapersOff, type ShownWallpapers, type WallpaperContrast, type WallpapersOff } from './themes/wallpapers';
+import { isMoving, isWallpaperAsset, panelWallpapers, shownSet, themeBlobUrl, type FlashRecord, type ImageStats, type WallpaperKind } from '../../shared/themes/wallpapers';
 import type { ThemeFile } from '../../shared/themes/schema';
-import { CHARACTER_MOTIONS, EMPTY_PROJECTS, shownCharacters, type CharacterMotion, type ProjectsFile, type ShownCharacters } from '../../shared/themes/characters';
+import { CHARACTER_MOTIONS, characterAssets, characterChoice, EMPTY_PROJECTS, shownCharacters, type CharacterChoiceBy, type CharacterMotion, type ProjectsFile, type ShownCharacters } from '../../shared/themes/characters';
 import { checkProjectLook, type ProjectLook } from '../../shared/themes/project-looks';
-
-export const FONT_FACE_CSS: string = fontFaceCss(APP_ORIGIN);
+import { FONT_FACE_CSS, renderedAppearance, shownAppearance, type AppearanceEnv } from './themes/shown-appearance';
+import { THEME_RENDER_SIZE, type RenderAppearance } from '../../shared/themes/agent';
+import type { LookKind } from '../../shared/themes/tokens';
+import type { RenderServed } from './themes/theme-renderer';
+import { arrangementOf, minimumScale, withArrangement } from './themes/arrangement';
+import type { ShellLayout } from '../preload/shell-channels';
 
 /** The built-in look's page CSS of a kind, at the default text size. */
 export function themeCss(kind: ThemeKind): string {
@@ -50,13 +51,16 @@ let fileIconTheme: FileIconTheme = 'material';
 let textSize: number = TEXT_SIZE_RANGE.default;
 let safeStart: SafeStartReason | undefined;
 let preview: TransientPreview | undefined;
+// local: a card of this computer's core, by stage or capture id; relayed: a remote chat's draft capture main holds, by capture id
+type CardThemeOrigin = 'local' | 'relayed';
+// the theme each open card draws, whose blobs the chat page loads
+const cardThemes: Readonly<Record<CardThemeOrigin, Map<string, ThemeFile>>> = { local: new Map(), relayed: new Map() };
 let held: { readonly look: HeldLook; readonly scope: 'window' | 'trusted' } | undefined;
 // base: the look without the transient preview, whose palette trusted UI keeps while a preview paints the window
 interface Shown {
   readonly theme: ShownTheme;
   readonly palette: ThemePalette;
   readonly base: ShownTheme;
-  readonly basePalette: ThemePalette;
   readonly css: string;
   readonly trusted: Readonly<Record<TrustedScope, string>>;
   // the trusted palette's --d-bg, which a trusted view paints before its page does
@@ -95,6 +99,8 @@ let motion: Omit<MotionInputs, 'reduceMotion' | 'forcedColors' | 'wallpapersShow
 };
 let followed: { readonly settings: ThemeSettings; readonly library: ThemeLibrary | undefined } | undefined;
 let signature = '';
+// bumped with each change of what a renderer gets; pages acknowledge the revision they painted (PanelTheme.revision)
+let themeRevision = 0;
 const appearanceListeners = new Set<() => void>();
 const inputListeners = new Set<() => void>();
 
@@ -232,43 +238,88 @@ function resolveNow(): NonNullable<typeof shown> {
   // the look from before an agent's on-the-fly change: the window's at a launch that reverts it, trusted UI's during the countdown
   const before = held ? resolveShown(heldInputs(inputs, held.look)) : undefined;
   const base = held?.scope === 'window' ? before! : resolveShown(inputs);
-  const basePalette = shownPalette(base);
   const theme = preview ? resolveShown({ ...inputs, preview }) : base;
-  const palette = theme === base ? basePalette : shownPalette(theme);
   const trustedLook = held?.scope === 'trusted' ? before! : base;
-  const trustedLookPalette = trustedLook === base ? basePalette : shownPalette(trustedLook);
   const setIndex = theme.decidedBy === 'preview' ? preview?.setIndex ?? 0 : cycleIndex({ themeId: theme.themeId, kind: theme.kind, sets: theme.look.wallpapers?.length ?? 0, minutes: theme.look.cycle?.minutes });
-  const wallpapers = shownWallpapers(theme, palette, { enabled: wallpapersEnabled(), contrast: wallpaperContrast, ...environment }, statsOf, (sha) => `${APP_ORIGIN}/theme-blob/${sha}`, setIndex, flashOf);
-  const pagePalette = wallpapers ? { ...palette, ...wallpapers.tokens } : palette;
-  const regionExtra = wallpapers ? { [SURFACE_ALPHA_TOKEN]: wallpapers.trustedAlpha } : {};
   const characters = charactersOf(theme, inputs);
-  return {
-    theme,
-    palette,
-    base,
-    basePalette,
-    css: `${FONT_FACE_CSS}\n${pageCss(theme, pagePalette, textSize)}`,
-    trusted: { region: trustedCss(trustedLookPalette, trustedLook.kind, 'region', trustedLook.style, textSize, regionExtra), root: trustedCss(trustedLookPalette, trustedLook.kind, 'root', trustedLook.style, textSize) },
-    trustedBackground: opaqueBackground(trustedPalette(trustedLookPalette, trustedLook.kind)),
-    // forced colors and safe start show a built-in look, which has no custom CSS
-    custom: theme.builtin ? {} : scopedThemeCss(theme),
-    ...(wallpapers ? { wallpapers } : {}),
+  const look = shownAppearance(theme, {
+    textSize,
+    wallpapers: { enabled: wallpapersEnabled(), contrast: wallpaperContrast, ...environment },
+    setIndex,
+    stats: statsOf,
+    flash: flashOf,
+    trusted: trustedLook,
     ...(characters ? { characters } : {}),
-  };
+  });
+  return { theme, base, ...look };
 }
 
 /**
- * The characters the window shows: under forced colors those of the look that would show without it, held on their first frame;
- * none in safe start, which shows Damocles as it ships.
+ * Whose characters the window shows and how they move: under forced colors those of the look that would show without it, held
+ * on their first frame; none in safe start, which shows Damocles as it ships.
  */
-function charactersOf(theme: ShownTheme, inputs: Parameters<typeof resolveShown>[0]): ShownCharacters | undefined {
+function charactersOf(theme: ShownTheme, inputs: Parameters<typeof resolveShown>[0]): AppearanceEnv['characters'] {
   if (theme.decidedBy === 'safeStart') return undefined;
   const forced = theme.decidedBy === 'forcedColors';
   const source = forced ? resolveShown({ ...inputs, forcedColors: false, ...(preview ? { preview } : {}) }) : theme;
   if (source.decidedBy === 'safeStart') return undefined;
   const still = forced || reducedMotion || motion.osReducedMotion !== false;
-  const set = { themeId: source.themeId, ...(source.characters ? { characters: source.characters } : {}), ...(source.assets ? { assets: source.assets } : {}) };
-  return shownCharacters(set, projectPins, { url: (sha) => `${APP_ORIGIN}/theme-blob/${sha}`, flash: flashOf }, still ? 'still' : characterMotion);
+  return { source, projects: projectPins, motion: still ? 'still' : characterMotion };
+}
+
+// Each file's record as its reader gives it now; a file it has none for is left out.
+async function readRecords<T>(shas: readonly string[], reader: ((sha256: string) => Promise<T | undefined>) | undefined): Promise<ReadonlyMap<string, T>> {
+  if (!reader) return new Map();
+  const read = await Promise.all([...new Set(shas)].map(async (sha) => [sha, await reader(sha)] as const));
+  return new Map(read.flatMap(([sha, record]) => (record === undefined ? [] : [[sha, record] as const])));
+}
+
+/**
+ * The drawn preview of `theme`'s look of `kind` (docs/invariants.md "Desktop themes"), built as the window paints it as a
+ * transient preview, with no forced colors or safe start: the user's text size, wallpaper contrast and reduced transparency, its
+ * first wallpaper set shown whatever Show wallpapers says and as stills, its characters still and no project's pin. The stats and
+ * flash checks of what it draws are read first, so a new wallpaper gets its readable dim. The arrangement is the theme's own,
+ * else `layout`'s, clamped to the drawing; `served` is every file it draws.
+ */
+export async function renderAppearance(theme: ThemeFile, kind: LookKind, layout: ShellLayout): Promise<{ readonly appearance: RenderAppearance; readonly served: RenderServed }> {
+  const transient = transientPreviewOf(theme, kind);
+  if (!transient) throw new Error(`The theme has no ${kind} look`);
+  const { safeStart: _safeStart, ...inputs } = appearanceInputs();
+  const resolved = resolveShown({ ...inputs, forcedColors: false, preview: transient });
+  // the built-in theme paints its own palette, as the window does
+  const shownTheme: ShownTheme = theme.id === BUILTIN_THEME_ID ? { ...resolved, builtin: true } : resolved;
+  const wallpapers = panelWallpapers(shownSet(shownTheme.look, 0)).map((wallpaper) => wallpaper.asset);
+  const [stats, flashes] = await Promise.all([readRecords(wallpapers, statsReader), readRecords([...wallpapers, ...characterAssets(theme)], flashReader)]);
+  // core writes a moving wallpaper's still frame before its flash check, so a file with no check has no still to draw yet
+  const unchecked = wallpapers.find((sha) => isMoving(shownTheme.assets?.[sha]?.kind) && !flashes.has(sha));
+  if (unchecked !== undefined) throw new Error(`The moving wallpaper ${unchecked} has no still frame yet: its analysis has not finished`);
+  const look = shownAppearance(shownTheme, {
+    textSize,
+    wallpapers: { enabled: true, contrast: wallpaperContrast, gpuCompositing: true, reducedTransparency: environment.reducedTransparency },
+    setIndex: 0,
+    stats: (sha) => stats.get(sha),
+    flash: (sha) => flashes.get(sha),
+    characters: { source: shownTheme, projects: EMPTY_PROJECTS, motion: 'still' },
+  });
+  const density = Number(styleTokens(shownTheme.style)['--d-density'] ?? 1);
+  // the sample window always draws the sidebar, whatever the user's window shows
+  const arrangement = arrangementOf(withArrangement({ ...layout, sidebarVisible: true }, theme.layout ?? arrangementOf(layout), THEME_RENDER_SIZE, minimumScale(textSize, density)));
+  const platform = process.platform;
+  if (platform !== 'darwin' && platform !== 'win32' && platform !== 'linux') throw new Error(`No title bar is drawn for ${platform}`);
+  return renderedAppearance(shownTheme, look, arrangement, platform);
+}
+
+/**
+ * The character the project of `key` shows as if it were selected, with no preview, forced colors or safe start, and what
+ * decided it; themeId is the theme a pin of it names. Undefined: the project shows its letter.
+ */
+export function projectCharacter(key: string): { readonly themeId: string; readonly character: string; readonly by: CharacterChoiceBy } | undefined {
+  const { safeStart: _safeStart, project: _selected, ...inputs } = appearanceInputs();
+  const look = projectLooks[key];
+  const theme = resolveShown({ ...inputs, forcedColors: false, ...(look ? { project: look } : {}) });
+  const set = characterSetOf(theme);
+  const choice = characterChoice(shownCharacters(set, projectPins, { url: themeBlobUrl, flash: flashOf }, 'still'), key);
+  return choice ? { themeId: set.themeId, character: choice.view.name, by: choice.by } : undefined;
 }
 
 /** projects.json as main read and checked it; the characters projects pin. */
@@ -283,14 +334,31 @@ export function currentCharacters(): ShownCharacters | undefined {
   return current().characters;
 }
 
-// Every theme file whose blobs a page may be painting: the library's, and those of a held before-look, which the files no
-// longer hold.
+// Every theme file whose blobs a page may be painting: the library's, those of a held before-look, which the files no
+// longer hold, and those an open theme card draws.
 function paintableThemes(): ThemeFile[] {
   const entries = [...(followed?.library?.entries().values() ?? []), ...(held?.look.themes.values() ?? [])];
-  return entries.flatMap((entry) => (entry?.status === 'ok' ? [entry.theme] : []));
+  return [...entries.flatMap((entry) => (entry?.status === 'ok' ? [entry.theme] : [])), ...cardThemes.local.values(), ...cardThemes.relayed.values()];
 }
 
-/** The blob a theme main read, a held before-look, the transient preview or a pin names as a character sprite, with its declared type. */
+// The most open cards of one origin whose themes main serves; past it the oldest card's blobs stop being served.
+const MAX_CARD_THEMES = 64;
+
+/** The theme an open card draws, validated by the caller; undefined when the card closed. */
+export function setCardTheme(origin: CardThemeOrigin, id: string, theme: ThemeFile | undefined): void {
+  const themes = cardThemes[origin];
+  themes.delete(id);
+  if (theme === undefined) return;
+  themes.set(id, theme);
+  for (const oldest of [...themes.keys()].slice(0, Math.max(0, themes.size - MAX_CARD_THEMES))) themes.delete(oldest);
+}
+
+/** Every card's theme of one origin, at the end of the core that opened them. */
+export function clearCardThemes(origin: CardThemeOrigin): void {
+  cardThemes[origin].clear();
+}
+
+/** The blob a theme main read, a held before-look, an open card, the transient preview or a pin names as a character sprite, with its declared type. */
 export function namedSpriteBlob(sha256: string): { readonly mime: string } | undefined {
   const named = (assets: ThemeFile['assets']): string | undefined => {
     const asset = assets?.[sha256];
@@ -335,6 +403,26 @@ function flashOf(sha256: string): FlashRecord | undefined {
     if (JSON.stringify(before) !== JSON.stringify(record)) refresh();
   }, () => undefined);
   return known;
+}
+
+/**
+ * Reads the stats of a preview's wallpapers and the flash checks of its wallpapers and sprites before it paints, so it paints
+ * once with each wallpaper's readable dim and no read that lands later changes the look again.
+ */
+export async function readPreviewRecords(next: TransientPreview): Promise<void> {
+  const wallpapers = Object.entries(next.assets ?? {}).flatMap(([sha, asset]) => (isWallpaperAsset(asset) ? [sha] : []));
+  const flashed = [...new Set([...wallpapers, ...characterAssets(next)])];
+  const generation = flashGeneration;
+  const [stats, flashes] = await Promise.all([readRecords(wallpapers, statsReader), readRecords(flashed, flashReader)]);
+  for (const sha of wallpapers) statsAsked.add(sha);
+  for (const [sha, record] of stats) wallpaperStats.set(sha, record);
+  if (generation !== flashGeneration) return;
+  for (const sha of flashed) {
+    flashAsked.add(sha);
+    const record = flashes.get(sha);
+    if (record) wallpaperFlashes.set(sha, record);
+    else wallpaperFlashes.delete(sha);
+  }
 }
 
 /** Where main reads a moving wallpaper's flash check (core's cache). */
@@ -403,7 +491,7 @@ export function chatSeeThrough(): boolean {
   return current().wallpapers?.regions.some((region) => region.panel === 'chat') === true;
 }
 
-/** The blob a theme main read, a held before-look or the transient preview names as a wallpaper, with its kind and declared type. */
+/** The blob a theme main read, a held before-look, an open card or the transient preview names as a wallpaper, with its kind and declared type. */
 export function namedImageBlob(sha256: string): { readonly kind: WallpaperKind; readonly mime: string } | undefined {
   const named = (theme: Pick<ThemeFile, 'assets'>): { kind: WallpaperKind; mime: string } | undefined => {
     const asset = theme.assets?.[sha256];
@@ -452,7 +540,7 @@ export function heldLookScope(): 'window' | 'trusted' | undefined {
   return held?.scope;
 }
 
-/** The blob a theme main read, a held before-look or the transient preview names as a bundled font, with its declared type; undefined otherwise. */
+/** The blob a theme main read, a held before-look, an open card or the transient preview names as a bundled font, with its declared type; undefined otherwise. */
 export function namedFontBlob(sha256: string): { readonly mime: string } | undefined {
   const named = (theme: Pick<ShownTheme, 'style' | 'assets'>): string | undefined => bundledFonts(theme).find((font) => font.sha256 === sha256)?.mime;
   const fromPreview = preview ? named(preview) : undefined;
@@ -524,7 +612,13 @@ export function trustedBackground(): string {
 export function currentTheme(scope: TrustedScope = 'region', page?: CustomCssPage): PanelTheme {
   const { theme, css, trusted, custom } = current();
   const customCss = scope === 'region' && page !== undefined ? pageCustomCss(custom, page) : undefined;
-  return { kind: theme.kind, css, trustedCss: trusted[scope], ...(customCss !== undefined ? { customCss } : {}), reducedMotion, fileIconTheme };
+  return { kind: theme.kind, css, trustedCss: trusted[scope], ...(customCss !== undefined ? { customCss } : {}), reducedMotion, fileIconTheme, revision: themeRevision };
+}
+
+/** The revision of what renderers get now, which a page acknowledges once it painted it. */
+export function currentThemeRevision(): number {
+  current();
+  return themeRevision;
 }
 
 /** The shown look's density, which scales main's own layout minimums as Tailwind's --spacing scales the pages'. */
@@ -546,6 +640,7 @@ function refresh(notify = true, writeSource = true): void {
   const next = JSON.stringify([theme.kind, shown.theme.themeId, shown.base.themeId, shown.theme.decidedBy, theme.css, theme.trustedCss, shown.custom, theme.reducedMotion, theme.fileIconTheme, shown.wallpapers?.regions, shown.wallpapers?.lowContrast, currentWallpapersOff(), currentWallpaperMotion(), shown.characters]);
   if (next !== signature) {
     signature = next;
+    themeRevision += 1;
     if (notify) for (const listener of [...appearanceListeners]) listener();
   }
   for (const listener of [...inputListeners]) listener();

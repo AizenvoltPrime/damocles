@@ -78,10 +78,11 @@ Processes, remote and files:
 
 UI:
 - Renderers read only `--d-*` tokens; only `tokens.css` reads `--vscode-*`. Sizes are rem, layouts use container queries, motion comes from `motion.css` ("Design tokens").
+- Every app CSS rule sits in a cascade layer (`@layer app` in an SFC `<style>`); the build refuses an unlayered rule ("Theme CSS and trusted regions").
 - Controls are shadcn-vue parts from `src/webview/components/ui/`; Tailwind over custom CSS.
 - An overlay's z-index comes from the `useOverlayEscape.ts` stack, never a fixed `z-` class.
 - A chat's settings read passes its folder only for a `CHAT_SETTING_KEYS` key; core, never the renderer, decides write scopes.
-- Theme files are written only by this computer's desktop core. Custom theme CSS reaches only scope roots, only through `sanitizeThemeCss`. An agent's theme change reaches the window only through its card or the keep-changes banner ("Desktop themes", "Theme CSS and trusted regions").
+- Theme files are written only by this computer's desktop core. Custom theme CSS reaches only scope roots, only through `sanitizeThemeCss`. An agent's theme change reaches the window only through its card or the keep-changes banner, or, for a screenshot the user allowed once or for the chat, a transient paint of its draft that ends with the capture ("Desktop themes", "Theme CSS and trusted regions").
 
 Design mode ("Design mode"):
 - A design chat writes only `design.md`, `screens/`, `shared/` and `variants/` of its own folder; core alone writes the rest, through `withDesignWrite`.

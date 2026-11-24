@@ -8,14 +8,16 @@ import { isolated } from '@shared/bidi-isolate';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { useReducedMotion } from '@/utils/reducedMotion';
 import { characterIndex, characterView, CHARACTER_STATES, frameAsset, frameFor, MAX_SPRITE_BYTES, MAX_SPRITE_FPS, MAX_SPRITE_SIDE, type CharacterState } from '@shared/themes/characters';
 import { MAX_STRIP_FRAMES, MAX_THEME_NAME_CHARS } from '@shared/themes/limits';
-import type { CharacterSet, ThemeFile } from '@shared/themes/schema';
+import { CHARACTER_SELECTIONS, type CharacterSelection, type CharacterSet, type ThemeFile } from '@shared/themes/schema';
 import { themeBlobUrl, type FlashRecord } from '@shared/themes/wallpapers';
 import type { DamoclesOverlayApi, ThemeEditorSession } from '../../../preload/overlay-channels';
 import CharacterImage from '../../components/CharacterImage.vue';
-import { withCharacterSet, withNewCharacter, withStateImage } from './character-edits';
+import { avatarHue } from '../../project-avatar';
+import { withCharacterSet, withNewCharacter, withSelection, withStateImage } from './character-edits';
 import CharacterSetPreview from './CharacterSetPreview.vue';
 import type { EditorImports } from './editor-imports';
 import { useEditorFormat } from './format';
@@ -99,6 +101,15 @@ function choose(index: number, state: CharacterState): void {
   if (name === undefined || props.readOnly || busy.value) return;
   // by name, so the image goes to the character it was chosen for wherever it is by then, and nowhere if it is gone
   void props.imports.importSprite(strip(), (draft, sprite) => withStateImage(draft, name, state, sprite));
+}
+
+// How the selected project's character is marked, each choice drawn on the set's first character in the first project's hue.
+const selection = computed<CharacterSelection>(() => set.value?.selection ?? 'outline');
+const selectionSample = computed(() => views.value.find(({ view }) => view !== undefined)?.view?.states.idle);
+const selectionHue = computed(() => ({ '--avatar-hue': String(avatarHue(props.session.projects?.[0]?.name ?? set.value?.name ?? '')) }));
+function pickSelection(value: unknown): void {
+  if (props.readOnly || value === selection.value || !CHARACTER_SELECTIONS.includes(value as CharacterSelection)) return;
+  emit('update', withSelection(props.draft, value as CharacterSelection));
 }
 
 function remove(index: number): void {
@@ -201,6 +212,60 @@ const avatarOf = (key: string, state: CharacterState) => {
     >
       {{ t('themeEditor.characters.noneText') }}
     </p>
+
+    <div
+      v-if="set"
+      class="flex flex-col gap-1.5"
+    >
+      <span
+        id="theme-character-selection"
+        class="text-12 font-medium"
+      >{{ t('themeEditor.characters.selection') }}</span>
+      <RadioGroup
+        :model-value="selection"
+        :disabled="readOnly"
+        orientation="horizontal"
+        aria-labelledby="theme-character-selection"
+        aria-describedby="theme-character-selection-note"
+        class="grid grid-cols-2 gap-2"
+        data-testid="character-selection"
+        @update:model-value="pickSelection"
+      >
+        <label
+          v-for="option in CHARACTER_SELECTIONS"
+          :key="option"
+          :for="`theme-character-selection-${option}`"
+          class="flex items-center gap-2 rounded-8 border px-2.5 py-2 transition-colors duration-150 ease-out"
+          :class="[readOnly ? '' : 'cursor-pointer', selection === option ? 'border-(--d-accent-fill) bg-(--d-accent-soft)' : readOnly ? 'border-(--d-border)' : 'border-(--d-border) hover:bg-(--d-hover)']"
+        >
+          <RadioGroupItem
+            :id="`theme-character-selection-${option}`"
+            :value="option"
+          />
+          <span
+            v-if="selectionSample"
+            aria-hidden="true"
+            class="project-character flex size-6 shrink-0 items-center justify-center p-0.5"
+            data-selected
+            :data-selection="option"
+            :style="selectionHue"
+          >
+            <CharacterImage
+              :image="selectionSample"
+              alt=""
+              :moves="false"
+            />
+          </span>
+          <span class="text-12">{{ t(`themeEditor.characters.selections.${option}`) }}</span>
+        </label>
+      </RadioGroup>
+      <p
+        id="theme-character-selection-note"
+        class="text-11.5 text-(--d-muted)"
+      >
+        {{ t('themeEditor.characters.selectionNote') }}
+      </p>
+    </div>
 
     <div
       v-for="entry in blocked"
@@ -351,7 +416,7 @@ const avatarOf = (key: string, state: CharacterState) => {
         <span class="project-character flex size-6 items-center justify-center rounded-6 bg-(--d-card) p-0.5">
           <CharacterImage
             v-if="avatarOf(project.key, project.state)"
-            :frame="avatarOf(project.key, project.state)!"
+            :image="avatarOf(project.key, project.state)!"
             alt=""
             :moves="false"
           />

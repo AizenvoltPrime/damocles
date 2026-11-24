@@ -393,6 +393,12 @@ function onStripDrop(event: DragEvent): void {
   terminals.move({ kind: 'toEditor', id: terminal.id });
 }
 
+// A closing tab keeps its last render while its leave plays, so the active mark comes off by hand: one tab is active at a time.
+function unmarkLeaving(tab: Element): void {
+  tab.removeAttribute('data-active');
+  tab.setAttribute('aria-selected', 'false');
+}
+
 function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
   event.preventDefault();
   void openMenu(tab, { left: event.clientX, top: event.clientY, width: 0, height: 0 });
@@ -425,7 +431,10 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
         data-testid="editor-tab-row"
         class="relative flex min-w-full shrink-0 items-stretch"
       >
-        <TransitionGroup name="editor-tab">
+        <TransitionGroup
+          name="editor-tab"
+          @before-leave="unmarkLeaving"
+        >
           <div
             v-for="(tab, index) in store.tabs.value"
             :id="`editor-tab-${tab.id}`"
@@ -435,6 +444,7 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
             data-testid="editor-tab"
             :data-tab-id="tab.id"
             :data-kind="tab.kind"
+            :data-active="tab.id === store.state.value?.activeTabId ? '' : undefined"
             :data-dirty="tab.dirty || undefined"
             :data-deleted="tab.deleted || undefined"
             :aria-selected="tab.id === store.state.value?.activeTabId"

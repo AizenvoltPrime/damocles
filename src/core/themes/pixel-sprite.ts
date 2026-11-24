@@ -1,6 +1,6 @@
-// A character drawn as pixel grids (ThemeSet asset.from.pixels, the built-in Arcade theme) turned into one sprite-strip SVG: the
-// frames side by side, each pixel a crisp square. scripts/generate-theme-art.ts imports this file through Node's type stripping:
-// erasable TypeScript and no imports.
+// A character drawn as pixel grids (ThemeSet sprites, the built-in Arcade theme) turned into one sprite-strip SVG, the frames
+// side by side, each pixel a crisp square, and read back from it. scripts/generate-theme-art.ts imports this file through Node's
+// type stripping: erasable TypeScript and no imports.
 
 export const MAX_PIXEL_SIDE = 32;
 export const MAX_PIXEL_COLORS = 16;
@@ -82,9 +82,10 @@ export function pixelSpriteSvg(sprite: PixelSprite): PixelStrip {
           x++;
           continue;
         }
+        const index = Number.parseInt(char, 16);
         let end = x + 1;
-        while (end < row.length && row[end] === char) end++;
-        runs[Number.parseInt(char, 16)]!.push(`M${f * frameWidth + x} ${y}h${end - x}v1h${x - end}z`);
+        while (end < row.length && !CLEAR.has(row[end]!) && Number.parseInt(row[end]!, 16) === index) end++;
+        runs[index]!.push(`M${f * frameWidth + x} ${y}h${end - x}v1h${x - end}z`);
         x = end;
       }
     });
@@ -93,4 +94,63 @@ export function pixelSpriteSvg(sprite: PixelSprite): PixelStrip {
   const paths = runs.flatMap((run, i) => (run.length === 0 ? [] : [`<path fill="${sprite.palette[i]!.toLowerCase()}" d="${run.join('')}"/>`]));
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${frameHeight}" viewBox="0 0 ${width} ${frameHeight}" shape-rendering="crispEdges">${paths.join('')}</svg>\n`;
   return { svg, frameWidth, frameHeight, frames: sprite.frames.length, fps: sprite.fps };
+}
+
+const SVG_ROOT = /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" width="(\d+)" height="(\d+)" viewBox="0 0 (\d+) (\d+)" shape-rendering="crispEdges">/;
+const SVG_PATH = /<path fill="(#[0-9a-f]{6})" d="([^"]*)"\/>/y;
+const SVG_RUN = /M(\d+) (\d+)h(\d+)v1h-(\d+)z/y;
+const SVG_END = '</svg>\n';
+
+/**
+ * The pixel grids `pixelSpriteSvg` drew `svg` from, cut into `frames` at `fps`: palette indexes in the order of its paths, `.`
+ * for clear. Only text `pixelSpriteSvg` itself writes, with a colored pixel and at a rate parsePixelSprite takes, reads back;
+ * anything else throws PixelSpriteError saying why.
+ */
+export function pixelSpriteFromSvg(svg: string, frames: number, fps: number): PixelSprite {
+  const root = SVG_ROOT.exec(svg);
+  if (!root) throw new PixelSpriteError('It is not an SVG drawn from pixel grids: its root element is not the one Damocles writes.');
+  const [width, height, viewWidth, viewHeight] = root.slice(1, 5).map(Number) as [number, number, number, number];
+  if (viewWidth !== width || viewHeight !== height) throw new PixelSpriteError('Its viewBox is not its size.');
+  if (!Number.isInteger(frames) || frames < 1 || frames > MAX_PIXEL_FRAMES) throw new PixelSpriteError(`It holds ${frames} frames; a pixel sprite holds 1 to ${MAX_PIXEL_FRAMES}.`);
+  if (!Number.isFinite(fps) || fps < 1 || fps > MAX_PIXEL_FPS) throw new PixelSpriteError(`Its frame rate is ${fps}; a pixel sprite moves at 1 to ${MAX_PIXEL_FPS} frames a second.`);
+  if (width % frames !== 0) throw new PixelSpriteError(`It is ${width} pixels wide, which does not cut into ${frames} frames.`);
+  const frameWidth = width / frames;
+  if (frameWidth < 1 || frameWidth > MAX_PIXEL_SIDE || height < 1 || height > MAX_PIXEL_SIDE) throw new PixelSpriteError(`Its frames are ${frameWidth} by ${height} pixels; a pixel sprite's are 1 to ${MAX_PIXEL_SIDE} a side.`);
+  const grid: string[][] = Array.from({ length: height }, () => Array.from({ length: width }, () => '.'));
+  const palette: string[] = [];
+  let at = root[0].length;
+  for (;;) {
+    SVG_PATH.lastIndex = at;
+    const path = SVG_PATH.exec(svg);
+    if (!path) break;
+    at = SVG_PATH.lastIndex;
+    if (palette.length === MAX_PIXEL_COLORS) throw new PixelSpriteError(`It has more than ${MAX_PIXEL_COLORS} colors.`);
+    const index = palette.length.toString(16);
+    palette.push(path[1]!);
+    const runs = path[2]!;
+    let from = 0;
+    while (from < runs.length) {
+      SVG_RUN.lastIndex = from;
+      const run = SVG_RUN.exec(runs);
+      if (!run) throw new PixelSpriteError('A path is not made of one-pixel-high runs.');
+      from = SVG_RUN.lastIndex;
+      const [x, y, length, back] = run.slice(1, 5).map(Number) as [number, number, number, number];
+      if (length < 1 || back !== length) throw new PixelSpriteError('A run is not a closed one-pixel-high row of pixels.');
+      if (y >= height || x + length > width || Math.floor(x / frameWidth) !== Math.floor((x + length - 1) / frameWidth)) throw new PixelSpriteError('A run reaches past its frame.');
+      const row = grid[y]!;
+      for (let cell = x; cell < x + length; cell++) {
+        if (row[cell] !== '.') throw new PixelSpriteError('Two runs cover the same pixel.');
+        row[cell] = index;
+      }
+    }
+  }
+  if (svg.slice(at) !== SVG_END) throw new PixelSpriteError('It holds something other than the paths of pixel runs.');
+  if (palette.length === 0) throw new PixelSpriteError(`It has no colored pixel; a pixel sprite has 1 to ${MAX_PIXEL_COLORS} colors.`);
+  const sprite: PixelSprite = {
+    palette,
+    frames: Array.from({ length: frames }, (_, f) => grid.map((row) => row.slice(f * frameWidth, (f + 1) * frameWidth).join(''))),
+    fps,
+  };
+  if (pixelSpriteSvg(sprite).svg !== svg) throw new PixelSpriteError('Its runs are not the ones its pixels draw.');
+  return sprite;
 }

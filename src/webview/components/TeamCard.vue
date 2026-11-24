@@ -169,7 +169,7 @@ function openMember(agentId: string): void {
       <span class="tabular-nums">{{ formatElapsed(elapsedMs) }}</span>
       <span
         v-if="run.legacyTokens"
-        data-part="tokens"
+        data-usage="tokens"
       >{{ t('agentUsage.tokens', { n: formatTokenCount(run.legacyTokens, locale) }, run.legacyTokens) }}</span>
       <AgentUsageStats
         :usage="run.usage"

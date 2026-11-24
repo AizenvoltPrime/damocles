@@ -236,7 +236,7 @@ export function miniCharacters(theme: Pick<ThemeFile, 'characters' | 'assets'>):
 
 // A character in an 8-unit square at (x, y), its first frame clipped by a nested viewport, its pixels kept square.
 const characterNode = (x: number, y: number, character: MiniCharacter): MiniNode => node('svg', { x, y, width: 8, height: 8, viewBox: `0 0 ${character.width} ${character.height}`, preserveAspectRatio: 'xMidYMid meet' }, [
-  node('image', { href: character.href, x: 0, y: 0, width: character.width * character.frames, height: character.height, preserveAspectRatio: 'none', style: 'image-rendering:pixelated' }),
+  node('image', { href: character.href, x: 0, y: 0, width: character.width * character.frames, height: character.height, preserveAspectRatio: 'none', style: 'image-rendering:pixelated', 'data-testid': 'mini-character' }),
 ]);
 
 /**

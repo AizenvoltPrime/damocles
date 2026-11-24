@@ -353,6 +353,25 @@ describe("ThemeSet's asset sources at the gate", () => {
     expect(runsUnasked(call, panel)).toBe(true);
   });
 
+  it('sprites, drawn or recolored, need no source judgement: no Read or WebFetch rule asks for them and they run unasked in every mode', async () => {
+    writeRules({ ask: ['Read', 'WebFetch', 'GenerateImage'] });
+    try {
+      const sprites = [
+        { name: 'pip', pixels: { palette: ['#ffffff'], frames: [['0']] } },
+        { name: 'pop', recolor: { from: { character: 'Pip', state: 'idle' }, map: { '#ffffff': '#ff0000' } } },
+      ];
+      for (const { name, setup } of MODES) {
+        const { panel, prompts } = gate(setup);
+        expect(await runPermissionGate(ev('ThemeSet', `sprites-${name}`, { name: 'Pals', sprites, characterEdits: [{ name: 'Pip', idle: 'pip' }] }), panel, undefined), name).toBeUndefined();
+        expect(prompts, name).toEqual([]);
+      }
+      const { panel } = gate({ mode: 'default' });
+      expectPolicyBlock(await runPermissionGate(ev('ThemeSet', 'pixels-asset', { name: 'Pals', asset: { name: 'pip', from: { pixels: { palette: ['#ffffff'], frames: [['0']] } } } }), panel, undefined), 'could not be approved');
+    } finally {
+      clearRules();
+    }
+  });
+
   it('an attachment or no source needs no read; a malformed source cannot be approved; a design chat or nested agent never runs a source', async () => {
     clearRules();
     for (const { name, setup } of MODES) {

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { DamoclesShellApi, ShellWindowState } from '../../preload/shell-channels';
+import type { ShellWindowState } from '../../preload/shell-channels';
+import type { WindowControlsApi } from './title-bar-api';
 
-const props = defineProps<{ api: DamoclesShellApi; windowState: ShellWindowState }>();
+const props = defineProps<{ api: WindowControlsApi; windowState: ShellWindowState }>();
 const { t } = useI18n();
 
 const maximizeLabel = computed(() => (props.windowState === 'maximized' ? t('titleBar.restore') : t('titleBar.maximize')));

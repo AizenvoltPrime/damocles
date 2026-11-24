@@ -269,6 +269,11 @@ export class PermissionHandler {
     }
   }
 
+  /** Tells a page that loaded whether the chat holds the screenshot grant, which it shows from this alone. */
+  republishScreenshotGrant(): void {
+    this.themeScreenshotManager.republish();
+  }
+
   /** Posts each device its own message, for prompts a chat on a remote host shows each device its own way. */
   setDevicePost(fn: DevicePostFn): void {
     this.state.postToDevices = fn;
@@ -529,6 +534,21 @@ export class PermissionHandler {
     this.themeScreenshotManager.resolveThemeScreenshot(promptId, choice);
   }
 
+  /** Whether the user allowed every screenshot of this chat with Allow for this chat; no mode or YOLO ever grants it. */
+  screenshotGranted(chat: string): boolean {
+    return this.themeScreenshotManager.screenshotGranted(chat);
+  }
+
+  /** Ends the chat's screenshot grant: any (the chat's strip), or only `chat`'s (main's notice). */
+  revokeScreenshotGrant(chat?: string): void {
+    this.themeScreenshotManager.revokeScreenshotGrant(chat);
+  }
+
+  /** The panel's live session id now; a screenshot grant of another session ends. */
+  endScreenshotGrantUnless(sessionId: string): void {
+    this.themeScreenshotManager.endScreenshotGrantUnless(sessionId);
+  }
+
   /** Raises the install card, in every mode, YOLO included, until its tool closes it or `signal` aborts. */
   openThemeInstall(ask: ThemeInstallAsk, signal: AbortSignal, allowFlash: ((sha256: string) => void) | undefined): ThemeInstallPrompt {
     return this.themeInstallManager.open(ask, signal, allowFlash);
@@ -545,6 +565,7 @@ export class PermissionHandler {
 
   async dispose(): Promise<void> {
     this.state.clearAll();
+    this.themeScreenshotManager.dispose();
     this.evaluatorManager.dispose();
     await this.diffManager.dispose();
   }

@@ -36,4 +36,11 @@ describe('sanitizeUrl', () => {
     expect(sanitizeUrl('java\nscript:alert(1)')).toBe('#');
     expect(sanitizeUrl(' javascript:alert(1)')).toBe('#');
   });
+
+  // A caller that means a local file decides so before it asks (MarkdownRenderer); here the shape is an unknown scheme.
+  it('reads a file name with a line and a drive path as schemes, and neutralizes them', () => {
+    expect(sanitizeUrl('utils.ts:42')).toBe('#');
+    expect(sanitizeUrl('C:/x/a.ts')).toBe('#');
+    expect(sanitizeUrl('x.js:alert(1)')).toBe('#');
+  });
 });

@@ -907,7 +907,7 @@ function permissionCallOf(name: string, input: Record<string, unknown>): { name:
 
 /**
  * The call a ThemeSet is decided as: with a `file` source a Read of that path, with a `url` source or `install` a WebFetch of
- * that URL, with a `generate` the image generation of its prompt; with no source, an attachment or pixels, itself.
+ * that URL, with a `generate` the image generation of its prompt; with no source (sprites included, which read nothing) or an attachment, itself.
  */
 function themeSourceCall(input: Record<string, unknown>): { name: string; input: Record<string, unknown> } | { undecidable: string } {
   const source = themeCallSource(input);

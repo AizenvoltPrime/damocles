@@ -24,6 +24,8 @@ interface VideoSource {
   readonly element: HTMLVideoElement;
   readonly copies: Set<HTMLCanvasElement>;
   frame: number | undefined;
+  // a region shows it playing, not its still frame
+  playing: boolean;
 }
 const videos = new Map<string, VideoSource>();
 // each canvas copy's placement of the video, relative to its own box
@@ -110,7 +112,7 @@ function videoFor(asset: string, url: string): VideoSource {
   element.addEventListener('loadeddata', () => {
     for (const canvas of source!.copies) drawCopy(canvas, element);
   });
-  source = { element, copies: new Set(), frame: undefined };
+  source = { element, copies: new Set(), frame: undefined, playing: false };
   videos.set(asset, source);
   return source;
 }
@@ -170,6 +172,48 @@ function placeVideo(image: HTMLElement, layout: RegionLayout, owner: boolean, pl
   if (playing) drawCopy(canvas, source.element);
 }
 
+// the image URL each shown region's background draws, as place() last set it
+const shownImages = new Map<Panel, string>();
+
+function decoded(url: string): Promise<void> {
+  const image = new Image();
+  image.src = url;
+  return image.decode().catch((err: unknown) => {
+    throw new Error(`the wallpaper image ${url} did not load`, { cause: err });
+  });
+}
+
+// Settles once the video has a frame; rejects when it failed, and when it is emptied or aborted (dropVideo) before it has one.
+function firstFrame(video: HTMLVideoElement): Promise<void> {
+  if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return Promise.resolve();
+  const failure = (): Error => new Error(`the wallpaper video ${video.dataset['wallpaperVideo'] ?? ''} did not load`);
+  // a video that failed before now fires no further event
+  if (video.error) return Promise.reject(failure());
+  return new Promise((resolve, reject) => {
+    const listening = new AbortController();
+    const { signal } = listening;
+    const fail = (): void => {
+      listening.abort();
+      reject(failure());
+    };
+    video.addEventListener('loadeddata', () => {
+      listening.abort();
+      resolve();
+    }, { signal });
+    for (const type of ['error', 'emptied', 'abort']) video.addEventListener(type, fail, { signal });
+  });
+}
+
+/**
+ * Settles once every shown region's image has decoded and every video a region plays has a frame; rejects when one does not
+ * load. A wallpaper change of the flush this is called in is placed by the time its tick ends, so it waits for the new set.
+ */
+async function whenDrawn(): Promise<void> {
+  await nextTick();
+  const playing = [...videos.values()].filter((source) => source.playing);
+  await Promise.all([...[...new Set(shownImages.values())].map(decoded), ...playing.map((source) => firstFrame(source.element))]);
+}
+
 // Written to the DOM directly from the observer's callback, so the regions move in the frame the panes did.
 function place(): void {
   const host = root.value;
@@ -179,6 +223,7 @@ function place(): void {
   const owners = videoOwners(all);
   // main's flag carries what only main sees (focus, power, the settings); reduce motion is also read here, as all script motion is
   const paused = props.paused === true || prefersReducedMotion();
+  shownImages.clear();
   for (const region of host.querySelectorAll<HTMLElement>('[data-wallpaper-region]')) {
     const layout = layouts.get(region.dataset['wallpaperRegion'] as Panel);
     region.hidden = layout === undefined;
@@ -204,6 +249,7 @@ function place(): void {
       filter: layout.blur > 0 ? `blur(${layout.blur}px)` : '',
     });
     image.dataset['wallpaperPlaying'] = String(playing);
+    shownImages.set(layout.panel, shown);
     if (layout.moving?.kind === 'video') placeVideo(image, layout, owners.get(layout.asset) === layout.panel, playing);
     else if (copy) dropCopy(copy);
     (image.nextElementSibling as HTMLElement).style.backgroundColor = `rgb(from var(${pane}) r g b / ${layout.dim})`;
@@ -232,7 +278,8 @@ function syncPlayback(layouts: readonly RegionLayout[], paused: boolean): void {
     const source = videos.get(asset);
     if (!source) continue;
     for (const canvas of [...source.copies]) if (!canvas.isConnected) source.copies.delete(canvas);
-    if (playsNow(layout, paused)) {
+    source.playing = playsNow(layout, paused);
+    if (source.playing) {
       void source.element.play().catch(() => undefined);
       follow(source);
     } else {
@@ -248,8 +295,9 @@ onMounted(() => {
   if (root.value) observer.observe(root.value);
   place();
 });
-// Every state push carries the wallpapers in a new array, so the set is compared by value; a new one is placed once it rendered.
-watch(() => JSON.stringify(props.wallpapers), () => void nextTick(place), { flush: 'post' });
+// Every state push carries the wallpapers in a new array, so the set is compared by value. A new one is placed in the post flush
+// that rendered its regions, with no further tick, which whenDrawn relies on.
+watch(() => JSON.stringify(props.wallpapers), () => place(), { flush: 'post' });
 watch(() => props.paused, () => place());
 useEventListener(window, LAYOUT_SETTLED_EVENT, place);
 onBeforeUnmount(() => {
@@ -258,7 +306,7 @@ onBeforeUnmount(() => {
   for (const asset of [...videos.keys()]) dropVideo(asset);
 });
 
-defineExpose({ place });
+defineExpose({ place, whenDrawn });
 </script>
 
 <template>

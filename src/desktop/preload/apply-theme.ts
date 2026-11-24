@@ -3,9 +3,13 @@ import type { PanelTheme } from './panel-channels';
 
 /**
  * Brings a page up to main's theme: the host theme style, the trusted palette's style right after it, the theme's
- * sanitized CSS after that, the vscode-dark/vscode-light body class, data-reduced-motion and data-file-icon-theme.
+ * sanitized CSS after that, the vscode-dark/vscode-light body class, data-reduced-motion, data-file-icon-theme and
+ * data-theme-revision. The page paints the change in its next frame: data-theme-switching holds every transition off for
+ * the one style flush that takes the new values, so no color fades from the old theme and a capture shows the new one.
  */
 export function applyHostTheme(theme: PanelTheme): void {
+  const root = document.documentElement;
+  root.toggleAttribute('data-theme-switching', true);
   const style = document.getElementById(HOST_THEME_STYLE_ID);
   if (style) style.textContent = theme.css;
   let trusted = document.getElementById(HOST_TRUSTED_STYLE_ID);
@@ -18,9 +22,13 @@ export function applyHostTheme(theme: PanelTheme): void {
   applyUserCss(theme.customCss, trusted ?? style);
   document.documentElement.toggleAttribute('data-reduced-motion', theme.reducedMotion);
   document.documentElement.dataset['fileIconTheme'] = theme.fileIconTheme;
+  if (theme.revision !== undefined) document.documentElement.dataset['themeRevision'] = String(theme.revision);
   document.body.classList.remove('vscode-dark', 'vscode-light');
   document.body.classList.add(`vscode-${theme.kind}`);
   document.body.dataset['vscodeThemeKind'] = `vscode-${theme.kind}`;
+  // reading a layout value computes the page's styles now, while transitions are off; the attribute must go only after it
+  void document.body.offsetHeight;
+  root.removeAttribute('data-theme-switching');
 }
 
 // textContent only: the CSS is the sanitizer's output, and it must never be parsed as markup.

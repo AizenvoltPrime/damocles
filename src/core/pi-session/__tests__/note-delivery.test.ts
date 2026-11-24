@@ -55,6 +55,8 @@ function piQueue() {
     // The panel echo stamps the prompt index, which is read from the branch; a Stop reads the leaf; a queued message
     // naming no conversation reads that nothing is stored yet, as an in-memory manager has no file.
     sessionManager: { getBranch: () => [], getEntries: () => [], getLeafId: (): string | null => null, getSessionFile: (): string | undefined => undefined },
+    // a spawn reads the loaded tools to say why a deferred group cannot load
+    getActiveToolNames: (): string[] => [],
     prompt: vi.fn(async (text: string, opts?: PromptOptions) => {
       if (session.isStreaming) (opts?.streamingBehavior === 'followUp' ? followUp : steering).push(text);
       opts?.preflightResult?.(session.isStreaming ? 'queued' : 'started');
@@ -103,7 +105,7 @@ function harness(): Harness {
     cwd: '/cwd',
     projectScope: true,
     platform: createFakePlatform(),
-    permissionHandler: { getPermissionMode: () => 'default', turnPermissionMode: () => 'default', setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [] } as unknown as PermissionHandler,
+    permissionHandler: { getPermissionMode: () => 'default', turnPermissionMode: () => 'default', setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [], endScreenshotGrantUnless: () => {} } as unknown as PermissionHandler,
     onMessage: (message: ExtensionToWebviewMessage) => emitted.push(message),
     resolveThinking: () => ({ thinkingDisabled: true, effort: null }),
   } as unknown as SessionOptions;

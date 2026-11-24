@@ -59,7 +59,7 @@ describe('BackgroundTasksOverlay', () => {
 
     const rows = wrapper.findAll('[data-testid="bg-subagent-row"]');
     expect(rows.map((row) => row.text())).toEqual([expect.stringContaining('first'), expect.stringContaining('second')]);
-    expect(wrapper.findAll('[data-part="tokens"]').map((t) => t.text())).toEqual(['10.0K tokens', '10.0K tokens']);
+    expect(wrapper.findAll('[data-usage="tokens"]').map((t) => t.text())).toEqual(['10.0K tokens', '10.0K tokens']);
   });
 
   it('counts a row\'s tools in one Greek phrase with the Greek plural', () => {

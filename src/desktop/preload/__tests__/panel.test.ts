@@ -27,6 +27,7 @@ vi.mock('electron', () => ({
 
 // The preload runs in a page; only the listener registration touches the document here.
 vi.stubGlobal('document', { addEventListener: () => undefined });
+vi.mock('../apply-theme', () => ({ applyHostTheme: () => undefined }));
 
 beforeEach(() => {
   H.initAnswers.length = 0;
@@ -130,5 +131,43 @@ describe('panel preload', () => {
     expect(received).toEqual([{ type: 'ready' }, frame]);
     expect(warn).toHaveBeenCalledWith('[damocles] dropped a host message that is not JSON');
     warn.mockRestore();
+  });
+
+  it('acknowledges a theme two frames after it applied, holding one wait at most while the view draws no frame', async () => {
+    vi.resetModules();
+    const frames: Array<() => void> = [];
+    vi.stubGlobal('requestAnimationFrame', (callback: () => void) => frames.push(callback));
+    vi.stubGlobal('document', { addEventListener: () => undefined, body: {}, fonts: { ready: Promise.resolve() } });
+    const drawFrames = async (): Promise<void> => {
+      for (let i = 0; i < 4; i += 1) {
+        await Promise.resolve();
+        for (const frame of frames.splice(0)) frame();
+      }
+      await Promise.resolve();
+    };
+    try {
+      await import('../panel');
+      H.initAnswers.push({ state: null, theme: { kind: 'dark', css: '', reducedMotion: false, revision: 1 } });
+      expect(H.exposed!.getState()).toBeNull();
+      const theme = H.handlers.get(PANEL_CHANNELS.theme)!;
+      const acks = (): unknown[] => H.sent.filter(([channel]) => channel === PANEL_CHANNELS.themeApplied).map(([, revision]) => revision);
+      theme({}, { kind: 'dark', css: 'a', reducedMotion: false, revision: 2 });
+      await Promise.resolve();
+      expect(acks()).toEqual([]);
+      await drawFrames();
+      expect(acks()).toEqual([2]);
+
+      // a hidden view: three themes land and no frame is drawn
+      for (const revision of [3, 4, 5]) theme({}, { kind: 'dark', css: String(revision), reducedMotion: false, revision });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(frames).toHaveLength(1);
+      await drawFrames();
+      await drawFrames();
+      expect(acks()).toEqual([2, 5]);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.stubGlobal('document', { addEventListener: () => undefined });
+    }
   });
 });

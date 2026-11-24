@@ -73,10 +73,13 @@ beforeEach(() => {
   stub(HTMLCanvasElement.prototype, 'getContext', { value: () => ({ clearRect: vi.fn(), drawImage }) });
   stub(HTMLCanvasElement.prototype, 'clientWidth', { get(this: Element) { return rectOf(this.parentElement!).width; } });
   stub(HTMLCanvasElement.prototype, 'clientHeight', { get(this: Element) { return rectOf(this.parentElement!).height; } });
+  // happy-dom has no readiness constants
+  stub(HTMLMediaElement, 'HAVE_CURRENT_DATA', { value: 2 });
   stub(HTMLVideoElement.prototype, 'videoWidth', { get: () => 1920 });
   stub(HTMLVideoElement.prototype, 'play', { value: play });
   stub(HTMLVideoElement.prototype, 'pause', { value: vi.fn() });
-  stub(HTMLVideoElement.prototype, 'load', { value: vi.fn() });
+  // an element let go of its source: the browser empties it
+  stub(HTMLVideoElement.prototype, 'load', { value(this: HTMLVideoElement) { this.dispatchEvent(new Event('emptied')); } });
   stub(HTMLVideoElement.prototype, 'requestVideoFrameCallback', {
     value(this: HTMLVideoElement, callback: () => void) {
       frames.set(this, [...(frames.get(this) ?? []), callback]);
@@ -114,6 +117,25 @@ const present = (element: HTMLVideoElement): void => {
   for (const callback of frames.get(element)?.splice(0) ?? []) callback();
 };
 const place = (wrapper: VueWrapper): void => (wrapper.vm as unknown as { place: () => void }).place();
+const whenDrawn = (wrapper: VueWrapper): Promise<void> => (wrapper.vm as unknown as { whenDrawn: () => Promise<void> }).whenDrawn();
+// How a promise stands once every job already queued has run.
+async function outcomeOf(promise: Promise<void>): Promise<string> {
+  let outcome = 'pending';
+  promise.then(() => (outcome = 'drawn'), (err: unknown) => (outcome = String(err)));
+  await flushPromises();
+  return outcome;
+}
+// Every image decodes; the URLs asked for are the ones returned.
+function decodeImages(): string[] {
+  const decoded: string[] = [];
+  stub(HTMLImageElement.prototype, 'decode', {
+    value(this: HTMLImageElement) {
+      decoded.push(this.src);
+      return Promise.resolve();
+    },
+  });
+  return decoded;
+}
 
 describe('the wallpaper layer', () => {
   it('places a region again when its pane came to rest in another slot, which moved it without a resize', async () => {
@@ -256,6 +278,83 @@ describe('the wallpaper layer', () => {
     await wrapper.setProps({ paused: true });
     expect((region('chat').firstElementChild as HTMLElement).dataset['wallpaperPlaying']).toBe('false');
     expect(videoOf(A).style.visibility).toBe('hidden');
+  });
+
+  it('is drawn once every shown region\'s image has decoded, a paused video\'s still included, and not when one does not load', async () => {
+    const decoded: string[] = [];
+    stub(HTMLImageElement.prototype, 'decode', {
+      value(this: HTMLImageElement) {
+        decoded.push(this.src);
+        return this.src.includes('missing') ? Promise.reject(new Error('EncodingError')) : Promise.resolve();
+      },
+    });
+    pane('sidebar', { x: 0, y: 40, width: 240, height: 760 });
+    pane('chat', { x: 240, y: 40, width: 1040, height: 760 });
+    // a region its pane does not show (no titlebar pane here) waits for nothing
+    const drawn = await layer([image('sidebar', A), video('chat', B), image('titlebar', 'c'.repeat(64))], true);
+    await (drawn.vm as unknown as { whenDrawn: () => Promise<void> }).whenDrawn();
+    expect(decoded.sort()).toEqual(['app://a', 'app://still']);
+
+    const broken = await layer([{ ...image('sidebar', A), url: 'app://missing' }]);
+    await expect((broken.vm as unknown as { whenDrawn: () => Promise<void> }).whenDrawn()).rejects.toThrow('the wallpaper image app://missing did not load');
+  });
+
+  it('waits for the new image when it is asked in the same flush as a wallpaper change', async () => {
+    const decoded = decodeImages();
+    pane('sidebar', { x: 0, y: 40, width: 240, height: 760 });
+    const wrapper = await layer([image('sidebar', A)]);
+    const changed = wrapper.setProps({ wallpapers: [image('sidebar', B)] });
+    await whenDrawn(wrapper);
+    expect(decoded).toEqual(['app://b']);
+    await changed;
+  });
+
+  it('is drawn at once when a playing video has a frame, and waits for no frame of a video it holds on its still', async () => {
+    decodeImages();
+    let ready = 2;
+    stub(HTMLVideoElement.prototype, 'readyState', { get: () => ready });
+    pane('chat', { x: 0, y: 40, width: 1280, height: 760 });
+    expect(await outcomeOf(whenDrawn(await layer([video('chat', A)])))).toBe('drawn');
+    ready = 0;
+    document.body.innerHTML = '';
+    pane('chat', { x: 0, y: 40, width: 1280, height: 760 });
+    expect(await outcomeOf(whenDrawn(await layer([video('chat', B)], true)))).toBe('drawn');
+  });
+
+  it("waits for a playing video's first frame, and is not drawn when the video fails", async () => {
+    decodeImages();
+    stub(HTMLVideoElement.prototype, 'readyState', { get: () => 0 });
+    pane('chat', { x: 0, y: 40, width: 1280, height: 760 });
+    const wrapper = await layer([video('chat', A)]);
+    const loading = whenDrawn(wrapper);
+    expect(await outcomeOf(loading)).toBe('pending');
+    videoOf(A).dispatchEvent(new Event('loadeddata'));
+    expect(await outcomeOf(loading)).toBe('drawn');
+
+    const failing = whenDrawn(wrapper);
+    expect(await outcomeOf(failing)).toBe('pending');
+    videoOf(A).dispatchEvent(new Event('error'));
+    expect(await outcomeOf(failing)).toBe(`Error: the wallpaper video ${A} did not load`);
+  });
+
+  it('is not drawn, at once, when a playing video has already failed', async () => {
+    decodeImages();
+    stub(HTMLVideoElement.prototype, 'readyState', { get: () => 0 });
+    stub(HTMLVideoElement.prototype, 'error', { get: () => ({ code: 4, message: 'no supported source' }) });
+    pane('chat', { x: 0, y: 40, width: 1280, height: 760 });
+    const wrapper = await layer([video('chat', A)]);
+    expect(await outcomeOf(whenDrawn(wrapper))).toBe(`Error: the wallpaper video ${A} did not load`);
+  });
+
+  it('is not drawn when the video it waits for is let go, which empties it with no error', async () => {
+    decodeImages();
+    stub(HTMLVideoElement.prototype, 'readyState', { get: () => 0 });
+    pane('chat', { x: 0, y: 40, width: 1280, height: 760 });
+    const wrapper = await layer([video('chat', A)]);
+    const waiting = whenDrawn(wrapper);
+    expect(await outcomeOf(waiting)).toBe('pending');
+    await wrapper.setProps({ wallpapers: [image('chat')] });
+    expect(await outcomeOf(waiting)).toBe(`Error: the wallpaper video ${A} did not load`);
   });
 
   it('lets go of its observer, its videos and the settle listener when it unmounts', async () => {

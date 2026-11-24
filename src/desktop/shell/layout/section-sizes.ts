@@ -7,6 +7,16 @@ export const SIZED_SECTIONS: readonly SizedSection[] = ['projects', 'files', 'se
 
 export const isSizedSection = (name: SidebarSectionId): name is SizedSection => name !== 'chats';
 
+const FILLER_PRECEDENCE: readonly SidebarSectionId[] = ['chats', 'files', 'search', 'projects', 'repos', 'scm', 'graph'];
+
+/**
+ * The section that fills the height the others leave: the first open one of Chats, Files, Search, Projects, Repositories,
+ * Source control and Graph, wherever the user put it; undefined while all are collapsed.
+ */
+export function fillerSection(sections: Readonly<Record<SidebarSectionId, { readonly collapsed: boolean }>>): SidebarSectionId | undefined {
+  return FILLER_PRECEDENCE.find((name) => !sections[name].collapsed);
+}
+
 // VS Code's SplitView (`splitview.ts`): the open sections that keep a size of their own (`fixed`, top to bottom) share `room`,
 // the height left once the filler keeps its minimum. A section outside `fixed` keeps its stored size, so a collapsed one
 // reopens at it.

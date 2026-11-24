@@ -15,7 +15,7 @@ import Sidebar from '../components/Sidebar.vue';
 import { createEditorStore, EDITOR_STORE } from '../editor/editor-store';
 import { createScmStore, SCM_STORE } from '../scm/scm-store';
 import { shellI18n } from '../i18n';
-import { FakeResizeObserver, STATE, fakeShellApi } from './fakes';
+import { FakeResizeObserver, PAGE_PROVIDE, STATE, fakeShellApi } from './fakes';
 
 // The layout minimums are px at the default font and density: the shell scales them by its root font and the theme's density
 // (the spacing probe), main by minimumScale, and neither goes below the sidebar and section minimums main's layout file keeps.
@@ -98,7 +98,7 @@ describe('the shell\'s layout minimums', () => {
     const api: DamoclesShellApi = fakeShellApi();
     const wrapper = mount(Sidebar, {
       props: { api, state: STATE },
-      global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: createEditorStore(api), [SCM_STORE]: createScmStore(api.scm) } },
+      global: { plugins: [shellI18n], provide: { ...PAGE_PROVIDE, [EDITOR_STORE]: createEditorStore(api), [SCM_STORE]: createScmStore(api.scm) } },
       attachTo: document.body,
     });
     mounted.push(wrapper);

@@ -5,7 +5,8 @@ import type { LookKind } from './tokens';
 export type ThemeModeValue = 'system' | 'dark' | 'light';
 
 // Theme names as they were when the change was made, so an entry still reads right after a rename or a delete. themeId and
-// wasId name the themes of a pick and a hold, so a view shows a built-in's name in its own language; an older entry has none.
+// wasId name the themes of a pick, a hold and a project pin, so a view shows a built-in's name in its own language; an older
+// entry has none.
 // A pick has no was when the theme the look had is no longer installed.
 export type ThemeChange =
   | { readonly kind: 'pick'; readonly look: LookKind; readonly theme: string; readonly themeId?: string; readonly was?: string; readonly wasId?: string }
@@ -22,6 +23,8 @@ export type ThemeChange =
   | { readonly kind: 'delete'; readonly theme: string }
   // a project's own look set on this computer; project: its name when it was set, look none when it was turned off
   | { readonly kind: 'projectLook'; readonly project: string; readonly look: 'none' | 'touches' | 'full' }
+  // a project's character pinned (character) or unpinned (null) in the theme named, or with everyTheme in every theme
+  | { readonly kind: 'projectPin'; readonly project: string; readonly theme: string; readonly themeId?: string; readonly character: string | null; readonly everyTheme?: true }
   // the community store's signed list removed these installed themes: each is marked, and the preferred looks, schedule rules and
   // project looks that named one moved to the built-in theme
   | { readonly kind: 'storeRemoved'; readonly themes: readonly string[] }
@@ -58,7 +61,7 @@ export const MAX_CHANGE_NAME_CHARS = 256;
 export const MAX_CHANGE_LABEL_CHARS: number = 64 * 1024;
 export const MAX_CHANGE_ITEMS = 100_000;
 
-const CHANGE_KINDS = ['pick', 'save', 'create', 'schedule', 'hold', 'resume', 'rename', 'delete', 'projectLook', 'storeRemoved', 'wallpapersOff', 'reset', 'other'] as const satisfies readonly ThemeChange['kind'][];
+const CHANGE_KINDS = ['pick', 'save', 'create', 'schedule', 'hold', 'resume', 'rename', 'delete', 'projectLook', 'projectPin', 'storeRemoved', 'wallpapersOff', 'reset', 'other'] as const satisfies readonly ThemeChange['kind'][];
 // fails to compile while a ThemeChange kind has no entry above
 true satisfies (Exclude<ThemeChange['kind'], (typeof CHANGE_KINDS)[number]> extends never ? true : false);
 
@@ -101,6 +104,11 @@ export function parseThemeChange(raw: unknown): ThemeChange | undefined {
     case 'projectLook': {
       const { project } = raw;
       return isLabel(project) && (look === 'none' || look === 'touches' || look === 'full') ? { kind: 'projectLook', project, look } : undefined;
+    }
+    case 'projectPin': {
+      const { project, character, everyTheme } = raw;
+      if (!isLabel(project) || !isName(theme) || !isOptionalId(themeId) || (character !== null && !isName(character)) || (everyTheme !== undefined && everyTheme !== true)) return undefined;
+      return { kind: 'projectPin', project, theme, ...(themeId !== undefined ? { themeId } : {}), character, ...(everyTheme === true ? { everyTheme } : {}) };
     }
     case 'storeRemoved': {
       const { themes } = raw;

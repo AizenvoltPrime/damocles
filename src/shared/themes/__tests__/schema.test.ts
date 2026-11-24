@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { BUILTIN_THEME } from '../builtin';
 import { checkEveryThemePin } from '../characters';
 import { checkProjectLook } from '../project-looks';
-import { checkSchemaVersion, pointerSegments, themeErrorEnglish, validateTheme, type ThemeValidation } from '../schema';
+import { CHARACTER_SELECTIONS, checkSchemaVersion, pointerSegments, themeErrorEnglish, validateTheme, type ThemeValidation } from '../schema';
 
 const ID = '3f1c2a4e-9b7d-4c1e-8a2f-5d6e7f809a1b';
 const SHA = 'a'.repeat(64);
@@ -144,6 +144,15 @@ describe('validateTheme', () => {
     expect(errorsOf(validateTheme(theme({ name: 'می\u200Cخواهم \u{1F468}\u200D\u{1F469}' })))).toEqual([]);
   });
 
+  it('takes a character set\'s selection, outline or none, and refuses any other', () => {
+    const withSelection = (selection: unknown): Record<string, unknown> => theme({ characters: { name: 'Crew', characters: [{ name: 'Pip', states: { idle: { asset: SHA } } }], selection }, assets: { [SHA]: SPRITE } });
+    for (const selection of CHARACTER_SELECTIONS) {
+      const result = validateTheme(withSelection(selection));
+      expect(result.ok && result.theme.characters?.selection).toBe(selection);
+    }
+    expect(errorsOf(validateTheme(withSelection('glow'))).some((error) => error.startsWith('/characters/selection: '))).toBe(true);
+  });
+
   it('holds each token override to the format that is painted, whatever its case', () => {
     const result = validateTheme(withTokens({ '--d-shadow': '0 18PX 48px #00000080', '--d-muted': '#9AA7B4' }));
     expect(errorsOf(result)).toEqual([]);
@@ -168,7 +177,7 @@ describe('validateTheme', () => {
     const full = (): Record<string, unknown> => structuredClone(theme({
       looks: { dark: { colors: COLORS, tokens: { '--d-text': '#ffffff' }, wallpapers: [{ name: 'Sky', span: { asset: sha(1), panels: ['chat'], fit: 'fill' }, panels: { sidebar: { asset: sha(1), fit: 'tile', dim: 0.4, blur: 8 } }, spanLook: { chat: { dim: 0.5, blur: 2 } } }], cycle: { minutes: 5 } } },
       style: { fonts: { ui: { installed: 'Segoe UI' }, mono: { asset: sha(2), family: 'Mono' } } },
-      characters: { name: 'Crew', characters: [{ name: 'Pip', states: { idle: { strip: STRIP }, running: { asset: SHA } } }] },
+      characters: { name: 'Crew', characters: [{ name: 'Pip', states: { idle: { strip: STRIP }, running: { asset: SHA } } }], selection: 'none' },
       css: { transcript: '.x { color: red }' },
       layout: { grid: { slots: { main: 'editor', side: 'chat', bottom: 'terminal' }, visible: { editor: true, terminal: false }, sideWidth: 400, bottomHeight: 200 }, sections: { chats: { collapsed: false } } },
       assets: { [SHA]: { ...SPRITE, flash: { flagged: false } }, [sha(1)]: IMAGE, [sha(2)]: { kind: 'font', mime: 'font/woff2', bytes: 1000, license: { spdx: 'OFL-1.1' } } },

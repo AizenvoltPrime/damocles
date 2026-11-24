@@ -9,7 +9,7 @@ import OverlayApp from '../overlay/OverlayApp.vue';
 import TitleBar from '../components/TitleBar.vue';
 import { shellI18n } from '../i18n';
 import { createOverlaySettingsBridge } from '../overlay/settings/overlay-bridge';
-import { FakeResizeObserver, fakeOverlayApi, fakeShellApi, STATE, type FakeOverlayApi } from './fakes';
+import { FakeResizeObserver, PAGE_PROVIDE, fakeOverlayApi, fakeShellApi, STATE, type FakeOverlayApi } from './fakes';
 
 const mounted: VueWrapper[] = [];
 let api: FakeOverlayApi;
@@ -678,7 +678,7 @@ describe('notification center', () => {
 describe('title bar bell', () => {
   it('shows the unseen count on a badge, rings for a new attention entry, keeps the pop-up state in its label and opens the center under the bell', async () => {
     const shell = fakeShellApi();
-    const wrapper = mount(TitleBar, { props: { api: shell, state: STATE }, global: { plugins: [shellI18n] }, attachTo: document.body });
+    const wrapper = mount(TitleBar, { props: { api: shell, state: STATE }, global: { provide: PAGE_PROVIDE, plugins: [shellI18n] }, attachTo: document.body });
     mounted.push(wrapper);
     const bell = wrapper.get('[data-testid="notification-bell"]');
     expect(bell.attributes('title')).toBe('Notifications');
@@ -707,7 +707,7 @@ describe('title bar bell', () => {
 
   it('shows the engine pill only while the engine is halted, and its click restarts the engine', async () => {
     const shell = fakeShellApi();
-    const wrapper = mount(TitleBar, { props: { api: shell, state: STATE }, global: { plugins: [shellI18n] }, attachTo: document.body });
+    const wrapper = mount(TitleBar, { props: { api: shell, state: STATE }, global: { provide: PAGE_PROVIDE, plugins: [shellI18n] }, attachTo: document.body });
     mounted.push(wrapper);
     expect(wrapper.find('[data-testid="engine-pill"]').exists()).toBe(false);
 
@@ -730,7 +730,7 @@ describe('title bar bell', () => {
     shellI18n.global.locale.value = 'el';
     const wrapper = mount(TitleBar, {
       props: { api: fakeShellApi(), state: { ...STATE, notifications: { unseen: 1, doNotDisturb: false, popupsOff: false, attention: 0 } } },
-      global: { plugins: [shellI18n] },
+      global: { provide: PAGE_PROVIDE, plugins: [shellI18n] },
     });
     mounted.push(wrapper);
     const bell = wrapper.get('[data-testid="notification-bell"]');

@@ -1,5 +1,6 @@
-// Timers a desktop end-to-end test fires itself instead of waiting for the clock (the keep-changes countdown). Main builds
-// one only in an unpackaged run with DAMOCLES_E2E_HOOKS=1; until `hold` is called it is setTimeout and clearTimeout.
+// Timers a desktop end-to-end test fires itself instead of waiting for the clock (the keep-changes countdown, a draft capture's
+// wait for its pages' paint, the screenshot notice). Main builds them only in an unpackaged run with DAMOCLES_E2E_HOOKS=1; until `hold` is called each
+// is setTimeout and clearTimeout.
 
 export class HeldTimers {
   private atLeastMs: number | undefined;

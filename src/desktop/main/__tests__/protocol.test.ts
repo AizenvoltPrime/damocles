@@ -6,6 +6,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 vi.mock('electron', () => ({ protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() } }));
 
 import { protocol } from 'electron';
+import { ThemeRenderer, type RenderPage, type RenderServed } from '../themes/theme-renderer';
+import type { ThemeRenderJob } from '../../../shared/themes/agent';
 import { appResourceUri, handleAppProtocol, handleThemeRenderProtocol, mimeTypeFor, NOTIFIER_PAGE_URL, panelPageUrl, registerAppScheme, resolveAppRequest, SHELL_PAGE_URL, THEME_RENDER_PAGE_URL, THEME_SHOT_URL_PREFIX, type AppPages, type ThemeRenderPages } from '../protocol';
 
 const SHOT = 'f'.repeat(32);
@@ -170,13 +172,14 @@ describe('handleThemeRenderProtocol', () => {
   const pages: ThemeRenderPages = {
     themeRender: () => '<!DOCTYPE html>render',
     themeBlob: (sha256) => Promise.resolve(sha256 === ANALYZED ? { mime: 'image/png', size: png.length, body: (start, end) => new Blob([png.slice(start, end + 1)]).stream() } : undefined),
+    themeCache: () => Promise.resolve(png),
   };
 
   // the theme renderer's own session's protocol, never the default session's
-  function fetchRender(url: string, init: RequestInit = {}): Promise<Response> {
+  function fetchRender(url: string, init: RequestInit = {}, served: ThemeRenderPages = pages): Promise<Response> {
     const sessionProtocol = { handle: vi.fn() };
     vi.mocked(protocol.handle).mockClear();
-    handleThemeRenderProtocol(sessionProtocol, root, pages);
+    handleThemeRenderProtocol(sessionProtocol, root, served);
     expect(protocol.handle).not.toHaveBeenCalled();
     expect(sessionProtocol.handle).toHaveBeenCalledWith('app', expect.any(Function));
     const handler = sessionProtocol.handle.mock.calls[0]![1] as (request: Request) => Promise<Response>;
@@ -194,13 +197,98 @@ describe('handleThemeRenderProtocol', () => {
     expect(blob.headers.get('content-type')).toBe('image/png');
     expect(new Uint8Array(await blob.arrayBuffer())).toEqual(png);
     expect((await fetchRender(`app://damocles/theme-blob/${'d'.repeat(64)}`)).status).toBe(404);
+    const still = await fetchRender(`app://damocles/theme-cache/${ANALYZED}/still.png`);
+    expect(still.status).toBe(200);
+    expect(still.headers.get('content-type')).toBe('image/png');
+    // what a job's page loaded is never kept for a later job's page
+    for (const served of [blob, still]) expect(served.headers.get('cache-control')).toBe('no-store');
   });
 
-  it('serves no other page or route of the app, and only GET', async () => {
-    for (const url of [SHELL_PAGE_URL, NOTIFIER_PAGE_URL, panelPageUrl('chat-1'), 'app://damocles/overlay/index.html', `${THEME_SHOT_URL_PREFIX}${SHOT}`, `app://damocles/forge/avatar/${'a'.repeat(64)}`, `app://damocles/store-thumb/${STORE_THUMB_SHA}`, `app://damocles/theme-cache/${ANALYZED}/still.png`, 'app://damocles/desktop/main.js']) {
+  it("serves a job's blob and still frame under a no-content policy, and an SVG sprite under the SVG policy", async () => {
+    const blob = await fetchRender(`app://damocles/theme-blob/${ANALYZED}`);
+    expect(blob.headers.get('content-security-policy')).toBe("default-src 'none'");
+    expect(blob.headers.get('x-content-type-options')).toBe('nosniff');
+    const still = await fetchRender(`app://damocles/theme-cache/${ANALYZED}/still.png`);
+    expect(still.headers.get('content-security-policy')).toBe("default-src 'none'");
+    expect(still.headers.get('x-content-type-options')).toBe('nosniff');
+    const svg = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>');
+    const sprite = await fetchRender(`app://damocles/theme-blob/${ANALYZED}`, {}, { ...pages, themeBlob: () => Promise.resolve({ mime: 'image/svg+xml', size: svg.length, body: () => new Blob([svg]).stream() }) });
+    expect(sprite.status).toBe(200);
+    expect(sprite.headers.get('content-type')).toBe('image/svg+xml');
+    expect(sprite.headers.get('content-security-policy')).toBe("default-src 'none'; style-src 'unsafe-inline'");
+    expect(sprite.headers.get('cache-control')).toBe('no-store');
+  });
+
+  it("answers a byte range of a job's blob with its part, and one past the end with 416, neither kept", async () => {
+    const part = await fetchRender(`app://damocles/theme-blob/${ANALYZED}`, { headers: { range: 'bytes=2-5' } });
+    expect(part.status).toBe(206);
+    expect(part.headers.get('content-range')).toBe(`bytes 2-5/${png.length}`);
+    expect(part.headers.get('content-length')).toBe('4');
+    expect(part.headers.get('cache-control')).toBe('no-store');
+    expect(part.headers.get('content-security-policy')).toBe("default-src 'none'");
+    expect(new Uint8Array(await part.arrayBuffer())).toEqual(png.slice(2, 6));
+    const past = await fetchRender(`app://damocles/theme-blob/${ANALYZED}`, { headers: { range: `bytes=${png.length}-` } });
+    expect(past.status).toBe(416);
+    expect(past.headers.get('content-range')).toBe(`bytes */${png.length}`);
+    expect(past.headers.get('cache-control')).toBe('no-store');
+    // a blob the running job does not name has no range either
+    expect((await fetchRender(`app://damocles/theme-blob/${'d'.repeat(64)}`, { headers: { range: 'bytes=0-1' } })).status).toBe(404);
+  });
+
+  // the page's handler would answer any thumbnail; the route never asks it
+  it('serves no other page or route of the app, no thumbnail, and only GET', async () => {
+    for (const url of [SHELL_PAGE_URL, NOTIFIER_PAGE_URL, panelPageUrl('chat-1'), 'app://damocles/overlay/index.html', `${THEME_SHOT_URL_PREFIX}${SHOT}`, `app://damocles/forge/avatar/${'a'.repeat(64)}`, `app://damocles/store-thumb/${STORE_THUMB_SHA}`, `app://damocles/theme-cache/${ANALYZED}/thumb-480.webp`, 'app://damocles/desktop/main.js']) {
       expect((await fetchRender(url)).status, url).toBe(404);
     }
     expect((await fetchRender(THEME_RENDER_PAGE_URL, { method: 'POST' })).status).toBe(404);
+  });
+
+  it("serves a draft's sprite, wallpaper and still frame only while the running window job draws them, and never a thumbnail", async () => {
+    const SPRITE = '1'.repeat(64);
+    const WALLPAPER = '2'.repeat(64);
+    const VIDEO = '3'.repeat(64);
+    const OTHER = '4'.repeat(64);
+    const served: RenderServed = {
+      blobs: new Map([[SPRITE, { kind: 'sprite', mime: 'image/png' }], [WALLPAPER, { kind: 'image', mime: 'image/png' }]]),
+      stills: new Set([VIDEO]),
+    };
+    const renderer = new ThemeRenderer({ openPage: async () => page, log: () => undefined });
+    // wired as main wires the render session: only the renderer's running job names what it serves
+    const jobPages: ThemeRenderPages = {
+      themeRender: () => '',
+      themeBlob: (sha256) => {
+        const named = renderer.currentJobBlob(sha256);
+        return Promise.resolve(named ? { mime: named.mime, size: png.length, body: (start, end) => new Blob([png.slice(start, end + 1)]).stream() } : undefined);
+      },
+      themeCache: (sha256) => Promise.resolve(renderer.currentJobStill(sha256) ? png : undefined),
+    };
+    const statuses = async (): Promise<number[]> => Promise.all([
+      `app://damocles/theme-blob/${SPRITE}`, `app://damocles/theme-blob/${WALLPAPER}`, `app://damocles/theme-cache/${VIDEO}/still.png`,
+      `app://damocles/theme-blob/${VIDEO}`, `app://damocles/theme-blob/${OTHER}`, `app://damocles/theme-cache/${OTHER}/still.png`,
+      `app://damocles/theme-cache/${VIDEO}/thumb-480.webp`, `app://damocles/theme-cache/${WALLPAPER}/thumb-480.webp`,
+    ].map(async (url) => (await fetchRender(url, {}, jobPages)).status));
+    let during: number[] = [];
+    const page: RenderPage = {
+      render: async () => {
+        during = await statuses();
+        return JSON.stringify({ drawn: true, width: 1280, height: 800 });
+      },
+      resize: async () => undefined,
+      capture: async () => {
+        const bytes = new Uint8Array(24);
+        bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]);
+        new DataView(bytes.buffer).setUint32(16, 1280);
+        new DataView(bytes.buffer).setUint32(20, 800);
+        return bytes;
+      },
+      close: async () => undefined,
+    };
+    const appearance = { kind: 'dark', css: '', trustedCss: '', arrangement: { grid: { slots: { main: 'chat', side: 'editor', bottom: 'terminal' }, visible: { editor: false, terminal: false }, sideWidth: 400, bottomHeight: 200 }, sidebarWidth: 280, sectionOrder: [], sections: {} }, platform: 'linux' } as const;
+    const job: Extract<ThemeRenderJob, { kind: 'window' }> = { kind: 'window', view: 'window', appearance, width: 1280, height: 800 };
+    expect(await statuses()).toEqual([404, 404, 404, 404, 404, 404, 404, 404]);
+    await renderer.window(job, served);
+    expect(during).toEqual([200, 200, 200, 404, 404, 404, 404, 404]);
+    expect(await statuses()).toEqual([404, 404, 404, 404, 404, 404, 404, 404]);
   });
 });
 

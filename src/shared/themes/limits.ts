@@ -46,6 +46,12 @@ export const THEME_ID: RegExp = /^[a-z0-9-]{1,64}$/;
 // A user theme's id, which is also its folder under themes/: a lowercase UUID. A folder of any other name is no theme.
 export const USER_THEME_ID: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
+// An agent's theme draft's id, which is also its file name under drafts/: a lowercase UUID.
+export const DRAFT_ID: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+// A character set holds at most this many characters.
+export const MAX_SET_CHARACTERS = 256;
+
 // The undo history's file under themes/. The oldest entries go first once it would pass MAX_HISTORY_BYTES; a theme.json is at
 // most 4 MB.
 export const HISTORY_FOLDER = 'history';

@@ -29,4 +29,18 @@ describe('theme schema', () => {
     }
     expect(check({ ...theme, name: 'می\u200Cخواهم' })).toBe(true);
   });
+
+  it('agrees with the validator on a character set\'s selection', () => {
+    const check = new Ajv({ strict: false, allErrors: true }).compile(JSON.parse(readFileSync(OUTPUT, 'utf8')) as object);
+    const sha = 'a'.repeat(64);
+    const theme = (selection: string): object => ({
+      ...(JSON.parse(JSON.stringify(BUILTIN_THEME)) as object),
+      id: '3f1c2a4e-9b7d-4c1e-8a2f-5d6e7f809a1b',
+      characters: { name: 'Crew', characters: [{ name: 'Pip', states: { idle: { asset: sha } } }], selection },
+      assets: { [sha]: { kind: 'sprite', mime: 'image/png', bytes: 100, width: 16, height: 16, license: {} } },
+    });
+    for (const [selection, ok] of [['outline', true], ['none', true], ['glow', false]] as const) {
+      expect([selection, validateTheme(theme(selection)).ok, check(theme(selection))]).toEqual([selection, ok, ok]);
+    }
+  });
 });

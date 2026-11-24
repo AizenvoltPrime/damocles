@@ -6,8 +6,9 @@ import { boundGraphChoices, boundRepositoryViewStates, MAX_SEARCH_VIEW_STATES, M
 import type { OverlayMenuItem } from '../../preload/overlay-channels';
 import { remPx } from '@/composables/useRemPx';
 import { useHostConnection } from '@/composables/useHostConnection';
-import { atRootScale, GRID_SASH_REM, ROW_SASH_OVERLAP_REM, ROW_SASH_REM, SASH_KEY_STEP_REM, SECTION_HEADER_REM, storedMinimum } from '../layout';
+import { atRootScale, GRID_SASH_REM, ROW_SASH_OVERLAP_REM, ROW_SASH_REM, SASH_KEY_STEP_REM, SIDEBAR_SECTION_CHROME_REM, storedMinimum } from '../layout';
 import ProjectsSection from './ProjectsSection.vue';
+import SidebarFrame from './SidebarFrame.vue';
 import ChatsSection from './ChatsSection.vue';
 import FilesSection from './FilesSection.vue';
 import PortsSection from './PortsSection.vue';
@@ -19,7 +20,7 @@ import GraphSection from '../graph/GraphSection.vue';
 import { ALWAYS_SHOW_SECTION_ACTIONS, SECTION_ORDER, SECTION_TITLES } from './sidebar-section';
 import Sash from '../layout/Sash.vue';
 import { COLUMN_MIN_PX, gridAreas, gridMinWidth } from '../layout/layout-model';
-import { fitSections, isSizedSection, moveSash, sashRange, SIZED_SECTIONS, yieldTo, type SectionSizes, type SizedSection, type SplitItem } from '../layout/section-sizes';
+import { fillerSection, fitSections, isSizedSection, moveSash, sashRange, SIZED_SECTIONS, yieldTo, type SectionSizes, type SizedSection, type SplitItem } from '../layout/section-sizes';
 import { dropSection, sameOrder, shiftSection, type SectionOrder } from '../layout/section-order';
 
 defineOptions({ name: 'ShellSidebar' });
@@ -28,10 +29,8 @@ const props = defineProps<{ api: DamoclesShellApi; state: ShellState }>();
 const { t } = useI18n();
 provide(ALWAYS_SHOW_SECTION_ACTIONS, computed(() => props.state.sidebar.alwaysShowHeaderActions));
 
-// rem: seven section headers plus the six row sashes between them.
-const SECTION_CHROME_REM = 7 * SECTION_HEADER_REM + 6 * (ROW_SASH_REM - 2 * ROW_SASH_OVERLAP_REM);
-
-const root = ref<HTMLElement | null>(null);
+const frame = ref<InstanceType<typeof SidebarFrame> | null>(null);
+const root = computed(() => frame.value?.root ?? null);
 const projects = ref<InstanceType<typeof ProjectsSection> | null>(null);
 const chats = ref<InstanceType<typeof ChatsSection> | null>(null);
 const files = ref<InstanceType<typeof FilesSection> | null>(null);
@@ -63,13 +62,12 @@ const minSection = computed(() => storedMinimum(MIN_SECTION_SIZE));
 const gridMin = computed(() => gridMinWidth(gridAreas(props.state.layout.grid), atRootScale(COLUMN_MIN_PX), remPx(GRID_SASH_REM)));
 const maxWidth = computed(() => Math.max(minWidth.value, windowWidth.value - gridMin.value));
 const width = computed(() => Math.min(Math.max(layout.value.sidebarWidth, minWidth.value), maxWidth.value));
-// The first open section of Chats, Files, Search, Projects, Repositories, Source control and Graph fills the height the others leave,
-// wherever the user put it, and keeps at least a section's minimum; the other open sections keep their sizes, shrinking in
-// proportion when the sidebar is too short for them.
+// The filler keeps at least a section's minimum; the other open sections keep their sizes, shrinking in proportion when the
+// sidebar is too short for them.
 const sections = computed(() => layout.value.sections);
 const order = computed(() => layout.value.sectionOrder);
-const filler = computed(() => (['chats', 'files', 'search', 'projects', 'repos', 'scm', 'graph'] as const).find((name) => !sections.value[name].collapsed));
-const sectionRoom = computed(() => sidebarHeight.value - remPx(SECTION_CHROME_REM) - portsHeight.value - minSection.value);
+const filler = computed(() => fillerSection(sections.value));
+const sectionRoom = computed(() => sidebarHeight.value - remPx(SIDEBAR_SECTION_CHROME_REM) - portsHeight.value - minSection.value);
 const fixedSections = computed(() => order.value.filter(isSizedSection).filter((name) => !sections.value[name].collapsed && filler.value !== name));
 const sizes = computed(() => {
   const stored = Object.fromEntries(SIZED_SECTIONS.map((name) => [name, sections.value[name].size])) as SectionSizes;
@@ -81,17 +79,7 @@ const searchSize = computed(() => sizes.value.search);
 const reposSize = computed(() => sizes.value.repos);
 const scmSize = computed(() => sizes.value.scm);
 const graphSize = computed(() => sizes.value.graph);
-// Reference motion: the sidebar slides out by its own width; no transition while the user drags its edge.
-const slideStyle = computed(() => ({
-  width: `${width.value}px`,
-  marginLeft: props.state.layout.sidebarVisible ? '0px' : `-${width.value}px`,
-  transition: dragging.value ? 'none' : 'margin-left .28s cubic-bezier(.2, .8, .2, 1)',
-}));
-// The panes beside the sidebar take every width in between while it slides; a transition its sections run bubbles here too.
 const emit = defineEmits<{ slide: [running: boolean] }>();
-function onSlide(event: TransitionEvent, running: boolean): void {
-  if (event.target === root.value && event.propertyName === 'margin-left') emit('slide', running);
-}
 const bodySize = (name: SizedSection): number | undefined => (filler.value === name ? undefined : sizes.value[name]);
 
 // The sections keep their DOM order and show in the user's order through CSS `order` (odd values), so a move never detaches a
@@ -325,18 +313,14 @@ defineExpose({
 </script>
 
 <template>
-  <nav
-    ref="root"
+  <SidebarFrame
+    ref="frame"
     data-testid="sidebar"
-    data-wallpaper-panel="sidebar"
-    :aria-label="t('sidebar.label')"
-    :inert="!state.layout.sidebarVisible"
-    class="relative flex shrink-0 flex-col overflow-hidden border-r border-(--d-border) bg-(--d-pane-sidebar) [reading-flow:flex-visual]"
-    :class="rowDragging ? '' : 'sidebar-sections-animated'"
-    :style="slideStyle"
-    @transitionrun="onSlide($event, true)"
-    @transitionend="onSlide($event, false)"
-    @transitioncancel="onSlide($event, false)"
+    :width="width"
+    :visible="state.layout.sidebarVisible"
+    :resizing="dragging !== null"
+    :sections-animated="!rowDragging"
+    @slide="emit('slide', $event)"
     @focusin="onFocusIn"
     @focusout="onFocusOut"
   >
@@ -494,5 +478,5 @@ defineExpose({
     >
       {{ announcement }}
     </p>
-  </nav>
+  </SidebarFrame>
 </template>

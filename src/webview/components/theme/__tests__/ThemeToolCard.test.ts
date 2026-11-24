@@ -157,6 +157,36 @@ describe('the ThemeSet tool card', () => {
     const w = await show(call({ name: 'ThemeRead', input: { screenshot: true } }, { tool: 'ThemeRead', screenshot: 'denied' }));
     expect(outcome(w)).toBe('Denied');
     expect(body(w)).toContain('Screenshot denied.');
+    expect(body(w)).toContain('No image was sent.');
+    expect(body(w)).not.toContain('drawn preview');
+  });
+
+  it('says the agent still sees the drawn preview only when the denied call asked for one', async () => {
+    const w = await show(call({ name: 'ThemeRead', input: { screenshot: true, preview: 'window' } }, { tool: 'ThemeRead', screenshot: 'denied' }));
+    expect(body(w)).toContain('The agent sees the drawn preview only.');
+    expect(body(w)).not.toContain('No image was sent.');
+  });
+
+  it.each([
+    ['forcedColors', 'Windows contrast themes are on, so the window shows Damocles\' own look, not the theme.'],
+    ['windowHidden', 'The window was minimized or hidden.'],
+    ['covered', 'Another app covered the window. Bring Damocles to the front to take one.'],
+    ['timeout', 'The window did not finish drawing the draft in time, so nothing was sent.'],
+  ] as const)('says why main took no screenshot (%s), never that nobody answered', async (shotRefused, why) => {
+    const w = await show(call({ name: 'ThemeRead', input: { screenshot: true } }, { tool: 'ThemeRead', shotRefused }));
+    expect(outcome(w)).toBe('Not taken');
+    expect(w.get('[data-testid="theme-tool-outcome"]').classes()).toContain('text-(--d-warning)');
+    expect(body(w)).toContain('Screenshot not taken.');
+    expect(body(w)).toContain(why);
+    expect(body(w)).not.toContain('Nobody answered');
+    expect(w.get('[data-tool-card]').attributes('data-outcome')).toBe('notTaken');
+  });
+
+  it('draws the screenshot it sent, a draft\'s included, from the result\'s images', async () => {
+    const w = await show(call({ id: 'call_shot', name: 'ThemeRead', input: { screenshot: true, draft: 'draft-1' }, imageCount: 1 }, { tool: 'ThemeRead', screenshot: 'sent' }));
+    expect(outcome(w)).toBe('Sent');
+    expect(w.find('[data-testid="theme-tool-images"]').exists()).toBe(true);
+    expect(posted).toEqual([expect.objectContaining({ type: 'requestToolResultImages', toolUseId: 'call_shot' })]);
   });
 
   it('says a screenshot was not sent when its card ran out or the window let go of the image', async () => {

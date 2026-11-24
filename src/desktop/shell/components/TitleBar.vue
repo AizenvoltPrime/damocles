@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Bell, BellOff, ChevronRight, Moon, PanelBottom, PanelLeft, PanelRight, Search, Settings, Sun } from 'lucide-vue-next';
-import type { DamoclesShellApi, ShellState } from '../../preload/shell-channels';
+import type { TitleBarApi, TitleBarState } from './title-bar-api';
 import { hostStateLabel } from '../host-label';
 import { chatTitleText } from './chat-title';
 import EnginePill from './EnginePill.vue';
@@ -14,7 +14,7 @@ import { ariaKeyshortcuts } from '../overlay/quick-pick';
 import { hostColorDataTone, hostColorLook } from '@shared/host-colors';
 import { characterState } from '@shared/themes/characters';
 
-const props = defineProps<{ api: DamoclesShellApi; state: ShellState }>();
+const props = defineProps<{ api: TitleBarApi; state: TitleBarState }>();
 const { t } = useI18n();
 
 // Served by protocol.ts beside the shell; a bound URL, so vite does not treat it as a module import.
@@ -141,6 +141,7 @@ async function openCenter(): Promise<void> {
           ref="logo"
           type="button"
           data-testid="app-menu"
+          data-part="brand"
           class="flex h-7.5 shrink-0 items-center gap-2.25 rounded-7 pr-3 pl-3.5 hover:bg-(--d-hover)"
           :aria-label="t('titleBar.appMenu', { app: APP_NAME })"
           :title="t('titleBar.appMenu', { app: APP_NAME })"
@@ -199,7 +200,10 @@ async function openCenter(): Promise<void> {
         :aria-label="t('titleBar.breadcrumb')"
         class="flex min-w-0 items-center gap-1.5 text-12.5 text-(--d-muted)"
       >
-        <span class="flex min-w-0 items-center gap-1.5 rounded-7 bg-(--d-hover) px-2 py-0.75">
+        <span
+          data-part="project"
+          class="flex min-w-0 items-center gap-1.5 rounded-7 bg-(--d-hover) px-2 py-0.75"
+        >
           <ProjectAvatar
             :name="projectName"
             :project-key="selectedProject?.key"
@@ -226,6 +230,7 @@ async function openCenter(): Promise<void> {
             <span
               class="max-w-85 truncate text-(--d-text)"
               data-testid="breadcrumb-chat"
+              data-part="chat"
               aria-current="page"
             >{{ chatTitle }}</span>
           </span>

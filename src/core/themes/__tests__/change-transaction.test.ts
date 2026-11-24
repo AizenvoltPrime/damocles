@@ -8,7 +8,7 @@ import type { ThemeSchedule } from '../../../shared/themes/schedule';
 import type { ProjectLook } from '../../../shared/themes/project-looks';
 import { SCHEDULE_FOLD_GAP_MS } from '../history';
 import { createThemeService, type ThemeService } from '../index';
-import { AGENT, draftOf, failReads, failWrites, fileSettings, ID, named, OTHER, OWNER, readJson, themeJson, writeTheme } from './service-fixtures';
+import { AGENT, draftOf, storedDraft, failReads, failWrites, fileSettings, ID, named, OTHER, OWNER, readJson, themeJson, writeTheme } from './service-fixtures';
 
 const SCHEDULE: ThemeSchedule = { enabled: true, rules: [{ days: ['mon', 'tue', 'wed', 'thu', 'fri'], minute: 19 * 60, theme: ID, look: 'dark' }] };
 const LATER: ThemeSchedule = { enabled: true, rules: [{ days: ['mon'], minute: 7 * 60, theme: ID, look: 'dark' }] };
@@ -62,14 +62,15 @@ describe('a theme change whose history cannot be read', () => {
 describe('an on-the-fly change and its countdown mark', () => {
   const apply = (themeId = OTHER) => {
     const draft = draftOf(themes.drafts.newId(), themeId);
-    return { draft, run: () => themes.applyDraft({ draft, pick: ['dark'], actor: AGENT, onTheFly: true, currentArrangement: noArrangement }) };
+    const run = async () => themes.applyDraft({ draft: await themes.drafts.get(draft.id) ?? await storedDraft(themes, draft), pick: ['dark'], actor: AGENT, onTheFly: true, currentArrangement: noArrangement });
+    return { draft, run };
   };
 
   it('is refused before anything is written when appearance.json is of another version', async () => {
     const appearance = JSON.stringify({ version: 2, later: true });
     fs.writeFileSync(appearanceFile(), appearance);
     const { draft, run } = apply();
-    await themes.drafts.put(draft);
+    await storedDraft(themes, draft);
     await expect(run()).rejects.toThrow(/newer Damocles/);
     expect(fs.existsSync(path.dirname(themeFile(OTHER)))).toBe(false);
     expect(settingsNow()).toEqual({});
@@ -133,8 +134,7 @@ describe('a change that fails part-way', () => {
   });
 
   it('removes the theme an apply created and keeps its draft, so the same apply succeeds once the disk has room', async () => {
-    const draft = draftOf(themes.drafts.newId(), OTHER);
-    await themes.drafts.put(draft);
+    const draft = await storedDraft(themes, draftOf(themes.drafts.newId(), OTHER));
     const run = () => themes.applyDraft({ draft, pick: ['dark'], actor: AGENT, onTheFly: false, currentArrangement: noArrangement });
     const failing = failWrites((file) => file === historyFile());
     await expect(run()).rejects.toThrow(/ENOSPC/);
@@ -324,7 +324,7 @@ describe('a history file of a newer version', () => {
 describe('an undo or a restore that fails part-way', () => {
   // two changes of one countdown: a theme created and picked, then the schedule turned on
   const twoChanges = async (): Promise<string> => {
-    const draft = draftOf(themes.drafts.newId(), OTHER);
+    const draft = await storedDraft(themes, draftOf(themes.drafts.newId(), OTHER));
     const applied = await themes.applyDraft({ draft, pick: ['dark'], actor: AGENT, onTheFly: true, currentArrangement: noArrangement });
     if (applied.kind !== 'applied') throw new Error('not applied');
     await themes.setSchedule(SCHEDULE, { kind: 'agent', chatId: 'chat-b', title: 'Evenings' }, true);

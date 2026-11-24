@@ -4,7 +4,7 @@ import { englishText, l, type LocalizedText } from '../localized-text.ts';
 import { FONT_NAME, MAX_FONT_BYTES, MAX_THEME_FONTS, reservedFontName } from './fonts.ts';
 import {
   CHAT_COLUMN_RANGE, DENSITY_RANGE, DIM_RANGE, LINE_HEIGHT_RANGE, MAX_ANIMATION_FRAMES, MAX_ARRANGEMENT_COORDINATE, MAX_BLUR_PX, MAX_INSTANT_MS, MAX_MOVING_BYTES, MAX_STRIP_FRAMES,
-  MAX_THEME_ASSETS, MIN_ARRANGEMENT_SECTION,
+  MAX_SET_CHARACTERS, MAX_THEME_ASSETS, MIN_ARRANGEMENT_SECTION,
   MAX_THEME_AUTHOR_CHARS, MAX_THEME_DESCRIPTION_CHARS, MAX_THEME_LICENSE_CHARS, MAX_THEME_NAME_CHARS, MAX_THEME_VERSION_CHARS, MAX_VIDEO_MS, MAX_WALLPAPER_SETS, ONE_LINE_NAME, RADIUS_RANGE, SURFACE_OPACITY_RANGE, USER_THEME_ID,
 } from './limits.ts';
 import { isValidTokenValue, OVERRIDABLE_TOKENS, SHADOW_TOKEN, type TokenName } from './tokens.ts';
@@ -63,9 +63,14 @@ export interface AssetMeta {
   readonly license: { readonly spdx?: string; readonly text?: string; readonly author?: string; readonly source?: string };
 }
 export type CharFrame = { readonly asset: string } | { readonly strip: { readonly asset: string; readonly frameWidth: number; readonly frameHeight: number; readonly frames: number; readonly fps: number } };
+// How the selected project's character is marked: an outline along its opaque pixels, or nothing beyond its row's own selection.
+export const CHARACTER_SELECTIONS = ['outline', 'none'] as const;
+export type CharacterSelection = (typeof CHARACTER_SELECTIONS)[number];
 export interface CharacterSet {
   readonly name: string;
   readonly characters: ReadonlyArray<{ readonly name: string; readonly alt?: string; readonly states: { readonly idle: CharFrame; readonly running?: CharFrame; readonly waiting?: CharFrame } }>;
+  // absent: outline
+  readonly selection?: CharacterSelection;
 }
 export interface Arrangement {
   readonly grid?: {
@@ -160,7 +165,8 @@ const characterSet = Type.Object({
     name: givenName,
     alt: optional(text(200)),
     states: Type.Object({ idle: charFrame, running: optional(charFrame), waiting: optional(charFrame) }),
-  }), { maxItems: 256 }),
+  }), { maxItems: MAX_SET_CHARACTERS }),
+  selection: optional(literals(CHARACTER_SELECTIONS)),
 });
 const arrangement = Type.Object({
   grid: optional(Type.Object({

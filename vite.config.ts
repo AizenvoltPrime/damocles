@@ -4,6 +4,7 @@ import tailwindcss from '@tailwindcss/vite';
 import { resolve } from 'path';
 import type { GetModuleInfo, OutputBundle, PreRenderedAsset, PreRenderedChunk } from 'rollup';
 import { protectedLayerOrder } from './scripts/protected-layer.ts';
+import { vendorLayer } from './scripts/vendor-layer.ts';
 
 // The one dynamic import that loads the editor overlay; every file reachable only through it ships as assets/monaco-*,
 // which .vscodeignore and scripts/sync-vscodeignore.ts --check keep out of the VSIX.
@@ -105,7 +106,7 @@ function monacoWorkersOnly(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [vue(), tailwindcss(), monacoChunkNaming(), protectedLayerOrder(['index'])],
+  plugins: [vendorLayer(), vue(), tailwindcss(), monacoChunkNaming(), protectedLayerOrder(['index'])],
   root: 'src/webview',
   build: {
     outDir: '../../dist/webview',

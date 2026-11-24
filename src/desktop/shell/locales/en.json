@@ -666,6 +666,12 @@
           "touches": "Touches for {project}",
           "full": "Own theme for {project}"
         },
+        "projectPin": {
+          "theme": "{character} pinned to {project} in {theme}",
+          "every": "{character} kept for {project} in every theme",
+          "themeCleared": "{project} no longer pinned in {theme}",
+          "everyCleared": "{project} no longer keeps a character in every theme"
+        },
         "savePicked": {
           "dark": "Edited {theme}, now your dark look",
           "light": "Edited {theme}, now your light look",
@@ -4423,6 +4429,15 @@
       "body": "Nothing is saved. Answer the card in “{chat}” to keep or discard it.",
       "bodyUntitled": "Nothing is saved. Answer the card in its chat to keep or discard it.",
       "stop": "Stop showing"
+    },
+    "screenshot": {
+      "title": "Screenshot taken.",
+      "body": "“{chat}” took a screenshot of this window for the model, as you allowed for that chat.",
+      "bodyUntitled": "A chat took a screenshot of this window for the model, as you allowed for that chat.",
+      "bodyOnHost": "“{chat}” on {host} took a screenshot of this window for the model, as you allowed for that chat.",
+      "bodyUntitledOnHost": "A chat on {host} took a screenshot of this window for the model, as you allowed for that chat.",
+      "revoke": "Revoke",
+      "dismiss": "Dismiss"
     }
   },
   "projectLook": {
@@ -4614,7 +4629,13 @@
       "replaced": "Replaced the {name} characters.",
       "removed": "Removed the {name} characters.",
       "restored": "The {name} characters are back.",
-      "undoReplace": "Undo"
+      "undoReplace": "Undo",
+      "selection": "Selected project",
+      "selections": {
+        "outline": "Outline",
+        "none": "None"
+      },
+      "selectionNote": "How the selected project's character stands out in the sidebar: an outline that follows its shape, or only its row's highlight."
     },
     "css": {
       "note": "Theme CSS styles content areas only. Cards that ask for your answer, Settings and dialogs never take theme CSS.",

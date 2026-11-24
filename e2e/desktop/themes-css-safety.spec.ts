@@ -9,7 +9,7 @@ import { seedStubModel, writeUserSettings, type HermeticHome } from './support/h
 import { call, chatRequests, startOpenAIStub, type OpenAIStub } from './support/openai-stub';
 import { hostMessage, openProjectChat, settled } from './support/screenshots';
 import { selectedProjectKey, shellPage, SHELL_URL, SHELL_WINDOW_CONTROLS } from './support/shell';
-import { activeTerminal, openTerminal, useTestProfile } from './support/terminal';
+import { activeTerminal, openTerminal, terminalRows, useTestProfile } from './support/terminal';
 import { loadThemeTools, readTheme, writeTheme } from './support/themes';
 import { addProject, awaitTurnEnd, chatInput, promptReady } from './support/ui';
 
@@ -370,6 +370,55 @@ test('a theme that strikes through the sidebar leaves the Untrusted badge unstru
   expect(await red(badge)).toBe(0);
   // the badge is a control of its own, so it keeps the pointer whatever cursor the theme gives the row
   expect(await badge.evaluate((element) => getComputedStyle(element).cursor)).toBe('pointer');
+});
+
+// Every app rule sits in a cascade layer before damocles-user, so a theme's rule on a registry hook (CSS_HOOKS) wins without
+// !important over the app's own rule for the same element, in each region: the tool card's and the active editor tab's
+// Tailwind backgrounds, the selected row's, the avatar's `.project-avatar` background, the title bar crumb's background and
+// the active terminal row's Tailwind text color. The `strong` probe competes with a rule of an SFC <style> block,
+// MarkdownRenderer.vue's `.markdown-renderer :deep(strong) { color: var(--d-text) }`, which outranks it in specificity.
+test('a theme\'s rule without !important on a hook wins over the app\'s own rule for the same element, in every region', async ({ home, launch }) => {
+  test.setTimeout(180_000);
+  useTestProfile(home);
+  fs.writeFileSync(path.join(home.project, 'notes.ts'), "export const answer = 'forty-two';\n");
+  const css = {
+    transcript: `[data-tool-card][data-tool="ToolSearch"] { background-color: ${HOOK_BLUE}; } strong { color: ${HOOK_BLUE}; }`,
+    sidebar: `[data-project-row][data-selected] { background-color: ${HOOK_BLUE}; } [data-avatar="letter"] { background-color: ${HOOK_BLUE}; }`,
+    titlebar: `[data-part="project"] { background-color: ${HOOK_BLUE}; }`,
+    editorChrome: `[data-editor-tab][data-active] { background-color: ${HOOK_BLUE}; }`,
+    terminalChrome: `[data-terminal-row][data-active] { color: ${HOOK_BLUE}; }`,
+  };
+  writeTheme(home, NIGHT, { schemaVersion: 1, id: NIGHT, name: 'Night', looks: { dark: { colors: COLORS } }, css, origin: { kind: 'created', installedAt: 1 } });
+  const openai = await stub(home);
+  writeUserSettings(home, { 'damocles.desktop.theme': 'dark', 'damocles.desktop.themes.dark': NIGHT });
+  const { app } = await launch();
+  const tab = await openProjectChat(app, home.project);
+  const shell = await shellPage(app);
+  await loadThemeTools(openai, tab);
+  openai.replies.push({ chunks: ['A **bold** word.'] });
+  await send(tab, 'say something bold');
+  await expect(tab.locator('.markdown-renderer strong', { hasText: 'bold' })).toBeVisible(CHECKED);
+  await awaitTurnEnd(tab);
+  // the terminal list shows once two terminals run
+  await openTerminal(app);
+  await shell.getByTestId('terminal-new').click({ modifiers: ['Shift'] });
+  await expect(terminalRows(shell)).toHaveCount(2);
+  expect(await openInEditor(app, { projectKey: await selectedProjectKey(app), relativePath: 'notes.ts' })).toMatchObject({ ok: true });
+  await editorShows(shell, 'forty-two');
+
+  const hooked: Array<readonly [Locator, 'backgroundColor' | 'color']> = [
+    [tab.locator('[data-theme-scope~="transcript"] [data-tool-card][data-tool="ToolSearch"]').first(), 'backgroundColor'],
+    [tab.locator('[data-theme-scope~="transcript"] .markdown-renderer strong', { hasText: 'bold' }), 'color'],
+    [shell.locator('[data-theme-scope~="sidebar"] [data-project-row][data-selected]'), 'backgroundColor'],
+    [shell.locator('[data-theme-scope~="sidebar"] [data-avatar="letter"]').first(), 'backgroundColor'],
+    [shell.locator('[data-theme-scope~="titlebar"] [data-part="project"]'), 'backgroundColor'],
+    [shell.locator('[data-theme-scope~="editorChrome"] [data-editor-tab][data-active]'), 'backgroundColor'],
+    [shell.locator('[data-theme-scope~="terminalChrome"] [data-terminal-row][data-active]'), 'color'],
+  ];
+  for (const [element, property] of hooked) {
+    await expect(element).toBeVisible();
+    await expect.poll(() => element.evaluate((node, name) => getComputedStyle(node)[name], property), CHECKED).toBe(HOOK_BLUE);
+  }
 });
 
 // Chromium ignores a whole rule for one selector it does not read, so a rule the sanitizer keeps with such a selector would

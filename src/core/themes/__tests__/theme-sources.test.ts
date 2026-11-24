@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { themeAssetSource, themeImagePrompt } from '../../../shared/themes/asset-source';
+import { ASSET_SOURCE_REFUSAL, themeAssetSource, themeImagePrompt } from '../../../shared/themes/asset-source';
 import { MAX_MOVING_BYTES as MAX_WALLPAPER_BYTES } from '../../../shared/themes/wallpapers';
 import { RedirectRefusedError, safeFetch } from '../../pi-session/web-access/safe-fetch';
 import { attachmentSource, checkDeclaredType, fetchUrlSource, readFileSource, SourceRefusedError, themeSourceRefusal } from '../sources';
@@ -33,13 +33,13 @@ describe('themeAssetSource', () => {
     expect(themeAssetSource({ asset: { name: 'a', from: { url: 'https://a.example/a.png' } } })).toEqual({ kind: 'url', url: 'https://a.example/a.png' });
     expect(themeAssetSource({ asset: { name: 'a', from: { generate: { prompt: 'dunes', aspect: '21:9' } } } })).toEqual({ kind: 'generate', prompt: 'dunes', aspect: '21:9' });
     expect(themeAssetSource({ asset: { name: 'a', from: { attachment: 2 } } })).toEqual({ kind: 'attachment', index: 2 });
-    expect(themeAssetSource({ asset: { name: 'a', from: { pixels: [] } } })).toEqual({ kind: 'pixels', pixels: [] });
   });
 
   it('refuses two sources, none, an empty value, an unknown aspect or field', () => {
-    for (const from of [{ file: 'a.png', url: 'https://a.example/a.png' }, {}, { file: '' }, { url: 3 }, { generate: { prompt: ' ' } }, { generate: { prompt: 'x', seed: 1 } }, { attachment: '1' }, { disk: 'a' }, 'a.png']) {
+    for (const from of [{ file: 'a.png', url: 'https://a.example/a.png' }, {}, { file: '' }, { url: 3 }, { generate: { prompt: ' ' } }, { generate: { prompt: 'x', seed: 1 } }, { attachment: '1' }, { disk: 'a' }, { pixels: [] }, 'a.png']) {
       expect(themeAssetSource({ asset: { name: 'a', from } }), JSON.stringify(from)).toHaveProperty('refused');
     }
+    expect(themeAssetSource({ asset: { name: 'a', from: { pixels: [] } } })).toEqual({ refused: ASSET_SOURCE_REFUSAL });
     expect(themeAssetSource({ asset: { name: 'a', from: { generate: { prompt: 'x', aspect: '5:4' } } } })).toEqual({ refused: expect.stringContaining('aspect is one of 16:9') });
   });
 

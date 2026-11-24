@@ -31,6 +31,8 @@ const EXPLAIN_AFTER_MS = 500;
 export interface TrustedVisibilityOptions {
   /** The card is held for a reason it states elsewhere (its host is away), so it does not explain the check. */
   quiet?: MaybeRefOrGetter<boolean>;
+  /** The request the card shows, where a newer one replaces it on the same element: each change starts the hold again. */
+  request?: MaybeRefOrGetter<unknown>;
 }
 
 export interface TrustedVisibility {
@@ -55,8 +57,8 @@ function isPress(event: Event): boolean {
  * the whole card in view, unobscured and undistorted (IntersectionObserver v2 at threshold 1). Until then every event of
  * `HELD_EVENTS` on it stops at its root, before any of its own handlers and before any listener outside it; a card whose
  * handlers live outside its root (a document listener) asks `refuse`. A new request is a new element (key the card by its
- * request id), which starts held; an element the card no longer shows, one playing its leave included, is inert and
- * answers nothing.
+ * request id), which starts held, or one that replaces the old in place is passed as `request`, which holds it again; an
+ * element the card no longer shows, one playing its leave included, is inert and answers nothing.
  */
 export function useTrustedVisibility(
   target: MaybeRefOrGetter<HTMLElement | null | undefined>,
@@ -164,6 +166,10 @@ export function useTrustedVisibility(
     // sync: the element is held from the moment the card shows it, and a leaving one from the moment it is let go
     { immediate: true, flush: 'sync' },
   );
+
+  watch(() => toValue(options.request), () => {
+    if (shown) startHold();
+  }, { flush: 'sync' });
 
   tryOnScopeDispose(retire);
 

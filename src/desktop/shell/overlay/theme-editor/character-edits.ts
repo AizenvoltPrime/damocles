@@ -1,7 +1,7 @@
 // The Characters section's edits of a draft. Pure: each takes the draft it changes, so an import that answers late can be
 // placed in the draft as it is then.
 import { characterAssets, spriteFrame, type Character, type CharacterState, type SpriteImport } from '@shared/themes/characters';
-import type { AssetMeta, CharacterSet, ThemeFile } from '@shared/themes/schema';
+import type { AssetMeta, CharacterSelection, CharacterSet, ThemeFile } from '@shared/themes/schema';
 
 /** The draft with `next` as its character set and only the sprites a set names among its assets. */
 export function withCharacterSet(draft: ThemeFile, next: CharacterSet | undefined, extra: Readonly<Record<string, AssetMeta>> = {}): ThemeFile {
@@ -13,6 +13,14 @@ export function withCharacterSet(draft: ThemeFile, next: CharacterSet | undefine
   if (Object.keys(assets).length > 0) theme['assets'] = assets;
   else delete theme['assets'];
   return theme as unknown as ThemeFile;
+}
+
+/** The draft whose set marks the selected project's character by `selection`; outline, the default, is written as no field. */
+export function withSelection(draft: ThemeFile, selection: CharacterSelection): ThemeFile {
+  const set = draft.characters;
+  if (!set) return draft;
+  const { selection: _previous, ...rest } = set;
+  return { ...draft, characters: selection === 'outline' ? rest : { ...rest, selection } };
 }
 
 /** A character set and the sprite assets it names, as a draft held them: what Undo puts back. */
@@ -32,7 +40,7 @@ export function withNewCharacter(draft: ThemeFile, name: string, sprite: SpriteI
   const set = draft.characters;
   if (set?.characters.some((character) => character.name === name)) return undefined;
   const character: Character = { name, states: { idle: spriteFrame(sprite) } };
-  return withCharacterSet(draft, { name: set?.name ?? draft.name, characters: [...(set?.characters ?? []), character] }, { [sprite.sha256]: sprite.asset });
+  return withCharacterSet(draft, { ...set, name: set?.name ?? draft.name, characters: [...(set?.characters ?? []), character] }, { [sprite.sha256]: sprite.asset });
 }
 
 /** The draft with `sprite` as the `state` image of the character named `name`; undefined when that character is gone. */

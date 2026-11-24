@@ -80,6 +80,7 @@ import type { ImageBlock } from '../../../shared/types/content';
 import { emptyAgentUsage, type AgentUsageTotals } from '../../../shared/usage-accounting';
 import { sessionEffort, type EffortBadgeLevel } from '../../../shared/effort-badge';
 import { DEFAULT_SUBAGENT_CONCURRENCY } from '../../../shared/types/constants';
+import type { ToolExclusion, ToolGroupInertReason } from '../tools/inert-reason';
 
 /** `randomUUID().slice(0, 17)`: 8 hex, dash, 4 hex, dash, the v4 version nibble and 2 hex. Keep the
  *  pattern in step with `newSubagentId`; ids reach `isSubagentId` from the model. */
@@ -210,6 +211,10 @@ export interface SubagentEngine {
   onRunsChanged: () => void;
   /** Configured-hooks dispatch deps (US-008) — fires PreToolUse/PostToolUse/subagent_end for this subagent. */
   getHooksDispatch?: () => DispatchDeps | undefined;
+  /** The panel's built-in deferred groups with no eligible tool, with why, read at spawn. */
+  deferredInert?: () => ReadonlyMap<string, ToolGroupInertReason>;
+  /** The panel's built-in deferred tools excluded by name, with why, read at spawn. */
+  deferredExcluded?: () => ReadonlyMap<string, ToolExclusion>;
 }
 
 /** A spawn as the `Agent` call asks for it. `toolCallId` is the spawning `Agent` tool-call id (the webview subagent-card key). */
@@ -866,6 +871,8 @@ export class AgentManager {
       parentToolUseId,
       stopSignal: record.abortController!.signal,
       deferrableToolNames,
+      ...(this.engine.deferredInert ? { deferredInert: this.engine.deferredInert() } : {}),
+      ...(this.engine.deferredExcluded ? { deferredExcluded: this.engine.deferredExcluded() } : {}),
       // Gate parity with the panel: a CLASSIFIER (auto-allow vs `canUseTool`), never a grant filter.
       // Without it `toolCategory('mcp__*')` is 'other' and every nested MCP call, annotated read
       // included, falls through to full approval.

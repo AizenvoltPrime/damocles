@@ -19,6 +19,8 @@ export interface PanelTheme {
   readonly reducedMotion: boolean;
   // damocles.desktop.fileIconTheme, mirrored as the data-file-icon-theme attribute of every renderer's root element
   readonly fileIconTheme: FileIconTheme;
+  // main's theme revision, mirrored as data-theme-revision; absent on the theme renderer's page, which acknowledges nothing
+  readonly revision?: number;
 }
 
 // A remote chat's host as this computer's host store names it; core never names it.
@@ -71,6 +73,8 @@ export const PANEL_CHANNELS = {
   message: 'damocles:panel:message',
   // main → renderer, PanelTheme after a theme or reduce motion change
   theme: 'damocles:panel:theme',
+  // renderer → main, number: the PanelTheme revision the page applied, its fonts loaded and two frames drawn since
+  themeApplied: 'damocles:panel:theme-applied',
   // main → renderer, PanelHostLabel after the chat's host was renamed, recolored, went away or came back
   host: 'damocles:panel:host',
   // renderer → main, a PanelHostAction on the page's own host

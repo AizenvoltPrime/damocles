@@ -7,7 +7,8 @@ import { MAX_SEARCH_LENGTH, type DamoclesShellApi, type ShellChat, type ShellCha
 import { MAX_OVERLAY_ITEMS, tidyMenu, type OverlayMenuItem, type OverlayRect } from '../../preload/overlay-channels';
 import { Button } from '@/components/ui/button';
 import { remPx } from '@/composables/useRemPx';
-import { chatListRows, chatOffers as offers, tagCounts, type ChatListRow } from '../chat-list';
+import { chatListRowRem, chatListRows, chatOffers as offers, tagCounts, type ChatListRow } from '../chat-list';
+import ChatGroupLabel from './ChatGroupLabel.vue';
 import SidebarSection from './SidebarSection.vue';
 import { TOOLBAR_BUTTON } from './sidebar-section';
 import ChatRow from './ChatRow.vue';
@@ -28,10 +29,6 @@ const props = defineProps<{
 const emit = defineEmits<{ toggle: [] }>();
 const { t } = useI18n();
 
-// Fixed row heights in rem; the virtual list positions rows from their px.
-const GROUP_ROW_REM = 1.625;
-const CHAT_ROW_REM = 2.875;
-const NESTED_ROW_REM = 2;
 const SEARCH_DEBOUNCE_MS = 150;
 const STATE_ACTION = 'h-auto rounded-7 border-(--d-border2) bg-transparent px-2.5 py-1 text-xs font-normal text-(--d-text) transition-none hover:border-(--d-accent-fill) hover:bg-transparent hover:text-(--d-accent)';
 
@@ -151,7 +148,7 @@ function settled(id: string): void {
   next.delete(id);
   arrived.value = next;
 }
-const rowHeight = (row: ChatListRow | undefined): number => remPx(row?.kind === 'group' ? GROUP_ROW_REM : row?.nested ? NESTED_ROW_REM : CHAT_ROW_REM);
+const rowHeight = (row: ChatListRow | undefined): number => remPx(chatListRowRem(row));
 const { list: visibleRows, containerProps, wrapperProps } = useVirtualList(rows, {
   itemHeight: (index) => rowHeight(rows.value[index]),
   overscan: 8,
@@ -692,13 +689,10 @@ defineExpose({
           :style="{ height: `${rowHeight(row)}px` }"
           :class="row.kind === 'chat' ? 'py-px' : ''"
         >
-          <div
+          <ChatGroupLabel
             v-if="row.kind === 'group'"
-            aria-hidden="true"
-            class="px-2 pt-2 pb-0.75 text-10.5 font-medium text-(--d-faint)"
-          >
-            {{ t(`chats.${row.group}`) }}
-          </div>
+            :group="row.group"
+          />
           <ChatRow
             v-else
             :chat="row.chat"

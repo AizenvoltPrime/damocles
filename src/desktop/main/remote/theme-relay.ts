@@ -1,13 +1,15 @@
 // A remote chat's theme tools change this computer's app (docs/invariants.md "Remote daemon and wire", user.theme): main
 // refuses while the tools are off here, counts as the user's consent only a press it saw its own page post on a card it
 // filled from its own record, logs, and forwards to this computer's core, which alone writes the theme files and bounds its answers.
+import { randomUUID } from 'node:crypto';
 import {
   boundedRelayText, CLIENT_THEMES_OFF, MAX_COMPUTER_NAME_CHARS, MAX_RELAYED_THEME_PNG_BYTES, MAX_THEME_UPLOAD_BYTES, THEME_UPLOAD_CHUNK_BYTES, THEMES_FEATURE,
-  type RelayedThemeProject, type ThemeShot, type ThemeShowEnded, type ThemeStagedCard, type UserThemeCalls, type UserThemeMethod,
+  type RelayedThemeProject, type ThemeChat, type ThemeShot, type ThemeShowEnded, type ThemeStagedCard, type UserThemeCalls, type UserThemeMethod,
 } from '../../../shared/themes/relay';
-import { THEME_SHOW_NOTES } from '../../../shared/themes/agent';
+import { SCREENSHOT_ANSWER_MS, THEME_SHOW_NOTES } from '../../../shared/themes/agent';
 import type { ThemeInstallClashChoice, ThemeInstallPreview, ThemeInstallProgress } from '../../../shared/themes/install';
-import type { MainRequests } from '../../core-protocol/messages';
+import type { ThemeFile } from '../../../shared/themes/schema';
+import type { MainRequests, ThemeCaptureTaken } from '../../core-protocol';
 import { l } from '../../../core/l10n';
 
 type CoreThemeRelay = {
@@ -23,8 +25,12 @@ export interface ThemeRelayDeps {
   // the host project holding the chat's folder on this computer; undefined for a folder of none
   readonly project: (folder: string) => RelayedThemeProject | undefined;
   readonly core: CoreThemeRelay;
+  // main's check of a draft's theme before it paints or serves it; throws for one that fails
+  readonly validated: (theme: unknown) => ThemeFile;
   readonly screenshots: {
-    take(signal: AbortSignal): Promise<ThemeShot>;
+    // the window as it is, or painted with the draft `theme` for this capture alone; granted: no card asked, so the notice
+    // shows when that chat is not on screen, named from this computer's records alone
+    take(ask: { readonly chat: Pick<ThemeChat, 'id'>; readonly theme?: ThemeFile; readonly granted: boolean }, signal: AbortSignal): Promise<ThemeCaptureTaken>;
     read(shotId: string, signal: AbortSignal): Promise<Uint8Array>;
     drop(shotId: string): Promise<void>;
   };
@@ -242,6 +248,12 @@ export interface RelayPage {
 
 export interface RelayedConsentsDeps {
   readonly now: () => number;
+  // tells the page whether its chat holds the screenshot grant; main is the one publisher of it to a remote chat's page
+  readonly publishGrant: (panelId: string, granted: boolean) => void;
+  // the checked draft a held capture paints, whose blobs the page's card miniature loads; undefined once the capture is gone
+  readonly captureTheme: (captureId: string, theme: ThemeFile | undefined) => void;
+  // the stored session the page shows now, as main reads it from the page's state; undefined before it has one
+  readonly pageSession: (panelId: string) => string | undefined;
   readonly log: (line: string) => void;
 }
 
@@ -249,8 +261,12 @@ export interface RelayedConsentsDeps {
 export const CONSENT_FRESH_MS = 60_000;
 // The stages this computer's core keeps per authority (MAX_STAGES in theme-tools.ts); fewer here would end an open card early.
 const MAX_CONSENT_STAGES = 20;
-// The tool holds one shot at a time; a third take drops the authority's oldest from the store too.
+// Per authority, of shots and of draft captures each: the tool holds one at a time, and a third drops that authority's oldest
+// (a shot from the store too).
 const MAX_CONSENT_SHOTS = 2;
+// A draft card waits SCREENSHOT_ANSWER_MS from its core's start, a wire trip before main holds the capture; a press made at
+// the end of that wait still counts for CONSENT_FRESH_MS.
+const CAPTURE_TTL_MS: number = SCREENSHOT_ANSWER_MS + CONSENT_FRESH_MS;
 const MAX_CONSENT_INSTALLS = 4;
 // Past this many open theme cards a page gets no new one: dropping an older card's entry would let its prompt id be bound again.
 const MAX_PAGE_CARDS = 256;
@@ -266,9 +282,24 @@ interface InstallPress {
   readonly useArrangement: boolean;
   readonly at: number;
 }
+// session: the chat it was taken for; cleared: read without a press of its own, because the chat's grant covered it or the
+// press its draft capture spent did
+interface HeldShot {
+  readonly shot: ThemeShot;
+  readonly session: string;
+  readonly cleared?: 'grant' | 'press';
+}
+// a draft capture that waits for its card's Allow: the chat, and the draft's name and checked theme main paints
+interface HeldCapture {
+  readonly session: string;
+  readonly name: string;
+  readonly theme: ThemeFile;
+  readonly at: number;
+}
 interface AuthorityConsents {
   readonly stages: Map<string, ThemeStagedCard>;
-  readonly shots: Map<string, ThemeShot>;
+  readonly shots: Map<string, HeldShot>;
+  readonly captures: Map<string, HeldCapture>;
   readonly installs: Map<string, ThemeInstallPreview>;
   readonly applied: Map<string, number>;
   // stage id to the card whose toggle was pressed
@@ -293,6 +324,9 @@ export class RelayedConsents {
   private readonly held = new Map<string, AuthorityConsents>();
   // panel id, then prompt id; fixed from a card's first delivery until its Closed passes to that page or the page goes
   private readonly cards = new Map<string, Map<string, PageCard>>();
+  // docs/invariants.md "Desktop themes", the screenshot grant: authority, then the chat's session id, then the pages of this
+  // computer that granted it; memory only
+  private readonly grants = new Map<string, Map<string, Set<string>>>();
   private readonly deps: RelayedConsentsDeps;
 
   constructor(deps: RelayedConsentsDeps) {
@@ -313,10 +347,10 @@ export class RelayedConsents {
     held?.shown.delete(stageId);
   }
 
-  /** Records the shot for the authority; the shots that left to make room, which the caller drops from the store. */
-  shotTaken(authority: string, shot: ThemeShot): string[] {
+  /** Records the shot taken for the authority's chat `session`; the shots that left to make room, which the caller drops from the store. */
+  shotTaken(authority: string, shot: ThemeShot, session: string, cleared?: HeldShot['cleared']): string[] {
     const { shots } = this.of(authority);
-    shots.set(shot.shotId, shot);
+    shots.set(shot.shotId, { shot, session, ...(cleared !== undefined ? { cleared } : {}) });
     const evicted = [...shots.keys()].slice(0, Math.max(0, shots.size - MAX_CONSENT_SHOTS));
     for (const old of evicted) this.shotEnded(authority, old);
     return evicted;
@@ -333,6 +367,76 @@ export class RelayedConsents {
     const held = this.held.get(authority);
     held?.allowed.delete(shotId);
     return held?.shots.delete(shotId) === true;
+  }
+
+  /**
+   * Holds a draft capture for the authority's chat `session` until its card's Allow spends it: its id, and the captures that
+   * expired or left to make room, whose core the caller tells.
+   */
+  captureMade(authority: string, capture: Omit<HeldCapture, 'at'>): { readonly captureId: string; readonly gone: string[] } {
+    const { captures } = this.of(authority);
+    const captureId = randomUUID();
+    captures.set(captureId, { ...capture, at: this.deps.now() });
+    this.deps.captureTheme(captureId, capture.theme);
+    const expired = [...captures].filter(([, held]) => this.deps.now() - held.at > CAPTURE_TTL_MS).map(([old]) => old);
+    for (const old of expired) this.captureEnded(authority, old);
+    const evicted = [...captures.keys()].slice(0, Math.max(0, captures.size - MAX_CONSENT_SHOTS));
+    for (const old of evicted) this.captureEnded(authority, old);
+    return { captureId, gone: [...expired, ...evicted] };
+  }
+
+  /**
+   * The capture if it is the authority's, still held, and its card's Allow (once or for the chat) was pressed within
+   * CONSENT_FRESH_MS; else why not. It is gone either way, so a press is spent once.
+   */
+  spendCapture(authority: string, captureId: string): HeldCapture | 'gone' | 'notAllowed' {
+    const held = this.held.get(authority);
+    const capture = held?.captures.get(captureId);
+    const at = capture ? held!.allowed.get(captureId) : undefined;
+    this.captureEnded(authority, captureId);
+    if (!capture || this.deps.now() - capture.at > CAPTURE_TTL_MS) return 'gone';
+    return this.fresh(at) ? capture : 'notAllowed';
+  }
+
+  /** The capture is the authority's no longer; a capture of another authority stays. */
+  captureEnded(authority: string, captureId: string): void {
+    const held = this.held.get(authority);
+    held?.allowed.delete(captureId);
+    if (held?.captures.delete(captureId)) this.deps.captureTheme(captureId, undefined);
+  }
+
+  /** Whether the authority's chat `session` holds the screenshot grant this computer's user gave on one of its pages. */
+  granted(authority: string, session: string): boolean {
+    return this.grants.get(authority)?.has(session) === true;
+  }
+
+  /** Whether the page granted its chat the screenshot grant, which its reload is told again. */
+  pageGranted(panelId: string): boolean {
+    return [...this.grants.values()].some((sessions) => [...sessions.values()].some((pages) => pages.has(panelId)));
+  }
+
+  /** Revoke from the screenshot notice: the grant of the authority's chat `session` ends, and every page that showed it hears so. */
+  revoke(authority: string, session: string): void {
+    const sessions = this.grants.get(authority);
+    const pages = sessions?.get(session);
+    if (!sessions || !pages) return;
+    sessions.delete(session);
+    if (sessions.size === 0) this.grants.delete(authority);
+    this.deps.log(`[remote] the screenshot grant of a chat on ${authority} was revoked on this computer`);
+    for (const panelId of pages) this.deps.publishGrant(panelId, false);
+  }
+
+  /** The strip's Revoke on the page: every grant the page gave ends, and the page hears so even when it held none here. */
+  revokePage(page: RelayPage): void {
+    const held = [...(this.grants.get(page.authority) ?? [])].filter(([, pages]) => pages.has(page.panelId));
+    for (const [session] of held) this.revoke(page.authority, session);
+    // revoke tells every page that held the grant, this one included
+    if (held.length === 0) this.deps.publishGrant(page.panelId, false);
+  }
+
+  /** The page's chat has another session now: a grant the page gave for an earlier one ends. */
+  pageSession(page: RelayPage, session: string | undefined): void {
+    for (const [granted, pages] of [...(this.grants.get(page.authority) ?? [])]) if (granted !== session && pages.has(page.panelId)) this.revoke(page.authority, granted);
   }
 
   installMade(authority: string, preview: ThemeInstallPreview): void {
@@ -353,15 +457,35 @@ export class RelayedConsents {
     held?.installing.delete(installId);
   }
 
-  /** Forget host: everything of the authority goes; its shots, which the caller drops from the store. */
+  /** Forget host: everything of the authority goes, its grants included; its shots, which the caller drops from the store. */
   forgetAuthority(authority: string): string[] {
-    const shots = [...(this.held.get(authority)?.shots.keys() ?? [])];
+    const held = this.held.get(authority);
+    const shots = [...(held?.shots.keys() ?? [])];
+    for (const captureId of [...(held?.captures.keys() ?? [])]) this.captureEnded(authority, captureId);
     this.held.delete(authority);
+    const pages = new Set([...(this.grants.get(authority)?.values() ?? [])].flatMap((granted) => [...granted]));
+    this.grants.delete(authority);
+    for (const panelId of pages) this.deps.publishGrant(panelId, false);
     return shots;
   }
 
+  /**
+   * The chat left memory: its cards and the captures they wait on end with it, and so does a grant no other open page of
+   * this computer gave, whose remaining pages keep their strip.
+   */
   pageClosed(panelId: string): void {
+    const cards = this.cards.get(panelId);
     this.cards.delete(panelId);
+    for (const [authority, held] of this.held) {
+      for (const card of cards?.values() ?? []) if (card.kind === 'screenshot' && card.id !== undefined && held.captures.has(card.id)) this.captureEnded(authority, card.id);
+    }
+    for (const [authority, sessions] of [...this.grants]) {
+      for (const [session, pages] of [...sessions]) {
+        pages.delete(panelId);
+        if (pages.size === 0) sessions.delete(session);
+      }
+      if (sessions.size === 0) this.grants.delete(authority);
+    }
   }
 
   /**
@@ -382,11 +506,15 @@ export class RelayedConsents {
     if (!isRecord(message) || typeof message['promptId'] !== 'string') return this.undelivered(page, type, 'it is malformed');
     const promptId = message['promptId'];
     const cards = this.cards.get(page.panelId);
+    const held = this.held.get(page.authority);
     if (closed !== undefined) {
-      if (cards?.get(promptId)?.kind === closed) cards.delete(promptId);
+      const open = cards?.get(promptId);
+      if (open?.kind !== closed) return json;
+      cards!.delete(promptId);
+      // a draft card closed with no Allow pressed: no capture follows; a pressed one waits for screenshotCapture to spend it
+      if (open.kind === 'screenshot' && open.id !== undefined && held?.captures.has(open.id) && !held.allowed.has(open.id)) this.captureEnded(page.authority, open.id);
       return json;
     }
-    const held = this.held.get(page.authority);
     if (kind === undefined) {
       const open = cards?.get(promptId);
       if (open?.kind !== 'install' || open.id === undefined) return json;
@@ -397,7 +525,7 @@ export class RelayedConsents {
     const open = cards?.get(promptId);
     if (open !== undefined && (open.kind !== kind || open.id !== id)) return this.undelivered(page, type, 'the page shows another card under its prompt id');
     // a screenshot card reaches only the device whose window it shows, so one naming no shot of this computer is never honest
-    if (kind === 'screenshot' && id === undefined) return this.undelivered(page, type, 'it names no screenshot this computer took for that host');
+    if (kind === 'screenshot' && id === undefined) return this.undelivered(page, type, 'it names no screenshot or draft capture this computer holds for that host');
     if (open === undefined) {
       if ((cards?.size ?? 0) >= MAX_PAGE_CARDS) return this.undelivered(page, type, 'the page already holds too many theme cards');
       if (cards) cards.set(promptId, { kind, id });
@@ -407,7 +535,9 @@ export class RelayedConsents {
     const { owner } = message;
     if (id === undefined) return JSON.stringify({ ...message, otherDevice: isRecord(message['otherDevice']) ? message['otherDevice'] : {} });
     if (kind === 'screenshot') {
-      const shot = held!.shots.get(id)!;
+      const capture = held!.captures.get(id);
+      if (capture) return JSON.stringify({ ...prompt, draft: { name: capture.name, theme: capture.theme }, owner });
+      const { shot } = held!.shots.get(id)!;
       return JSON.stringify({ ...prompt, url: shot.url, width: shot.width, height: shot.height, owner });
     }
     if (kind === 'install') return JSON.stringify({ ...prompt, preview: held!.installs.get(id), owner });
@@ -441,11 +571,24 @@ export class RelayedConsents {
         if (message['on'] === true && forwarded) held.shown.set(id, { promptId: message['promptId'], at });
         else held.shown.delete(id);
         return;
-      case 'resolveThemeScreenshot':
-        if (card.kind !== 'screenshot' || !held.shots.has(id)) return;
-        if (message['choice'] === 'allow' && forwarded) held.allowed.set(id, at);
+      case 'resolveThemeScreenshot': {
+        if (card.kind !== 'screenshot') return;
+        const session = held.shots.get(id)?.session ?? held.captures.get(id)?.session;
+        if (session === undefined) return;
+        const allows = message['choice'] === 'allow' || message['choice'] === 'allowChat';
+        if (allows && forwarded) held.allowed.set(id, at);
         else held.allowed.delete(id);
+        // the grant is set only here ("Desktop themes", the screenshot grant), by the press this computer saw on a card bound
+        // to that chat's shot or capture
+        if (message['choice'] !== 'allowChat' || !forwarded) return;
+        // both session ids are the remote core's word, so the authority and the notice bound the grant; the match only keeps
+        // it off a page that shows another chat, and a page with no session gets none
+        const shown = this.deps.pageSession(page.panelId);
+        if (shown === session) this.grant(page, session);
+        else if (shown === undefined) this.deps.log(`[remote] an Allow for this chat on ${page.authority} counted once: this computer knows no chat session of the page`);
+        else this.deps.log(`[remote] an Allow for this chat on ${page.authority} counted once: its shot is not of the chat the page shows`);
         return;
+      }
       case 'resolveThemeInstall': {
         if (card.kind !== 'install' || !held.installs.has(id)) return;
         const { onClash, useArrangement } = message;
@@ -473,12 +616,29 @@ export class RelayedConsents {
     return this.fresh(press.at);
   }
 
-  /** Whether the shot is the authority's and its Allow was pressed; either way the Allow is spent. */
+  /**
+   * Whether the shot is the authority's and may be read: its Allow was pressed, the press its draft capture spent cleared it,
+   * or it was taken under its chat's grant, which still holds. Either way the Allow is spent.
+   */
   spendAllow(authority: string, shotId: string): boolean {
     const held = this.held.get(authority);
-    const at = held?.shots.has(shotId) ? held.allowed.get(shotId) : undefined;
+    const shot = held?.shots.get(shotId);
+    const at = shot ? held!.allowed.get(shotId) : undefined;
     held?.allowed.delete(shotId);
+    if (shot?.cleared === 'press') return true;
+    if (shot?.cleared === 'grant' && this.granted(authority, shot.session)) return true;
     return this.fresh(at);
+  }
+
+  private grant(page: RelayPage, session: string): void {
+    const sessions = this.grants.get(page.authority) ?? new Map<string, Set<string>>();
+    this.grants.set(page.authority, sessions);
+    const pages = sessions.get(session) ?? new Set<string>();
+    sessions.set(session, pages);
+    if (pages.has(page.panelId)) return;
+    pages.add(page.panelId);
+    this.deps.log(`[remote] a chat on ${page.authority} was granted screenshots on this computer`);
+    this.deps.publishGrant(page.panelId, true);
   }
 
   spendInstall(authority: string, installId: string): Omit<InstallPress, 'at'> | undefined {
@@ -496,7 +656,7 @@ export class RelayedConsents {
   private of(authority: string): AuthorityConsents {
     let held = this.held.get(authority);
     if (!held) {
-      held = { stages: new Map(), shots: new Map(), installs: new Map(), applied: new Map(), shown: new Map(), allowed: new Map(), installing: new Map() };
+      held = { stages: new Map(), shots: new Map(), captures: new Map(), installs: new Map(), applied: new Map(), shown: new Map(), allowed: new Map(), installing: new Map() };
       this.held.set(authority, held);
     }
     return held;
@@ -506,7 +666,11 @@ export class RelayedConsents {
   private namedId(held: AuthorityConsents | undefined, kind: CardKind, message: Record<string, unknown>): string | undefined {
     if (!held) return undefined;
     if (kind === 'change') return typeof message['stageId'] === 'string' && held.stages.has(message['stageId']) ? message['stageId'] : undefined;
-    if (kind === 'screenshot') return [...held.shots.values()].find((shot) => shot.url === message['url'])?.shotId;
+    if (kind === 'screenshot') {
+      const draft = message['draft'];
+      if (draft !== undefined) return typeof message['captureId'] === 'string' && held.captures.has(message['captureId']) ? message['captureId'] : undefined;
+      return [...held.shots.values()].find(({ shot }) => shot.url === message['url'])?.shot.shotId;
+    }
     const preview = message['preview'];
     const installId = isRecord(preview) ? preview['installId'] : undefined;
     return typeof installId === 'string' && held.installs.has(installId) ? installId : undefined;
@@ -531,6 +695,7 @@ const FAILED: Readonly<Record<UserThemeMethod, string>> = {
   discard: 'The proposal could not be discarded on the computer that shows this chat.',
   preview: 'Show in window could not be changed on the computer that shows this chat.',
   screenshotTake: 'The screenshot could not be taken on the computer that shows this chat.',
+  screenshotCapture: 'The draft could not be painted and captured on the computer that shows this chat.',
   screenshot: 'The screenshot could not be read on the computer that shows this chat.',
   screenshotDrop: 'The screenshot could not be dropped on the computer that shows this chat.',
   installPrepare: 'The theme could not be downloaded on the computer that shows this chat.',
@@ -538,6 +703,7 @@ const FAILED: Readonly<Record<UserThemeMethod, string>> = {
   installCancel: 'The install could not be cancelled on the computer that shows this chat.',
 };
 const SHOT_NOT_ALLOWED = 'The screenshot was not sent: nobody allowed it on the computer that shows this chat.';
+const CAPTURE_GONE = 'The draft was not captured: the computer that shows this chat no longer holds it. Ask for a new screenshot if it is still needed.';
 
 export async function relayTheme<M extends UserThemeMethod>(deps: ThemeRelayDeps, method: M, params: UserThemeCalls[M]['params'], signal: AbortSignal): Promise<UserThemeCalls[M]['result']> {
   const ends = ALWAYS.has(method) || (method === 'preview' && (params as UserThemeCalls['preview']['params']).on === false);
@@ -563,11 +729,23 @@ export async function relayTheme<M extends UserThemeMethod>(deps: ThemeRelayDeps
   };
   // each case's answer is the method's own; TypeScript narrows params but not the generic result
   type Answer = UserThemeCalls[M]['result'];
+  // a capture of this computer's window for the authority's chat, held for the chat's card or its grant's read
+  const keepShot = async (chat: Pick<ThemeChat, 'id'>, theme: ThemeFile | undefined, cleared: 'grant' | 'press' | undefined): Promise<UserThemeCalls['screenshotTake']['result']> => {
+    const taken = await own(() => deps.screenshots.take({ chat: { id: chat.id }, ...(theme !== undefined ? { theme } : {}), granted: cleared === 'grant' }, signal));
+    if (taken.kind === 'refused') return taken;
+    // a Revoke while the window was captured leaves the shot to its card
+    const kept = cleared === 'grant' && !consents.granted(authority, chat.id) ? undefined : cleared;
+    for (const evicted of consents.shotTaken(authority, taken.shot, chat.id, kept)) {
+      await deps.screenshots.drop(evicted);
+      await deps.shotGone(evicted);
+    }
+    return { kind: 'shot', shot: taken.shot, granted: kept === 'grant' };
+  };
   switch (method) {
     case 'read': {
-      const { request, folder } = params as UserThemeCalls['read']['params'];
+      const { request, chat, folder } = params as UserThemeCalls['read']['params'];
       deps.log(`[remote] user.theme.read for ${authority}: ${request.about ?? 'current'}`);
-      return await own(() => deps.core['themes.relay.read']({ authority, request, ...projectOf(folder) }, signal)) as Answer;
+      return await own(() => deps.core['themes.relay.read']({ authority, request, chat, ...projectOf(folder) }, signal)) as Answer;
     }
     case 'uploadStart': {
       const start = params as UserThemeCalls['uploadStart']['params'];
@@ -635,20 +813,49 @@ export async function relayTheme<M extends UserThemeMethod>(deps: ThemeRelayDeps
       }
     }
     case 'screenshotTake': {
-      deps.log(`[remote] user.theme.screenshotTake for ${authority}`);
-      const shot = await own(() => deps.screenshots.take(signal));
-      for (const evicted of consents.shotTaken(authority, shot)) {
-        await deps.screenshots.drop(evicted);
-        await deps.shotGone(evicted);
+      const { chat, draft } = params as UserThemeCalls['screenshotTake']['params'];
+      // the grant is this computer's record, never a word of the remote core ("Desktop themes", the screenshot grant)
+      const took = (what: string, granted: boolean): void => deps.log(`[remote] user.theme.screenshotTake for ${authority}: ${what}, ${granted ? 'under the chat\'s grant' : 'for its card'}`);
+      if (draft === undefined) {
+        const granted = consents.granted(authority, chat.id);
+        took('the window', granted);
+        return await keepShot(chat, undefined, granted ? 'grant' : undefined) as Answer;
       }
-      return shot as Answer;
+      const found = await own(() => deps.core['themes.relay.draftTheme']({ authority, chat: chat.id, draft }, signal));
+      if ('refused' in found) {
+        deps.log(`[remote] user.theme.screenshotTake refused for ${authority}: this computer's core holds no such draft of that chat`);
+        throw new Error(found.refused);
+      }
+      const theme = await own(async () => deps.validated(found.theme));
+      // read after the wait for the draft, so a Revoke during it sends the draft to its card
+      const granted = consents.granted(authority, chat.id);
+      took('a draft', granted);
+      if (granted) return await keepShot(chat, theme, 'grant') as Answer;
+      const { captureId, gone } = consents.captureMade(authority, { session: chat.id, name: found.name, theme });
+      for (const id of gone) await deps.shotGone(id);
+      return { kind: 'draft', captureId, draft: { name: found.name, theme } } as Answer;
+    }
+    case 'screenshotCapture': {
+      const { captureId } = params as UserThemeCalls['screenshotCapture']['params'];
+      // checked and spent before the first await: a press paints and captures once
+      const capture = consents.spendCapture(authority, captureId);
+      if (capture === 'gone') {
+        deps.log(`[remote] user.theme.screenshotCapture refused for ${authority}: this computer holds no such capture of that host`);
+        throw new Error(CAPTURE_GONE);
+      }
+      if (capture === 'notAllowed') {
+        deps.log(`[remote] user.theme.screenshotCapture refused for ${authority}: its Allow was not pressed on this computer`);
+        throw new Error(SHOT_NOT_ALLOWED);
+      }
+      deps.log(`[remote] user.theme.screenshotCapture for ${authority} after its Allow on this computer`);
+      return await keepShot({ id: capture.session }, capture.theme, 'press') as Answer;
     }
     case 'screenshot': {
       const { shotId } = params as UserThemeCalls['screenshot']['params'];
       // checked and spent before the first await: the shot leaves once
       const allowed = consents.spendAllow(authority, shotId);
       if (!allowed || !consents.shotEnded(authority, shotId)) {
-        deps.log(`[remote] user.theme.screenshot refused for ${authority}: it is not that host's shot, or its Allow was not pressed on this computer`);
+        deps.log(`[remote] user.theme.screenshot refused for ${authority}: it is not that host's shot, its Allow was not pressed on this computer, or the chat's grant ended`);
         throw new Error(SHOT_NOT_ALLOWED);
       }
       let png: Uint8Array;
@@ -666,7 +873,9 @@ export async function relayTheme<M extends UserThemeMethod>(deps: ThemeRelayDeps
     }
     case 'screenshotDrop': {
       const { shotId } = params as UserThemeCalls['screenshotDrop']['params'];
+      // the id is a shot's, or a draft capture's whose card closed without its Allow
       if (consents.shotEnded(authority, shotId)) await own(() => deps.screenshots.drop(shotId));
+      else consents.captureEnded(authority, shotId);
       return undefined as Answer;
     }
     case 'installPrepare': {

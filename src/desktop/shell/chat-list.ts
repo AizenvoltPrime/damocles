@@ -12,6 +12,14 @@ export type ChatListRow =
 
 const GROUP_ORDER: readonly ChatGroup[] = ['today', 'yesterday', 'earlier'];
 
+// Fixed row heights in rem; the virtual list positions rows from their px.
+const GROUP_ROW_REM = 1.625;
+const CHAT_ROW_REM = 2.875;
+const NESTED_ROW_REM = 2;
+
+/** A row's height in rem: a group header, a nested design chat or a chat. */
+export const chatListRowRem = (row: ChatListRow | undefined): number => (row?.kind === 'group' ? GROUP_ROW_REM : row?.nested ? NESTED_ROW_REM : CHAT_ROW_REM);
+
 // Day boundaries are local midnights, so a chat from 23:50 yesterday is not "Today".
 export function chatGroupOf(timestamp: number, now: Date): ChatGroup {
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();

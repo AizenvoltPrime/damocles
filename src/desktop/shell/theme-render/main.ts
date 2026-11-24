@@ -1,17 +1,25 @@
 // The theme render page: an offscreen sandboxed window with no preload and no bridge. Main calls window.damoclesRender with
-// one job's JSON at a time and waits for the answer; for a drawing it then captures the window itself. A moving wallpaper's
-// analysis decodes every frame itself, with no playback, from the bytes main fed through damoclesFeed, checks each for flashing
-// (src/shared/themes/flash.ts) and reports its progress through damoclesProgress.
+// one job's JSON at a time and waits for the answer; for a drawing it then captures the window itself. A window job draws the
+// real shell and transcript components with sample content (SampleWindow.vue), themed as main's window builder themes the
+// window; a characters job draws one page of a character sheet (CharacterSheet.vue) the same way. A moving wallpaper's
+// analysis decodes every frame itself, with no playback, from the bytes main fed through damoclesFeed, checks each for
+// flashing (src/shared/themes/flash.ts) and reports its progress through damoclesProgress.
+
+// First, so the bundle opens with its @layer statement, ahead of every layered block the components' CSS adds.
+import './style.css';
 import { createApp, h, nextTick, type App } from 'vue';
 import type { ThemeAnalysisAnswer, ThemeRenderAnswer, ThemeRenderJob, ThemeSpriteAnswer } from '@shared/themes/agent';
 import { decodedDurationRefused, MAX_ANIMATION_FRAMES, STILL_SIDE, THUMB_QUALITY, THUMB_SIDE } from '@shared/themes/wallpapers';
 import { readVideoSamples, type VideoSamples } from '@shared/themes/video-samples';
 import { analyzeLoop, FLASH_SAMPLE_SIDE, FLASH_WINDOW_MS, FlashAnalyzer, WALLPAPER_FLASH_FIELD, type FlashResult } from '@shared/themes/flash';
-import ThemeMiniature from '@/components/theme/ThemeMiniature.vue';
+import { installPlatformBridge } from '@/composables/usePlatformBridge';
 import { paletteFromPixels } from '../themes/wallpaper-palette';
+import { createRenderBridge } from './render-bridge';
+import { painted } from './settle';
 import { luminanceStats } from './stats';
+import { drawWindow } from './window-job';
+import { drawSheet } from './sheet-job';
 import { decodeEveryFrame } from './video-frames';
-import './style.css';
 
 declare global {
   interface Window {
@@ -21,13 +29,14 @@ declare global {
   }
 }
 
-const frame = (): Promise<void> => new Promise((resolve) => requestAnimationFrame(() => resolve()));
+// The sample transcript's components post through this bridge; installed before anything reads it.
+installPlatformBridge(createRenderBridge());
 
-let mounted: { app: App; host: HTMLElement } | undefined;
+let mounted: { apps: readonly App[]; host: HTMLElement } | undefined;
 
 function host(width: number, height: number): HTMLElement {
   if (mounted) {
-    mounted.app.unmount();
+    for (const app of [...mounted.apps].reverse()) app.unmount();
     mounted.host.remove();
     mounted = undefined;
   }
@@ -41,27 +50,32 @@ function mount(width: number, height: number, render: () => ReturnType<typeof h>
   const element = host(width, height);
   const app = createApp({ render });
   app.mount(element);
-  mounted = { app, host: element };
+  mounted = { apps: [app], host: element };
   return element;
 }
 
-async function draw(job: ThemeRenderJob): Promise<void> {
-  if (job.kind === 'preview') {
-    const looks = job.mode === 'split' ? 'dark and light looks' : `${job.mode} look`;
-    mount(job.width, job.height, () => h(ThemeMiniature, { theme: job.theme, mode: job.mode, label: `${job.theme.name}, ${looks}` }));
-    return;
-  }
-  if (job.kind === 'composite') {
-    const { bounds } = job;
-    const element = mount(job.width, job.height, () => h('div', { style: 'position:relative;width:100%;height:100%' }, [
-      h('img', { src: job.shell, alt: '', style: `position:absolute;left:0;top:0;width:${job.width}px;height:${job.height}px` }),
-      h('img', { src: job.chat, alt: '', style: `position:absolute;left:${bounds.x}px;top:${bounds.y}px;width:${bounds.width}px;height:${bounds.height}px` }),
-    ]));
-    await nextTick();
-    await Promise.all([...element.querySelectorAll('img')].map((image) => image.decode()));
-    return;
-  }
-  throw new Error(`Unknown render job ${String((job as { kind?: unknown }).kind)}`);
+async function drawComposite(job: Extract<ThemeRenderJob, { kind: 'composite' }>): Promise<void> {
+  const { bounds } = job;
+  const element = mount(job.width, job.height, () => h('div', { style: 'position:relative;width:100%;height:100%' }, [
+    h('img', { src: job.shell, alt: '', style: `position:absolute;left:0;top:0;width:${job.width}px;height:${job.height}px` }),
+    h('img', { src: job.chat, alt: '', style: `position:absolute;left:${bounds.x}px;top:${bounds.y}px;width:${bounds.width}px;height:${bounds.height}px` }),
+  ]));
+  await nextTick();
+  await Promise.all([...element.querySelectorAll('img')].map((image) => image.decode()));
+}
+
+function windowJob(job: Extract<ThemeRenderJob, { kind: 'window' }>): Promise<ThemeRenderAnswer> {
+  const element = host(job.width, job.height);
+  return drawWindow(job, element, (apps) => {
+    mounted = { apps, host: element };
+  });
+}
+
+function sheetJob(job: Extract<ThemeRenderJob, { kind: 'characters' }>): Promise<ThemeRenderAnswer> {
+  const element = host(job.width, job.height);
+  return drawSheet(job, element, (apps) => {
+    mounted = { apps, host: element };
+  });
 }
 
 // The stats sample's side: 64 x 64 pixels of the whole image.
@@ -324,12 +338,13 @@ window.damoclesRender = async (json: string): Promise<string> => {
   const job = JSON.parse(json) as ThemeRenderJob;
   if (job.kind === 'analyze') return analyze(job);
   if (job.kind === 'sprite') return analyzeSprite(job);
-  await draw(job);
+  if (job.kind === 'window') return JSON.stringify(await windowJob(job));
+  if (job.kind === 'characters') return JSON.stringify(await sheetJob(job));
+  if (job.kind !== 'composite') throw new Error(`Unknown render job ${String((job as { kind?: unknown }).kind)}`);
+  await drawComposite(job);
   await nextTick();
   await document.fonts.ready;
-  // Two frames: the first lays out and paints, the second has the painted frame ready for main's capture.
-  await frame();
-  await frame();
+  await painted();
   const answer: ThemeRenderAnswer = { drawn: true, width: job.width, height: job.height };
   return JSON.stringify(answer);
 };

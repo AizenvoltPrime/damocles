@@ -13,7 +13,7 @@ type SizedSection = Exclude<keyof ShellLayout['sections'], 'chats'>;
 const SIZED_SECTIONS: readonly SizedSection[] = ['projects', 'files', 'search', 'repos', 'scm', 'graph'];
 
 /** The part of the window's layout a theme saves: the grid's slots, visibility and sizes, the sidebar's width and its sections. */
-export function arrangementOf(layout: ShellLayout): Arrangement {
+export function arrangementOf(layout: ShellLayout): Required<Arrangement> {
   const { slots, visible, sideWidth, bottomHeight } = layout.grid;
   const sections = Object.fromEntries([
     ...SIZED_SECTIONS.map((id) => [id, { collapsed: layout.sections[id].collapsed, size: Math.round(layout.sections[id].size) }]),

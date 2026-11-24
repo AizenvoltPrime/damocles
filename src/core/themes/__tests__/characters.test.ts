@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SettingsStore } from '../../../platform/settings-store';
 import {
-  characterFor, characterIndex, characterState, frameView, parseProjectsFile, PROJECTS_FILE, shownCharacters, type FrameSources, type ProjectsFile,
+  characterFor, characterIndex, characterState, frameView, MAX_SPRITE_BYTES, parseProjectsFile, PROJECTS_FILE, shownCharacters, type FrameSources, type ProjectsFile,
 } from '../../../shared/themes/characters';
 import { englishText, LocalizedError } from '../../../shared/localized-text';
 import type { CharacterSet, LookColors, ThemeFile } from '../../../shared/themes/schema';
@@ -63,6 +63,13 @@ describe('which character a project shows', () => {
     expect(characterFor(bare, 'b')?.name).toBe('Gloop');
     expect(characterFor(bare, 'c')).toBeUndefined();
     expect(shownCharacters({ themeId: 'damocles' }, { version: 1, pins: {} }, sources, 'always')).toBeUndefined();
+  });
+
+  it('carries the shown set\'s selection, and an outline where the set names none or the theme has no set', () => {
+    const projects: ProjectsFile = { version: 1, pins: { b: { everyTheme: every } } };
+    expect(shownCharacters({ themeId: ID, characters: SET, assets: ASSETS }, projects, sources, 'always')?.selection).toBe('outline');
+    expect(shownCharacters({ themeId: ID, characters: { ...SET, selection: 'none' }, assets: ASSETS }, projects, sources, 'always')?.selection).toBe('none');
+    expect(shownCharacters({ themeId: 'damocles' }, projects, sources, 'always')?.selection).toBe('outline');
   });
 
   it('reads the state from the chats: waiting over running over idle', () => {
@@ -151,6 +158,35 @@ describe('character sprites in the theme service', () => {
     expect(await themes.allowFlash(sprite.sha256)).toBe(true);
     expect(frameView(frame, { [sprite.sha256]: sprite.asset }, { ...sources, flash })).toMatchObject({ moves: true, playable: true });
     expect(flash(sprite.sha256)).toMatchObject({ flagged: true, atMs: 250, kind: 'general', allowed: true });
+  });
+
+  it("keeps the blob of a sprite only a draft's names hold, reads a stored sprite only as its sha256 says, and leaves out a draft whose names do not check", async () => {
+    let now = Date.now();
+    const themes = createThemeService({ root, settings: fakeSettings(path.join(root, 'settings.json')), now: () => now });
+    themes.setSpriteAnalyzer(passed);
+    const svg = new TextEncoder().encode(pixelSpriteSvg(parsePixelSprite({ palette: ['#ff6bb5'], frames: [['0.', '.0']] })).svg);
+    const sprite = await themes.importSprite({ bytes: svg, name: 'pip.svg' });
+    const draft = { id: themes.drafts.newId(), owner: { authority: 'local', sessionId: 's', toolCallId: 'c' }, createdAt: now, baseThemeId: null, baseHash: null, theme: { schemaVersion: 1, id: ID, name: 'Night', looks: { dark: { colors: COLORS } } } } as const;
+    await themes.drafts.put({ ...draft, sprites: { pip: { sha256: sprite.sha256, asset: sprite.asset } } }, null);
+    expect((await themes.drafts.get(draft.id))?.sprites).toEqual({ pip: { sha256: sprite.sha256, asset: sprite.asset } });
+    now += BLOB_GRACE_MS * 2;
+    await themes.collectBlobs();
+    expect(fs.existsSync(path.join(root, 'blobs', sprite.sha256))).toBe(true);
+    expect(new Uint8Array(await themes.readSprite(sprite.sha256, sprite.asset))).toEqual(svg);
+
+    fs.writeFileSync(path.join(root, 'blobs', sprite.sha256), new TextEncoder().encode('<svg/>'));
+    expect(await refusal(themes.readSprite(sprite.sha256, sprite.asset))).toBe(`The stored file ${sprite.sha256} is not the file its name says.`);
+    fs.writeFileSync(path.join(root, 'blobs', sprite.sha256), new Uint8Array(MAX_SPRITE_BYTES + 1));
+    expect(await refusal(themes.readSprite(sprite.sha256, sprite.asset))).toBe(`The stored file ${sprite.sha256} is larger than 256 KB, the most a character sprite may be.`);
+    expect(await refusal(themes.readSprite('e'.repeat(64), sprite.asset))).toBe(`No sprite ${'e'.repeat(64)} is stored.`);
+    expect(await refusal(themes.readSprite(sprite.sha256, { ...sprite.asset, kind: 'image' }))).toBe(`No sprite ${sprite.sha256} is stored.`);
+
+    const file = path.join(root, 'drafts', `${draft.id}.json`);
+    const stored = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    fs.writeFileSync(file, JSON.stringify({ ...stored, sprites: { pip: { sha256: sprite.sha256, asset: { ...sprite.asset, kind: 'font' } } } }));
+    expect(await themes.drafts.get(draft.id)).toBeUndefined();
+    fs.writeFileSync(file, JSON.stringify({ ...stored, sprites: { 'no spaces': { sha256: sprite.sha256, asset: sprite.asset } } }));
+    expect(await themes.drafts.get(draft.id)).toBeUndefined();
   });
 
   it('keeps a character kept in every theme after its theme is deleted: the pin stays and its sprite blob stays referenced', async () => {

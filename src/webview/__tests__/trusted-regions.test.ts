@@ -47,6 +47,7 @@ beforeAll(async () => {
     import('@/components/theme/ThemeChangePrompt.vue'),
     import('@/components/theme/ThemeScreenshotPrompt.vue'),
     import('@/components/theme/ThemeInstallPrompt.vue'),
+    import('@/components/theme/ThemeScreenshotGrantStrip.vue'),
   ]);
 });
 
@@ -239,17 +240,19 @@ describe('the chat page', () => {
     });
     themes.setScreenshotPrompt({ promptId: 'ts-1', toolUseId: 'call_2', url: 'app://damocles/theme-shot/3f2a9c', width: 1280, height: 800, owner: { kind: 'main' } });
     themes.setInstallPrompt({ promptId: 'ti-1', toolUseId: 'call_3', preview: installPreview(), owner: { kind: 'main' } });
+    themes.setScreenshotGrant(true);
 
     const app = mount(App, { global: { plugins: [i18n] }, attachTo: document.body });
     mounted.push(app);
     await flushPromises();
     await vi.waitFor(() => {
+      expect(document.querySelector('[data-testid="theme-screenshot-grant"]')).not.toBeNull();
       expect(document.querySelector('[data-testid="theme-screenshot-card"]')).not.toBeNull();
       expect(document.querySelector('[data-testid="theme-change-card"]')).not.toBeNull();
       expect(document.querySelector('[data-testid="theme-install-card"]')).not.toBeNull();
     });
 
-    for (const testId of ['permission-card', 'skill-card', 'elicitation-card', 'theme-change-card', 'theme-screenshot-card', 'theme-install-card', 'plan-ready-banner']) {
+    for (const testId of ['permission-card', 'skill-card', 'elicitation-card', 'theme-change-card', 'theme-screenshot-card', 'theme-install-card', 'theme-screenshot-grant', 'plan-ready-banner']) {
       expect(document.querySelector(`[data-testid="${testId}"]`)?.hasAttribute('data-trusted'), testId).toBe(true);
     }
     expect(document.querySelector('[role="dialog"][data-trusted]')).not.toBeNull();
@@ -289,6 +292,41 @@ describe('the chat page', () => {
     banner.querySelector('button')!.click();
     await flushPromises();
     expect(usePermissionStore().isPlanOverlayVisible).toBe(true);
+  });
+
+  // Revoke is a decision of the chat's grant, so the strip holds it like a card; its note covers its one row of text.
+  it('holds the screenshot grant strip\'s Revoke while the strip is covered, outside the dimmed prompts', async () => {
+    useThemePromptStore().setScreenshotGrant(true);
+    const visibility = installVisibilityObserver(false);
+    useSettingsStore().setHostCapabilities({ ...VSCODE_HOST_CAPABILITIES, damoclesTheme: true });
+    const posted = vi.spyOn(acquireVsCodeApi!(), 'postMessage');
+    mounted.push(mount(App, { global: { plugins: [i18n] }, attachTo: document.body }));
+    await flushPromises();
+    await vi.waitFor(() => expect(byTestId('theme-screenshot-grant')).not.toBeNull());
+    const strip = byTestId('theme-screenshot-grant');
+    const revokes = (): unknown[] => posted.mock.calls.map(([message]) => message).filter((message) => (message as { type: string }).type === 'revokeThemeScreenshotGrant');
+
+    expect(strip.closest('[data-testid="chat-prompts"]')).toBeNull();
+    expect(visibility.observed()).toContain(strip);
+    const note = [...strip.querySelectorAll<HTMLElement>('p[role="status"]')].filter((region) => region.classList.contains('absolute'));
+    expect(note).toHaveLength(1);
+    expect([...note[0]!.classList]).toEqual(expect.arrayContaining(['pointer-events-none', 'absolute', 'inset-0']));
+    expect(note[0]!.parentElement!.querySelector('button')).toBeNull();
+    byTestId('theme-screenshot-grant-revoke').click();
+    await flushPromises();
+    expect(revokes()).toEqual([]);
+
+    visibility.report(true);
+    await flushPromises();
+    byTestId('theme-screenshot-grant-revoke').click();
+    await flushPromises();
+    expect(revokes()).toEqual([{ type: 'revokeThemeScreenshotGrant' }]);
+
+    // the grant ends while Revoke holds focus: the composer takes it, not the body
+    byTestId('theme-screenshot-grant-revoke').focus();
+    useThemePromptStore().setScreenshotGrant(false);
+    await flushPromises();
+    expect(document.activeElement?.tagName).toBe('TEXTAREA');
   });
 
   it('gates every card of the dock on its own whole visibility, answering no click while covered', async () => {
@@ -464,10 +502,11 @@ const DOCK_ITEM_SOURCES = [
   'components/theme/ThemeChangePrompt.vue',
   'components/theme/ThemeScreenshotPrompt.vue',
   'components/theme/ThemeInstallPrompt.vue',
+  'components/theme/ThemeScreenshotGrantStrip.vue',
 ] as const;
 const DOCK_ITEMS = [
   'auth-banner', 'permission-card', 'question-card', 'form-card', 'skill-card', 'elicitation-card', 'sign-in-card', 'design-version-card',
-  'design-approval-card', 'theme-change-card', 'theme-screenshot-card', 'theme-install-card', 'plan-ready-banner',
+  'design-approval-card', 'theme-change-card', 'theme-screenshot-card', 'theme-install-card', 'theme-screenshot-grant', 'plan-ready-banner',
 ] as const;
 
 /** The declarations of the first rule written `<selector> {` in `css`. */
@@ -514,6 +553,7 @@ describe('the dock', () => {
     });
     themes.setScreenshotPrompt({ promptId: 'ts-1', toolUseId: 'call_2', url: 'app://damocles/theme-shot/3f2a9c', width: 1280, height: 800, owner: { kind: 'main' } });
     themes.setInstallPrompt({ promptId: 'ti-1', toolUseId: 'call_3', preview: installPreview(), owner: { kind: 'main' } });
+    themes.setScreenshotGrant(true);
     raiseQuestionFormAndDesignApproval();
     useDesignStore().addVersionPrompt({ promptId: 'dv-1', designId: 'contacts-1a2b3c4d', fromVersion: 1, toVersion: 2, changes: [] });
     useUIStore().setAuthFailure({ account: 'xai', reason: 'noApiAccess' });
@@ -537,7 +577,8 @@ describe('the dock', () => {
     expect(dock.querySelectorAll('.d-dock-shadow')).toHaveLength(DOCK_ITEMS.length);
     // every prompt of the dock takes an answer, so each is trusted UI, and so is the wrapper that draws its shadow
     const prompts = [...dock.querySelectorAll<HTMLElement>('[data-dock-prompt]')];
-    expect(prompts.map((prompt) => prompt.dataset.testid).sort()).toEqual(DOCK_ITEMS.filter((item) => item !== 'auth-banner' && item !== 'plan-ready-banner').sort());
+    const strips: readonly string[] = ['auth-banner', 'plan-ready-banner', 'theme-screenshot-grant'];
+    expect(prompts.map((prompt) => prompt.dataset.testid).sort()).toEqual(DOCK_ITEMS.filter((item) => !strips.includes(item)).sort());
     for (const prompt of prompts) {
       expect(prompt.hasAttribute('data-trusted'), prompt.dataset.testid).toBe(true);
       expect(prompt.parentElement!.hasAttribute('data-trusted'), prompt.dataset.testid).toBe(true);
@@ -599,6 +640,7 @@ const SURFACES: Readonly<Record<string, 'trusted' | { readonly exempt: string }>
   'theme/ThemeChangePrompt.vue': 'trusted',
   'theme/ThemeScreenshotPrompt.vue': 'trusted',
   'theme/ThemeInstallCard.vue': 'trusted',
+  'theme/ThemeScreenshotGrantStrip.vue': 'trusted',
   'PlanApprovalOverlay.vue': 'trusted',
   // an extension's own question (select, confirm, input, editor): its answer leaves the page, so it is gated like core's
   'ExtensionUiDialog.vue': 'trusted',

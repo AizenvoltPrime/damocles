@@ -3,7 +3,7 @@ import { protocol, type Protocol } from 'electron';
 import { readFile, realpath, stat as statFile } from '../../core/resource-fs';
 import { APP_HOST, APP_ORIGIN, APP_SCHEME, isInside, SERVED_FILES, SERVED_ROOTS } from '../app-urls';
 import { NOTIFIER_PAGE_PATH, THEME_EDITOR_PAGE_PATH } from '../preload/page-paths';
-import { THEME_SHOT_ID, THEME_SHOT_PATH } from '../../shared/themes/wallpapers';
+import { STILL_FILE, THEME_SHOT_ID, THEME_SHOT_PATH } from '../../shared/themes/wallpapers';
 
 export { APP_HOST, APP_ORIGIN, APP_SCHEME, appResourceUri } from '../app-urls';
 export { THEME_SHOT_URL_PREFIX } from '../../shared/themes/wallpapers';
@@ -109,11 +109,13 @@ export interface AppPages {
   themeBlobServed?(sha256: string, status: number, contentRange: string | null): void;
 }
 
-/** What the theme renderer's session serves besides the built files. */
+/** What the theme renderer's session serves besides the built files: only what its running job draws or decodes. */
 export interface ThemeRenderPages {
   themeRender(): string;
-  /** A theme blob the renderer's running job names (the file under analysis included), or one every page may load. */
+  /** A theme blob the renderer's running job draws or decodes; undefined for any other. */
   themeBlob(sha256: string): Promise<ServedBlob | undefined>;
+  /** The still frame of a file the running job draws still; undefined for any other, and before its analysis. */
+  themeCache(sha256: string, file: typeof STILL_FILE): Promise<Uint8Array | undefined>;
   themeBlobServed?(sha256: string, status: number, contentRange: string | null): void;
 }
 
@@ -274,9 +276,13 @@ export function parseByteRange(header: string | null, size: number): ByteRange {
   return { kind: 'part', start, end };
 }
 
-// A blob is content-addressed, so a URL's bytes never change and the renderer may keep them. A media element reads a video in
-// byte ranges; each answer streams only its part.
-async function serveThemeBlob(pages: Pick<AppPages, 'themeBlob' | 'themeBlobServed'>, sha256: string, rangeHeader: string | null): Promise<Response> {
+const IMMUTABLE = 'max-age=31536000, immutable';
+// The render session answers by the running job, so no page there may keep a file for a later job's page.
+const RENDER_JOB_ONLY = 'no-store';
+
+// A blob is content-addressed, so a URL's bytes never change: the default session's answer is immutable, and the render session
+// passes no-store. A media element reads a video in byte ranges; each answer streams only its part.
+async function serveThemeBlob(pages: Pick<AppPages, 'themeBlob' | 'themeBlobServed'>, sha256: string, rangeHeader: string | null, cacheControl: string = IMMUTABLE): Promise<Response> {
   let blob: ServedBlob | undefined;
   try {
     blob = await pages.themeBlob(sha256);
@@ -288,7 +294,7 @@ async function serveThemeBlob(pages: Pick<AppPages, 'themeBlob' | 'themeBlobServ
     'content-type': blob.mime,
     'x-content-type-options': 'nosniff',
     'content-security-policy': blob.mime === 'image/svg+xml' ? SVG_CSP : "default-src 'none'",
-    'cache-control': 'max-age=31536000, immutable',
+    'cache-control': cacheControl,
     'accept-ranges': 'bytes',
   };
   const range = parseByteRange(rangeHeader, blob.size);
@@ -308,8 +314,9 @@ async function serveThemeBlob(pages: Pick<AppPages, 'themeBlob' | 'themeBlobServ
   return new Response(body, { status: 206, headers: { ...headers, 'content-length': String(length), 'content-range': contentRange } });
 }
 
-// A derived file is named by its wallpaper's content, so a URL's bytes never change once written.
-async function serveThemeCache(pages: AppPages, sha256: string, file: string): Promise<Response> {
+// A derived file is named by its wallpaper's content, so a URL's bytes never change once written: immutable in the default
+// session, no-store in the render session.
+async function serveThemeCache(pages: Pick<AppPages, 'themeCache'>, sha256: string, file: string, cacheControl: string = IMMUTABLE): Promise<Response> {
   let bytes: Uint8Array | undefined;
   try {
     bytes = await pages.themeCache(sha256, file);
@@ -323,7 +330,7 @@ async function serveThemeCache(pages: AppPages, sha256: string, file: string): P
       'content-type': mimeTypeFor(file),
       'x-content-type-options': 'nosniff',
       'content-security-policy': "default-src 'none'",
-      'cache-control': 'max-age=31536000, immutable',
+      'cache-control': cacheControl,
     },
   });
 }
@@ -378,14 +385,16 @@ export function handleAppProtocol(resourceRoot: string, pages: AppPages): void {
 
 /**
  * The app scheme in the theme renderer's own session (`sessionProtocol` is that session's): its page, the built files the page
- * loads and the blobs of its job. No other session serves a blob still under analysis, and this one serves no other page.
+ * loads and the blobs and still frames of its running job; never a thumbnail. No other session serves a blob still under
+ * analysis, and this one serves no other page.
  */
 export function handleThemeRenderProtocol(sessionProtocol: Pick<Protocol, 'handle'>, resourceRoot: string, pages: ThemeRenderPages): void {
   sessionProtocol.handle(APP_SCHEME, async (request) => {
     if (request.method !== 'GET') return notFound();
     const target = resolveAppRequest(request.url, resourceRoot);
     if (target?.kind === 'themeRender') return htmlPage(pages.themeRender());
-    if (target?.kind === 'themeBlob') return serveThemeBlob(pages, target.sha256, request.headers.get('range'));
+    if (target?.kind === 'themeBlob') return serveThemeBlob(pages, target.sha256, request.headers.get('range'), RENDER_JOB_ONLY);
+    if (target?.kind === 'themeCache' && target.file === STILL_FILE) return serveThemeCache({ themeCache: (sha256) => pages.themeCache(sha256, STILL_FILE) }, target.sha256, target.file, RENDER_JOB_ONLY);
     if (target?.kind === 'file') return serveFile(target.root, target.filePath);
     return notFound();
   });

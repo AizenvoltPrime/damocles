@@ -225,7 +225,8 @@ import { logUncaughtErrors } from '../local-services/process-errors';
 import { ProjectList } from './projects';
 import { announceInstalledVersion, ReleaseNotesSource } from './release-notes';
 import { appResourceUri, handleAppProtocol, registerAppScheme, THEME_RENDER_PAGE_URL, THEME_SHOT_URL_PREFIX } from './protocol';
-import { AgentThemes, type AgentThemesDeps } from './themes/agent-themes';
+import { AgentThemes, type AgentThemesDeps, type ScreenshotNoticeState } from './themes/agent-themes';
+import { THEME_APPLIED_TIMEOUT_MS, ThemeAcks } from './themes/theme-acks';
 import { ThemeRenderer } from './themes/theme-renderer';
 import { createThemeRenderSession, openThemeRenderPage, themeRenderHtml } from './themes/theme-render-page';
 import { ThemeCommands } from './theme-commands';
@@ -249,12 +250,12 @@ import { SUBCALL_USAGE_LEDGER_PATH } from '../../core/paths';
 import { TaskbarBadges } from './taskbar-badges';
 import { TaskbarCounter } from './taskbar-counter';
 import {
-  currentBaseShown, decidedShown, currentDensity, currentShown, currentTextSize, currentTheme, currentThemeKind, currentWallpaperMotion, currentWallpapers, followThemeSettings, FONT_FACE_CSS, invalidateWallpaperStats,
-  namedFontBlob, namedImageBlob, onThemeChange, preferredThemeId, safeStartReason, setHeldLook, setMotionEnvironment, setSafeStart, setThemePreview, setWallpaperCycle, setWallpaperEnvironment,
+  currentBaseShown, decidedShown, currentDensity, currentShown, currentTextSize, currentTheme, currentThemeKind, currentThemeRevision, currentWallpaperMotion, currentWallpapers, followThemeSettings, invalidateWallpaperStats,
+  namedFontBlob, namedImageBlob, onThemeChange, preferredThemeId, safeStartReason, setHeldLook, setMotionEnvironment, setSafeStart, setThemePreview, setCardTheme, clearCardThemes, projectCharacter, setWallpaperCycle, setWallpaperEnvironment,
   setWallpaperFlashReader, setWallpaperStatsReader, shownBackground, trustedBackground, wallpaperCycleChanged, currentCharacters, namedSpriteBlob, setProjectPins,
   projectLookOf, setProjectLooks, setSelectedProject,
-  currentScheduleView, reevaluateTheme, setAppearanceSchedule, setReportedTimeZone, setThemeClock, themeNow, themePreference,
-  heldLookSettled, onThemeInputsChange, setOsKindStandIn,
+  currentScheduleView, reevaluateTheme, renderAppearance, setAppearanceSchedule, setReportedTimeZone, setThemeClock, themeNow, themePreference,
+  heldLookSettled, onThemeInputsChange, setOsKindStandIn, readPreviewRecords,
 } from './theme';
 import { APPEARANCE_FILE, parseAppearanceSchedule, THEME_TICK_MS } from '../../shared/themes/schedule';
 import { openThemeBlob, readStoreThumb, readThemeBlob, readThemeThumb, readWallpaperFlash, readWallpaperPalette, readWallpaperStats, type NamedBlob } from './themes/theme-blobs';
@@ -680,6 +681,8 @@ class DesktopApp {
   // the characters the overlay and the notifier were last told of, as JSON
   private overlayCharacters = 'null';
   private pinnedMotion: Parameters<typeof setMotionEnvironment>[0] = {};
+  // the shell page's document.visibilityState as it last reported it (SHELL_CHANNELS.pageMotion)
+  private shellPageVisible = true;
   // an e2e run's regional format, since app.getSystemLocale() is the machine's
   private pinnedSystemLocale: string | undefined;
   // an e2e run that set the schedule's clock fires the theme tick itself (themeTick)
@@ -903,7 +906,27 @@ class DesktopApp {
     send: async (authority, ended) => this.requireRemoteCore(authority).client.themeShowEndedRemote(ended),
     log: (line) => log(line),
   });
-  private readonly relayedConsents = new RelayedConsents({ now: () => Date.now(), log: (line) => log(line) });
+  private readonly relayedConsents = new RelayedConsents({
+    now: () => Date.now(),
+    // main is the one publisher of a remote chat's grant to its page; a post of its core's is dropped (REMOTE_CORE_REFUSED_POSTS)
+    publishGrant: (panelId, granted) => {
+      void this.views?.panel(panelId)?.postMessage({ type: 'themeScreenshotGrant', granted });
+    },
+    captureTheme: (captureId, theme) => setCardTheme('relayed', captureId, theme),
+    pageSession: (panelId) => {
+      const panel = this.views?.panel(panelId);
+      return panel ? this.sessionIdOf(panel) : undefined;
+    },
+    log: (line) => log(line),
+  });
+  // the e2e hooks' hold on the wait for those revisions, so a slow runner's capture waits for its pages (DAMOCLES_E2E_HOOKS,
+  // unpackaged only)
+  private readonly themeAckTimers = E2E_HOOKS ? new HeldTimers() : undefined;
+  // the theme revisions the shell and the chat views painted, which a draft capture waits on
+  private readonly themeAcks = new ThemeAcks({
+    revision: () => currentThemeRevision(),
+    ...(this.themeAckTimers ? { setTimer: this.themeAckTimers.setTimer, clearTimer: this.themeAckTimers.clearTimer } : {}),
+  });
   private readonly relayedShots: RelayedShotsDeps = {
     features: (authority) => this.authorities?.connection(authority)?.features,
     send: async (authority, shotId) => this.requireRemoteCore(authority).client.themeScreenshotGoneRemote(shotId),
@@ -918,6 +941,9 @@ class DesktopApp {
   });
   // the e2e hooks' hold on the keep-changes countdown, which a test then ends itself (DAMOCLES_E2E_HOOKS, unpackaged only)
   private readonly keepChangesTimers = E2E_HOOKS ? new HeldTimers() : undefined;
+  // the e2e hooks' hold on the screenshot notice's timer, and every notice raised since launch (DAMOCLES_E2E_HOOKS, unpackaged only)
+  private readonly screenshotNoticeTimers = E2E_HOOKS ? new HeldTimers() : undefined;
+  private readonly raisedScreenshotNotices: ScreenshotNoticeState[] = [];
   private readonly agentThemes: AgentThemes = new AgentThemes({
     root: THEMES_DIR,
     owner: this.themesOwner,
@@ -925,6 +951,40 @@ class DesktopApp {
     renderer: this.themeRenderer,
     shotUrlPrefix: THEME_SHOT_URL_PREFIX,
     captureWindow: () => this.captureWindowForTheme(),
+    chatSlot: () => {
+      const chat = this.views?.inSlot();
+      if (!chat || !chat.view.getVisible()) return undefined;
+      const session = this.sessionIdOf(chat);
+      return { origin: chat.authority, ...(session !== undefined ? { session } : {}) };
+    },
+    windowState: () => {
+      const window = this.window;
+      if (!window || window.isDestroyed()) return 'none';
+      if (window.isMinimized() || !window.isVisible()) return 'hidden';
+      // Chromium's occlusion tracking marks a window another app covers whole as hidden to its page
+      return this.shellPageVisible ? 'shown' : 'covered';
+    },
+    readPreviewRecords: (preview) => readPreviewRecords(preview),
+    themeApplied: (signal) => {
+      const window = this.window;
+      if (!window || window.isDestroyed()) return Promise.resolve(false);
+      const chat = this.views?.inSlot();
+      const pages = [window.webContents, ...(chat?.view.getVisible() ? [chat.webContents] : [])];
+      return this.themeAcks.until(pages, signal);
+    },
+    revokeGrant: async (origin, chat) => {
+      if (origin !== 'local') {
+        this.relayedConsents.revoke(origin, chat);
+        return;
+      }
+      // a local grant lives in the memory of this computer's core, so with no core running it has already ended
+      await this.client()?.themesScreenshotGrantRevoke(chat);
+    },
+    noticeNames: (origin, session) => this.screenshotNoticeNames(origin, session),
+    noticeFocusLeft: () => {
+      const part = this.noticeFocus.ended(true, 'chat');
+      if (part !== undefined) this.focusOn(part);
+    },
     core: {
       keep: (entryId) => this.requireLocalClient().themesKeep(entryId),
       revert: async (entryId) => {
@@ -940,9 +1000,12 @@ class DesktopApp {
       },
     },
     setPreview: (preview) => setThemePreview(preview),
+    cardTheme: (stageId, theme) => setCardTheme('local', stageId, theme),
+    projectCharacter: (key) => projectCharacter(key),
     editorTakenOver: () => this.themeDock?.previewTakenOver(),
     editorRefused: (reason) => this.themeDock?.previewRefused(reason),
     shownKind: () => currentBaseShown().kind,
+    renderAppearance: (theme, kind) => renderAppearance(theme, kind, this.windowLayout.sidebar()),
     shownState: () => {
       const shown = currentShown();
       return { kind: shown.kind, themeId: shown.themeId, decidedBy: shown.decidedBy };
@@ -954,6 +1017,7 @@ class DesktopApp {
     shellChanged: () => this.shellStateChanged(),
     countdownEnded: () => this.keepCountdownEnded(),
     ...(this.keepChangesTimers ? { timers: this.keepChangesTimers } : {}),
+    ...(this.screenshotNoticeTimers ? { noticeTimers: this.screenshotNoticeTimers, noticeRaised: (notice: ScreenshotNoticeState) => this.raisedScreenshotNotices.push(notice) } : {}),
     log: (line) => log(line),
   });
   // the user's theme commands: the menu's, the palette's and Settings › Appearance's (main/theme-commands.ts)
@@ -1468,6 +1532,10 @@ class DesktopApp {
   // The part F6 moved keyboard focus from into the desktop popups, until focus is anywhere else or the popup window loses it.
   private toastFocusOrigin: FocusPart | undefined;
   private readonly keepFocus = new KeepFocus<FocusPart>();
+  // the part keyboard focus came from into the screenshot notice, which it returns to as the notice closes
+  private readonly noticeFocus = new KeepFocus<FocusPart>();
+  // the last part other than the desktop popups that held keyboard focus
+  private lastFocusedPart: FocusPart | undefined;
   // What the main window focuses once it gains focus (a part left from the popups, or an overlay popup opened while it was
   // unfocused), until a later focusOn places focus, that popup closes or the window does.
   private focusOnActivation: FocusPart | 'overlay' | undefined;
@@ -1537,6 +1605,7 @@ class DesktopApp {
         if (!this.notifier.owns(contents)) this.toastFocusOrigin = undefined;
         this.views?.focused(contents);
         if (contents === this.window?.webContents || this.windowView(contents)) this.activationFocus.focused(contents);
+        this.partFocused(this.focusedPart());
         this.refreshMenuState();
       });
       contents.on('blur', () => this.refreshMenuState());
@@ -1613,10 +1682,11 @@ class DesktopApp {
       themeShot: (id) => this.agentThemes.shot(id),
       ...(E2E_HOOKS ? { themeBlobServed: (sha256: string, status: number, contentRange: string | null) => this.servedThemeBlobs.push({ sha256, status, contentRange }) } : {}),
     });
-    // the theme renderer's page loads in a session of its own, the only one that serves the blobs of its running job
+    // the theme renderer's page loads in a session of its own, which serves only what its running job draws or decodes
     createThemeRenderSession(resourceRoot, {
-      themeRender: () => themeRenderHtml(FONT_FACE_CSS),
-      themeBlob: (sha256) => openThemeBlob(THEMES_DIR, sha256, (sha) => this.renderJobBlob(sha) ?? this.namedBlob(sha), (sha) => this.themeLibrary?.packedAsset(sha), this.themeNotices),
+      themeRender: () => themeRenderHtml(),
+      themeBlob: (sha256) => openThemeBlob(THEMES_DIR, sha256, (sha) => this.themeRenderer.currentJobBlob(sha), (sha) => this.themeLibrary?.packedAsset(sha), this.themeNotices),
+      themeCache: async (sha256, file) => (this.themeRenderer.currentJobStill(sha256) ? readThemeThumb(THEMES_DIR, sha256, file, this.themeNotices) : undefined),
       ...(E2E_HOOKS ? { themeBlobServed: (sha256: string, status: number, contentRange: string | null) => this.servedThemeBlobs.push({ sha256, status, contentRange }) } : {}),
     });
 
@@ -2492,6 +2562,8 @@ class DesktopApp {
       dispose: async () => {
         this.overlaySettings?.coreEnded(client);
         this.agentThemes.coreEnded();
+        // this core's cards end with it; a remote chat's draft capture is RelayedConsents' to end
+        clearCardThemes('local');
         await this.beforeCoreDispose();
         for (const subscription of subscriptions) subscription.dispose();
         const views = (this.views?.chats() ?? []).filter((view) => view.authority === 'local');
@@ -2629,10 +2701,12 @@ class DesktopApp {
     window.on('blur', () => {
       this.ciWindowFocused(false);
       this.motionChanged({ focused: false });
+      this.refreshNoticeHolds();
     });
     window.on('focus', () => {
       this.ciWindowFocused(true);
       this.motionChanged({ focused: true });
+      this.refreshNoticeHolds();
     });
     this.ciWindowFocused(window.isFocused());
     this.motionChanged({ focused: window.isFocused(), minimized: window.isMinimized() });
@@ -2651,6 +2725,7 @@ class DesktopApp {
         if (this.focusOnActivation === 'overlay') this.focusOnActivation = undefined;
         this.flash('overlay', false);
       },
+      modeChanged: () => this.refreshNoticeHolds(),
       // A badge drawn while the page could not draw is a dot.
       canRasterize: () => this.taskbar.reapply(),
       log: (line) => log(line),
@@ -2769,7 +2844,13 @@ class DesktopApp {
         onReveal: (chat) => this.showChat(chat, { focus: true }),
         onRendererGaveUp: (panel) => this.chatGaveUp(panel),
         onRendererGone: () => this.rendererCrashed('a chat page'),
-        onSavedSessionChange: (chat) => this.chatChanged(chat),
+        onSavedSessionChange: (chat) => {
+          // a remote chat's screenshot grant ends with its session, on this signal or the chats mirror's, whichever lands first
+          if (chat.authority !== 'local') this.relayedConsents.pageSession(chat, chat.savedSessionId);
+          this.chatChanged(chat);
+        },
+        onThemeApplied: (panel, revision) => this.themeAcks.acknowledged(panel.webContents, revision),
+        onDocumentGone: (panel) => this.themeAcks.forget(panel.webContents),
         onModalChange: (chat) => {
           if (this.views?.selected() === chat) this.shell?.stateChanged();
         },
@@ -2894,18 +2975,22 @@ class DesktopApp {
     window.on('show', () => {
       this.tray?.relocalize();
       this.publishVisibleAuthorities();
+      this.refreshNoticeHolds();
     });
     window.on('hide', () => {
       this.tray?.relocalize();
       this.publishVisibleAuthorities();
+      this.refreshNoticeHolds();
     });
     window.on('minimize', () => {
       this.publishVisibleAuthorities();
       this.motionChanged({ minimized: true });
+      this.refreshNoticeHolds();
     });
     window.on('restore', () => {
       this.publishVisibleAuthorities();
       this.motionChanged({ minimized: false });
+      this.refreshNoticeHolds();
     });
     onWindowActivated(window, () => {
       this.notificationCenter.windowFocused();
@@ -2932,6 +3017,7 @@ class DesktopApp {
     this.overlaySettings = overlaySettings;
     this.quickOpenPicker = quickOpenPicker;
     this.themeDock = themeDock;
+    this.refreshNoticeHolds();
     this.editorPane?.reopened();
     overlay.handleWhileOpen(OVERLAY_CHANNELS.projectLookImage, () => overlay.isOpen('projectLook'), () => this.projectLookImage(window));
     overlay.load();
@@ -5281,7 +5367,10 @@ class DesktopApp {
       window,
       preloadPath: path.join(__dirname, 'preload-overlay.js'),
       log: (line) => log(line),
-      onChange: () => this.shellStateChanged(),
+      onChange: () => {
+        this.refreshNoticeHolds();
+        this.shellStateChanged();
+      },
       onRestack: () => overlay.restack(),
       theme: () => currentTheme('root'),
       background: () => trustedBackground(),
@@ -5362,23 +5451,14 @@ class DesktopApp {
     });
   }
 
-  // What a theme main read, the transient preview or the open theme editor's imports declare a blob to be: the blobs any
-  // page of the app may load.
+  // What a theme main read, an open theme card, the transient preview or the open theme editor's imports declare a blob to
+  // be: the blobs any page of the app may load.
   private namedBlob(sha256: string): NamedBlob | undefined {
     const font = namedFontBlob(sha256);
     if (font) return { kind: 'font', mime: font.mime };
     const sprite = namedSpriteBlob(sha256);
     if (sprite) return { kind: 'sprite', mime: sprite.mime };
     return namedImageBlob(sha256) ?? this.themeDock?.namedBlob(sha256);
-  }
-
-  // What the theme renderer's running job declares a blob to be: a drawn theme's bundled font, or the file under analysis,
-  // which no check has passed yet. Served only in the renderer's own session.
-  private renderJobBlob(sha256: string): NamedBlob | undefined {
-    const font = this.agentThemes.namedFontBlob(sha256);
-    if (font) return { kind: 'font', mime: font.mime };
-    const analyzing = this.themeRenderer.currentImage();
-    return analyzing?.sha256 === sha256 ? { kind: analyzing.kind, mime: analyzing.mime } : undefined;
   }
 
   private async themeEditorSession(themeId: string): Promise<ThemeEditorRead | undefined> {
@@ -5558,7 +5638,11 @@ class DesktopApp {
       runUpdateAction: (action) => runUpdateAction(action, this.aboutDeps()),
       setContentBounds: (bounds) => views.setContentBounds(bounds),
       setThemeDockBounds: (bounds) => this.themeDock?.setBounds(bounds),
-      setPageMotion: ({ visible, reducedMotion }) => this.motionChanged({ visible, osReducedMotion: reducedMotion }),
+      setPageMotion: ({ visible, reducedMotion }) => {
+        this.shellPageVisible = visible;
+        this.motionChanged({ visible, osReducedMotion: reducedMotion });
+        this.refreshNoticeHolds();
+      },
       setTimeZone: (zone) => {
         if (setReportedTimeZone(zone)) log(`[themes] the theme schedule follows the time zone ${zone}`);
       },
@@ -5567,6 +5651,14 @@ class DesktopApp {
       keepThemeChanges: reportFailure(() => this.agentThemes.keep(), this.shellFailure('Keep Theme Change', 'Damocles could not keep the theme change: {0}')),
       revertThemeChanges: reportFailure(() => this.agentThemes.revert(), this.shellFailure('Revert Theme Change', 'Damocles could not revert the theme change: {0}')),
       stopShowingProposal: reportFailure(() => this.agentThemes.stopShowing(), this.shellFailure('Stop Showing', 'Damocles could not stop showing the proposal in the window: {0}')),
+      revokeScreenshotGrant: reportFailure((id: string) => this.agentThemes.revokeNotice(id), this.shellFailure('Revoke Screenshots', 'Damocles could not revoke the chat\'s screenshot permission: {0}')),
+      dismissScreenshotNotice: (id) => this.agentThemes.dismissNotice(id),
+      themeApplied: (revision) => {
+        if (this.window && !this.window.isDestroyed()) this.themeAcks.acknowledged(this.window.webContents, revision);
+      },
+      documentGone: () => {
+        if (this.window && !this.window.isDestroyed()) this.themeAcks.forget(this.window.webContents);
+      },
       rendererGone: () => this.rendererCrashed('the window'),
       // Main owns the sidebar's visibility and the grid's slots, visibility and maximized pane. The shell owns the sizes and
       // Search states while it runs, each part reporting only its own fields, so main stores them without publishing.
@@ -5735,7 +5827,13 @@ class DesktopApp {
       setFocusedPart: (part) => {
         this.shellFocusedPart = part;
         if (part !== 'keepChanges') this.keepFocus.left();
+        this.partFocused(part ?? undefined);
         this.refreshMenuState();
+      },
+      holdScreenshotNotice: (id, reason, held) => {
+        if (reason === 'focus' && !held) this.noticeFocus.left();
+        else if (reason === 'focus' && this.agentThemes.screenshotNotice()?.id === id) this.noticeFocus.entered(this.lastFocusedPart ?? 'chat');
+        this.agentThemes.holdNotice(id, reason, held);
       },
       terminal: {
         state: () => this.requireTerminals().state(),
@@ -6434,6 +6532,16 @@ class DesktopApp {
           hold: () => this.keepChangesTimers?.hold(KEEP_CHANGES_MS),
           expire: () => (this.keepChangesTimers?.fire() ?? 0) > 0,
         },
+        // a draft capture's wait for its pages' paint: after hold() it ends only when they painted or the capture stopped
+        themeAcks: {
+          hold: () => this.themeAckTimers?.hold(THEME_APPLIED_TIMEOUT_MS),
+        },
+        // the screenshot notice: after hold() none closes by the clock, whatever time it has left; raised() lists every
+        // notice raised since launch, a capture of a chat the notice already shows included
+        screenshotNotice: {
+          hold: () => this.screenshotNoticeTimers?.hold(0),
+          raised: () => [...this.raisedScreenshotNotices],
+        },
         // main's schedule clock reads `now` from this call on and runs on from there, and main's own THEME_TICK_MS tick
         // stops, so nothing evaluates the schedule again but an input change, a power event or themeTick(); null gives back
         // Date.now and the tick
@@ -7104,6 +7212,11 @@ class DesktopApp {
     const key = (corePanelId: string): string => chatKey(authority, corePanelId);
     return [
       client.onHeldMemoryChanged(() => this.remoteHosts?.hostsChanged()),
+      // a chat's screenshot grant ends with its session, on this signal or the page's saved state, whichever lands first
+      client.onChatSessionChanged((viewId, sessionId) => {
+        const page = this.views?.chats().find((chat) => chat.panelId === viewId && chat.authority === authority);
+        if (page) this.relayedConsents.pageSession(page, sessionId);
+      }),
       client.onFoldersChanged(() => {
         this.followSelectedChat();
         this.refreshScmRoots();
@@ -7402,6 +7515,15 @@ class DesktopApp {
       allowRelayedInstallFlash(this.themeRelayDeps(panel.authority), message, new AbortController().signal).catch(this.report('Allowing a theme wallpaper to flash'));
       return true;
     }
+    // this computer holds a remote chat's screenshot grant ("Desktop themes"), so the page's strip Revoke ends here, also while the host is away
+    if (panel.authority !== 'local' && (message as { type?: unknown }).type === 'revokeThemeScreenshotGrant') {
+      this.relayedConsents.revokePage(panel);
+      return true;
+    }
+    // a reloaded page hears its grant again; it goes on to core as well
+    if (panel.authority !== 'local' && (message as { type?: unknown }).type === 'ready' && this.relayedConsents.pageGranted(panel.panelId)) {
+      void panel.postMessage({ type: 'themeScreenshotGrant', granted: true });
+    }
     // a theme card's press counts only as main saw it here, and only while it goes on to the chat's core: none is held while the host is away
     if (panel.authority !== 'local') this.relayedConsents.pressed(panel, message, !panel.offline && this.authorities?.connection(panel.authority) !== undefined);
     if (this.holdWhileAway(panel, message)) return true;
@@ -7536,6 +7658,7 @@ class DesktopApp {
         const project = hostProjectOf({ authority, projects: () => this.remoteProjects(), os: () => this.knownAuthorityOs(authority) }, folder);
         return project ? { key: project.key, name: project.name } : undefined;
       },
+      validated: (theme) => this.agentThemes.validated(theme),
       core: {
         'themes.relay.read': (params, signal) => this.core.run('A theme tool for a remote chat', (core) => core.client.themeRelay('themes.relay.read', params, signal)),
         'themes.relay.uploadStart': (params, signal) => this.core.run('A theme tool for a remote chat', (core) => core.client.themeRelay('themes.relay.uploadStart', params, signal)),
@@ -7548,9 +7671,10 @@ class DesktopApp {
         'themes.relay.installCommit': (params, signal) => this.core.run('A theme tool for a remote chat', (core) => core.client.themeRelay('themes.relay.installCommit', params, signal)),
         'themes.relay.installCancel': (params, signal) => this.core.run('A theme tool for a remote chat', (core) => core.client.themeRelay('themes.relay.installCancel', params, signal)),
         'themes.relay.allowFlash': (params, signal) => this.core.run('A theme tool for a remote chat', (core) => core.client.themeRelay('themes.relay.allowFlash', params, signal)),
+        'themes.relay.draftTheme': (params, signal) => this.core.run('A theme tool for a remote chat', (core) => core.client.themeRelay('themes.relay.draftTheme', params, signal)),
       },
       screenshots: {
-        take: async (signal) => shots['themes.screenshotTake']({}, signal),
+        take: async (ask, signal) => this.agentThemes.take({ ...ask, origin: authority }, signal),
         read: async (shotId, signal) => (await shots['themes.screenshotRead']({ shotId }, signal)).png,
         drop: async (shotId) => {
           await shots['themes.screenshotDrop']({ shotId }, new AbortController().signal);
@@ -10609,6 +10733,7 @@ class DesktopApp {
     const kept = this.agentThemes.keepState();
     const keepChanges = kept && shownKeepChanges(kept, this.requireLocalization());
     const themeProposal = this.agentThemes.proposalStrip();
+    const screenshotNotice = this.agentThemes.screenshotNotice();
     const wallpapers = currentWallpapers();
     const characters = currentCharacters();
     return {
@@ -10628,6 +10753,8 @@ class DesktopApp {
       ...(safeStart !== undefined ? { safeStart: { reason: safeStart } } : {}),
       ...(keepChanges ? { keepChanges } : {}),
       ...(themeProposal ? { themeProposal } : {}),
+      ...(screenshotNotice ? { screenshotNotice } : {}),
+      themeRevision: currentThemeRevision(),
       ...(wallpapers ? { wallpapers: wallpapers.regions, wallpaperPaused: currentWallpaperMotion().paused } : {}),
       ...(characters ? { characters } : {}),
       shortcuts: shellShortcutLabels(),
@@ -10873,6 +11000,30 @@ class DesktopApp {
     if (next === 'keepChanges' && current !== 'keepChanges') this.keepFocus.entered(current ?? 'chat');
     if (current === 'toasts' && next !== 'toasts') this.leavePopupsFor(next);
     else this.focusOn(next);
+  }
+
+  // The desktop popups are left out: focus that returns there finds a popup that may be gone.
+  private partFocused(part: FocusPart | undefined): void {
+    if (part !== undefined && part !== 'toasts') this.lastFocusedPart = part;
+  }
+
+  // The screenshot notice names a chat only from this computer's records: its title from main's chat list for a panel showing
+  // that session, and a remote chat's host from the host store (docs/invariants.md "Desktop themes").
+  private screenshotNoticeNames(origin: string, session: string): ReturnType<AgentThemesDeps['noticeNames']> {
+    const panel = this.views?.chats().find((chat) => chat.authority === origin && this.sessionIdOf(chat) === session);
+    const chat = (panel ? this.titleOf(panel) : undefined) ?? '';
+    if (origin === 'local') return { chat };
+    const color = this.hostColor(origin);
+    return { chat, host: { name: this.hostName(origin), ...(color !== undefined ? { color } : {}) } };
+  }
+
+  // The screenshot notice's time stops while the user may not see it: the window unfocused, minimized, hidden or covered by
+  // another app, or an overlay popup or the theme editor dock open over the shell.
+  private refreshNoticeHolds(): void {
+    const window = this.window;
+    const seen = window !== undefined && !window.isDestroyed() && window.isFocused() && !window.isMinimized() && window.isVisible() && this.shellPageVisible;
+    this.agentThemes.setNoticeHold('window', !seen);
+    this.agentThemes.setNoticeHold('covered', this.overlay?.mode === 'full' || (this.themeDock?.isOpen() === true && !this.themeDock.peeking()));
   }
 
   // The banner's buttons go with its countdown: focus still on them returns to the part F6 took it from, else to the chat.

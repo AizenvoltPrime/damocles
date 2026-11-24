@@ -461,6 +461,7 @@ function declaration(ctx: Ctx, node: Declaration): Canonical | undefined {
     drop(ctx, node, reason ?? 'parseError');
     return undefined;
   }
+  // !important is kept: a theme rule needs it against inline styles, and it still loses to an earlier layer's `!important`, the protected layer's first
   return { text: `${property}:${written.text}${important ? '!important' : ''}`, signature: ['declaration', property, important, written.signature] };
 }
 

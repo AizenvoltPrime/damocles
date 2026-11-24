@@ -186,6 +186,8 @@ describe('the theme library\'s System colors entry', () => {
       .toEqual({ kind: 'pick', look: 'dark', theme: 'Σέλας', themeId: 'damocles-aurora', wasId: NIGHT.id });
     const mine = { kind: 'hold', theme: 'System colors', themeId: NIGHT.id, look: 'dark' } as const;
     expect(shownChange(mine, greek)).toEqual(mine);
+    expect(shownChange({ kind: 'projectPin', project: 'site', theme: 'Aurora', themeId: 'damocles-aurora', character: 'Pip' }, greek))
+      .toEqual({ kind: 'projectPin', project: 'site', theme: 'Σέλας', themeId: 'damocles-aurora', character: 'Pip' });
     expect(shownStoredName('damocles-system', 'System colors', greek)).toBe('Χρώματα συστήματος');
     expect(shownStoredName(undefined, 'System colors', greek)).toBe('System colors');
   });

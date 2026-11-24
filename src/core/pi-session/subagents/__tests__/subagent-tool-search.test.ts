@@ -102,6 +102,15 @@ describe('subagent ToolSearch registration (Slice 3 §3.3)', () => {
     expect(h.handlers.has('turn_end')).toBe(true);
   });
 
+  it("answers a group with the panel's reason frozen at spawn, and says a fix reaches only later agents", async () => {
+    const h = fakePi(['read', TOOL_TOOL_SEARCH]);
+    createSubagentExtensionFactory({ ...ctxWith(BROWSER_PI_TOOL_NAMES), deferredInert: new Map([['compass', { kind: 'off', setting: 'damocles.compass.enabled' }]]) })(h.pi);
+    const result = await call(h.registered.get(TOOL_TOOL_SEARCH)!, ['compass', 'web']);
+    const lines = result.content[0]!.text.split('\n');
+    expect(lines).toContain('Not available in this session: compass. The setting damocles.compass.enabled is off; the user turns it on in Settings. The change reaches only agents started after it.');
+    expect(lines).toContain("Not available in this session: web. This agent's tool list does not include it.");
+  });
+
   it('reports the agent\'s deferrable universe as its inventory total', async () => {
     // Renamed from "advertises …": this asserts the reported COUNT. What the agent is advertised —
     // the description string it actually reads — is a different guarantee, asserted below.
@@ -278,11 +287,11 @@ describe('the subagent activation port — additive, and bounded by the agent\'s
     for (const n of ['Edit', 'read', TOOL_TOOL_SEARCH]) expect(result.content[0]!.text, n).toContain(n);
   });
 
-  it('reports names outside the universe as unknown instead of silently dropping them', async () => {
+  it('reports names outside the universe instead of silently dropping them: a built-in group tool with its reason, any other name as unknown', async () => {
     const { tool } = register(BROWSER_PI_TOOL_NAMES, ['read', TOOL_TOOL_SEARCH]);
-    const result = await call(tool!, ['CompassSearch', 'BrowserOpen']);
-    expect(result.content[0]!.text).toContain('CompassSearch');
-    expect(result.content[0]!.text).toMatch(/Unknown entries/);
+    const result = await call(tool!, ['CompassSearch', 'nonsense', 'BrowserOpen']);
+    expect(result.content[0]!.text).toContain("Not available in this session: CompassSearch. This agent's tool list does not include it.");
+    expect(result.content[0]!.text).toContain('Unknown entries: nonsense');
     expect(result.details?.matches).toEqual(['BrowserOpen']);
   });
 

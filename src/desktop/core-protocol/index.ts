@@ -37,6 +37,7 @@ export {
   type ScmMirrorPatch,
   type ScmRepositoryEntry,
   type SettingsViewScope,
+  type ThemeCaptureTaken,
   type ThemeListing,
   type StateScope,
 } from './messages';

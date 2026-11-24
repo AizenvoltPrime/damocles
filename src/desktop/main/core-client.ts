@@ -47,6 +47,7 @@ export class CoreClient implements Disposable {
   private readonly adoptView: <T>(view: RelayView, attach: () => Promise<T>) => Promise<T>;
   private readonly chatsById = new Map<string, ChatEntry>();
   private readonly chatsByView = new Map<string, ChatEntry>();
+  private readonly sessionListeners = new Set<(viewId: string, sessionId: string | undefined) => void>();
   // a folder key open as a project may also be a working folder another project owns, so the two roles are kept apart
   private folders: { readonly defaultKey: string; readonly projects: ReadonlyMap<string, FolderTargetEntry>; readonly owned: ReadonlyMap<string, FolderTargetEntry> } | undefined;
   private readonly subscriptions: Disposable[];
@@ -88,6 +89,7 @@ export class CoreClient implements Disposable {
         const shown = chatEntryToShell(keys, entry);
         this.chatsById.set(panelId, shown);
         this.chatsByView.set(shown.viewId, shown);
+        if (previous && previous.sessionId !== shown.sessionId) for (const listener of [...this.sessionListeners]) listener(shown.viewId, shown.sessionId);
       }),
       endpoint.onMirror('folderTargets', ({ defaultKey, targets }) => {
         const shown = targets.map((target) => folderTargetToShell(keys, target));
@@ -125,6 +127,7 @@ export class CoreClient implements Disposable {
   dispose(): void {
     for (const subscription of this.subscriptions) subscription.dispose();
     this.foldersListeners.clear();
+    this.sessionListeners.clear();
     this.heldMemoryListeners.clear();
     this.forgeListeners.clear();
     this.relocationListeners.clear();
@@ -144,6 +147,12 @@ export class CoreClient implements Disposable {
 
   chats(): readonly ChatEntry[] {
     return [...this.chatsById.values()];
+  }
+
+  /** A registered chat's entry names another session than its entry before; a chat's first entry and its removal are not told. */
+  onChatSessionChanged(listener: (viewId: string, sessionId: string | undefined) => void): Disposable {
+    this.sessionListeners.add(listener);
+    return { dispose: () => { this.sessionListeners.delete(listener); } };
   }
 
   // ---- the folder targets mirror (WorkspaceFolderRegistry)
@@ -912,6 +921,11 @@ export class CoreClient implements Disposable {
   // main let go of a screenshot to hold newer ones, while its card may still show it
   themesScreenshotGone(shotId: string): Promise<void> {
     return this.request('themes.screenshotGone', { shotId });
+  }
+
+  // the screenshot notice's Revoke ended the grant of the chat with this session id
+  themesScreenshotGrantRevoke(chat: string): Promise<void> {
+    return this.request('themes.screenshotGrantRevoke', { chat });
   }
 
   // a daemon's core: this computer's window let go of a screenshot it took for a card that core raised

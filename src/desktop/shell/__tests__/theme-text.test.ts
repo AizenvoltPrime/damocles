@@ -20,6 +20,26 @@ describe('a history entry of a pick', () => {
   });
 });
 
+describe("a history entry of a project's pinned character", () => {
+  const plain = (value: string): string => value.replace(/[\u2066-\u2069]/g, '');
+  const pin = { kind: 'projectPin', project: 'api', theme: 'Night' } as const;
+
+  it('says the character pinned in the theme named, or kept in every theme', () => {
+    expect(plain(changeText(t, { ...pin, character: 'Pip' }))).toBe('Pip pinned to api in Night');
+    expect(plain(changeText(t, { ...pin, character: 'Pip', everyTheme: true }))).toBe('Pip kept for api in every theme');
+  });
+
+  it('says the pin cleared, in the theme named or in every theme, and names no character', () => {
+    expect(plain(changeText(t, { ...pin, character: null }))).toBe('api no longer pinned in Night');
+    expect(plain(changeText(t, { ...pin, character: null, everyTheme: true }))).toBe('api no longer keeps a character in every theme');
+  });
+
+  it('marks the project, the theme and the character as user text', () => {
+    const text = changeText(t, { ...pin, character: 'Pip' });
+    for (const name of ['Pip', 'api', 'Night']) expect(text).toContain(`\u2068${name}\u2069`);
+  });
+});
+
 describe('a theme card\'s origin line', () => {
   it('says System colors\' description in the UI\'s language, and another built-in\'s origin', async () => {
     expect(originText(t, systemTheme({}), true, undefined)).toBe("Follows this computer's colors");

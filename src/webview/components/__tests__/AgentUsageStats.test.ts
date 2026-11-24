@@ -17,7 +17,7 @@ function render(props: { usage: AgentUsageTotals; dollarBilled?: boolean; varian
   return mount(AgentUsageStats, { props: { variant: 'card', ...props }, global: { plugins: [i18n] } });
 }
 
-const part = (wrapper: ReturnType<typeof render>, name: string) => wrapper.find(`[data-part="${name}"]`);
+const part = (wrapper: ReturnType<typeof render>, name: string) => wrapper.find(`[data-usage="${name}"]`);
 
 beforeEach(() => setActivePinia(createPinia()));
 

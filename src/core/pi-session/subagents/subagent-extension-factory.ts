@@ -34,6 +34,7 @@ import { registerTurnEndImagePruning, registerAgentStartImageReconcile } from '.
 import { registerAbortSettledCallRecord, registerStoppedToolResultMarker, registerWindDownErrorRecord } from '../stopped-tool-result';
 import { registerKnownSecretMasking } from '../known-secret-masking';
 import { createToolSearchTool, mcpGroupsOf, type McpToolMenuEntry, type ToolActivationPort } from '../tools/tool-search-tool';
+import type { ToolExclusion, ToolGroupInertReason } from '../tools/inert-reason';
 
 /** The state a subagent's gate hook routes to: the parent handler + mode reader + the spawning tool id. */
 export interface SubagentGateContext extends GatePermissionContext {
@@ -48,6 +49,10 @@ export interface SubagentGateContext extends GatePermissionContext {
   stopSignal: AbortSignal;
   /** This agent's deferrable universe: the names ToolSearch may activate. Empty ⇒ nothing deferred. */
   deferrableToolNames: readonly string[];
+  /** The panel's built-in deferred groups with no eligible tool at spawn, with why. */
+  deferredInert?: ReadonlyMap<string, ToolGroupInertReason>;
+  /** The panel's built-in deferred tools excluded by name at spawn, with why. */
+  deferredExcluded?: ReadonlyMap<string, ToolExclusion>;
   /**
    * `mcp__*` name → menu facts, from the agent's frozen `NestedMcpToolset` snapshot. The ONLY blurb and
    * group source for the nested ToolSearch inventory (constraint §4.3: never read pi's registry for this).
@@ -80,6 +85,8 @@ function buildSubagentActivationPort(
   mcpDescriptions: ReadonlyMap<string, McpToolMenuEntry> | undefined,
   directMcpGroups: ReadonlySet<string> | undefined,
   design: () => boolean,
+  inert: ReadonlyMap<string, ToolGroupInertReason> | undefined,
+  excluded: ReadonlyMap<string, ToolExclusion> | undefined,
 ): ToolActivationPort {
   // Groups come from the snapshot's menu facts (the descriptor's server), the same rule as the panel's
   // `deferrableToolsSnapshot()`. Computed once per spawn: this agent's universe is frozen.
@@ -109,6 +116,8 @@ function buildSubagentActivationPort(
       mcpGroups,
       ...(directMcpGroups?.size ? { directMcpGroups } : {}),
       ...(design() ? { design: true } : {}),
+      inert: inert ?? new Map(),
+      ...(excluded?.size ? { excluded } : {}),
       nested: true,
     }),
     // Additive only: pi diffs the active set around `execute`, and any REMOVAL forces its safe fallback
@@ -217,7 +226,7 @@ export function createSubagentExtensionFactory(ctx: SubagentGateContext): Extens
     if (ctx.deferrableToolNames.length > 0) {
       try {
         pi.registerTool(
-          createToolSearchTool(buildSubagentActivationPort(pi, ctx.deferrableToolNames, ctx.mcpDescriptions, ctx.directMcpGroups, () => ctx.designScope?.() !== undefined)),
+          createToolSearchTool(buildSubagentActivationPort(pi, ctx.deferrableToolNames, ctx.mcpDescriptions, ctx.directMcpGroups, () => ctx.designScope?.() !== undefined, ctx.deferredInert, ctx.deferredExcluded)),
         );
       } catch (err) {
         log('[SubagentExtension] ToolSearch registration failed: %O', err);

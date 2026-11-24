@@ -8,6 +8,7 @@ import SlidingIndicator from '../SlidingIndicator.vue';
 import { useQuestionStore } from '@/stores/useQuestionStore';
 import type { QuestionOption } from '@shared/types/permissions';
 import { i18n } from '@/i18n';
+import { CHAT_VIEW_PROVIDE } from '@/__tests__/code-highlighter';
 
 const shiki = vi.hoisted(() => {
   const instance = {
@@ -31,7 +32,7 @@ function questionCard(options: QuestionOption[], multiSelect = false): VueWrappe
     toolUseId: 'q-1',
     questions: [{ question: 'Which layout?', header: 'Layout', multiSelect, options }],
   });
-  const wrapper = mount(QuestionPrompt, { props: { visible: true }, global: { plugins: [i18n] }, attachTo: document.body });
+  const wrapper = mount(QuestionPrompt, { props: { visible: true }, global: { provide: CHAT_VIEW_PROVIDE, plugins: [i18n] }, attachTo: document.body });
   mounted.push(wrapper);
   return wrapper;
 }
@@ -406,7 +407,7 @@ describe('a question with another one queued behind it', () => {
       answered.push(store.pendingQuestion?.toolUseId);
       store.clearQuestion();
     };
-    const wrapper = mount(QuestionPrompt, { props: { visible: true, onSubmit: settle, onCancel: settle }, global: { plugins: [i18n] }, attachTo: document.body });
+    const wrapper = mount(QuestionPrompt, { props: { visible: true, onSubmit: settle, onCancel: settle }, global: { provide: CHAT_VIEW_PROVIDE, plugins: [i18n] }, attachTo: document.body });
     mounted.push(wrapper);
     store.goToTab(1);
     await flushPromises();

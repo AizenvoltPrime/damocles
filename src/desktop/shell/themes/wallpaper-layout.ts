@@ -61,7 +61,8 @@ export function placeImage(fit: Fit, box: Rect, image: { readonly width: number;
   return { x: box.x + (box.width - width) / 2, y: box.y + (box.height - height) / 2, width, height };
 }
 
-const px = (n: number): string => `${Math.round(n * 100) / 100}px`;
+/** `n` CSS px, to a hundredth. */
+export const px = (n: number): string => `${Math.round(n * 100) / 100}px`;
 
 /** Whether a region plays its moving wallpaper now: never a still one, and never one its flash check blocks. */
 export const playsNow = (layout: Pick<RegionLayout, 'moving'>, paused: boolean): boolean => layout.moving !== undefined && layout.moving.playable && !paused;

@@ -40,7 +40,7 @@ describe('the miniature\'s characters', () => {
     const nodes = all(miniatureNodes(THEME, 'dark', 'm1'));
     const images = nodes.filter((n) => n.tag === 'image' && String(n.attrs['href']).includes(SHA(1)));
     expect(images).toHaveLength(1);
-    expect(images[0]!.attrs).toMatchObject({ width: 20, height: 10, preserveAspectRatio: 'none', style: 'image-rendering:pixelated' });
+    expect(images[0]!.attrs).toMatchObject({ width: 20, height: 10, preserveAspectRatio: 'none', style: 'image-rendering:pixelated', 'data-testid': 'mini-character' });
     expect(nodes.find((n) => n.tag === 'svg' && n.children?.includes(images[0]!))!.attrs).toMatchObject({ width: 8, height: 8, viewBox: '0 0 10 10' });
     // the letters of the two projects with characters are gone; the other two keep theirs
     const letters = nodes.filter((n) => n.tag === 'text' && /^[A-Z]$/.test(n.text ?? '')).map((n) => n.text);

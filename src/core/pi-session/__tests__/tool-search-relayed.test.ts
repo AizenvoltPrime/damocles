@@ -1,15 +1,17 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createToolSearchTool, type DeferrableSnapshot } from '../tools/tool-search-tool';
 import { setRelayedToolNames } from '../mcp/relayed-tool-names';
-import { installPlatform } from '../../platform-host';
+import { installPlatform, installedPlatform } from '../../platform-host';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { createFakeRemoteHost } from '../../../__mocks__/fake-remote-host';
 import { deferredToolNames, loadableToolNames } from '../tools/deferred-tools';
 import { FORGE_PI_TOOL_NAMES } from '../tools/forge-tool-specs';
-import { THEME_PI_TOOL_NAMES } from '../tools/theme-tool-specs';
 import { THEMES_FEATURE } from '../../../shared/themes/relay';
-import { forgeUnreachableReason, themeClosedReason, themeOffReason, themeOutdatedReason, userScopeReach } from '../../user-scope';
+import { forgeUnreachableReason, themeClosedReason, themeGroupUnavailable, themeOffReason, themeOutdatedReason, userScopeReach } from '../../user-scope';
 import { englishText } from '../../../shared/localized-text';
+import { TOOL_GROUP_SETTINGS } from '../../../shared/types/tools';
+import { deferredInertReasons, fullActiveToolNames, mcpDeferrableNames, type ToolStatusDeps } from '../tool-status';
+import { designRuleSet } from '../../design/rule-set';
 
 afterEach(() => {
   setRelayedToolNames('test', new Map());
@@ -25,7 +27,7 @@ function closedClient(server: string, piName: string): void {
 }
 
 async function toolSearch(entries: string[]): Promise<string> {
-  const snapshot: DeferrableSnapshot = { names: [], loaded: new Set(), mcpGroups: new Map() };
+  const snapshot: DeferrableSnapshot = { names: [], loaded: new Set(), mcpGroups: new Map(), inert: new Map() };
   const tool = createToolSearchTool({ deferrable: () => snapshot, activate: () => undefined });
   const result = (await tool.execute('tc-1', { tools: entries }, undefined, undefined, { sessionManager: { getSessionId: () => 'sess-1' } } as never)) as unknown as { content: Array<{ text: string }> };
   return result.content[0]!.text;
@@ -56,7 +58,7 @@ describe('ToolSearch for the forge group while the pinned device\'s GitHub and G
     const loaded = new Set<string>();
     // the session's loadable set, read at each call as pi-session's port reads it
     const tool = createToolSearchTool({
-      deferrable: () => ({ names: loadableToolNames(deferredToolNames(FORGE_PI_TOOL_NAMES, []), userScopeReach(), false), loaded, mcpGroups: new Map() }),
+      deferrable: () => ({ names: loadableToolNames(deferredToolNames(FORGE_PI_TOOL_NAMES, []), userScopeReach(), false), loaded, mcpGroups: new Map(), inert: new Map() }),
       activate: (_sessionId, names) => { for (const name of names) loaded.add(name); },
     });
     const search = async (): Promise<string> => ((await tool.execute('tc-1', { tools: ['forge'] }, undefined, undefined, { sessionManager: { getSessionId: () => 'sess-1' } } as never)) as unknown as { content: Array<{ text: string }> }).content[0]!.text;
@@ -86,20 +88,58 @@ describe('ToolSearch for the forge group while the pinned device\'s GitHub and G
 });
 
 describe('ToolSearch for the theme group of a chat on a remote host', () => {
-  const search = async (settings: Record<string, unknown>, arrange: (fake: ReturnType<typeof createFakeRemoteHost>) => void): Promise<string> => {
+  /** The deps a daemon's core reads for a main chat whose only deferred group is theme, as `PiSession.toolStatusDeps` reads them. */
+  const remoteThemeDeps = (): ToolStatusDeps => ({
+    webEnabled: false,
+    teamEnabled: false,
+    teamAvailable: false,
+    browserAvailable: false,
+    browserEnabled: false,
+    imageEnabled: false,
+    imageAvailability: { available: true },
+    forgeAvailable: false,
+    forgeEnabled: false,
+    forgeUnavailable: undefined,
+    themeAvailable: true,
+    themeEnabled: installedPlatform()!.settings.get<boolean>(TOOL_GROUP_SETTINGS.theme, true),
+    themeSwitchOnDevice: true,
+    themeUnavailable: themeGroupUnavailable(),
+    mcpEnabled: false,
+    mcpToolNames: [],
+    mcpDeferrableToolNames: [],
+    mcpResourceExposure: null,
+    disabled: new Set(),
+    designEnabled: false,
+    designRole: false,
+    ruleSet: designRuleSet({ designPreview: true }),
+  });
+
+  const search = async (settings: Record<string, unknown>, arrange: (fake: ReturnType<typeof createFakeRemoteHost>) => void, entries = ['theme']): Promise<string> => {
     const fake = createFakeRemoteHost();
     installPlatform({ ...createFakePlatform({ settings: { user: settings } }), remote: fake.remote });
     arrange(fake);
+    // composed as PiSession.deferrableToolsSnapshot composes the panel's
     const tool = createToolSearchTool({
-      deferrable: () => ({ names: loadableToolNames(deferredToolNames(THEME_PI_TOOL_NAMES, []), userScopeReach(), false), loaded: new Set(), mcpGroups: new Map() }),
+      deferrable: () => {
+        const deps = remoteThemeDeps();
+        const eligible = fullActiveToolNames(deps);
+        const loaded = new Set<string>();
+        return { names: loadableToolNames(deferredToolNames(eligible, mcpDeferrableNames(deps)), userScopeReach(), false), loaded, mcpGroups: new Map(), inert: deferredInertReasons(deps, eligible, loaded) };
+      },
       activate: () => undefined,
     });
-    return ((await tool.execute('tc-1', { tools: ['theme'] }, undefined, undefined, { sessionManager: { getSessionId: () => 'sess-1' } } as never)) as unknown as { content: Array<{ text: string }> }).content[0]!.text;
+    return ((await tool.execute('tc-1', { tools: entries }, undefined, undefined, { sessionManager: { getSessionId: () => 'sess-1' } } as never)) as unknown as { content: Array<{ text: string }> }).content[0]!.text;
   };
 
-  it('answers with why the app is out of reach: closed, too old, or its theme tools off', async () => {
+  it('answers with why the app is out of reach: closed or too old', async () => {
     expect(await search({}, (fake) => fake.set('clientAuth', 'client-a', undefined))).toContain(`Not available: theme. ${englishText(themeClosedReason())}`);
     expect(await search({}, (fake) => fake.set('clientFeatures', 'client-a', []))).toContain(`Not available: theme. ${englishText(themeOutdatedReason())}`);
-    expect(await search({ 'damocles.desktop.themes.agentTools': false }, (fake) => fake.set('clientFeatures', 'client-a', [THEMES_FEATURE]))).toContain(`Not available: theme. ${englishText(themeOffReason())}`);
+  });
+
+  it("names the device's switch, for the group and for a tool name alike, while the theme tools are off there", async () => {
+    const text = await search({ 'damocles.desktop.themes.agentTools': false }, (fake) => fake.set('clientFeatures', 'client-a', [THEMES_FEATURE]), ['theme', 'ThemeSet']);
+    expect(text).toContain(`Not available in this session: theme, ThemeSet. ${englishText(themeOffReason())}`);
+    expect(text).not.toContain('damocles.desktop.themes.agentTools');
+    expect(text).not.toContain('Unknown entries');
   });
 });

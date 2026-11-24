@@ -19,6 +19,7 @@ import { buildAgentPrompt } from '../prompts';
 import { createSubagentExtensionFactory, type SubagentGateContext } from '../subagent-extension-factory';
 import { buildNestedMcpToolset, type NestedMcpToolset } from '../../tools/mcp-tools';
 import { fullActiveToolNames } from '../../tool-status';
+import type { ToolGroupInertReason } from '../../tools/inert-reason';
 import { TOOL_TOOL_SEARCH, TEAM_CREATE_TOOL } from '../../../../shared/tool-names';
 import type { McpToolDescriptor } from '../../mcp/types';
 import type { McpClientManager } from '../../mcp/mcp-client-manager';
@@ -1800,6 +1801,22 @@ describe('AgentManager → nested MCP: names, definitions and execution (criteri
     expect(ctx.isMcpReadOnly!('mcp__git__status')).toBe(true);   // annotated
     expect(ctx.isMcpReadOnly!('mcp__git__commit')).toBe(false);  // not annotated
     expect(ctx.mcpDescriptions?.get('mcp__git__status')).toMatchObject({ description: 'desc of mcp__git__status', group: 'git' });
+    mgr.dispose();
+  });
+
+  it("the gate context carries the panel's reasons for the groups ToolSearch cannot load, read at each spawn", async () => {
+    vi.mocked(createSubagentExtensionFactory).mockClear();
+    const panel = mcpPanel([GIT_STATUS]);
+    const { engine, gates, captured } = makeMcpEngine({ panel, deps: toolStatusDeps() });
+    const reasons: ReadonlyMap<string, ToolGroupInertReason>[] = [new Map([['web', { kind: 'off', setting: 'damocles.pi.webSearch.enabled' }]]), new Map([['theme', { kind: 'host' }]])];
+    let reads = 0;
+    engine.deferredInert = () => reasons[reads++]!;
+    const mgr = new AgentManager(engine, 2);
+
+    await spawnAndCapture(mgr, captured, gates, 'general-purpose');
+    expect(vi.mocked(createSubagentExtensionFactory).mock.calls.at(-1)![0].deferredInert).toBe(reasons[0]);
+    await spawnAndCapture(mgr, captured, gates, 'general-purpose');
+    expect(vi.mocked(createSubagentExtensionFactory).mock.calls.at(-1)![0].deferredInert).toBe(reasons[1]);
     mgr.dispose();
   });
 });

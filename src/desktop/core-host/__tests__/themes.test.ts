@@ -152,6 +152,71 @@ describe('the theme list over the core protocol', () => {
   });
 });
 
+describe("the agent's theme host over the core protocol", () => {
+  const signal = (): AbortSignal => new AbortController().signal;
+
+  it('asks main to render with only the parts of the ask that are given', async () => {
+    const { main, host, violations } = start();
+    const asked: unknown[] = [];
+    main.serve('themes.render', (params) => {
+      asked.push(params);
+      return { pngs: [] };
+    });
+    const theme = themeJson(ID) as never;
+    await host.agent.host.render(theme, { view: 'characters', look: 'light', characters: [0, 2] }, signal());
+    await host.agent.host.render(theme, { view: 'window' }, signal());
+    expect(asked).toEqual([{ theme, view: 'characters', look: 'light', characters: [0, 2] }, { theme, view: 'window' }]);
+    expect(violations).toEqual([]);
+  });
+
+  it('asks main for a screenshot with the chat, and the theme and grant only when given', async () => {
+    const { main, host, violations } = start();
+    const asked: unknown[] = [];
+    main.serve('themes.screenshotTake', (params) => {
+      asked.push(params);
+      return { kind: 'refused', reason: 'noWindow' } as const;
+    });
+    const theme = themeJson(ID) as never;
+    const chat = { id: 'chat-a' };
+    // main names the chat from its own records, so a title the caller holds does not cross
+    expect(await host.agent.host.screenshotTake({ chat: { ...chat, title: 'Colors' } as typeof chat, theme, granted: true }, signal())).toEqual({ kind: 'refused', reason: 'noWindow' });
+    await host.agent.host.screenshotTake({ chat }, signal());
+    expect(asked).toEqual([{ chat, theme, granted: true }, { chat }]);
+    expect(violations).toEqual([]);
+  });
+
+  it("reads a relayed chat's own draft by the chat main names, and no other chat's", async () => {
+    const { main, host, violations } = start();
+    const draft = await host.service.drafts.put({ id: host.service.drafts.newId(), owner: { authority: 'ssh+prod-1', sessionId: 'chat-a', toolCallId: 'call-1' }, createdAt: 1, baseThemeId: null, baseHash: null, theme: themeJson(ID, 'Drafted') as never }, null);
+    const read = (chat: string) => main.request('themes.relay.read', { authority: 'ssh+prod-1', request: { about: 'theme', draft: draft.id }, chat });
+    const own = await read('chat-a');
+    expect(own.isError).toBeUndefined();
+    expect(JSON.stringify(own.content)).toContain('Drafted');
+    expect(await read('chat-b')).toMatchObject({ isError: true, content: [{ type: 'text', text: expect.stringContaining(`This chat has no theme draft ${draft.id}.`) }] });
+    expect(violations).toEqual([]);
+  });
+
+  it("tells every listener of a revoked grant, a shown theme's end and a screenshot gone, one that throws included", async () => {
+    const { main, host, logs, violations } = start();
+    const heard: string[] = [];
+    const port = host.agent.host;
+    port.onScreenshotGrantRevoked(() => { throw new Error('grant listener failed'); });
+    port.onScreenshotGrantRevoked((chat) => heard.push(`revoked:${chat}`));
+    port.onShowEnded(() => { throw new Error('show listener failed'); });
+    port.onShowEnded((promptId, reason) => heard.push(`ended:${promptId}:${reason}`));
+    port.onScreenshotGone(() => { throw new Error('gone listener failed'); });
+    port.onScreenshotGone((shotId) => heard.push(`gone:${shotId}`));
+    const revoked = port.onScreenshotGrantRevoked((chat) => heard.push(`disposed:${chat}`));
+    revoked.dispose();
+    await main.request('themes.screenshotGrantRevoke', { chat: 'chat-a' });
+    await main.request('themes.showEnded', { promptId: 'prompt-1', reason: 'stopped' });
+    await main.request('themes.screenshotGone', { shotId: 'shot-1' });
+    expect(heard).toEqual(['revoked:chat-a', 'ended:prompt-1:stopped', 'gone:shot-1']);
+    for (const failed of ['grant listener failed', 'show listener failed', 'gone listener failed']) expect(logs.some((line) => line.includes(failed))).toBe(true);
+    expect(violations).toEqual([]);
+  });
+});
+
 describe('System colors over the core protocol', () => {
   const looksOf = (accent?: string): SystemLooks => systemTheme(accent === undefined ? {} : { accent }).looks;
   const listed = async (main: MainEndpoint) => (await main.request('themes.list', {})).themes.find((entry) => entry.id === 'damocles-system');
@@ -361,7 +426,7 @@ describe('the theme service at core start', () => {
   // the dev build and the installed app share the themes folder
   it('leaves a countdown another running Damocles counts, tells main so once, and reverts it once that one is gone', async () => {
     const other = createThemeService({ root: home, settings: fileSettings(file('settings.json')), owner: OTHER_APP });
-    const draft: ThemeDraft = { id: other.drafts.newId(), owner: { authority: 'local', sessionId: 'chat-a', toolCallId: 'call-1' }, createdAt: 1, baseThemeId: null, baseHash: null, theme: themeJson(ID) as never };
+    const draft: ThemeDraft = await other.drafts.put({ id: other.drafts.newId(), owner: { authority: 'local', sessionId: 'chat-a', toolCallId: 'call-1' }, createdAt: 1, baseThemeId: null, baseHash: null, theme: themeJson(ID) as never }, null);
     const applied = await other.applyDraft({ draft, pick: ['dark'], actor: { kind: 'agent', chatId: 'chat-a', title: '' }, onTheFly: true, currentArrangement: async () => undefined });
     if (applied.kind !== 'applied') throw new Error('not applied');
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });

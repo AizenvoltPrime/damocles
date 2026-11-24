@@ -1,10 +1,11 @@
 /* Layers rank by first appearance, so a theme's custom CSS (damocles-user) can never come before the protected layer, whose
    !important declarations beat every later layer. Only @layer statements may precede @import, so the protected rules follow
-   the imports. The build checks the order (scripts/protected-layer.ts); why: docs/invariants.md "Theme CSS and trusted regions". */
-@layer damocles-protected, theme, base, components, utilities, damocles-user;
+   the imports. The build checks the order and refuses any rule outside a layer (scripts/protected-layer.ts); why: docs/invariants.md
+   "Theme CSS and trusted regions". */
+@layer damocles-protected, theme, base, components, utilities, vendor, app, damocles-user;
 @import "tailwindcss";
-@import "./styles/tokens.css";
-@import "./styles/motion.css";
+@import "./styles/tokens.css" layer(app);
+@import "./styles/motion.css" layer(app);
 
 /* Must match the scope roots and marks the sanitizer's @scope names (src/shared/themes/css-sanitizer.ts). Trusted roots and
    marks take --d-font and --d-mono as Damocles' own stacks from main's trusted CSS; VS Code keeps its own font there. */
@@ -150,7 +151,7 @@
   }
 }
 
-/* Monaco's stylesheets size their widgets for the browser's content-box (the find widget's 16px + 3px padding buttons are 22px in VS Code), so preflight's border-box is undone inside it; Monaco's own unlayered border-box rules still win. */
+/* Monaco's stylesheets size their widgets for the browser's content-box (the find widget's 16px + 3px padding buttons are 22px in VS Code), so preflight's border-box is undone inside it; Monaco's own border-box rules, in the vendor layer, still win. */
 @layer base {
   .monaco-editor *,
   .monaco-editor ::before,
@@ -425,33 +426,35 @@
   }
 }
 
-html,
-body {
-  margin: 0;
-  padding: 0;
-  height: 100%;
-  width: 100%;
-  /* the chat pane's token: a see-through chat view shows the shell's wallpaper through it */
-  background-color: var(--d-pane-chat);
-  color: var(--d-text);
-  overflow: hidden;
-}
+@layer app {
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    width: 100%;
+    /* the chat pane's token: a see-through chat view shows the shell's wallpaper through it */
+    background-color: var(--d-pane-chat);
+    color: var(--d-text);
+    overflow: hidden;
+  }
 
-#app {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
-}
+  #app {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
 
-.message-container {
-  scrollbar-width: none;
-  overflow-anchor: none;
-}
+  .message-container {
+    scrollbar-width: none;
+    overflow-anchor: none;
+  }
 
-.message-container::-webkit-scrollbar {
-  display: none;
+  .message-container::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 /* Layered so a utility such as [scrollbar-width:none] can override it. */
@@ -543,189 +546,201 @@ body {
   }
 }
 
-a {
-  color: var(--d-accent);
-  text-decoration: underline;
-}
-
-a:hover {
-  color: var(--d-text);
-}
-
-[data-sonner-toaster] {
-  position: absolute !important;
-  top: 0.75rem !important;
-  right: 0.75rem !important;
-  z-index: 100;
-}
-
-.toast-base {
-  background: var(--popover) !important;
-}
-
-.toast-success {
-  --toast-accent: var(--color-success);
-  border-color: color-mix(in srgb, var(--toast-accent) 30%, transparent) !important;
-  box-shadow:
-    0 4px 24px -4px color-mix(in srgb, var(--background) 40%, black),
-    0 0 20px -8px color-mix(in srgb, var(--toast-accent) 40%, transparent) !important;
-}
-
-.toast-error {
-  --toast-accent: var(--color-error);
-  border-color: color-mix(in srgb, var(--toast-accent) 30%, transparent) !important;
-  box-shadow:
-    0 4px 24px -4px color-mix(in srgb, var(--background) 40%, black),
-    0 0 20px -8px color-mix(in srgb, var(--toast-accent) 40%, transparent) !important;
-}
-
-.toast-warning {
-  --toast-accent: var(--color-warning);
-  border-color: color-mix(in srgb, var(--toast-accent) 30%, transparent) !important;
-  box-shadow:
-    0 4px 24px -4px color-mix(in srgb, var(--background) 40%, black),
-    0 0 20px -8px color-mix(in srgb, var(--toast-accent) 40%, transparent) !important;
-}
-
-.toast-info {
-  --toast-accent: var(--color-info);
-  border-color: color-mix(in srgb, var(--toast-accent) 30%, transparent) !important;
-  box-shadow:
-    0 4px 24px -4px color-mix(in srgb, var(--background) 40%, black),
-    0 0 20px -8px color-mix(in srgb, var(--toast-accent) 40%, transparent) !important;
-}
-
-[data-sonner-toast] [data-close-button] {
-  position: absolute !important;
-  top: 0.5rem !important;
-  right: 0.5rem !important;
-  background: color-mix(in srgb, var(--foreground) 5%, transparent) !important;
-  border: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent) !important;
-  border-radius: var(--radius-6) !important;
-  width: 1.5rem !important;
-  height: 1.5rem !important;
-  color: color-mix(in srgb, var(--foreground) 50%, transparent) !important;
-  opacity: 0;
-  transition:
-    opacity,
-    background-color,
-    color 0.15s ease !important;
-}
-
-[data-sonner-toast]:hover [data-close-button] {
-  opacity: 1;
-}
-
-[data-sonner-toast] [data-close-button]:hover {
-  background: color-mix(in srgb, var(--foreground) 10%, transparent) !important;
-  color: color-mix(in srgb, var(--foreground) 90%, transparent) !important;
-}
-
-.toast-icon {
-  @apply shrink-0 flex items-center justify-center size-6 rounded-full;
-}
-
-.toast-icon-success {
-  background: color-mix(in srgb, var(--color-success) 20%, transparent);
-  color: var(--d-success);
-}
-
-.toast-icon-error {
-  background: color-mix(in srgb, var(--color-error) 20%, transparent);
-  color: var(--d-danger);
-}
-
-.toast-icon-warning {
-  background: color-mix(in srgb, var(--color-warning) 20%, transparent);
-  color: var(--d-warning);
-}
-
-.toast-icon-info {
-  background: color-mix(in srgb, var(--color-info) 20%, transparent);
-  color: var(--d-info);
-}
-
-.toast-icon-loading {
-  background: color-mix(in srgb, var(--muted-foreground) 20%, transparent);
-  color: var(--muted-foreground);
-}
-
-/* A strip scrolled under VS Code's overlay slider (useOverflowStrip.ts, OverflowSlider.vue): its native scrollbar never takes room. */
-.d-overflow-strip {
-  scrollbar-width: none;
-}
-
-/*
- * VS Code's scrollbar fade (base/browser/ui/scrollbar/media/scrollbars.css): in over 100 ms, out over 800 ms. The slider takes
- * scrollbarSlider.background, hoverBackground and activeBackground at VS Code's alphas (40%, 70%, 40%) of --d-muted and --d-text.
- */
-.d-overflow-scrollbar {
-  opacity: 0;
-  transition: opacity 0.8s linear;
-}
-
-.d-overflow-scrollbar-shown {
-  opacity: 1;
-  transition: opacity 0.1s linear;
-}
-
-.d-overflow-slider {
-  background-color: color-mix(in srgb, var(--d-muted) 40%, transparent);
-}
-
-/* A hidden slider takes no clicks: the content under the strip's bottom edge keeps them. */
-.d-overflow-scrollbar:not(.d-overflow-scrollbar-shown) .d-overflow-slider {
-  pointer-events: none;
-}
-
-.d-overflow-slider:hover {
-  background-color: color-mix(in srgb, var(--d-muted) 70%, transparent);
-}
-
-.d-overflow-slider[data-active] {
-  background-color: color-mix(in srgb, var(--d-text) 40%, transparent);
-}
-
-.d-overflow-fade-start {
-  mask-image: linear-gradient(90deg, transparent, #000 1.5rem);
-}
-
-.d-overflow-fade-end {
-  mask-image: linear-gradient(90deg, #000 calc(100% - 1.5rem), transparent);
-}
-
-.d-overflow-fade-start.d-overflow-fade-end {
-  mask-image: linear-gradient(90deg, transparent, #000 1.5rem, #000 calc(100% - 1.5rem), transparent);
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .bubble-fade-transitions {
-    transition: border-color 700ms ease-out, box-shadow 200ms ease-out, background-color 200ms ease-out;
+@layer app {
+  /* Monaco's widgets (under one of these roots) keep their own link colors, which this layer would otherwise beat. */
+  a:where(:not(:is(.monaco-editor, .monaco-diff-editor, .monaco-component) a)) {
+    color: var(--d-accent);
+    text-decoration: underline;
   }
-  .bubble-fade-transitions.is-highlighted {
-    transition: border-color 200ms ease-out, box-shadow 200ms ease-out, background-color 200ms ease-out;
-  }
-}
 
-/* data-reduced-motion carries the host's setting: damocles.desktop.reduceMotion on desktop, workbench.reduceMotion in VS Code (utils/reducedMotion.ts). */
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  a:where(:not(:is(.monaco-editor, .monaco-diff-editor, .monaco-component) a)):hover {
+    color: var(--d-text);
+  }
+
+  [data-sonner-toaster] {
+    position: absolute !important;
+    top: 0.75rem !important;
+    right: 0.75rem !important;
+    z-index: 100;
+  }
+
+  .toast-base {
+    background: var(--popover) !important;
+  }
+
+  .toast-success {
+    --toast-accent: var(--color-success);
+    border-color: color-mix(in srgb, var(--toast-accent) 30%, transparent) !important;
+    box-shadow:
+      0 4px 24px -4px color-mix(in srgb, var(--background) 40%, black),
+      0 0 20px -8px color-mix(in srgb, var(--toast-accent) 40%, transparent) !important;
+  }
+
+  .toast-error {
+    --toast-accent: var(--color-error);
+    border-color: color-mix(in srgb, var(--toast-accent) 30%, transparent) !important;
+    box-shadow:
+      0 4px 24px -4px color-mix(in srgb, var(--background) 40%, black),
+      0 0 20px -8px color-mix(in srgb, var(--toast-accent) 40%, transparent) !important;
+  }
+
+  .toast-warning {
+    --toast-accent: var(--color-warning);
+    border-color: color-mix(in srgb, var(--toast-accent) 30%, transparent) !important;
+    box-shadow:
+      0 4px 24px -4px color-mix(in srgb, var(--background) 40%, black),
+      0 0 20px -8px color-mix(in srgb, var(--toast-accent) 40%, transparent) !important;
+  }
+
+  .toast-info {
+    --toast-accent: var(--color-info);
+    border-color: color-mix(in srgb, var(--toast-accent) 30%, transparent) !important;
+    box-shadow:
+      0 4px 24px -4px color-mix(in srgb, var(--background) 40%, black),
+      0 0 20px -8px color-mix(in srgb, var(--toast-accent) 40%, transparent) !important;
+  }
+
+  [data-sonner-toast] [data-close-button] {
+    position: absolute !important;
+    top: 0.5rem !important;
+    right: 0.5rem !important;
+    background: color-mix(in srgb, var(--foreground) 5%, transparent) !important;
+    border: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent) !important;
+    border-radius: var(--radius-6) !important;
+    width: 1.5rem !important;
+    height: 1.5rem !important;
+    color: color-mix(in srgb, var(--foreground) 50%, transparent) !important;
+    opacity: 0;
+    transition:
+      opacity,
+      background-color,
+      color 0.15s ease !important;
+  }
+
+  [data-sonner-toast]:hover [data-close-button] {
+    opacity: 1;
+  }
+
+  [data-sonner-toast] [data-close-button]:hover {
+    background: color-mix(in srgb, var(--foreground) 10%, transparent) !important;
+    color: color-mix(in srgb, var(--foreground) 90%, transparent) !important;
+  }
+
+  .toast-icon {
+    @apply shrink-0 flex items-center justify-center size-6 rounded-full;
+  }
+
+  .toast-icon-success {
+    background: color-mix(in srgb, var(--color-success) 20%, transparent);
+    color: var(--d-success);
+  }
+
+  .toast-icon-error {
+    background: color-mix(in srgb, var(--color-error) 20%, transparent);
+    color: var(--d-danger);
+  }
+
+  .toast-icon-warning {
+    background: color-mix(in srgb, var(--color-warning) 20%, transparent);
+    color: var(--d-warning);
+  }
+
+  .toast-icon-info {
+    background: color-mix(in srgb, var(--color-info) 20%, transparent);
+    color: var(--d-info);
+  }
+
+  .toast-icon-loading {
+    background: color-mix(in srgb, var(--muted-foreground) 20%, transparent);
+    color: var(--muted-foreground);
+  }
+
+  /* A strip scrolled under VS Code's overlay slider (useOverflowStrip.ts, OverflowSlider.vue): its native scrollbar never takes room. */
+  .d-overflow-strip {
+    scrollbar-width: none;
+  }
+
+  /*
+   * VS Code's scrollbar fade (base/browser/ui/scrollbar/media/scrollbars.css): in over 100 ms, out over 800 ms. The slider takes
+   * scrollbarSlider.background, hoverBackground and activeBackground at VS Code's alphas (40%, 70%, 40%) of --d-muted and --d-text.
+   */
+  .d-overflow-scrollbar {
+    opacity: 0;
+    transition: opacity 0.8s linear;
+  }
+
+  .d-overflow-scrollbar-shown {
+    opacity: 1;
+    transition: opacity 0.1s linear;
+  }
+
+  .d-overflow-slider {
+    background-color: color-mix(in srgb, var(--d-muted) 40%, transparent);
+  }
+
+  /* A hidden slider takes no clicks: the content under the strip's bottom edge keeps them. */
+  .d-overflow-scrollbar:not(.d-overflow-scrollbar-shown) .d-overflow-slider {
+    pointer-events: none;
+  }
+
+  .d-overflow-slider:hover {
+    background-color: color-mix(in srgb, var(--d-muted) 70%, transparent);
+  }
+
+  .d-overflow-slider[data-active] {
+    background-color: color-mix(in srgb, var(--d-text) 40%, transparent);
+  }
+
+  .d-overflow-fade-start {
+    mask-image: linear-gradient(90deg, transparent, #000 1.5rem);
+  }
+
+  .d-overflow-fade-end {
+    mask-image: linear-gradient(90deg, #000 calc(100% - 1.5rem), transparent);
+  }
+
+  .d-overflow-fade-start.d-overflow-fade-end {
+    mask-image: linear-gradient(90deg, transparent, #000 1.5rem, #000 calc(100% - 1.5rem), transparent);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .bubble-fade-transitions {
+      transition: border-color 700ms ease-out, box-shadow 200ms ease-out, background-color 200ms ease-out;
+    }
+    .bubble-fade-transitions.is-highlighted {
+      transition: border-color 200ms ease-out, box-shadow 200ms ease-out, background-color 200ms ease-out;
+    }
+  }
+
+  /* data-reduced-motion carries the host's setting: damocles.desktop.reduceMotion on desktop, workbench.reduceMotion in VS Code (utils/reducedMotion.ts).
+     Important in this layer, so they also beat a theme's important transition (docs/themes.md "Custom CSS"). */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-delay: 0s !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  [data-reduced-motion] *,
+  [data-reduced-motion] *::before,
+  [data-reduced-motion] *::after {
     animation-duration: 0.001ms !important;
     animation-delay: 0s !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
-}
 
-[data-reduced-motion] *,
-[data-reduced-motion] *::before,
-[data-reduced-motion] *::after {
-  animation-duration: 0.001ms !important;
-  animation-delay: 0s !important;
-  animation-iteration-count: 1 !important;
-  transition-duration: 0.001ms !important;
-  scroll-behavior: auto !important;
+  /* The desktop preload sets data-theme-switching for the one style flush of a theme change (preload/apply-theme.ts). */
+  [data-theme-switching],
+  [data-theme-switching] *,
+  [data-theme-switching] *::before,
+  [data-theme-switching] *::after {
+    transition: none !important;
+  }
 }

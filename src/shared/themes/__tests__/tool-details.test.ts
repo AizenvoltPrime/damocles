@@ -30,12 +30,14 @@ describe('a theme tool result\'s details, read back', () => {
 
   it('keeps only the fields that have the shape the card reads', () => {
     expect(parseThemeToolDetails({
-      tool: 'ThemeRead', looks: ['light', 'sepia', 'dark'], note: 7, screenshot: 'maybe', useArrangement: 'yes', droppedCss: 'all', droppedCssMore: -1,
+      tool: 'ThemeRead', looks: ['light', 'sepia', 'dark'], note: 7, screenshot: 'maybe', shotRefused: 'broken', useArrangement: 'yes', droppedCss: 'all', droppedCssMore: -1,
       undone: { kind: 'conjured' }, laterChange: { change: { kind: 'reset' }, actor: { kind: 'nobody' }, at: 1 },
     })).toEqual({ tool: 'ThemeRead', looks: ['dark', 'light'] });
     const later = { change: { kind: 'save', theme: 'Bleach' }, actor: { kind: 'user' }, at: 5 };
     expect(parseThemeToolDetails({ tool: 'ThemeSet', undone: { kind: 'reset' }, laterChange: later, screenshot: 'sent', droppedCssMore: 3, useArrangement: true }))
       .toEqual({ tool: 'ThemeSet', undone: { kind: 'reset' }, laterChange: later, screenshot: 'sent', droppedCssMore: 3, useArrangement: true });
+    expect(parseThemeToolDetails({ tool: 'ThemeRead', shotRefused: 'windowHidden' })).toEqual({ tool: 'ThemeRead', shotRefused: 'windowHidden' });
+    expect(parseThemeToolDetails({ tool: 'ThemeRead', shotRefused: 'covered' })).toEqual({ tool: 'ThemeRead', shotRefused: 'covered' });
   });
 });
 

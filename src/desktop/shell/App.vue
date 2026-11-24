@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, shallowRef, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { DamoclesShellApi, FileRef, ShellFocusPart, ShellState } from '../preload/shell-channels';
+import type { DamoclesShellApi, FileRef, ScreenshotNoticeHold, ShellFocusPart, ShellState } from '../preload/shell-channels';
 import { applyShellLocale } from './i18n';
-import { setPageCharacters } from './characters';
+import { createPageCharacters, PAGE_CHARACTERS } from './characters';
 import { watchContentBounds } from './content-bounds';
 import TitleBar from './components/TitleBar.vue';
 import Sidebar from './components/Sidebar.vue';
@@ -15,6 +15,7 @@ import ChatPlaceholder from './components/ChatPlaceholder.vue';
 import SafeStartBanner from './components/SafeStartBanner.vue';
 import KeepChangesBanner from './components/KeepChangesBanner.vue';
 import ShowInWindowStrip from './components/ShowInWindowStrip.vue';
+import ScreenshotNotice from './components/ScreenshotNotice.vue';
 import WallpaperLayer from './themes/WallpaperLayer.vue';
 import { watchPageMotion } from './themes/page-motion';
 import { watchTimeZone } from './themes/time-zone';
@@ -34,11 +35,14 @@ const props = defineProps<{ api: DamoclesShellApi }>();
 const { t } = useI18n();
 
 const state = shallowRef<ShellState | null>(null);
+const pageCharacters = createPageCharacters();
+provide(PAGE_CHARACTERS, pageCharacters.characters);
 const titleBar = ref<InstanceType<typeof TitleBar> | null>(null);
 const sidebar = ref<InstanceType<typeof Sidebar> | null>(null);
 const grid = ref<InstanceType<typeof LayoutGrid> | null>(null);
 const sidebarSliding = ref(false);
 const keepBanner = ref<InstanceType<typeof KeepChangesBanner> | null>(null);
+const wallpaperLayer = ref<InstanceType<typeof WallpaperLayer> | null>(null);
 
 function keepBannerFocusOut(event: FocusEvent): void {
   const root = keepBanner.value?.$el as HTMLElement | undefined;
@@ -75,7 +79,7 @@ let sidebarWaiters: Array<() => void> = [];
 
 function applyState(next: ShellState): void {
   state.value = next;
-  setPageCharacters({ shown: next.characters, selected: next.selected.projectKey });
+  pageCharacters.set({ shown: next.characters, selected: next.selected.projectKey });
   void applyShellLocale(next.locale);
   if (!next.layout.sidebarVisible) return;
   for (const resolve of sidebarWaiters.splice(0)) resolve();
@@ -188,6 +192,37 @@ async function revealInFiles(file: FileRef): Promise<void> {
   await sidebar.value?.revealFile(file);
 }
 
+// Main captures the window for a screenshot only once the page painted the theme revision it published: the state and the
+// theme applied, the fonts loaded, the wallpapers drawn and the characters decoded, then two frames.
+async function acknowledgeTheme(revision: number): Promise<void> {
+  await nextTick();
+  await document.fonts.ready;
+  await wallpaperLayer.value?.whenDrawn();
+  // a character that does not decode shows its project's letter instead, which is what the window then paints
+  await Promise.all([...document.querySelectorAll<HTMLImageElement>('[data-avatar="character"] img')].map((image) => image.decode().catch((err: unknown) => {
+    console.warn(`[damocles] a project character did not decode: ${err instanceof Error ? err.message : String(err)}`);
+  })));
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  if (state.value?.themeRevision !== revision || document.documentElement.dataset['themeRevision'] !== String(revision)) return;
+  props.api.reportThemeApplied(revision);
+}
+// The state and the theme message of one revision come on separate channels, in either order: whichever lands second acks.
+const appliedThemeRevision = ref(themeRevisionOfPage());
+stops.push(props.api.onThemeRevision((revision) => {
+  appliedThemeRevision.value = revision;
+}));
+function themeRevisionOfPage(): number | undefined {
+  const revision = Number(document.documentElement.dataset['themeRevision']);
+  return Number.isInteger(revision) ? revision : undefined;
+}
+watch([() => state.value?.themeRevision, appliedThemeRevision], ([revision, applied]) => {
+  if (revision === undefined || revision !== applied) return;
+  acknowledgeTheme(revision).catch((err: unknown) => {
+    // unacknowledged, so a capture waiting on this revision ends as a timeout
+    console.warn(`[damocles] theme revision ${revision} was not drawn: ${err instanceof Error ? err.message : String(err)}`);
+  });
+}, { flush: 'post' });
+
 onBeforeUnmount(() => {
   for (const stop of stops) stop();
   sidebarWaiters = [];
@@ -207,6 +242,7 @@ onBeforeUnmount(() => {
   >
     <WallpaperLayer
       v-if="state.wallpapers"
+      ref="wallpaperLayer"
       :wallpapers="state.wallpapers"
       :paused="(state.wallpaperPaused?.length ?? 0) > 0"
     />
@@ -242,6 +278,20 @@ onBeforeUnmount(() => {
       :proposal="state.themeProposal"
       @stop="void api.stopShowingProposal()"
     />
+    <!-- Opens to its height and collapses back on close (reduce motion makes both instant); a newer notice updates it in place,
+         so a leave plays only on close, and out-in keeps the next one out until the leaving one, inert, is gone. -->
+    <Transition
+      name="t-strip"
+      mode="out-in"
+    >
+      <ScreenshotNotice
+        v-if="state.screenshotNotice"
+        :notice="state.screenshotNotice"
+        @revoke="(id: string) => void api.revokeScreenshotGrant(id)"
+        @dismiss="(id: string) => void api.dismissScreenshotNotice(id)"
+        @hold="(id: string, reason: ScreenshotNoticeHold, held: boolean) => api.holdScreenshotNotice(id, reason, held)"
+      />
+    </Transition>
     <!-- Peek at the window: the editor dock that covered it steps aside until this button or Escape. -->
     <div
       v-if="state.dockPeek"

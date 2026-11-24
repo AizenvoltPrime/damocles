@@ -6,6 +6,7 @@ import { resolve } from 'path';
 import { DESKTOP_FONT_FILES, DESKTOP_FONT_LICENSES } from './src/desktop/main/desktop-fonts';
 import { shellWorkerTest } from './scripts/shell-workers.ts';
 import { protectedLayerOrder } from './scripts/protected-layer.ts';
+import { vendorLayer } from './scripts/vendor-layer.ts';
 import { MATERIAL_ICON_DIR, materialIconNames } from './src/desktop/shell/material-icons';
 import { BUILTIN_EXAMPLE_IDS } from './src/shared/themes/builtin';
 
@@ -84,8 +85,7 @@ function shellWorkersOnly(): Plugin {
 // The desktop shell, overlay and theme render pages; main generates their HTML (nonce CSP) and loads assets/index.{js,css},
 // assets/overlay.{js,css} and assets/theme-render.{js,css} by these fixed names.
 export default defineConfig({
-  // the theme render page takes no theme CSS, so its layers are Tailwind's alone
-  plugins: [vue(), tailwindcss(), desktopFonts(), materialFileIcons(), builtinThemes(), requiredPageAssets(), protectedLayerOrder(['index', 'overlay'])],
+  plugins: [vendorLayer(), vue(), tailwindcss(), desktopFonts(), materialFileIcons(), builtinThemes(), requiredPageAssets(), protectedLayerOrder(['index', 'overlay', 'theme-render'])],
   root: 'src/desktop/shell',
   // Relative asset URLs: the shell is served under app://damocles/desktop-shell/, where a root-absolute /assets/ URL misses.
   base: './',

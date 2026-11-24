@@ -8,14 +8,12 @@ export type ThemeAssetSource =
   | { readonly kind: 'file'; readonly file: string }
   | { readonly kind: 'url'; readonly url: string }
   | { readonly kind: 'generate'; readonly prompt: string; readonly aspect?: ThemeImageAspect }
-  | { readonly kind: 'attachment'; readonly index: number }
-  // a character drawn as pixel grids, which core checks and turns into a sprite-strip SVG; it reads nothing
-  | { readonly kind: 'pixels'; readonly pixels: unknown };
+  | { readonly kind: 'attachment'; readonly index: number };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const named = (value: unknown): value is string => typeof value === 'string' && value.trim() !== '';
 
-export const ASSET_SOURCE_REFUSAL = 'asset.from names exactly one source: { file: path }, { url: https URL }, { generate: { prompt, aspect? } }, { attachment: n } or { pixels: { palette, frames, fps? } }.';
+export const ASSET_SOURCE_REFUSAL = 'asset.from names exactly one source: { file: path }, { url: https URL }, { generate: { prompt, aspect? } } or { attachment: n }.';
 
 /** The source of ThemeSet's `asset`; undefined when the input has no asset, `refused` when `from` is not one source of its shape. */
 export function themeAssetSource(input: Record<string, unknown>): ThemeAssetSource | { readonly refused: string } | undefined {
@@ -38,8 +36,6 @@ export function themeAssetSource(input: Record<string, unknown>): ThemeAssetSour
     }
     case 'attachment':
       return typeof value === 'number' ? { kind: 'attachment', index: value } : { refused: ASSET_SOURCE_REFUSAL };
-    case 'pixels':
-      return { kind: 'pixels', pixels: value };
     default:
       return { refused: ASSET_SOURCE_REFUSAL };
   }

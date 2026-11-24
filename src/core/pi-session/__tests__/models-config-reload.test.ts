@@ -37,7 +37,7 @@ describe("a chat's start and pi's models.json", () => {
       projectScope: true,
       platform,
       model: 'gpt-6-luna',
-      permissionHandler: { getPermissionMode: () => 'default', turnPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {}, setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [] } as unknown as SessionOptions['permissionHandler'],
+      permissionHandler: { getPermissionMode: () => 'default', turnPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {}, setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [], endScreenshotGrantUnless: () => {} } as unknown as SessionOptions['permissionHandler'],
       onMessage: () => {},
       resolveThinking: () => ({ thinkingDisabled: false, effort: null }),
     });

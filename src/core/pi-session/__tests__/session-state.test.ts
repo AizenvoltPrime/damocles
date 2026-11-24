@@ -204,6 +204,10 @@ import { runPermissionGate, type GatePermissionContext } from '../permission-gat
 import { ShellCancelStore } from '../tools/shell-cancel-registry';
 import type { ToolCallEvent } from '@earendil-works/pi-coding-agent';
 import { getPiCodingAgent } from '../pi-loader';
+import { PROMPT_SUMMARY_MAX_CHARS } from '../pending-prompts';
+import type { ThemeFile } from '../../../shared/themes/schema';
+import type { ThemeAgentHost } from '../tools/theme-tools';
+import type { RemoteHost } from '../../../platform/remote-host';
 
 type StateMessage = Extract<ExtensionToWebviewMessage, { type: 'sessionStateChanged' }>;
 type UiRequest = Extract<ExtensionToWebviewMessage, { type: 'extensionUiRequest' }>;
@@ -239,7 +243,20 @@ async function startPanel(extra: Partial<SessionOptions> = {}): Promise<{
   session: PiSession;
   permissionHandler: PermissionHandler;
   messages: ExtensionToWebviewMessage[];
+  options: SessionOptions;
 }> {
+  const panel = buildPanel(extra);
+  await panel.session.initializeEarly();
+  return panel;
+}
+
+/** The panel before its session starts, as a folder switch builds it. */
+function buildPanel(extra: Partial<SessionOptions> = {}): {
+  session: PiSession;
+  permissionHandler: PermissionHandler;
+  messages: ExtensionToWebviewMessage[];
+  options: SessionOptions;
+} {
   const messages: ExtensionToWebviewMessage[] = [];
   const platform = createFakePlatform();
   const permissionHandler = new PermissionHandler(platform, getPiCodingAgent);
@@ -257,9 +274,7 @@ async function startPanel(extra: Partial<SessionOptions> = {}): Promise<{
     resolveThinking: () => ({ thinkingDisabled: false, effort: null }),
     ...extra,
   };
-  const session = new PiSession(options);
-  await session.initializeEarly();
-  return { session, permissionHandler, messages };
+  return { session: new PiSession(options), permissionHandler, messages, options };
 }
 
 /** Start a turn and hold it open until the returned `finish` runs, so prompts can open mid-turn. */
@@ -833,7 +848,7 @@ describe('panel activity, from the same publisher', () => {
   it('a screenshot card is a pending prompt of kind themeScreenshot (Needs you), reposted to a webview that came back, and idle once answered', async () => {
     const { session, permissionHandler, messages } = await startPanel();
     const activity = watchActivity(session);
-    const answer = permissionHandler.requestThemeScreenshot({ toolUseId: 'call-2', url: 'app://damocles/theme-shot/0123456789abcdef0123456789abcdef', width: 800, height: 600 }, new AbortController().signal);
+    const answer = permissionHandler.requestThemeScreenshot({ toolUseId: 'call-2', chat: 'chat-a', url: 'app://damocles/theme-shot/0123456789abcdef0123456789abcdef', width: 800, height: 600 }, new AbortController().signal);
     const request = messages.find((m) => m.type === 'requestThemeScreenshot') as Extract<ExtensionToWebviewMessage, { type: 'requestThemeScreenshot' }>;
     expect(permissionHandler.pendingPrompts()).toEqual([{ id: request.promptId, kind: 'themeScreenshot', request }]);
     const posted = messages.length;
@@ -845,6 +860,24 @@ describe('panel activity, from the same publisher', () => {
     expect(states(messages)).toEqual(['idle', 'requires_action', 'idle']);
     expect(activity.map((a) => a.pendingKinds)).toEqual([[], ['themeScreenshot'], []]);
     expect(activity[1]?.pendingPrompts).toEqual([{ id: request.promptId, kind: 'themeScreenshot', owner: { kind: 'main' }, summary: { message: 'send a screenshot of the window' } }]);
+    await session.dispose();
+  });
+
+  it("a draft's screenshot card is summed up with the draft's name, on one line and capped", async () => {
+    const { session, permissionHandler, messages } = await startPanel();
+    const activity = watchActivity(session);
+    const theme = { schemaVersion: 1, id: '0a1b2c3d-1111-4222-8333-444455556666', name: 'Amber Night', looks: {} } as unknown as ThemeFile;
+    const answer = permissionHandler.requestThemeScreenshot({ toolUseId: 'call-3', chat: 'chat-a', draft: { name: `Amber\nNight ${'x'.repeat(200)}`, theme }, captureId: 'c'.repeat(32) }, new AbortController().signal);
+    const request = messages.find((m) => m.type === 'requestThemeScreenshot') as Extract<ExtensionToWebviewMessage, { type: 'requestThemeScreenshot' }>;
+    permissionHandler.resolveThemeScreenshot(request.promptId, 'deny');
+    expect(await answer).toBe('deny');
+
+    expect(activity[1]?.pendingPrompts).toEqual([{
+      id: request.promptId,
+      kind: 'themeScreenshot',
+      owner: { kind: 'main' },
+      summary: { message: 'send a screenshot of the window with the draft {0}', args: [`Amber Night ${'x'.repeat(PROMPT_SUMMARY_MAX_CHARS - 13)}…`] },
+    }]);
     await session.dispose();
   });
 
@@ -1189,5 +1222,124 @@ describe('the chat review inputs', () => {
     session.teamMessage({ type: 'teamAgentToolResult', teamId: 't', agentId: 'a', toolUseId: 'call-1', result: 'ok' });
     expect((await session.chatReviewSnapshot('chat')).generation).toBeGreaterThan(before);
     await session.dispose();
+  });
+});
+
+describe("the chat's screenshot grant", () => {
+  beforeEach(() => {
+    H.resetServices();
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+    vi.restoreAllMocks();
+  });
+
+  type ShotRequest = Extract<ExtensionToWebviewMessage, { type: 'requestThemeScreenshot' }>;
+  const grants = (messages: readonly ExtensionToWebviewMessage[]): boolean[] => messages.flatMap((m) => (m.type === 'themeScreenshotGrant' ? [m.granted] : []));
+  const publish = (session: PiSession): void => (session as unknown as { publishSessionState(): void }).publishSessionState();
+
+  /** The user answers a screenshot card of `chat`; each card's add and removal publishes the panel's session state. */
+  async function answerCard(panel: { permissionHandler: PermissionHandler; messages: ExtensionToWebviewMessage[] }, chat: string, choice: 'allow' | 'allowChat'): Promise<void> {
+    const answer = panel.permissionHandler.requestThemeScreenshot({ toolUseId: 'call-shot', chat, url: 'app://damocles/theme-shot/0123456789abcdef0123456789abcdef', width: 800, height: 600 }, new AbortController().signal);
+    const request = [...panel.messages].reverse().find((m): m is ShotRequest => m.type === 'requestThemeScreenshot')!;
+    panel.permissionHandler.resolveThemeScreenshot(request.promptId, choice);
+    expect(await answer).toBe(choice);
+  }
+
+  /** As PanelManager.replaceSession: the old session is disposed, then a new one is built on the panel's PermissionHandler. */
+  async function replaceSession(panel: Awaited<ReturnType<typeof startPanel>>): Promise<PiSession> {
+    await panel.session.dispose();
+    return new PiSession(panel.options);
+  }
+
+  function localThemeHost(): { themeTools: ThemeAgentHost; revokeFromNotice: (chat: string) => void; unsubscribed: ReturnType<typeof vi.fn> } {
+    let listener: ((chat: string) => void) | undefined;
+    const unsubscribed = vi.fn();
+    const themeTools = {
+      themes: { drafts: { removeOwnedBy: async () => undefined } },
+      host: { onScreenshotGrantRevoked: (l: (chat: string) => void) => { listener = l; return { dispose: unsubscribed }; } },
+      settings: { get: () => undefined },
+      authority: 'local',
+    } as unknown as ThemeAgentHost;
+    return { themeTools, revokeFromNotice: (chat) => listener!(chat), unsubscribed };
+  }
+
+  it("a disposed session's late publish, with no runtime, leaves the grant of the conversation its panel continues", async () => {
+    const panel = await startPanel();
+    const chat = panel.session.currentSessionId!;
+    await answerCard(panel, chat, 'allowChat');
+    const successor = await replaceSession(panel);
+    publish(panel.session);
+    expect(panel.permissionHandler.screenshotGranted(chat)).toBe(true);
+    await successor.dispose();
+  });
+
+  it('a publish of a session that has not started leaves the grant', async () => {
+    const panel = await startPanel();
+    const chat = panel.session.currentSessionId!;
+    await answerCard(panel, chat, 'allowChat');
+    const successor = await replaceSession(panel);
+    // the successor's card publishes its session state as it opens and as it closes
+    await answerCard(panel, chat, 'allow');
+    expect(panel.permissionHandler.screenshotGranted(chat)).toBe(true);
+    expect(grants(panel.messages)).toEqual([true]);
+    await successor.dispose();
+  });
+
+  it('a chat move keeps the grant, and a new conversation then ends it and tells the page', async () => {
+    const panel = await startPanel();
+    const chat = panel.session.currentSessionId!;
+    await answerCard(panel, chat, 'allowChat');
+    const moved = await replaceSession(panel);
+    // the move resumes the stored conversation, which pi opens under its own session id
+    const fresh = H.fakePi.createAgentSessionFromServices.getMockImplementation()!;
+    H.fakePi.createAgentSessionFromServices.mockImplementationOnce(async () => {
+      const made = await fresh();
+      made.session.sessionId = chat;
+      return made;
+    });
+    await moved.initializeEarly();
+    expect(moved.currentSessionId).toBe(chat);
+    expect(panel.permissionHandler.screenshotGranted(chat)).toBe(true);
+
+    moved.reset();
+    await moved.whenReplaced();
+    expect(moved.currentSessionId).not.toBe(chat);
+    expect(panel.permissionHandler.screenshotGranted(chat)).toBe(false);
+    expect(grants(panel.messages)).toEqual([true, false]);
+    await moved.dispose();
+  });
+
+  it("main's notice ends only the grant of the chat it names, and the session's dispose lets go of it", async () => {
+    const theme = localThemeHost();
+    const panel = buildPanel({ themeTools: theme.themeTools });
+    await answerCard(panel, 'chat-a', 'allowChat');
+    theme.revokeFromNotice('chat-b');
+    expect(panel.permissionHandler.screenshotGranted('chat-a')).toBe(true);
+    theme.revokeFromNotice('chat-a');
+    expect(panel.permissionHandler.screenshotGranted('chat-a')).toBe(false);
+    expect(grants(panel.messages)).toEqual([true, false]);
+    expect(theme.unsubscribed).not.toHaveBeenCalled();
+    await panel.session.dispose();
+    expect(theme.unsubscribed).toHaveBeenCalledTimes(1);
+  });
+
+  it("tells a page that loaded whether its chat holds the grant only where this core holds it: this computer's theme tools", async () => {
+    const local = buildPanel({ themeTools: localThemeHost().themeTools });
+    local.session.onWebviewReady();
+    expect(grants(local.messages)).toEqual([false]);
+    await local.session.dispose();
+
+    const remote = { relayed: {} as RemoteHost };
+    const daemon = buildPanel({ platform: { ...createFakePlatform(), remote: remote.relayed }, themeTools: remote });
+    daemon.session.onWebviewReady();
+    expect(grants(daemon.messages)).toEqual([]);
+    await daemon.session.dispose();
+
+    // VS Code has no theme tools
+    const vscode = buildPanel();
+    vscode.session.onWebviewReady();
+    expect(grants(vscode.messages)).toEqual([]);
+    await vscode.session.dispose();
   });
 });

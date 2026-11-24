@@ -219,13 +219,16 @@ export interface PendingThemeChange {
 }
 
 /** An open screenshot card; it resolves with the user's answer, or undefined when it closed unanswered. */
-export interface PendingThemeScreenshot {
+export type PendingThemeScreenshot = {
   resolve: (choice: ThemeScreenshotChoice | undefined) => void;
   cleanup: () => void;
   request: Extract<ExtensionToWebviewMessage, { type: 'requestThemeScreenshot' }>;
+} & (
   // a remote chat's card: the client whose window the screenshot shows, whose views alone show and answer it
-  device?: string;
-}
+  | { device: string; chat?: never }
+  // a card of this computer's window: the chat its Allow for this chat grants
+  | { chat: string; device?: never }
+);
 
 /** An open install card; its tool closes it, and the user's answer closes it on every view. */
 export interface PendingThemeInstall {

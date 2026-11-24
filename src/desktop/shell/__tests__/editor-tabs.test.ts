@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
+import { nextTick } from 'vue';
 import type { ScmDecorations } from '../../preload/scm-channels';
 import type { ShellEditorTab, ShellHost, ShellProject } from '../../preload/shell-channels';
 import ConflictBar from '../editor/ConflictBar.vue';
@@ -166,6 +167,31 @@ describe("the active tab's bar", () => {
     await flushPromises();
     expect(tabMeasures()).toBeGreaterThan(0);
     styles.mockRestore();
+  });
+
+  // A theme styles [data-editor-tab][data-active], and a closing tab stays in the row while its leave plays.
+  it('marks only the next tab active while the closed active tab leaves', async () => {
+    const tabs = [codeTab('a', 'a.ts'), codeTab('b', 'b.ts')];
+    const api = fakeShellApi([], { getEditorState: vi.fn(async () => ({ ...EDITOR_STATE, tabs, activeTabId: 'a' })) });
+    const store = createEditorStore(api);
+    await store.start();
+    const scm = createScmStore(api.scm);
+    await scm.start();
+    const wrapper = mount(EditorTabs, {
+      props: { api, closeShortcut: 'Ctrl+W', projects: [], hosts: [] },
+      global: { plugins: [shellI18n], provide: { [EDITOR_STORE]: store, [SCM_STORE]: scm, [TERMINAL_STORE as symbol]: createTerminalStore(api) }, stubs: { 'transition-group': false } },
+      attachTo: document.body,
+    });
+    mounted.push(wrapper);
+    await flushPromises();
+    const ids = (selector: string): Array<string | undefined> => wrapper.findAll(selector).map((tab) => tab.attributes('data-tab-id'));
+    expect(ids('[data-editor-tab][data-active]')).toEqual(['a']);
+
+    api.pushEditorState({ ...EDITOR_STATE, tabs: [tabs[1]!], activeTabId: 'b' });
+    await nextTick();
+    expect(ids('[data-editor-tab]')).toEqual(['a', 'b']);
+    expect(ids('[data-editor-tab][data-active]')).toEqual(['b']);
+    expect(ids('[data-editor-tab][aria-selected="true"]')).toEqual(['b']);
   });
 });
 

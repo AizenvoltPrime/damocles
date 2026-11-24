@@ -9,6 +9,7 @@ import DiffOverlay from '../DiffOverlay.vue';
 import { useDiffStore } from '@/stores/useDiffStore';
 import { usePermissionStore } from '@/stores/usePermissionStore';
 import { i18n } from '@/i18n';
+import { CHAT_VIEW_PROVIDE } from '@/__tests__/code-highlighter';
 
 const highlightDiffLines = vi.hoisted(() => vi.fn(async (lines: Array<{ content: string }>) => lines.map((line) => ({ ...line, highlightedContent: line.content }))));
 
@@ -22,7 +23,7 @@ const PATCH = createTwoFilesPatch('src/a.ts', 'src/a.ts', BEFORE, BEFORE.replace
 const Shell = { template: '<div><slot name="header-actions" /><slot /></div>' };
 
 async function card(toolCall: ToolCall): Promise<VueWrapper> {
-  const wrapper = mount(ToolCallCard, { props: { toolCall, source: 'session' }, global: { plugins: [i18n] } });
+  const wrapper = mount(ToolCallCard, { props: { toolCall, source: 'session' }, global: { provide: CHAT_VIEW_PROVIDE, plugins: [i18n] } });
   await flushPromises();
   return wrapper;
 }
@@ -32,7 +33,7 @@ function rows(wrapper: VueWrapper): string[][] {
   return wrapper.findAll('[data-testid="diff-view"] tr').map((tr) => tr.findAll('td').map((td) => td.text()));
 }
 
-const newNumbers = (wrapper: VueWrapper): string[] => wrapper.findAll('[data-part="new-line"]').map((td) => td.text()).filter(Boolean);
+const newNumbers = (wrapper: VueWrapper): string[] => wrapper.findAll('[data-diff-line="new"]').map((td) => td.text()).filter(Boolean);
 
 function edit(over: Partial<ToolCall> = {}): ToolCall {
   return { id: 't-edit', name: 'Edit', input: { file_path: '/w/src/a.ts', old_string: 'line 120', new_string: 'changed 120' }, status: 'completed', ...over };
@@ -68,7 +69,7 @@ describe('an Edit card', () => {
     const wrapper = await card(toolCall);
 
     expect(wrapper.get('[data-testid="diff-view"]').attributes('data-numbered')).toBe('false');
-    expect(wrapper.findAll('[data-part="new-line"]')).toHaveLength(0);
+    expect(wrapper.findAll('[data-diff-line="new"]')).toHaveLength(0);
     expect(rows(wrapper)).toEqual([['-', 'line 120'], ['+', 'changed 120']]);
   });
 
@@ -162,7 +163,7 @@ describe('the diff a card opens', () => {
     await wrapper.get('[data-testid="diff-view"]').element.closest('button')!.click();
     const opened = useDiffStore().expandedDiff!;
 
-    const overlay = mount(DiffOverlay, { props: { diff: opened }, global: { plugins: [i18n], stubs: { OverlayShell: Shell } } });
+    const overlay = mount(DiffOverlay, { props: { diff: opened }, global: { provide: CHAT_VIEW_PROVIDE, plugins: [i18n], stubs: { OverlayShell: Shell } } });
     await flushPromises();
 
     expect(rows(overlay)).toEqual(rows(wrapper));

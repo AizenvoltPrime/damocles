@@ -13,7 +13,7 @@ const fileCard = (tab: Page, name: string): Locator => tab.getByTestId('tool-car
 
 /** The new-file line numbers the card's diff shows, top to bottom. */
 const newLineNumbers = (card: Locator): Promise<string[]> =>
-  card.locator('[data-part="new-line"]').evaluateAll((cells) => cells.map((cell) => cell.textContent?.trim() ?? '').filter(Boolean));
+  card.locator('[data-diff-line="new"]').evaluateAll((cells) => cells.map((cell) => cell.textContent?.trim() ?? '').filter(Boolean));
 
 function numbered(count: number): string {
   return Array.from({ length: count }, (_, i) => `export const line${i + 1} = ${i + 1};`).join('\n') + '\n';
@@ -66,7 +66,7 @@ test('an Edit far down a file numbers its card at the real line, while it awaits
     await approve(tab, file, original.replace('= 150;', '= 1500;'));
     await expect(card.getByTestId('tool-card-change')).toHaveText('+1 −1');
     await expect.poll(() => newLineNumbers(card)).toEqual(['146', '147', '148', '149', '150', '151', '152', '153', '154']);
-    await expect(card.locator('[data-part="new-line"]', { hasText: /^1$/ })).toHaveCount(0);
+    await expect(card.locator('[data-diff-line="new"]', { hasText: /^1$/ })).toHaveCount(0);
     await awaitTitleRequest(stub);
   } finally {
     await stub.close();

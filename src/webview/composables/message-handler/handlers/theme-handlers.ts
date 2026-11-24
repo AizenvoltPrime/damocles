@@ -26,6 +26,10 @@ export function createThemeHandlers(): Partial<HandlerRegistry> {
       useThemePromptStore().removeScreenshotPrompt(msg.promptId);
     },
 
+    themeScreenshotGrant: (msg) => {
+      useThemePromptStore().setScreenshotGrant(msg.granted);
+    },
+
     requestThemeInstall: (msg) => {
       const { type: _type, ...prompt } = msg;
       useThemePromptStore().setInstallPrompt(prompt);

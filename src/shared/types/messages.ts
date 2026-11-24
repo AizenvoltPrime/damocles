@@ -265,8 +265,13 @@ export type WebviewToExtensionMessage =
   | { type: "resolveThemeChange"; promptId: string; choice: ThemeChangeChoice; note?: string }
   /** The card's Show in window toggle: paint the proposal on the window, or stop. Core answers with `themeChangeUpdated`. */
   | { type: "setThemeShowInWindow"; promptId: string; on: boolean }
-  /** The answer to a `requestThemeScreenshot`; core answers with `themeScreenshotClosed`, for a prompt no longer open too. */
+  /**
+   * The answer to a `requestThemeScreenshot`; core answers with `themeScreenshotClosed`, for a prompt no longer open too.
+   * `allowChat` also grants the chat every later screenshot until it closes, gets a new session or the grant is revoked.
+   */
   | { type: "resolveThemeScreenshot"; promptId: string; choice: ThemeScreenshotChoice }
+  /** The chat's screenshot grant strip's Revoke: later screenshots raise the card again. */
+  | { type: "revokeThemeScreenshotGrant" }
   /**
    * The answer to a `requestThemeInstall`; `onClash` is required for install when the preview has a clash. Core answers every
    * one: `themeInstallClosed` for one it took and for a prompt no longer open, and `requestThemeInstall` again, with the preview
@@ -1167,10 +1172,17 @@ export type ExtensionToWebviewMessage =
   | { type: "themeChangeClosed"; promptId: string }
   /**
    * A prompt of kind `themeScreenshot` (desktop only): ThemeRead asks before it sends a screenshot of the window to the model.
-   * `url` is `app://damocles/theme-shot/<id>`, served from main's memory until the card closes or 10 minutes pass.
+   * `url` is `app://damocles/theme-shot/<id>`, served from main's memory until the card closes or 10 minutes pass. A draft's
+   * card carries the draft's name and theme instead, for its miniature: Allow paints it on the window and captures it. A chat
+   * on a remote host names the capture the device's main holds (`captureId`), which binds the card there, as `stageId` does.
    */
-  | { type: "requestThemeScreenshot"; promptId: string; toolUseId: string; url: string; width: number; height: number; owner: PromptOwner }
+  | ({ type: "requestThemeScreenshot"; promptId: string; toolUseId: string; owner: PromptOwner } & (
+      | { url: string; width: number; height: number; draft?: never }
+      | { draft: { name: string; theme: ThemeFile }; captureId?: string; url?: never; width?: never; height?: never }
+    ))
   | { type: "themeScreenshotClosed"; promptId: string }
+  /** Whether this chat holds the screenshot grant; one publisher (core's manager for a local chat, device main for a remote page). */
+  | { type: "themeScreenshotGrant"; granted: boolean }
   /**
    * A prompt of kind `themeInstall` (desktop only): ThemeSet install waits for Install or Cancel on the card listing what the
    * file holds; `themeInstallUpdated` carries the whole preview again as each wallpaper's flash check ends.

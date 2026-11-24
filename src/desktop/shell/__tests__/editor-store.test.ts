@@ -122,7 +122,10 @@ beforeEach(() => {
   models.length = 0;
   vi.useFakeTimers();
 });
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe('editor store', () => {
   it('sends a web link an editor opens to main with the active tab, once Monaco loaded', async () => {

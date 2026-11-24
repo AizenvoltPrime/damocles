@@ -51,6 +51,7 @@ function deps(overrides: Partial<ToolStatusDeps>): ToolStatusDeps {
     forgeUnavailable: 'noForgeAccount',
     themeAvailable: false,
     themeEnabled: true,
+    themeSwitchOnDevice: false,
     themeUnavailable: undefined,
     mcpEnabled: false,
     mcpToolNames: [],

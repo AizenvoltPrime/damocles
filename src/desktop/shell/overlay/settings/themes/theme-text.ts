@@ -52,6 +52,11 @@ function plainChange(t: Translate, change: ThemeChange): string {
       return t(`${T}.change.resume`);
     case 'projectLook':
       return t(`${T}.change.projectLook.${change.look}`, { project: isolated(change.project) });
+    case 'projectPin': {
+      const scope = change.everyTheme === true ? 'every' : 'theme';
+      const values = { project: isolated(change.project), theme: isolated(change.theme), character: isolated(change.character ?? '') };
+      return t(`${T}.change.projectPin.${change.character === null ? `${scope}Cleared` : scope}`, values);
+    }
     case 'storeRemoved':
       return t(`${T}.change.storeRemoved`, { themes: change.themes.map(isolated).join(', ') });
     case 'wallpapersOff':

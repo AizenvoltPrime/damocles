@@ -1,3 +1,5 @@
+// First, so the bundle opens with its @layer statement, ahead of every layered block the components' CSS adds.
+import './overlay.css';
 import { createApp } from 'vue';
 import { createPinia } from 'pinia';
 import { installPlatformBridge } from '@/composables/usePlatformBridge';
@@ -9,7 +11,6 @@ import { NOTIFIER_PAGE_PATH, THEME_EDITOR_PAGE_PATH } from '../../preload/page-p
 import { mountNotifier } from './notifier-page';
 import { mountThemeEditor } from './theme-editor/editor-page';
 import { installRasterizer } from './rasterize';
-import './overlay.css';
 
 const api = window.damoclesOverlay;
 if (!api) throw new Error('The Damocles overlay page loaded without its preload');

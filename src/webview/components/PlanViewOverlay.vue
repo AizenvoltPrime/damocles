@@ -71,22 +71,24 @@ function handleOpenInEditor() {
 </template>
 
 <style scoped>
-.plan-body :deep(h1) {
-  margin-top: 0;
-  font-size: 1.375rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
+@layer app {
+  .plan-body :deep(h1) {
+    margin-top: 0;
+    font-size: 1.375rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
 
-.plan-body :deep(h1 + .markdown-p) {
-  color: var(--d-muted);
-}
+  .plan-body :deep(h1 + .markdown-p) {
+    color: var(--d-muted);
+  }
 
-.plan-body :deep(h2) {
-  font-size: 0.7188rem;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--d-faint);
+  .plan-body :deep(h2) {
+    font-size: 0.7188rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--d-faint);
+  }
 }
 </style>

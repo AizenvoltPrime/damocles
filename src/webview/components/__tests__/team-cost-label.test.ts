@@ -149,7 +149,7 @@ describe('agent cost labels', () => {
   it('explains the estimate marker in the agent overlay chips', () => {
     panelBilling(true);
     const wrapper = mountAgentOverlay(agent({ dollarBilled: false }));
-    expect(wrapper.get('[data-part="cost"]').text()).toBe('~$26.45 est.');
+    expect(wrapper.get('[data-usage="cost"]').text()).toBe('~$26.45 est.');
     expect(defined(titled(wrapper)).text()).toBe('~$26.45 est.');
   });
 });
@@ -159,26 +159,26 @@ describe('a live specialist label', () => {
     panelBilling(true);
     // The team list reaches the webview before any specialist spawns, so the card starts on the placeholder.
     const wrapper = mountAgentOverlay(agent({ dollarBilled: true }));
-    expect(wrapper.get('[data-part="cost"]').text()).toContain('$26.45');
+    expect(wrapper.get('[data-usage="cost"]').text()).toContain('$26.45');
     expect(titled(wrapper)).toBeUndefined();
 
     useTeamStore().handleAgentStatusUpdate(TEAM_ID, AGENT_ID, 'running', undefined, undefined, 'sonnet', false);
     await nextTick();
 
-    expect(wrapper.get('[data-part="cost"]').text()).toContain('~$26.45 est.');
+    expect(wrapper.get('[data-usage="cost"]').text()).toContain('~$26.45 est.');
     expect(defined(titled(wrapper)).text()).toBe('~$26.45 est.');
   });
 
   it('keeps the flag when a later status update omits it', async () => {
     panelBilling(true);
     const wrapper = mountAgentOverlay(agent({ dollarBilled: false }));
-    expect(wrapper.get('[data-part="cost"]').text()).toContain('~$26.45 est.');
+    expect(wrapper.get('[data-usage="cost"]').text()).toContain('~$26.45 est.');
 
     useTeamStore().handleAgentStatusUpdate(TEAM_ID, AGENT_ID, 'completed');
     await nextTick();
 
     // A partial delta that says nothing about billing must not relabel a subscription cost as a charge.
-    expect(wrapper.get('[data-part="cost"]').text()).toContain('~$26.45 est.');
+    expect(wrapper.get('[data-usage="cost"]').text()).toContain('~$26.45 est.');
     expect(defined(titled(wrapper)).text()).toBe('~$26.45 est.');
   });
 });
@@ -224,10 +224,10 @@ describe('agent and team usage', () => {
 
   it('an agent card counts every prompt token and itemises them in a localized tooltip', () => {
     const wrapper = mountCard(busy());
-    const tokens = wrapper.get('[data-part="tokens"]');
+    const tokens = wrapper.get('[data-usage="tokens"]');
     expect(tokens.text()).toBe('10.0K tokens');
     expect(tokens.attributes('title')).toBe('Uncached input: 50\nCache read: 7,000\nCache write: 2,000\nOutput: 950');
-    expect(wrapper.get('[data-part="cache"]').text()).toBe('77% cache');
+    expect(wrapper.get('[data-usage="cache"]').text()).toBe('77% cache');
   });
 
   it('the team card of a single run adds the cache hit rate of all its agents', () => {
@@ -249,11 +249,11 @@ describe('agent and team usage', () => {
     const firstCard = mountTeamCard([lead], first);
     const secondCard = mountTeamCard([lead], second);
 
-    expect(firstCard.get('[data-part="tokens"]').text()).toBe('4.0K tokens');
-    expect(firstCard.find('[data-part="cache"]').exists()).toBe(false);
+    expect(firstCard.get('[data-usage="tokens"]').text()).toBe('4.0K tokens');
+    expect(firstCard.find('[data-usage="cache"]').exists()).toBe(false);
     expect(firstCard.text()).toContain('$1.00');
-    expect(secondCard.get('[data-part="tokens"]').text()).toBe('11.0K tokens');
-    expect(secondCard.get('[data-part="cache"]').text()).toBe('80% cache');
+    expect(secondCard.get('[data-usage="tokens"]').text()).toBe('11.0K tokens');
+    expect(secondCard.get('[data-usage="cache"]').text()).toBe('80% cache');
     expect(secondCard.text()).toContain('$0.50');
   });
 
@@ -263,8 +263,8 @@ describe('agent and team usage', () => {
       usage: { ...emptyAgentUsage(), costUsd: 0.75 }, legacyTokens: 1500,
     };
     const wrapper = mountTeamCard([busy()], legacy);
-    expect(wrapper.get('[data-part="tokens"]').text()).toBe('1.5K tokens');
-    expect(wrapper.find('[data-part="cache"]').exists()).toBe(false);
+    expect(wrapper.get('[data-usage="tokens"]').text()).toBe('1.5K tokens');
+    expect(wrapper.find('[data-usage="cache"]').exists()).toBe(false);
     expect(wrapper.text()).toContain('$0.75');
   });
 
@@ -288,15 +288,15 @@ describe('agent and team usage', () => {
     });
     await nextTick();
 
-    expect(card.get('[data-part="tokens"]').text()).toBe('12.9K tokens');
-    expect(card.get('[data-part="tokens"]').text()).toBe(overlay.get('[data-part="tokens"]').text());
-    expect(card.get('[data-part="cache"]').text()).toBe(overlay.get('[data-part="cache"]').text());
+    expect(card.get('[data-usage="tokens"]').text()).toBe('12.9K tokens');
+    expect(card.get('[data-usage="tokens"]').text()).toBe(overlay.get('[data-usage="tokens"]').text());
+    expect(card.get('[data-usage="cache"]').text()).toBe(overlay.get('[data-usage="cache"]').text());
   });
 
   it('the team overlay totals every agent’s tokens, cache hit rate and cost', () => {
     const wrapper = mountTeamOverlay([busy(), busy({ agentId: 'agent-2', totalInputTokens: 950, cacheReadTokens: 1000, cacheCreationTokens: 0 })]);
-    expect(wrapper.get('[data-part="tokens"]').text()).toBe('12.9K tokens');
-    expect(wrapper.get('[data-part="cache"]').text()).toBe('72% cache');
-    expect(wrapper.get('[data-part="cost"]').text()).toBe('$3.00');
+    expect(wrapper.get('[data-usage="tokens"]').text()).toBe('12.9K tokens');
+    expect(wrapper.get('[data-usage="cache"]').text()).toBe('72% cache');
+    expect(wrapper.get('[data-usage="cost"]').text()).toBe('$3.00');
   });
 });

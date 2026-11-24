@@ -7,6 +7,8 @@ export const SECTION_HEADER_REM = 1.875;
 // rem: the row sash's hit area, which overlaps each neighbouring section by ROW_SASH_OVERLAP_REM.
 export const ROW_SASH_REM = 0.3125;
 export const ROW_SASH_OVERLAP_REM = 0.125;
+// rem: seven section headers plus the six row sashes between them.
+export const SIDEBAR_SECTION_CHROME_REM = 7 * SECTION_HEADER_REM + 6 * (ROW_SASH_REM - 2 * ROW_SASH_OVERLAP_REM);
 // rem a sash moves per arrow key.
 export const SASH_KEY_STEP_REM = 0.625;
 

@@ -3,7 +3,10 @@
 import type { ThemeActor, ThemeHistoryChange } from './changes';
 import type { ContrastIssue } from './contrast';
 import type { CssDroppedPart } from './css-types';
-import type { CssRegion, LOOK_SEEDS, ThemeFile } from './schema';
+import type { Arrangement, CharacterSelection, CssRegion, LOOK_SEEDS, ThemeFile } from './schema';
+import type { ShellWallpaper } from './wallpapers';
+import type { CharacterState, CharacterView, ShownCharacters } from './characters';
+import type { CharacterSheetPage } from './character-sheet';
 import type { LookKind } from './tokens';
 import type { ProjectLookKind, ProjectTouch } from './project-looks';
 import type { TOOL_THEME_READ, TOOL_THEME_SCHEDULE, TOOL_THEME_SET } from '../tool-names';
@@ -45,9 +48,15 @@ export type ThemeChangeItem =
   | { readonly kind: 'css'; readonly region: CssRegion; readonly cleared: boolean }
   // count: the characters of the theme's new set; 0 when it has none left
   | { readonly kind: 'characters'; readonly count: number }
+  // character sprites the call drew from pixel grids, and those it recolored from another sprite
+  | { readonly kind: 'sprites'; readonly added: number; readonly recolored: number }
+  // characterEdits and characterSet: how many characters were added, changed and removed; all 0 when only the set changed
+  | { readonly kind: 'characterEdits'; readonly added: number; readonly changed: number; readonly removed: number }
   | { readonly kind: 'schedule'; readonly enabled: boolean; readonly rules: number }
   // the chat's project's own look: none turns it off, touches lists what it sets, full names its theme and look
   | { readonly kind: 'projectLook'; readonly project: string; readonly look: 'none' | 'touches' | 'full'; readonly touches?: readonly ProjectTouch[]; readonly theme?: string; readonly themeLook?: ProjectLookKind }
+  // the chat's project's character pinned (character) or unpinned (null) in the theme named, or with everyTheme in every theme
+  | { readonly kind: 'projectPin'; readonly project: string; readonly theme: string; readonly themeId?: string; readonly character: string | null; readonly everyTheme?: true }
   | { readonly kind: 'undo'; readonly change: ThemeHistoryChange };
 
 /** A checkPalette issue of one look of the proposal. */
@@ -95,7 +104,12 @@ export function applyThemeChangeUpdate<T extends { state: ThemeChangeState; show
 }
 
 export type ThemeChangeChoice = 'apply' | 'discard' | 'change';
-export type ThemeScreenshotChoice = 'allow' | 'deny';
+// allowChat: allow this one and grant the chat every later screenshot until it closes or the grant is revoked
+export type ThemeScreenshotChoice = 'allow' | 'allowChat' | 'deny';
+
+// Why main took no screenshot of a draft or of the window.
+export const THEME_CAPTURE_REFUSALS = ['forcedColors', 'safeStart', 'windowHidden', 'covered', 'noWindow', 'timeout'] as const;
+export type ThemeCaptureRefusal = (typeof THEME_CAPTURE_REFUSALS)[number];
 
 // applied: Apply on the card; kept and reverted: the keep-changes banner's end; discarded: Discard (or the stop of the
 // turn); changesRequested: Change with a note; outdated: the theme changed meanwhile and the draft was discarded; undone:
@@ -135,6 +149,8 @@ export interface ThemeToolDetails {
   readonly theme?: ThemeFile;
   // ThemeRead with screenshot: whether the user allowed it
   readonly screenshot?: 'sent' | 'denied';
+  // ThemeRead with screenshot: why main took none
+  readonly shotRefused?: ThemeCaptureRefusal;
   // ThemeSet that generated an image: the image model its usage is billed to, as GenerateImage names it
   readonly provider?: string;
   readonly model?: string;
@@ -226,9 +242,31 @@ export function pendingConfirmOf(json: Readonly<Record<string, unknown>> | undef
 
 export const THEME_RENDER_SIZE = { width: 1280, height: 800 } as const;
 
+/** What main's window builder gives the render page: the same CSS, wallpapers and characters the window would paint. */
+export interface RenderAppearance {
+  readonly kind: 'dark' | 'light';
+  // FONT_FACE_CSS and pageCss, for the host style element
+  readonly css: string;
+  // the trusted region palette, scoped to [data-trusted]
+  readonly trustedCss: string;
+  // sanitized custom CSS for sidebar, editorChrome, terminalChrome and titlebar
+  readonly shellCss?: string;
+  // sanitized custom CSS for transcript
+  readonly chatCss?: string;
+  // a moving wallpaper is already its still: url is the still and there is no `moving`
+  readonly wallpapers?: readonly ShellWallpaper[];
+  // motion 'still'
+  readonly characters?: ShownCharacters;
+  // the theme's own arrangement, else the window's current one, whole and clamped to the drawing's size
+  readonly arrangement: Required<Arrangement>;
+  readonly platform: 'darwin' | 'win32' | 'linux';
+}
+
 /** One job of the theme renderer page, passed as JSON text to window.damoclesRender. */
 export type ThemeRenderJob =
-  | { readonly kind: 'preview'; readonly theme: ThemeFile; readonly mode: 'dark' | 'light' | 'split'; readonly width: number; readonly height: number }
+  | { readonly kind: 'window'; readonly view: 'window' | 'sidebar'; readonly appearance: RenderAppearance; readonly width: typeof THEME_RENDER_SIZE.width; readonly height: typeof THEME_RENDER_SIZE.height }
+  // one page of a character sheet, at the size its layout gives; characters: the set's characters its rows draw, by index
+  | { readonly kind: 'characters'; readonly appearance: RenderAppearance; readonly sheet: CharacterSheetPage; readonly characters: readonly SheetCharacterView[]; readonly width: number; readonly height: number }
   // shell and chat are data:image/png URLs; bounds place the chat capture over the shell capture, in its pixels
   | { readonly kind: 'composite'; readonly shell: string; readonly chat: string; readonly bounds: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }; readonly width: number; readonly height: number }
   // a wallpaper at `url` decoded and measured; `image` is the size its header declares, which the decoded pixels must match.
@@ -255,6 +293,33 @@ export type ThemeRenderJob =
     readonly height: number;
   };
 
+/** A character of the set by its index there, as the sheet draws it. */
+export interface SheetCharacterView {
+  readonly index: number;
+  readonly view: CharacterView;
+}
+
+/** What a character sheet drew, as data core words: every character by its index in the set. */
+export interface CharacterSheetFacts {
+  // the characters each page shows, in order
+  readonly sheets: readonly (readonly number[])[];
+  // those that would need a page past MAX_SHEETS, which a sheet of fewer characters draws
+  readonly omitted: readonly number[];
+  // those no page can draw: an image with no declared size, or a frame over MAX_SPRITE_SIDE, taller than a page or too wide
+  // to fit across at 1x
+  readonly unfit: readonly number[];
+  // those with no image that can show yet: an animated image whose still frame is not drawn, or a strip its image does not match
+  readonly undrawn: readonly number[];
+  // states drawn as their still frame: an animated GIF or WebP, whose frames are not shown
+  readonly stills: readonly { readonly character: number; readonly state: CharacterState }[];
+  // states whose frames did not all show: past MAX_SHEET_FRAMES, or more than fit a page
+  readonly clipped: readonly { readonly character: number; readonly state: CharacterState; readonly shown: number; readonly frames: number }[];
+  // the set's selection: none draws the selected cell without an outline
+  readonly selection: CharacterSelection;
+  // the look has a sidebar wallpaper, so each line has its cell
+  readonly wallpaper: boolean;
+}
+
 /** The sprite job's answer, as JSON text: the decoded size, the first frame as a data:image/png URL when drawn, the flash check. */
 export interface ThemeSpriteAnswer {
   readonly width: number;
@@ -280,4 +345,6 @@ export interface ThemeRenderAnswer {
   readonly drawn: true;
   readonly width: number;
   readonly height: number;
+  // view 'sidebar' only: the [data-render-region="sidebar"] rect in CSS px, integers, inside width x height
+  readonly region?: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
 }

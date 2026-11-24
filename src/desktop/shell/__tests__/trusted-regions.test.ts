@@ -53,7 +53,7 @@ const HOST: ShellHost = { hostId: 'h1', kind: 'ssh', authorityKey: 'ssh+h1', nam
 const REMOTE: ShellProject = { ...STATE.projects[0]!, key: 'r1', name: 'api', fsPath: '/srv/api', authority: PROD, platform: 'linux', trusted: false };
 
 // The window with everything trusted it can show at once: a remote project's stripe and host chip, the window controls,
-// the three theme banners and the editor dock's peek bar, beside grouped projects with a host dot and an Untrusted badge.
+// the three theme banners, the screenshot notice and the editor dock's peek bar, beside grouped projects with a host dot and an Untrusted badge.
 const { selectedChat: _noChat, ...WITHOUT_CHAT } = STATE;
 const SHOWN: ShellState = {
   ...WITHOUT_CHAT,
@@ -66,6 +66,7 @@ const SHOWN: ShellState = {
   safeStart: { reason: 'launch' },
   keepChanges: { phase: 'counting', endsAt: Date.now() + KEEP_CHANGES_MS, durationMs: KEEP_CHANGES_MS, chatTitle: 'Warmer', change: { kind: 'create', theme: 'Amber', picked: ['dark'] }, previousName: 'Bleach', changeCount: 1 },
   themeProposal: { promptId: 'tc-1', chatTitle: 'Warmer' },
+  screenshotNotice: { id: 'sn-1', chat: 'Warmer', origin: 'local' },
   dockPeek: true,
 };
 
@@ -75,7 +76,7 @@ describe('the shell window', () => {
     mounted.push(mount(App, { props: { api }, global: { plugins: [shellI18n] }, attachTo: document.body }));
     await flushPromises();
 
-    const trusted = ['title-bar-stripe', 'title-bar-host', 'window-controls', 'safe-start-banner', 'keep-changes-banner', 'show-in-window-strip', 'theme-dock-peek'];
+    const trusted = ['title-bar-stripe', 'title-bar-host', 'window-controls', 'safe-start-banner', 'keep-changes-banner', 'show-in-window-strip', 'screenshot-notice', 'theme-dock-peek'];
     for (const testId of trusted) {
       expect(document.querySelector(`[data-testid="${testId}"]`)?.hasAttribute('data-trusted'), testId).toBe(true);
     }
@@ -90,7 +91,7 @@ describe('the shell window', () => {
     await flushPromises();
 
     const checked = visibility.observed().map((element) => element.getAttribute('data-testid'));
-    expect(checked).toEqual(expect.arrayContaining(['safe-start-banner', 'keep-changes-banner', 'show-in-window-strip', 'theme-dock-peek']));
+    expect(checked).toEqual(expect.arrayContaining(['safe-start-banner', 'keep-changes-banner', 'show-in-window-strip', 'screenshot-notice', 'theme-dock-peek']));
     for (const element of visibility.observed()) expect(element.className, element.getAttribute('data-testid') ?? '').not.toMatch(/(^|[\s:])shadow-/);
     for (const trusted of document.querySelectorAll('[data-trusted]')) expect(trusted.className, trusted.getAttribute('data-testid') ?? '').not.toMatch(/d-fade|o-fade-out|opacity-/);
     expect(document.querySelector('[data-testid="window-close"]')!.className).not.toMatch(/opacity-/);
@@ -102,7 +103,7 @@ describe('the shell window', () => {
     mounted.push(mount(App, { props: { api }, global: { plugins: [shellI18n] }, attachTo: document.body }));
     await flushPromises();
 
-    for (const testId of ['safe-start-banner', 'keep-changes-banner', 'show-in-window-strip']) {
+    for (const testId of ['safe-start-banner', 'keep-changes-banner', 'show-in-window-strip', 'screenshot-notice']) {
       const text = document.querySelector(`[data-testid="${testId}"] > div > p`)!;
       expect(text.classList.contains('max-h-18'), testId).toBe(true);
       expect(text.classList.contains('overflow-y-auto'), testId).toBe(true);
@@ -114,7 +115,7 @@ describe('the shell window', () => {
     const api = fakeShellApi([], { getState: vi.fn(async () => SHOWN) });
     mounted.push(mount(App, { props: { api }, global: { plugins: [shellI18n] }, attachTo: document.body }));
     await flushPromises();
-    const strips = ['safe-start-banner', 'keep-changes-banner', 'show-in-window-strip', 'theme-dock-peek'];
+    const strips = ['safe-start-banner', 'keep-changes-banner', 'show-in-window-strip', 'screenshot-notice', 'theme-dock-peek'];
     const region = (testId: string): HTMLElement => {
       const regions = [...document.querySelectorAll<HTMLElement>(`[data-testid="${testId}"] p[role="status"]`)].filter((candidate) => candidate.classList.contains('absolute'));
       expect(regions, testId).toHaveLength(1);
@@ -146,8 +147,8 @@ describe('the shell window', () => {
     mounted.push(mount(App, { props: { api }, global: { plugins: [shellI18n] }, attachTo: document.body }));
     await flushPromises();
     const click = (selector: string): void => document.querySelector<HTMLElement>(selector)!.click();
-    const presses = ['[data-testid="safe-start-use-mine"]', '[data-testid="safe-start-banner"] button:nth-of-type(2)', '[data-testid="keep-changes-keep"]', '[data-testid="keep-changes-revert"]', '[data-testid="show-in-window-stop"]', '[data-testid="theme-dock-peek"] button'];
-    const requests = [api.useMyTheme, api.openSettings, api.keepThemeChanges, api.revertThemeChanges, api.stopShowingProposal, api.endThemeDockPeek];
+    const presses = ['[data-testid="safe-start-use-mine"]', '[data-testid="safe-start-banner"] button:nth-of-type(2)', '[data-testid="keep-changes-keep"]', '[data-testid="keep-changes-revert"]', '[data-testid="show-in-window-stop"]', '[data-testid="screenshot-notice-revoke"]', '[data-testid="theme-dock-peek"] button'];
+    const requests = [api.useMyTheme, api.openSettings, api.keepThemeChanges, api.revertThemeChanges, api.stopShowingProposal, api.revokeScreenshotGrant, api.endThemeDockPeek];
 
     visibility.report(false);
     await flushPromises();
@@ -159,6 +160,19 @@ describe('the shell window', () => {
     for (const selector of presses) click(selector);
     for (const request of requests) expect(request).toHaveBeenCalledTimes(1);
     expect(api.openSettings).toHaveBeenCalledWith('appearance');
+    expect(api.revokeScreenshotGrant).toHaveBeenCalledWith('sn-1');
+  });
+
+  // Dismiss decides nothing, so it acts while the notice is covered; Revoke names the notice main published.
+  it('dismisses the screenshot notice by its id while it is covered', async () => {
+    const api = fakeShellApi([], { getState: vi.fn(async () => SHOWN) });
+    mounted.push(mount(App, { props: { api }, global: { plugins: [shellI18n] }, attachTo: document.body }));
+    await flushPromises();
+    visibility.report(false);
+    await flushPromises();
+    document.querySelector<HTMLElement>('[data-testid="screenshot-notice-dismiss"]')!.click();
+    expect(api.dismissScreenshotNotice).toHaveBeenCalledWith('sn-1');
+    expect(api.revokeScreenshotGrant).not.toHaveBeenCalled();
   });
 
   it('ends the dock\'s peek on Escape pressed on its bar only, and not while the bar is covered', async () => {

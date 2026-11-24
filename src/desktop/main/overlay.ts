@@ -138,6 +138,8 @@ export interface OverlayHostDeps {
   // the last open popup closed: what awaitActivation started ends here, before focus returns, since focusing a view can
   // activate the window
   readonly popupsClosed: () => void;
+  // the overlay started or stopped covering the window
+  readonly modeChanged: () => void;
   // rasterize can draw again: the page (re)loaded, or answered after a deadline for the first time since it loaded
   readonly canRasterize: () => void;
   readonly log: (line: string) => void;
@@ -2271,6 +2273,7 @@ export class OverlayHost {
       // A hidden view keeps keyboard focus, so focus leaves with the popup.
       this.releaseFocus(hadFocus);
     }
+    if (mode !== previous) this.deps.modeChanged();
   }
 
   // Main's own overlay features (the settings modal) post and listen on the overlay page through these.

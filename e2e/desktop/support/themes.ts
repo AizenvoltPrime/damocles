@@ -26,11 +26,16 @@ export interface ShownLook {
 /** One answer of main's theme blob route. */
 export interface ServedBlob { readonly sha256: string; readonly status: number; readonly contentRange: string | null }
 
+/** A screenshot notice main raised, as the shell was told it. */
+export interface RaisedNotice { readonly id: string; readonly chat: string; readonly origin: string; readonly host?: { readonly name: string } }
+
 export interface MotionPins { readonly focused?: boolean; readonly onBattery?: boolean; readonly batterySaver?: boolean }
 
 interface ThemeHooks {
   gpuCompositing(): Promise<string>;
   keepChanges: { hold(): void; expire(): boolean };
+  themeAcks: { hold(): void };
+  screenshotNotice: { hold(): void; raised(): RaisedNotice[] };
   themeClock(now: number | null): void;
   themeTick(): void;
   themeOsKind(kind: 'dark' | 'light' | null): void;
@@ -91,6 +96,21 @@ export const themeHooks = (app: ElectronApplication) => ({
   expireKeepChanges: async (): Promise<boolean> => {
     await hooksReady(app);
     return app.evaluate(() => (globalThis as unknown as Required<HookGlobals>).__damoclesE2e.keepChanges.expire());
+  },
+  /** A draft capture started after this waits for its pages' paint with no timeout, so a slow runner never ends it as `timeout`. */
+  holdThemeAcks: async (): Promise<void> => {
+    await hooksReady(app);
+    await app.evaluate(() => (globalThis as unknown as Required<HookGlobals>).__damoclesE2e.themeAcks.hold());
+  },
+  /** No screenshot notice raised after this closes by the clock, so a test that reads or presses one never races its timer. */
+  holdScreenshotNotice: async (): Promise<void> => {
+    await hooksReady(app);
+    await app.evaluate(() => (globalThis as unknown as Required<HookGlobals>).__damoclesE2e.screenshotNotice.hold());
+  },
+  /** Every screenshot notice main raised since launch, one per capture that raised or replaced one. */
+  screenshotNotices: async (): Promise<RaisedNotice[]> => {
+    await hooksReady(app);
+    return app.evaluate(() => (globalThis as unknown as Required<HookGlobals>).__damoclesE2e.screenshotNotice.raised());
   },
   /** Pins the inputs that pause moving wallpapers; an e2e window may never get the OS focus and its machine may run on battery. */
   pinMotion: async (pinned: MotionPins): Promise<void> => {
@@ -166,6 +186,11 @@ export function writeTheme(home: HermeticHome, id: string, json: unknown): void 
 export function readTheme(home: HermeticHome, id: string): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(path.join(themeDir(home, id), 'theme.json'), 'utf8')) as Record<string, unknown>;
 }
+
+const AURORA_DIR = path.resolve(import.meta.dirname, '..', '..', '..', 'resources', 'themes', 'damocles-aurora');
+
+/** The smaller of the built-in Aurora theme's wallpapers: a real picture the theme renderer decodes. */
+export const auroraPng = (): Buffer => fs.readdirSync(AURORA_DIR).filter((file) => file.endsWith('.png')).map((file) => fs.readFileSync(path.join(AURORA_DIR, file))).sort((a, b) => a.length - b.length)[0]!;
 
 /** Stores `bytes` as core stores a blob, under the SHA-256 of the bytes, which main checks before it serves one; the hash. */
 export function storeBlob(home: HermeticHome, bytes: Uint8Array | string): string {

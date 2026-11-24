@@ -72,7 +72,7 @@ const stateWord = (state: CharacterState): string => t(`projects.characterState.
               :data-testid="`character-cell-${state}`"
             >
               <CharacterImage
-                :frame="row.states[state]!"
+                :image="row.states[state]!"
                 :alt="t('themeEditor.characters.cell', { character: row.name, state: stateWord(state) })"
                 :moves="!still && row.states[state]!.moves && row.states[state]!.playable"
               />

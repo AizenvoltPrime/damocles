@@ -32,6 +32,18 @@ export interface TransientPreview {
   readonly setIndex?: number;
 }
 
+/** `theme`'s look of `kind` as a transient preview, with everything it draws; undefined when it has no such look. */
+export function transientPreviewOf(theme: ThemeFile, kind: LookKind, setIndex?: number): TransientPreview | undefined {
+  const look = theme.looks[kind];
+  if (!look) return undefined;
+  const { style, assets, css, characters } = theme;
+  return {
+    themeId: theme.id, kind, look,
+    ...(style ? { style } : {}), ...(assets ? { assets } : {}), ...(css ? { css } : {}), ...(characters ? { characters } : {}),
+    ...(setIndex !== undefined ? { setIndex } : {}),
+  };
+}
+
 // Why moving wallpapers show their still frame now; none of them, and they play.
 export type MotionPause = 'unfocused' | 'hidden' | 'minimized' | 'battery' | 'batterySaver' | 'reduceMotion' | 'forcedColors' | 'wallpapersOff';
 
@@ -91,6 +103,11 @@ export interface AppearanceInputs {
 // Damocles, or has no look of that kind.
 export type FallbackReason = 'missing' | 'broken' | 'needsNewer' | 'noLook';
 
+export interface ShownCharacterSet {
+  readonly themeId: string;
+  readonly set: NonNullable<ThemeFile['characters']>;
+}
+
 export interface ShownTheme {
   readonly kind: LookKind;
   // the theme whose look shows: the preferred one, or the built-in after a fallback, under forced colors or in safe start
@@ -101,8 +118,9 @@ export interface ShownTheme {
   readonly assets?: ThemeAssets;
   // the theme's custom CSS per region, as stored; none for a built-in look, under forced colors or in safe start
   readonly css?: NonNullable<ThemeFile['css']>;
-  // the theme's character set; none for the built-in look, under forced colors or in safe start
-  readonly characters?: NonNullable<ThemeFile['characters']>;
+  // the character set that shows and the theme it is from, which keys its pins: the look's own theme, or another installed
+  // theme under the project's touches; none for the built-in look, under forced colors or in safe start
+  readonly characters?: ShownCharacterSet;
   readonly builtin: boolean;
   // what chose the look: forced colors and System mode follow the OS kind, a fixed mode is its own kind, safe start the
   // built-in look of the mode's kind, a preview its own look, the schedule its active rule, override a pick that holds
@@ -115,6 +133,12 @@ export interface ShownTheme {
   // while the schedule decides: when a rule start next changes what shows (undefined: no rule within a week does)
   readonly until?: number;
   readonly fallback?: { readonly themeId: string; readonly reason: FallbackReason };
+}
+
+/** The character set `theme` shows with its assets, keyed by the theme the set is from. */
+export function characterSetOf(theme: ShownTheme): { readonly themeId: string; readonly characters?: ShownCharacterSet['set']; readonly assets?: ThemeAssets } {
+  const { characters, assets } = theme;
+  return { themeId: characters?.themeId ?? theme.themeId, ...(characters ? { characters: characters.set } : {}), ...(assets ? { assets } : {}) };
 }
 
 /** nativeTheme.themeSource: 'system' whenever the OS kind chooses the shown kind, else the shown kind, so native menus and scrollbars match it. */
@@ -145,7 +169,7 @@ export function resolveShown(inputs: AppearanceInputs): ShownTheme {
   const modeKind = systemMode ? inputs.osKind : inputs.mode;
   if (inputs.safeStart !== undefined) return { kind: modeKind, themeId: BUILTIN_THEME_ID, look: builtinLook(modeKind), builtin: true, decidedBy: 'safeStart', osDecides: systemMode };
   const { preview } = inputs;
-  if (preview) return { kind: preview.kind, themeId: preview.themeId, look: preview.look, ...styleOf(preview), builtin: false, decidedBy: 'preview', osDecides: systemMode };
+  if (preview) return { kind: preview.kind, themeId: preview.themeId, look: preview.look, ...styleOf(preview.themeId, preview), builtin: false, decidedBy: 'preview', osDecides: systemMode };
   return withTouches(inputs, baseLook(inputs));
 }
 
@@ -179,7 +203,7 @@ function withTouches(inputs: AppearanceInputs, shown: ShownTheme): ShownTheme {
   const { project } = inputs;
   if (project?.mode !== 'touches') return shown;
   const source = project.characterSet === undefined ? undefined : inputs.theme(project.characterSet);
-  const characters = source?.status === 'ok' ? source.theme.characters : undefined;
+  const characters = source?.status === 'ok' && source.theme.characters ? { themeId: source.id, set: source.theme.characters } : undefined;
   const touches = touchesOf(project).filter((touch) => touch !== 'characters' || characters !== undefined);
   if (touches.length === 0) return shown;
   const sprites = characters && source?.status === 'ok'
@@ -205,12 +229,12 @@ function lookOf(inputs: AppearanceInputs, themeId: string, kind: LookKind, decid
   if (entry.status !== 'ok') return builtin({ themeId, reason: entry.status });
   const look = entry.theme.looks[kind];
   if (look === undefined) return builtin({ themeId, reason: 'noLook' });
-  return { kind, themeId, look, ...styleOf(entry.theme), builtin: false, ...decided };
+  return { kind, themeId, look, ...styleOf(themeId, entry.theme), builtin: false, ...decided };
 }
 
-const styleOf = (theme: Pick<ThemeFile, 'style' | 'assets' | 'css' | 'characters'>): Pick<ShownTheme, 'style' | 'assets' | 'css' | 'characters'> => ({
+const styleOf = (themeId: string, theme: Pick<ThemeFile, 'style' | 'assets' | 'css' | 'characters'>): Pick<ShownTheme, 'style' | 'assets' | 'css' | 'characters'> => ({
   ...(theme.style !== undefined ? { style: theme.style } : {}),
   ...(theme.assets !== undefined ? { assets: theme.assets } : {}),
   ...(theme.css !== undefined ? { css: theme.css } : {}),
-  ...(theme.characters !== undefined ? { characters: theme.characters } : {}),
+  ...(theme.characters !== undefined ? { characters: { themeId, set: theme.characters } } : {}),
 });

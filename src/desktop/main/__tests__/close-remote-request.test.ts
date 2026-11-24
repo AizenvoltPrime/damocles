@@ -27,6 +27,7 @@ beforeEach(() => {
     state: () => ({ locale: 'en', platform: 'win32' }),
     focusOutside: () => {},
     awaitActivation: () => {},
+    modeChanged: () => undefined,
     popupsClosed: () => {},
     canRasterize: () => {},
     log: (line) => lines.push(line),

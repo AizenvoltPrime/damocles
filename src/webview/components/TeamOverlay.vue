@@ -163,14 +163,14 @@ function close(): void {
         <AgentChip
           v-if="totalTokens > 0"
           :icon="Database"
-          data-part="tokens"
+          data-usage="tokens"
           :value="formatTokenCount(totalTokens, locale)"
           :unit="t('overlays.agent.unit.tokens', totalTokens)"
         />
         <AgentChip
           v-if="cachePct > 0"
           :icon="Zap"
-          data-part="cache"
+          data-usage="cache"
           :value="`${cachePct}%`"
           :unit="t('overlays.agent.unit.cache')"
           :title="t('agentUsage.cacheHitTooltip')"
@@ -178,7 +178,7 @@ function close(): void {
         <AgentChip
           v-if="totalUsage.costUsd > 0"
           :icon="Receipt"
-          data-part="cost"
+          data-usage="cost"
           :value="costLabel(totalUsage.costUsd, totalBilled)"
           mono
           :title="costTitle(totalBilled)"

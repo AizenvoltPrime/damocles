@@ -307,9 +307,9 @@ describe('the team agent overlay meta chips', () => {
       global: { plugins: [i18n], stubs: { OverlayShell: Shell, MarkdownRenderer: true, ToolCallCard: true } },
     });
 
-    expect(wrapper.get('[data-part="tokens"]').text()).toBe('10.0K tokens');
-    expect(wrapper.get('[data-part="cache"]').text()).toBe('77% cache');
-    expect(wrapper.get('[data-part="cost"]').text()).toBe('$1.50');
+    expect(wrapper.get('[data-usage="tokens"]').text()).toBe('10.0K tokens');
+    expect(wrapper.get('[data-usage="cache"]').text()).toBe('77% cache');
+    expect(wrapper.get('[data-usage="cost"]').text()).toBe('$1.50');
   });
 });
 

@@ -21,7 +21,7 @@ import { createScmStore, SCM_STORE } from '../scm/scm-store';
 import { shellI18n } from '../i18n';
 import en from '../locales/en.json' with { type: 'json' };
 import el from '../locales/el.json' with { type: 'json' };
-import { FakeResizeObserver, STATE, contentName, fakeOverlayApi, fakePortsApi, fakeShellApi, opened, type FakeOverlayApi, type FakeShellApi } from './fakes';
+import { FakeResizeObserver, PAGE_PROVIDE, STATE, contentName, fakeOverlayApi, fakePortsApi, fakeShellApi, opened, type FakeOverlayApi, type FakeShellApi } from './fakes';
 
 const mounted: VueWrapper[] = [];
 const track = <T extends VueWrapper>(wrapper: T): T => {
@@ -373,7 +373,7 @@ describe('Reopen in WSL in Projects', () => {
     const groups: ShellProjectGroups = { order: ['local', 'ssh+h1'], collapsed: [] };
     const wrapper = track(mount(ProjectsSection, {
       props: { api, projects, selectedKey: 'app', hosts: [], view: options.view ?? 'flat', groups, platform: options.platform ?? 'win32', collapsed: false, bodySize: 300 },
-      global: { plugins: [shellI18n], stubs: { transition: false, 'transition-group': false } },
+      global: { provide: PAGE_PROVIDE, plugins: [shellI18n], stubs: { transition: false, 'transition-group': false } },
       attachTo: document.body,
     }));
     return { wrapper, api };

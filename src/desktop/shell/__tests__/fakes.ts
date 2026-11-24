@@ -15,8 +15,12 @@ import type { FlowStart, ForkState, PublishOwnersAnswer, PublishState } from '..
 import type { BranchNameCheck, ProtectedPushState } from '../../../shared/forge/protected-push';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { BUILTIN_THEME } from '../../../shared/themes/builtin';
+import { createPageCharacters, PAGE_CHARACTERS } from '../characters';
 import type { ThemeInstallPreview, ThemeInstallProgress } from '../../../shared/themes/install';
 import type { OverlayInstallCurrent, OverlayStoreResult, OverlayStoreView, OverlayThemesResult, ThemeInstallStart } from '../../preload/overlay-channels';
+
+/** What a page root provides the components a test mounts without it: its characters, none shown. */
+export const PAGE_PROVIDE = { [PAGE_CHARACTERS as symbol]: createPageCharacters().characters };
 
 // VS Code's search.* defaults, as main publishes them.
 export const SEARCH_SETTINGS: ShellSearchSettings = {
@@ -62,6 +66,7 @@ export const STATE: ShellState = {
     graph: {},
   },
   layoutRevision: 0,
+  themeRevision: 0,
   dockInset: 0,
   dockPeek: false,
   shortcuts: { newChat: 'Ctrl+N', newChatInWorktree: 'Shift+Alt+N', toggleSidebar: 'Ctrl+B', settings: 'Ctrl+,', quickOpen: 'Ctrl+P', toggleTerminal: 'Ctrl+`', newTerminal: 'Ctrl+Shift+`', splitTerminal: 'Ctrl+Shift+5', closeEditor: 'Ctrl+W', searchAgain: 'Ctrl+Shift+R', toggleQueryDetails: 'Ctrl+Shift+J', focusNextSearchResult: 'F4',
@@ -257,6 +262,8 @@ export type FakeShellApi = DamoclesShellApi & {
   scm: FakeScmApi;
   forge: FakeForgeShellApi;
   push: (state: ShellState) => void;
+  // the preload applied main's theme of this revision to the page
+  pushThemeRevision: (revision: number) => void;
   chatsChanged: (projectKey: string) => void;
   // main's ShownFolder push for one project
   pushShownFolder: (shown: ShownFolder) => void;
@@ -398,6 +405,7 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
   const searchFileUpdate = emitter<SearchFileUpdate>();
   const searchCommand = emitter<SearchCommandMessage>();
   const searchEditorHighlights = emitter<SearchEditorHighlights>();
+  const themeRevisions = emitter<number>();
   const list = (projectKey: string): ShellChatList => ({
     projectKey,
     chats,
@@ -467,6 +475,11 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
     keepThemeChanges: vi.fn(async () => undefined),
     revertThemeChanges: vi.fn(async () => undefined),
     stopShowingProposal: vi.fn(async () => undefined),
+    revokeScreenshotGrant: vi.fn(async () => undefined),
+    dismissScreenshotNotice: vi.fn(async () => undefined),
+    holdScreenshotNotice: vi.fn(),
+    onThemeRevision: vi.fn(themeRevisions.listen),
+    reportThemeApplied: vi.fn(),
     reportSidebarLayout: vi.fn(),
     reportGridSizes: vi.fn(),
     reportFocusedPart: vi.fn(),
@@ -575,6 +588,10 @@ export function fakeShellApi(chats: readonly ShellChat[] = [], overrides: Partia
       setDrafts: vi.fn(async () => {}),
     },
     push: (state) => { for (const l of stateListeners) l(state); },
+    pushThemeRevision: (revision) => {
+      document.documentElement.dataset['themeRevision'] = String(revision);
+      themeRevisions.emit(revision);
+    },
     chatsChanged: (key) => { for (const l of changedListeners) l(key); },
     pushShownFolder: shownFolder.emit,
     focusPart: (part) => { for (const l of focusListeners) l(part); },

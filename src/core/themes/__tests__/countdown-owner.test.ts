@@ -7,7 +7,7 @@ import { THEMES_DARK_SETTING } from '../../../desktop/local-services/desktop-con
 import { countdownLockPath } from '../countdown-lock';
 import { createThemeService, type ThemeService } from '../index';
 import { LOCK_STALE_MS } from '../write-lane';
-import { AGENT, draftOf, failWrites, fileSettings, ID, named, OTHER, readJson, writeTheme } from './service-fixtures';
+import { AGENT, draftOf, storedDraft, failWrites, fileSettings, ID, named, OTHER, readJson, writeTheme } from './service-fixtures';
 
 const INSTALLED = 'a'.repeat(32);
 const DEV = 'b'.repeat(32);
@@ -21,7 +21,7 @@ const appearanceFile = (): string => path.join(root, 'appearance.json');
 const themeFile = (id: string): string => path.join(root, 'themes', id, 'theme.json');
 const mark = (): unknown => readJson(appearanceFile())['pendingConfirm'];
 const applyOnTheFly = async (themes: ThemeService): Promise<string> => {
-  const draft = draftOf(themes.drafts.newId(), OTHER);
+  const draft = await storedDraft(themes, draftOf(themes.drafts.newId(), OTHER));
   const applied = await themes.applyDraft({ draft, pick: ['dark'], actor: AGENT, onTheFly: true, currentArrangement: async () => undefined });
   if (applied.kind !== 'applied') throw new Error('not applied');
   return applied.entryId;

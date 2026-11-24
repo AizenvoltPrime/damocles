@@ -65,6 +65,22 @@ describe('CoreClient', () => {
     expect(client.chatOfView('view-1')).toBeUndefined();
   });
 
+  it("tells when a chat's entry names another session than the entry before it, and not for its first entry or its removal", () => {
+    const { client, core } = connect();
+    const changed = vi.fn();
+    client.onChatSessionChanged(changed);
+    core.publish('chats', { panelId: 'host-1', entry: chat });
+    core.publish('chats', { panelId: 'host-1', entry: { ...chat, hasConversation: false } });
+    expect(changed).not.toHaveBeenCalled();
+    core.publish('chats', { panelId: 'host-1', entry: { ...chat, sessionId: 's2' } });
+    expect(changed.mock.calls).toEqual([['view-1', 's2']]);
+    const { sessionId: _sessionId, ...fresh } = chat;
+    core.publish('chats', { panelId: 'host-1', entry: fresh });
+    expect(changed.mock.calls).toEqual([['view-1', 's2'], ['view-1', undefined]]);
+    core.publish('chats', { panelId: 'host-1' });
+    expect(changed).toHaveBeenCalledTimes(2);
+  });
+
   // docs/invariants.md "Worktree chats", Ownership: a chat of project a works in its worktree w, which is open as a project itself.
   it('keeps a folder open as a project apart from the same folder held as a working folder, as core resolves it', () => {
     const { client, core } = connect();

@@ -3,6 +3,9 @@
  * Keyframes come from styles/motion.css.
  */
 
+/* The app layer runs to the end of the file, unindented; a rule outside every layer fails the build (scripts/protected-layer.ts). */
+@layer app {
+
 .sm-root {
   position: fixed;
   inset: 0;
@@ -864,4 +867,6 @@ mark.sm-mark {
 .sm-choice input {
   margin-top: 0.125rem;
   accent-color: var(--d-accent-fill);
+}
+
 }

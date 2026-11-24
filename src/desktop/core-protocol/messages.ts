@@ -54,7 +54,7 @@ import { GIT_HOST, parseCredentialFields, parseCredentialOrigin, isCredentialVal
 import type { PageSpec } from '../../shared/panel-html';
 import { brokerEnvOf, CLIENT_PENDING_REASONS, MAX_BROKER_ENV_NAME_CHARS, MAX_BROKER_ENV_VALUE_CHARS, MAX_BROKER_ENV_VARS, MAX_BROKER_EXPIRES_IN_MS, MAX_GLOBAL_MEMORY_CONTENT_CHARS, MAX_GLOBAL_MEMORY_ID_CHARS, MAX_GLOBAL_MEMORY_LABEL_CHARS, MAX_GLOBAL_MEMORY_TAGS, MAX_HELD_MEMORY_QUEUES, MAX_PLAN_MODEL_ID_CHARS, MAX_PLAN_MODEL_IDS, MAX_RELAYED_MCP_TIMEOUT_MS, MAX_RELAYED_MEMORIES, MAX_STANDING_GLOBALS, type BrokerAnswer, type BrowserToolAnswer, type ClientAuth, type ClientGlobalProfile, type ClientMcp, type ClientPolicy, type ClientUser, type GlobalMemoryListPage, type GlobalMemoryListRequest, type GlobalMemoryResolution, type GlobalMemorySearchFilters, type ListedGlobalMemory, type GlobalMemoryWrite, type HeldAuth, type HeldMemoryQueue, type RelayedGlobalMemory, type RelayedMcpServer, type SearchedGlobalMemory } from '../../shared/remote-user';
 import type { RelayedServedFile, ServedFile, ServedFileAnswer } from '../../shared/served-file-url';
-import { MAX_COMPUTER_NAME_CHARS, MAX_RELAYED_THEME_PNG_BYTES, MAX_RELAYED_THEME_TEXT_CHARS, MAX_THEME_UPLOAD_BYTES, THEME_READ_ABOUT, THEME_UPLOAD_CHUNK_BYTES, type RelayedThemeProject, type ThemeCommitAnswer, type ThemeContentPart, type ThemeReadAnswer, type ThemeReadRequest, type ThemeShowEnded, type ThemeStageAnswer, type ThemeStageRequest, type UserThemeCalls } from '../../shared/themes/relay';
+import { MAX_COMPUTER_NAME_CHARS, MAX_READ_SPRITE_REF_CHARS, MAX_READ_SPRITES, MAX_RELAYED_THEME_PNG_BYTES, MAX_SHEET_REF_CHARS, MAX_SHEET_REFS, MAX_RELAYED_THEME_TEXT_CHARS, MAX_THEME_UPLOAD_BYTES, THEME_PREVIEW_VIEWS, THEME_READ_ABOUT, THEME_UPLOAD_CHUNK_BYTES, type RelayedThemeProject, type ThemeCommitAnswer, type ThemeContentPart, type ThemePreviewView, type ThemeReadAnswer, type ThemeRendered, type ThemeReadRequest, type ThemeShowEnded, type ThemeShot, type ThemeShotCaptured, type ThemeShotTaken, type ThemeStageAnswer, type ThemeStageRequest, type UserThemeCalls, type ThemeChat } from '../../shared/themes/relay';
 import type { UserProfile } from '../../shared/types/memory';
 import { JOURNEY_FAILURES, type DesignCapture, type DesignJourneyRun, type DesignPreviewAnswer, type DesignPreviewFile, type DesignPreviewInfo, type DesignProbeResult, type DesignRender, type DesignRenderRequest, type JourneyStep } from '../../shared/types/design';
 import { MAX_JOURNEY_MESSAGE_CHARS, MAX_JOURNEY_OUTLINE_CHARS, MAX_JOURNEY_STEPS, parseJourneySteps } from '../../shared/design-journey';
@@ -67,7 +67,7 @@ import { EDITOR_HARD_MAX_DOCUMENT_BYTES, WORKTREE_PHASES, type ChatPlace, type C
 import { MAX_CALL_ARGS, REPOSITORY_CALLS, SCM_CALLS, WORKTREE_CALLS, type RepositoryCall, type ScmCall, type WorktreeCall } from './scm-calls';
 import { arr, bool, bytes, data, dict, either, finite, int, INVALID, localized, maybe, nonEmpty, none, num, obj, oneOf, opt, str, type Parser } from './schema';
 import type { LocalizedText } from '../../shared/localized-text';
-import { LOOK_SEEDS, MAX_TOKEN_VALUE_CHARS, PANELS, type Arrangement, type AssetMeta, type LookColors } from '../../shared/themes/schema';
+import { CHARACTER_SELECTIONS, CSS_REGIONS, LOOK_SEEDS, MAX_TOKEN_VALUE_CHARS, PANELS, type Arrangement, type AssetMeta, type LookColors } from '../../shared/themes/schema';
 import type { SystemLook, SystemLooks } from '../../shared/themes/system-theme';
 import { parseArrangement } from '../../shared/themes/arrangement';
 import { MAX_FONT_BYTES, type FontImport } from '../../shared/themes/fonts';
@@ -81,9 +81,10 @@ import {
   MAX_CHANGE_ID_CHARS, parseThemeActor, parseThemeHistoryChange, type ThemeActor, type ThemeHistoryChange, type ThemeHistoryEntry, type ThemeModeValue,
 } from '../../shared/themes/changes';
 import { parseScheduleRules, type ScheduleRule } from '../../shared/themes/schedule';
-import { MAX_STRIP_FRAMES, THEME_ID } from '../../shared/themes/limits';
-import { COUNTDOWN_OWNER, THEME_SHOW_END_REASONS, THEME_SHOW_REFUSALS, type ThemeShowEndReason, type ThemeShowRefusal } from '../../shared/themes/agent';
-import { MAX_PINNED_PROJECTS, MAX_SPRITE_BYTES, MAX_SPRITE_FPS, MAX_SPRITE_SIDE, type CharacterStrip, type PinEdit, type SpriteImport } from '../../shared/themes/characters';
+import { DRAFT_ID, MAX_SET_CHARACTERS, MAX_STRIP_FRAMES, MAX_THEME_NAME_CHARS, THEME_ID } from '../../shared/themes/limits';
+import { MAX_SHEETS } from '../../shared/themes/character-sheet';
+import { COUNTDOWN_OWNER, THEME_CAPTURE_REFUSALS, THEME_SHOW_END_REASONS, THEME_SHOW_REFUSALS, type CharacterSheetFacts, type ThemeCaptureRefusal, type ThemeShowEndReason, type ThemeShowRefusal } from '../../shared/themes/agent';
+import { CHARACTER_CHOICE_BY, CHARACTER_STATES, MAX_PINNED_PROJECTS, MAX_SPRITE_BYTES, MAX_SPRITE_FPS, MAX_SPRITE_SIDE, type CharacterChoiceBy, type CharacterStrip, type PinEdit, type SpriteImport } from '../../shared/themes/characters';
 import { checkProjectLook, MAX_PROJECT_KEY_CHARS, MAX_PROJECT_LOOKS, type ProjectLook } from '../../shared/themes/project-looks';
 import { OVERRIDABLE_TOKENS, type LookKind } from '../../shared/themes/tokens';
 import { MAX_CERTIFICATE_FIELD_CHARS, type ClientCertificateFilter } from '../../shared/client-certificate';
@@ -187,6 +188,9 @@ export interface Call<P, R> {
 /** The params and the result of request M of a request table. */
 export type Params<T, M extends keyof T> = T[M] extends Call<infer P, unknown> ? P : never;
 export type Result<T, M extends keyof T> = T[M] extends Call<unknown, infer R> ? R : never;
+
+/** Main's capture of the window: the shot it holds, or why it took none. */
+export type ThemeCaptureTaken = { readonly kind: 'shot'; readonly shot: ThemeShot } | { readonly kind: 'refused'; readonly reason: ThemeCaptureRefusal };
 
 /** Requests core sends and main serves: the proxied services and the writes of the mirrored ones. */
 export interface CoreRequests {
@@ -294,7 +298,9 @@ export interface CoreRequests {
   'user.theme.commit': Call<{ readonly clientId: string } & UserThemeCalls['commit']['params'], UserThemeCalls['commit']['result']>;
   'user.theme.discard': Call<{ readonly clientId: string } & UserThemeCalls['discard']['params'], void>;
   'user.theme.preview': Call<{ readonly clientId: string } & UserThemeCalls['preview']['params'], UserThemeCalls['preview']['result']>;
-  'user.theme.screenshotTake': Call<{ readonly clientId: string }, UserThemeCalls['screenshotTake']['result']>;
+  'user.theme.screenshotTake': Call<{ readonly clientId: string } & UserThemeCalls['screenshotTake']['params'], UserThemeCalls['screenshotTake']['result']>;
+  // the draft capture screenshotTake answered with captureId, after its card's Allow on that device
+  'user.theme.screenshotCapture': Call<{ readonly clientId: string } & UserThemeCalls['screenshotCapture']['params'], UserThemeCalls['screenshotCapture']['result']>;
   'user.theme.screenshot': Call<{ readonly clientId: string } & UserThemeCalls['screenshot']['params'], UserThemeCalls['screenshot']['result']>;
   'user.theme.screenshotDrop': Call<{ readonly clientId: string } & UserThemeCalls['screenshotDrop']['params'], void>;
   // ThemeSet install on the pinned device (feature themes); its card's Allow flashing never crosses from a remote core
@@ -327,10 +333,13 @@ export interface CoreRequests {
   // runs the host's Locate flow for the listed project with this key, the core's own folderKey of its path
   'window.locateProjectFolder': Call<{ readonly folderKey: string }, void>;
   // this computer's core only, for the agent's theme tools (feature themes); a daemon's core builds none of them
-  // a drawn preview of `theme`, which main validates: a 1280x800 PNG of its miniature with sample content only
-  'themes.render': Call<{ readonly theme: unknown; readonly mode: 'dark' | 'light' | 'split' }, { readonly png: Uint8Array }>;
-  // a screenshot of the window kept in main's memory under a one-time id, shown at url until dropped or 10 minutes pass
-  'themes.screenshotTake': Call<object, { readonly shotId: string; readonly url: string; readonly width: number; readonly height: number }>;
+  // a drawn preview of `theme`, which main validates: the sample window or its sidebar, or the character sheet's pages of the
+  // set's characters by index (default all)
+  'themes.render': Call<{ readonly theme: unknown; readonly view: ThemePreviewView; readonly look?: LookKind; readonly characters?: readonly number[] }, ThemeRendered>;
+  // a screenshot of the window kept in main's memory under a one-time id, shown at url until dropped or 10 minutes pass; with
+  // theme, which main validates, of that draft painted on the window for the capture; granted: no card asked, the chat's grant
+  // covers it, so main tells the user when another chat shows in the window
+  'themes.screenshotTake': Call<{ readonly chat: Pick<ThemeChat, 'id'>; readonly theme?: unknown; readonly granted?: true }, ThemeCaptureTaken>;
   'themes.screenshotRead': Call<{ readonly shotId: string }, { readonly png: Uint8Array }>;
   'themes.screenshotDrop': Call<{ readonly shotId: string }, void>;
   // an on-the-fly change core applied and marked pendingConfirm: answers once the keep-changes banner ends. entryId names the
@@ -356,8 +365,13 @@ export interface CoreRequests {
   // refused: the window cannot paint the proposal now, so nothing shows and the card's toggle stays off
   'themes.showInWindow': Call<{ readonly promptId: string; readonly chatTitle?: string; readonly theme: unknown }, { readonly refused?: ThemeShowRefusal }>;
   'themes.stopShowing': Call<{ readonly promptId: string }, void>;
+  // a theme card of the stage opened, whose miniature loads the theme's sprites and wallpapers, until cardClosed or core end
+  'themes.cardOpened': Call<{ readonly stageId: string; readonly theme: unknown }, void>;
+  'themes.cardClosed': Call<{ readonly stageId: string }, void>;
   // what the window shows now
   'themes.state': Call<object, { readonly kind: LookKind; readonly themeId: string; readonly decidedBy: string }>;
+  // the character the project of `key` shows as if it were selected, and what decided it; none: its letter
+  'themes.projectCharacter': Call<{ readonly key: string }, { readonly character?: { readonly themeId: string; readonly name: string; readonly by: CharacterChoiceBy } }>;
   // a wallpaper blob decoded in main's theme renderer (feature themes): its 480 px WebP thumbnail, luminance
   // percentiles, proposed palette and decoded size, which core writes under cache/<sha256>/; refused when its pixels do not
   // match its size. A moving wallpaper (kind animated or video, feature themes) also answers its first frame as PNG and
@@ -641,6 +655,8 @@ export interface MainRequests {
   'themes.showEnded': Call<{ readonly promptId: string; readonly reason: ThemeShowEndReason }, void>;
   // main let go of a screenshot to hold newer ones, so the card that shows it closes
   'themes.screenshotGone': Call<{ readonly shotId: string }, void>;
+  // the screenshot notice's Revoke for a chat of this core: its screenshot grant ends (feature themes)
+  'themes.screenshotGrantRevoke': Call<{ readonly chat: string }, void>;
   // puts back what the entry and every later one changed, as one new entry; arrangementNow: the window's, kept for its undo
   'themes.restore': Call<{ readonly entryId: string; readonly arrangementNow?: unknown }, { readonly arrangement?: unknown }>;
   // a font file stored as a theme blob (feature themes); refused for a collection, a restricted font or one too large
@@ -777,7 +793,7 @@ export interface MainRequests {
   'user.forge.describe': Call<{ readonly request: ForgeToolRequest; readonly viewId?: string; readonly toolCallId: string; readonly approval: boolean }, ForgeDescribeAnswer>;
   // this computer's core: a remote chat's theme tool on this computer's store, for the authority main names; project: the
   // host project main mapped the chat's folder to
-  'themes.relay.read': Call<{ readonly authority: string; readonly request: ThemeReadRequest; readonly project?: RelayedThemeProject }, ThemeReadAnswer>;
+  'themes.relay.read': Call<{ readonly authority: string; readonly request: ThemeReadRequest; readonly chat: string; readonly project?: RelayedThemeProject }, ThemeReadAnswer>;
   'themes.relay.uploadStart': Call<{ readonly authority: string } & UserThemeCalls['uploadStart']['params'], UserThemeCalls['uploadStart']['result']>;
   'themes.relay.uploadChunk': Call<{ readonly authority: string } & UserThemeCalls['uploadChunk']['params'], UserThemeCalls['uploadChunk']['result']>;
   'themes.relay.stage': Call<{ readonly authority: string; readonly request: ThemeStageRequest; readonly project?: RelayedThemeProject }, ThemeStageAnswer>;
@@ -792,6 +808,8 @@ export interface MainRequests {
   'themes.relay.installCommit': Call<{ readonly authority: string } & UserThemeCalls['installCommit']['params'], ThemeInstallCommitted>;
   'themes.relay.installCancel': Call<{ readonly authority: string; readonly installId: string }, void>;
   'themes.relay.allowFlash': Call<{ readonly authority: string; readonly installId: string; readonly sha256: string }, { readonly allowed: boolean }>;
+  // a remote chat's own draft, which main paints for a capture: refused unless the draft belongs to that authority's chat
+  'themes.relay.draftTheme': Call<{ readonly authority: string; readonly chat: string; readonly draft: string }, { readonly name: string; readonly theme: unknown } | { readonly refused: string }>;
   // a daemon's core: the window of the device that made the stage (the request's actor) ended its card's Show in window
   // (feature themes)
   'user.theme.showEnded': Call<ThemeShowEnded, void>;
@@ -1703,16 +1721,35 @@ const forgeTarget = obj({ serverId: label, repoPath: label, accountId: label, so
 // checks again, as it checks a local tool call
 const themeRecord: Parser<Readonly<Record<string, unknown>>> = (raw) =>
   (typeof raw === 'object' && raw !== null && !Array.isArray(raw) && themeData(raw) !== INVALID ? (raw as Readonly<Record<string, unknown>>) : INVALID);
+// a character sheet's facts name characters by their index in the set
+const setCharacter = int(0, MAX_SET_CHARACTERS - 1);
+const sheetState = oneOf(CHARACTER_STATES);
+const sheetFacts: Parser<CharacterSheetFacts> = obj({
+  sheets: arr(arr(setCharacter, MAX_SET_CHARACTERS, 1), MAX_SHEETS),
+  omitted: arr(setCharacter, MAX_SET_CHARACTERS),
+  unfit: arr(setCharacter, MAX_SET_CHARACTERS),
+  undrawn: arr(setCharacter, MAX_SET_CHARACTERS),
+  stills: arr(obj({ character: setCharacter, state: sheetState }), MAX_SET_CHARACTERS * CHARACTER_STATES.length),
+  clipped: arr(obj({ character: setCharacter, state: sheetState, shown: int(1, MAX_STRIP_FRAMES), frames: int(1, MAX_STRIP_FRAMES) }), MAX_SET_CHARACTERS * CHARACTER_STATES.length),
+  selection: oneOf(CHARACTER_SELECTIONS),
+  wallpaper: bool,
+});
 const themeContent: Parser<readonly ThemeContentPart[]> = arr(either<ThemeContentPart, ThemeContentPart>(
   obj({ type: oneOf(['text'] as const), text: str(MAX_RELAYED_THEME_TEXT_CHARS) }),
   obj({ type: oneOf(['image'] as const), png: bytes(MAX_RELAYED_THEME_PNG_BYTES) }),
 ), 16);
 // exactly what the ThemeRead tool sends: its schema bounds `theme` at 64 characters, and the tool drops an empty one
-const themeReadRequest: Parser<ThemeReadRequest> = obj({ about: opt(oneOf(THEME_READ_ABOUT)), theme: opt(nonEmpty(64)), preview: opt(bool) });
+// a draft only by its id, so no other text of a remote core's request reaches main's log or this computer's store
+const draftId: Parser<string> = (raw) => (typeof raw === 'string' && DRAFT_ID.test(raw) ? raw : INVALID);
+const themeReadRequest: Parser<ThemeReadRequest> = obj({
+  about: opt(oneOf(THEME_READ_ABOUT)), theme: opt(nonEmpty(64)), draft: opt(draftId), sprites: opt(arr(nonEmpty(MAX_READ_SPRITE_REF_CHARS), MAX_READ_SPRITES, 1)), region: opt(oneOf(CSS_REGIONS)),
+  preview: opt(oneOf(THEME_PREVIEW_VIEWS)), look: opt(lookKind), sheetCharacters: opt(arr(nonEmpty(MAX_SHEET_REF_CHARS), MAX_SHEET_REFS, 1)),
+});
 const themeReadAnswer: Parser<ThemeReadAnswer> = obj({ content: themeContent, isError: opt(yes) });
 const themeProject: Parser<RelayedThemeProject> = obj({ key: filePath, name: label });
 // the chat becomes a history entry's actor, so its id takes the actor's bound here, where a remote core's request arrives
-const themeChat = obj({ id: nonEmpty(MAX_CHANGE_ID_CHARS), title: opt(label) });
+const themeChatId = nonEmpty(MAX_CHANGE_ID_CHARS);
+const themeChat = obj({ id: themeChatId, title: opt(label) });
 const themeStageShape = {
   tool: oneOf(['set', 'schedule'] as const), input: themeRecord, toolCallId: key, chat: themeChat, planMode: bool, upload: opt(id),
 };
@@ -1721,7 +1758,7 @@ const themeStageAnswer: Parser<ThemeStageAnswer> = either<ThemeStageAnswer, Them
   obj({ kind: oneOf(['done'] as const), content: themeContent, details: themeRecord, isError: opt(yes), notes: opt(str(MAX_RELAYED_THEME_TEXT_CHARS)) }) as unknown as Parser<ThemeStageAnswer>,
   obj({
     kind: oneOf(['change'] as const), stageId: id, card: themeRecord, details: themeRecord,
-    summary: obj({ text: str(MAX_RELAYED_THEME_TEXT_CHARS), png: opt(bytes(MAX_RELAYED_THEME_PNG_BYTES)) }),
+    summary: obj({ text: str(MAX_RELAYED_THEME_TEXT_CHARS), pngs: opt(arr(bytes(MAX_RELAYED_THEME_PNG_BYTES), MAX_SHEETS, 1)) }),
     onTheFly: bool, notes: opt(str(MAX_RELAYED_THEME_TEXT_CHARS)), computer: opt(str(MAX_COMPUTER_NAME_CHARS)),
   }) as unknown as Parser<ThemeStageAnswer>,
 );
@@ -1735,6 +1772,15 @@ const themeUploadAck = obj({ received: int(0, MAX_THEME_UPLOAD_BYTES), complete:
 const themePreview = { stageId: id, promptId: id, on: bool };
 const themePreviewAnswer = obj({ showing: bool, refused: opt(oneOf(THEME_SHOW_REFUSALS)) });
 const themeShot = obj({ shotId: id, url: nonEmpty(MAX_ID_CHARS * 2), width: int(1, MAX_SHOT_SIDE), height: int(1, MAX_SHOT_SIDE) });
+const captureRefused = obj({ kind: oneOf(['refused'] as const), reason: oneOf(THEME_CAPTURE_REFUSALS) });
+const captureTaken: Parser<ThemeCaptureTaken> = either<ThemeCaptureTaken, ThemeCaptureTaken>(obj({ kind: oneOf(['shot'] as const), shot: themeShot }), captureRefused);
+// the draft's theme is data: main checks it (AgentThemes.validated) before it paints it
+const themeShotTaken: Parser<ThemeShotTaken> = either<ThemeShotTaken, ThemeShotTaken>(
+  either<ThemeShotTaken, ThemeShotTaken>(obj({ kind: oneOf(['shot'] as const), shot: themeShot, granted: bool }), captureRefused),
+  obj({ kind: oneOf(['draft'] as const), captureId: id, draft: obj({ name: nonEmpty(MAX_THEME_NAME_CHARS), theme: themeRecord }) }) as unknown as Parser<ThemeShotTaken>,
+);
+const notGranted: Parser<false> = (raw) => (raw === false ? false : INVALID);
+const themeShotCaptured: Parser<ThemeShotCaptured> = either<ThemeShotCaptured, ThemeShotCaptured>(obj({ kind: oneOf(['shot'] as const), shot: themeShot, granted: notGranted }), captureRefused);
 
 const relayedForgeShape = { toolCallId: id, folder: filePath, endpoints: remoteEndpoints, pushRemote: opt(label), branch: opt(label), tool: label, input: forgeToolInput, expected: opt(forgeTarget) };
 const forgeToolRequest: Parser<ForgeToolRequest> = obj({ tool: label, input: forgeToolInput, authorityKey: label, projectKey: opt(filePath), project: label, endpoints: remoteEndpoints, pushRemote: opt(label), branch: opt(label), expected: opt(forgeTarget) });
@@ -2007,14 +2053,15 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'user.mcp.readResource': method(obj({ clientId: id, server: label, uri: message }), value),
   'user.forge.tool': method(obj({ clientId: id, viewId: opt(id), ...relayedForgeShape }), forgeToolAnswer),
   'user.forge.describe': method(obj({ clientId: id, viewId: opt(id), approval: bool, ...relayedForgeShape }), forgeDescribeAnswer),
-  'user.theme.read': method(obj({ clientId: id, request: themeReadRequest, folder: opt(filePath) }), themeReadAnswer),
+  'user.theme.read': method(obj({ clientId: id, request: themeReadRequest, chat: themeChatId, folder: opt(filePath) }), themeReadAnswer),
   'user.theme.uploadStart': method(obj({ clientId: id, ...themeUploadStart }), obj({ uploadId: id })),
   'user.theme.uploadChunk': method(obj({ clientId: id, ...themeUploadChunk }), themeUploadAck),
   'user.theme.stage': method(obj({ clientId: id, folder: opt(filePath), ...themeStageShape }), themeStageAnswer),
   'user.theme.commit': method(obj({ clientId: id, stageId: id }), themeCommitAnswer),
   'user.theme.discard': method(obj({ clientId: id, stageId: id, keepDraft: opt(bool) }), done),
   'user.theme.preview': method(obj({ clientId: id, ...themePreview }), themePreviewAnswer),
-  'user.theme.screenshotTake': method(obj({ clientId: id }), themeShot),
+  'user.theme.screenshotTake': method(obj({ clientId: id, chat: obj({ id: themeChatId }), draft: opt(draftId) }), themeShotTaken),
+  'user.theme.screenshotCapture': method(obj({ clientId: id, captureId: id }), themeShotCaptured),
   'user.theme.screenshot': method(obj({ clientId: id, shotId: id }), obj({ png: bytes(MAX_RELAYED_THEME_PNG_BYTES) })),
   'user.theme.screenshotDrop': method(obj({ clientId: id, shotId: id }), done),
   'user.theme.installPrepare': method(
@@ -2039,8 +2086,11 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'design.journey': method(obj({ designId, relPath: filePath, widths: arr(renderWidth, MAX_PROBE_WIDTHS, 1), state: nullable(id), steps: journeySteps, outline: opt(bool) }), designJourneyRun),
   'design.replayJourney': method(obj({ panelId: id, designId, relPath: filePath, state: nullable(id), steps: journeySteps, reducedMotion: bool }), done),
   'window.locateProjectFolder': method(obj({ folderKey: filePath }), done),
-  'themes.render': method(obj({ theme: themeData, mode: oneOf(['dark', 'light', 'split'] as const) }), obj({ png: bytes(MAX_DATA_CHARS) })),
-  'themes.screenshotTake': method(obj({}), obj({ shotId: id, url: nonEmpty(MAX_ID_CHARS * 2), width: int(1, MAX_SHOT_SIDE), height: int(1, MAX_SHOT_SIDE) })),
+  'themes.render': method(
+    obj({ theme: themeData, view: oneOf(THEME_PREVIEW_VIEWS), look: opt(lookKind), characters: opt(arr(setCharacter, MAX_SHEET_REFS, 1)) }),
+    obj({ pngs: arr(bytes(MAX_DATA_CHARS), MAX_SHEETS), sheet: opt(sheetFacts) }),
+  ),
+  'themes.screenshotTake': method(obj({ chat: obj({ id: themeChatId }), theme: opt(themeData), granted: opt(yes) }), captureTaken),
   'themes.screenshotRead': method(obj({ shotId: id }), obj({ png: bytes(MAX_DATA_CHARS) })),
   'themes.screenshotDrop': method(obj({ shotId: id }), done),
   'themes.applied': method(obj({ entryId: nonEmpty(MAX_ID_CHARS), chatId: opt(nonEmpty(MAX_ID_CHARS)), chatTitle: opt(str(MAX_LABEL_CHARS)), change: themeHistoryChange, previousName: opt(themeName), previousId: opt(nonEmpty(MAX_ID_CHARS)) }), obj({ outcome: oneOf(['kept', 'reverted'] as const) })),
@@ -2052,7 +2102,10 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'themes.copyName': method(obj({ themeId, name: themeName }), obj({ name: themeName })),
   'themes.showInWindow': method(obj({ promptId: id, chatTitle: opt(str(MAX_LABEL_CHARS)), theme: themeData }), obj({ refused: opt(oneOf(THEME_SHOW_REFUSALS)) })),
   'themes.stopShowing': method(obj({ promptId: id }), done),
+  'themes.cardOpened': method(obj({ stageId: id, theme: themeData }), done),
+  'themes.cardClosed': method(obj({ stageId: id }), done),
   'themes.state': method(obj({}), obj({ kind: lookKind, themeId, decidedBy: id })),
+  'themes.projectCharacter': method(obj({ key: filePath }), obj({ character: opt(obj({ themeId, name: nonEmpty(MAX_THEME_NAME_CHARS), by: oneOf(CHARACTER_CHOICE_BY) })) })),
   'themes.analyze': method(
     obj({ sha256: sha256Hex, mime: nonEmpty(64), width: int(1, 8192), height: int(1, 8192), kind: opt(oneOf(['image', 'animated', 'video'] as const)), durationMs: opt(int(0, MAX_VIDEO_MS)) }),
     obj({ thumb: bytes(MAX_THUMB_BYTES), stats: imageStats, palette: wallpaperPalette, width: int(1, 8192), height: int(1, 8192), still: opt(bytes(MAX_STILL_BYTES)), flash: opt(flashVerdict) }),
@@ -2248,6 +2301,7 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'themes.keep': method(obj({ entryId: nonEmpty(MAX_ID_CHARS) }), done),
   'themes.showEnded': method(obj({ promptId: id, reason: oneOf(THEME_SHOW_END_REASONS) }), done),
   'themes.screenshotGone': method(obj({ shotId: id }), done),
+  'themes.screenshotGrantRevoke': method(obj({ chat: themeChatId }), done),
   'themes.restore': method(obj({ entryId: nonEmpty(MAX_ID_CHARS), arrangementNow: opt(value) }), obj({ arrangement: opt(value) })),
   'themes.importFont': method(
     obj({ bytes: bytes(MAX_FONT_BYTES) }),
@@ -2336,7 +2390,7 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'user.mcp.readResource': method(obj({ server: label, uri: message }), value),
   'user.forge.tool': method(obj({ request: forgeToolRequest, viewId: opt(id), toolCallId: id }), forgeToolAnswer),
   'user.forge.describe': method(obj({ request: forgeToolRequest, viewId: opt(id), toolCallId: id, approval: bool }), forgeDescribeAnswer),
-  'themes.relay.read': method(obj({ authority: filePath, request: themeReadRequest, project: opt(themeProject) }), themeReadAnswer),
+  'themes.relay.read': method(obj({ authority: filePath, request: themeReadRequest, chat: themeChatId, project: opt(themeProject) }), themeReadAnswer),
   'themes.relay.uploadStart': method(obj({ authority: filePath, ...themeUploadStart }), obj({ uploadId: id })),
   'themes.relay.uploadChunk': method(obj({ authority: filePath, ...themeUploadChunk }), themeUploadAck),
   'themes.relay.stage': method(obj({ authority: filePath, request: themeStageRequest, project: opt(themeProject) }), themeStageAnswer),
@@ -2347,6 +2401,10 @@ const MAIN_REQUESTS: Tables<MainToCore>['requests'] = {
   'themes.relay.installCommit': method(obj({ authority: filePath, ...installCommitShape, chat: themeChat }), installCommitted),
   'themes.relay.installCancel': method(obj({ authority: filePath, installId: id }), done),
   'themes.relay.allowFlash': method(obj({ authority: filePath, installId: id, sha256: sha256Hex }), obj({ allowed: bool })),
+  'themes.relay.draftTheme': method(
+    obj({ authority: filePath, chat: themeChatId, draft: draftId }),
+    either<{ readonly name: string; readonly theme: unknown } | { readonly refused: string }, { readonly name: string; readonly theme: unknown } | { readonly refused: string }>(obj({ name: nonEmpty(MAX_THEME_NAME_CHARS), theme: themeData }), obj({ refused: message })),
+  ),
   'user.theme.showEnded': method(obj({ stageId: id, promptId: id, reason: oneOf(THEME_SHOW_END_REASONS) }), done),
   'user.theme.screenshotGone': method(obj({ shotId: id }), done),
   'user.theme.installUpdated': method(obj({ preview: installPreview }), done),

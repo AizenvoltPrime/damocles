@@ -7,7 +7,7 @@ import { checkPalette, contrast } from '../../../../shared/themes/contrast';
 import { deriveLook } from '../../../../shared/themes/derive';
 import type { LookColors, ThemeFile } from '../../../../shared/themes/schema';
 import { systemTheme } from '../../../../shared/themes/system-theme';
-import { resolveShown, themeSourceFor, wallpaperMotion, type AppearanceInputs, type MotionInputs } from '../appearance';
+import { resolveShown, themeSourceFor, transientPreviewOf, wallpaperMotion, type AppearanceInputs, type MotionInputs } from '../appearance';
 import { opaqueBackground, shownPalette, trustedCss, trustedPalette } from '../theme-css';
 import { cssRefusal, readThemeFiles, themeEntry, type LibraryEntry } from '../theme-files';
 import { BUILTIN_MONO_STACK, BUILTIN_UI_STACK } from '../../../../shared/themes/fonts';
@@ -78,6 +78,28 @@ describe('resolveShown', () => {
   it('paints a transient preview\'s look and kind over the preferred look', () => {
     const preview = { themeId: ID, kind: 'light' as const, look: NIGHT.looks.dark! };
     expect(resolveShown(inputs({ preview }))).toMatchObject({ kind: 'light', themeId: ID, builtin: false, decidedBy: 'preview', look: preview.look });
+  });
+});
+
+describe('transientPreviewOf', () => {
+  const sprite = 'd'.repeat(64);
+  const full: ThemeFile = {
+    schemaVersion: 1, id: 'x', name: 'Full', looks: { dark: { colors: BUILTIN_THEME.looks.dark!.colors } },
+    style: { radius: 1.5 },
+    css: { sidebar: '.a { color: red }' },
+    characters: { name: 'Pals', characters: [{ name: 'Pip', states: { idle: { asset: sprite } } }] },
+    assets: { [sprite]: { kind: 'sprite', mime: 'image/png', bytes: 10, width: 16, height: 16, license: {} } },
+  };
+
+  it('carries the look and everything the theme draws: style, assets, CSS and characters', () => {
+    expect(transientPreviewOf(full, 'dark', 2)).toEqual({
+      themeId: 'x', kind: 'dark', look: full.looks.dark, style: full.style, assets: full.assets, css: full.css, characters: full.characters, setIndex: 2,
+    });
+  });
+
+  it('is undefined for a look the theme lacks, and leaves out what the theme lacks', () => {
+    expect(transientPreviewOf(full, 'light')).toBeUndefined();
+    expect(transientPreviewOf({ schemaVersion: 1, id: 'y', name: 'Bare', looks: { dark: full.looks.dark! } }, 'dark')).toEqual({ themeId: 'y', kind: 'dark', look: full.looks.dark });
   });
 });
 
@@ -502,7 +524,8 @@ describe("the selected project's own look in resolveShown", () => {
     expect(shown.touches).toEqual(['wallpaper', 'characters']);
     expect(shown.look.wallpapers).toEqual([wallpaper]);
     expect(shown.assets).toMatchObject({ [WALL]: IMAGE, [SPRITE]: ARCADE.assets![SPRITE] });
-    expect(shown.characters).toEqual(ARCADE.characters);
+    // the set keeps the theme it is from, which keys its pins
+    expect(shown.characters).toEqual({ themeId: ARCADE_ID, set: ARCADE.characters });
     const gone = resolveShown(scheduled({ project: { mode: 'touches', characterSet: '2c9e6679-7425-40de-944b-e07fc1f90ae7' } }));
     expect(gone.touches).toBeUndefined();
     expect(gone.characters).toBeUndefined();

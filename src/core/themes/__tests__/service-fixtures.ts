@@ -4,7 +4,7 @@ import { vi } from 'vitest';
 import type { SettingsStore } from '../../../platform/settings-store';
 import type { LookColors, ThemeFile } from '../../../shared/themes/schema';
 import type { LookKind } from '../../../shared/themes/tokens';
-import type { ThemeDraft } from '../drafts';
+import type { DraftBody, ThemeDraft } from '../drafts';
 import type { ThemeService } from '../index';
 
 export const ID = '0f8fad5b-d9cb-469f-a165-70867728950e';
@@ -46,7 +46,10 @@ export function fileSettings(settingsFile: string): SettingsStore {
   } as unknown as SettingsStore;
 }
 
-export const draftOf = (id: string, themeId: string, name = 'Fresh'): ThemeDraft => ({
+/** A draft as the store wrote it: its first revision. */
+export const storedDraft = (themes: Pick<ThemeService, 'drafts'>, body: DraftBody): Promise<ThemeDraft> => themes.drafts.put(body, null);
+
+export const draftOf = (id: string, themeId: string, name = 'Fresh'): DraftBody => ({
   id,
   owner: { authority: 'local', sessionId: AGENT.chatId, toolCallId: 'call-1' },
   createdAt: 1,

@@ -14,6 +14,7 @@ import {
 import { TOOL_THEME_SCHEDULE, TOOL_THEME_SET } from '../../../shared/tool-names';
 import { TOOL_GROUP_SETTINGS } from '../../../shared/types/tools';
 import type { ThemeShowRefusal } from '../../../shared/themes/agent';
+import type { ThemeFile } from '../../../shared/themes/schema';
 import type { ThemeInstallCommitted, ThemeInstallPrepared, ThemeInstallPreview } from '../../../shared/themes/install';
 import { l } from '../../l10n';
 import { currentPin } from '../../client-snapshots';
@@ -81,18 +82,27 @@ export function relayedThemeBackend(deps: ThemeRelayDeps): ThemeBackend {
   };
 
   return {
-    read: (request, signal) => call(pinned(), 'read', { request, folder: deps.folder() }, signal),
-    async screenshotTake(signal) {
+    read: (request, chat, signal) => call(pinned(), 'read', { request, chat, folder: deps.folder() }, signal),
+    // the device decides whether the chat holds the grant, so this core's granted is not sent
+    async screenshotTake({ chat, draft }, signal) {
       const clientId = pinned();
-      const shot = await call(clientId, 'screenshotTake', {}, signal);
-      owners.set(shot.shotId, clientId);
-      return shot;
+      const taken = await call(clientId, 'screenshotTake', { chat: { id: chat.id }, ...(draft !== undefined ? { draft } : {}) }, signal);
+      if (taken.kind === 'shot') owners.set(taken.shot.shotId, clientId);
+      if (taken.kind === 'draft') owners.set(taken.captureId, clientId);
+      return taken;
+    },
+    async screenshotCapture(captureId, signal) {
+      const clientId = ownerOf(captureId);
+      owners.delete(captureId);
+      const taken = await call(clientId, 'screenshotCapture', { captureId }, signal);
+      if (taken.kind === 'shot') owners.set(taken.shot.shotId, clientId);
+      return taken;
     },
     screenshotRead: async (shotId, signal) => (await call(ownerOf(shotId), 'screenshot', { shotId }, signal)).png,
-    async screenshotDrop(shotId) {
-      const clientId = ownerOf(shotId);
-      owners.delete(shotId);
-      await call(clientId, 'screenshotDrop', { shotId }, cleanupDeadline());
+    async screenshotDrop(id) {
+      const clientId = ownerOf(id);
+      owners.delete(id);
+      await call(clientId, 'screenshotDrop', { shotId: id }, cleanupDeadline());
     },
     upload(asset, sessionId, signal) {
       if (asset.bytes.byteLength > MAX_THEME_UPLOAD_BYTES) return Promise.resolve({ error: `the image is larger than ${MAX_THEME_UPLOAD_BYTES / MB} MB, the most a theme asset may be.` });
@@ -221,7 +231,7 @@ interface Receiving {
 
 /** This computer's core's side of the relay: a remote host's theme tool calls on its own store and window, per authority. */
 export interface ThemeRelayHost {
-  read(authority: string, request: ThemeReadRequest, project: RelayedThemeProject | undefined, signal: AbortSignal): Promise<ThemeReadAnswer>;
+  read(authority: string, request: ThemeReadRequest, chat: string, project: RelayedThemeProject | undefined, signal: AbortSignal): Promise<ThemeReadAnswer>;
   uploadStart(authority: string, start: UserThemeCalls['uploadStart']['params']): { readonly uploadId: string };
   uploadChunk(authority: string, chunk: UserThemeCalls['uploadChunk']['params']): ThemeUploadAck;
   stage(authority: string, request: ThemeStageRequest, project: RelayedThemeProject | undefined, signal: AbortSignal): Promise<ThemeStageAnswer>;
@@ -236,6 +246,8 @@ export interface ThemeRelayHost {
   installCancel(authority: string, installId: string): Promise<void>;
   // only main calls it, for a press on that authority's chat page on this computer; the remote core cannot
   allowFlash(authority: string, installId: string, sha256: string): Promise<{ readonly allowed: boolean }>;
+  // only main calls it, for a screenshot of a draft: the draft's name and theme when it is one of that authority's chat's own
+  draftTheme(authority: string, chat: string, draft: string): Promise<{ readonly name: string; readonly theme: ThemeFile } | { readonly refused: string }>;
   // removes the relayed drafts last changed more than RELAYED_DRAFT_TTL_MS ago that no stage names; how many went
   expireDrafts(now?: number): Promise<number>;
   // Forget host: the authority's drafts, stages, uploads and staged installs go
@@ -297,7 +309,7 @@ export function createThemeRelayHost(agent: ThemeAgentHost): ThemeRelayHost {
   };
 
   return {
-    read: async (authority, request, project, signal) => boundedRelayRead(await backend(authority, project).read(request, signal)),
+    read: async (authority, request, chat, project, signal) => boundedRelayRead(await backend(authority, project).read(request, chat, signal)),
     uploadStart(authority, start) {
       if (start.bytes > MAX_THEME_UPLOAD_BYTES) throw new Error(`A theme asset is at most ${MAX_THEME_UPLOAD_BYTES / MB} MB`);
       for (const [id, other] of [...receiving]) if (other.authority === authority && other.sessionId === start.sessionId) endReceiving(id);
@@ -375,6 +387,11 @@ export function createThemeRelayHost(agent: ThemeAgentHost): ThemeRelayHost {
       await agent.themes.installCancel(installId);
     },
     allowFlash: async (authority, installId, sha256) => ({ allowed: installs.get(installId) === authority && await agent.themes.installAllowFlash(installId, sha256) }),
+    async draftTheme(authority, chat, draft) {
+      const found = await agent.themes.drafts.get(draft);
+      if (found?.owner.authority !== authority || found.owner.sessionId !== chat) return { refused: 'This chat has no such theme draft.' };
+      return { name: found.theme.name, theme: found.theme };
+    },
     expireDrafts,
     forgetAuthority,
     async keepAuthorities(keep) {

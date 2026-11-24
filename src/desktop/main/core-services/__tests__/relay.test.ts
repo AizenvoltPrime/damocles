@@ -217,6 +217,15 @@ it("drops a remote core's theme card sent as a binary post, the path main does n
   expect(forwarded).toEqual([{ type: 'requestThemeChange', promptId: 'p' }, { type: 'browserFrame', frame: new Uint8Array([1, 2]) }]);
 });
 
+it("drops a remote core's word on the screenshot grant, as text or binary: this computer's main alone tells the page", () => {
+  const { post, postBinary, forwarded } = crafting(REMOTE_CORE_REFUSED_POSTS, THEME_CARD_POSTS);
+  post('themeScreenshotGrant', JSON.stringify({ type: 'themeScreenshotGrant', granted: true }));
+  post('streamStart', JSON.stringify({ type: 'themeScreenshotGrant', granted: false }));
+  postBinary({ type: 'themeScreenshotGrant', granted: true, frame: new Uint8Array([1]) });
+  postBinary({ type: ['themeScreenshotGrant'], granted: false });
+  expect(forwarded).toEqual([]);
+});
+
 it("passes a local core's posts of this computer's reply types, as text or binary", () => {
   const { post, postBinary, forwarded } = crafting(new Set());
   for (const type of REMOTE_CHAT_LOCAL_POSTS) post(type, JSON.stringify({ type }));

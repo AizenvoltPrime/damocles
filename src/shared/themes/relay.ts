@@ -1,10 +1,10 @@
 // The theme tools of a chat on a remote host: the daemon's core resolves sources on the host and sends the store work to the
 // device its turn is pinned to (user.theme.*), whose core alone writes (docs/invariants.md "Remote daemon and wire").
 import type { CssDroppedPart } from './css-types';
-import type { ThemeChangeAction, ThemeChangeItem, ThemeContrastIssue, ThemeLaterChange, ThemeShowEndReason, ThemeShowRefusal, ThemeToolDetails } from './agent';
+import type { CharacterSheetFacts, ThemeCaptureRefusal, ThemeChangeAction, ThemeChangeItem, ThemeContrastIssue, ThemeLaterChange, ThemeShowEndReason, ThemeShowRefusal, ThemeToolDetails } from './agent';
 import type { ThemeInstallCommit, ThemeInstallCommitted, ThemeInstallPreview } from './install';
 import type { LocalizedText } from '../localized-text';
-import type { ThemeFile } from './schema';
+import type { CssRegion, ThemeFile } from './schema';
 import type { LookKind } from './tokens';
 import { MAX_MOVING_BYTES } from './wallpapers';
 
@@ -37,13 +37,47 @@ export interface ThemeChat {
   readonly title?: string;
 }
 
-export const THEME_READ_ABOUT = ['current', 'installed', 'theme', 'schedule', 'project'] as const;
+export const THEME_READ_ABOUT = ['current', 'installed', 'theme', 'schedule', 'project', 'sprites', 'css'] as const;
+// What a drawn preview shows: the whole sample window, its sidebar cropped at native resolution, or the character sheet.
+export const THEME_PREVIEW_VIEWS = ['window', 'sidebar', 'characters'] as const;
+export type ThemePreviewView = (typeof THEME_PREVIEW_VIEWS)[number];
+// The characters a sheet shows, named by the agent: at most this many, each a name or an index of at most this many characters.
+export const MAX_SHEET_REFS = 32;
+export const MAX_SHEET_REF_CHARS = 64;
+
+/** A drawn preview main is asked for: a view, its look, and for the sheet the characters by index (default all). */
+export interface ThemeRenderAsk {
+  readonly view: ThemePreviewView;
+  readonly look?: LookKind;
+  readonly characters?: readonly number[];
+}
+
+/** What main drew: one image of the window or the sidebar, or the sheet's pages (none for a set with nothing to draw). */
+export interface ThemeRendered {
+  readonly pngs: readonly Uint8Array[];
+  readonly sheet?: CharacterSheetFacts;
+}
+
+// ThemeRead about sprites reads at most this many, each named in at most MAX_READ_SPRITE_REF_CHARS.
+export const MAX_READ_SPRITES = 32;
+export const MAX_READ_SPRITE_REF_CHARS = 80;
 
 export interface ThemeReadRequest {
   readonly about?: (typeof THEME_READ_ABOUT)[number];
   // a theme id, never empty
   readonly theme?: string;
-  readonly preview?: boolean;
+  // one of the reading chat's own drafts, for about theme and sprites and for preview
+  readonly draft?: string;
+  // about sprites: draft sprite names, sha256s or character/state
+  readonly sprites?: readonly string[];
+  // about css: the one region to read; every region without it
+  readonly region?: CssRegion;
+  // a drawn preview of the theme read, of the draft or of the shown one; none without it
+  readonly preview?: ThemePreviewView;
+  // the look the preview draws; default the kind on screen when the theme has it, else its only look
+  readonly look?: LookKind;
+  // preview characters: the characters the sheet shows, by name or index; every one without it
+  readonly sheetCharacters?: readonly string[];
 }
 
 export interface ThemeReadAnswer {
@@ -86,8 +120,8 @@ export type ThemeStageAnswer =
     readonly stageId: string;
     readonly card: ThemeStagedCard;
     readonly details: ThemeToolDetails;
-    // every outcome's result is the outcome's sentence, this text after it, and this image
-    readonly summary: { readonly text: string; readonly png?: Uint8Array };
+    // every outcome's result is the outcome's sentence, this text after it, and these images
+    readonly summary: { readonly text: string; readonly pngs?: readonly Uint8Array[] };
     // applied at once on commit, then held until the keep-changes banner ends
     readonly onTheFly: boolean;
     // added to the result of a call that did not fail
@@ -126,9 +160,24 @@ export interface ThemeShot {
   readonly height: number;
 }
 
+/**
+ * What a screenshot ask got: a held shot (granted: taken under the chat's grant, so no card asks), a draft that waits for the
+ * card's Allow before screenshotCapture paints and captures it, or main's refusal.
+ */
+export type ThemeShotTaken =
+  | { readonly kind: 'shot'; readonly shot: ThemeShot; readonly granted: boolean }
+  | { readonly kind: 'draft'; readonly captureId: string; readonly draft: { readonly name: string; readonly theme: ThemeFile } }
+  | { readonly kind: 'refused'; readonly reason: ThemeCaptureRefusal };
+
+/** What a draft capture after its card's Allow got: the shot, which the press cleared and no grant did, or main's refusal. */
+export type ThemeShotCaptured =
+  | { readonly kind: 'shot'; readonly shot: ThemeShot; readonly granted: false }
+  | { readonly kind: 'refused'; readonly reason: ThemeCaptureRefusal };
+
 /** The user.theme.* requests a daemon's core sends the pinned device, each with that device's client id beside its params. */
 export interface UserThemeCalls {
-  readonly read: { readonly params: { readonly request: ThemeReadRequest; readonly folder?: string }; readonly result: ThemeReadAnswer };
+  // chat: the reading chat's session id, whose drafts alone it reads
+  readonly read: { readonly params: { readonly request: ThemeReadRequest; readonly chat: string; readonly folder?: string }; readonly result: ThemeReadAnswer };
   readonly uploadStart: { readonly params: ThemeUploadStart & { readonly sessionId: string }; readonly result: { readonly uploadId: string } };
   readonly uploadChunk: { readonly params: ThemeUploadChunk; readonly result: ThemeUploadAck };
   readonly stage: { readonly params: ThemeStageRequest & { readonly folder?: string }; readonly result: ThemeStageAnswer };
@@ -138,7 +187,11 @@ export interface UserThemeCalls {
   // Show in window of the card promptId names; showing: whether the window shows it now
   // refused: why the device's window cannot paint the proposal, with showing false
   readonly preview: { readonly params: { readonly stageId: string; readonly promptId: string; readonly on: boolean }; readonly result: { readonly showing: boolean; readonly refused?: ThemeShowRefusal } };
-  readonly screenshotTake: { readonly params: object; readonly result: ThemeShot };
+  // chat: the reading chat, whose grant and drafts alone count; draft: one of its own drafts to capture instead of the window
+  // the chat by its id alone: the device names it from its own records
+  readonly screenshotTake: { readonly params: { readonly chat: Pick<ThemeChat, 'id'>; readonly draft?: string }; readonly result: ThemeShotTaken };
+  // the draft screenshotTake answered with captureId, after its card's Allow
+  readonly screenshotCapture: { readonly params: { readonly captureId: string }; readonly result: ThemeShotCaptured };
   readonly screenshot: { readonly params: { readonly shotId: string }; readonly result: { readonly png: Uint8Array } };
   readonly screenshotDrop: { readonly params: { readonly shotId: string }; readonly result: void };
   // ThemeSet install of an https URL the chat's gate judged as its WebFetch: the device downloads and stages it; computer: the
@@ -163,11 +216,13 @@ export function boundedRelayText(text: string, max: number = MAX_RELAYED_THEME_T
   return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }
 
+const IMAGE_LEFT_OUT = 'The image was too large to send.';
+
 /** A result's parts as they leave for the host: texts bounded, an oversize image left out. */
 function boundedRelayContent(content: readonly ThemeContentPart[]): ThemeContentPart[] {
   return content.flatMap((part): ThemeContentPart[] => {
     if (part.type === 'text') return [{ type: 'text', text: boundedRelayText(part.text) }];
-    return part.png.byteLength <= MAX_RELAYED_THEME_PNG_BYTES ? [{ type: 'image', png: part.png }] : [{ type: 'text', text: 'The image was too large to send.' }];
+    return part.png.byteLength <= MAX_RELAYED_THEME_PNG_BYTES ? [{ type: 'image', png: part.png }] : [{ type: 'text', text: IMAGE_LEFT_OUT }];
   });
 }
 
@@ -178,9 +233,11 @@ export function boundedRelayRead(answer: ThemeReadAnswer): ThemeReadAnswer {
 export function boundedRelayStage(answer: ThemeStageAnswer): ThemeStageAnswer {
   const notes = answer.notes !== undefined ? { notes: boundedRelayText(answer.notes) } : {};
   if (answer.kind === 'done') return { ...answer, content: boundedRelayContent(answer.content), ...notes };
-  const { png: _png, ...summary } = answer.summary;
-  const png = answer.summary.png !== undefined && answer.summary.png.byteLength <= MAX_RELAYED_THEME_PNG_BYTES ? { png: answer.summary.png } : {};
-  return { ...answer, summary: { ...summary, text: boundedRelayText(answer.summary.text), ...png }, ...notes };
+  const { pngs: _pngs, ...summary } = answer.summary;
+  const kept = (answer.summary.pngs ?? []).filter((png) => png.byteLength <= MAX_RELAYED_THEME_PNG_BYTES);
+  const leftOut = kept.length < (answer.summary.pngs?.length ?? 0) ? `\n${IMAGE_LEFT_OUT}` : '';
+  const text = boundedRelayText(answer.summary.text, MAX_RELAYED_THEME_TEXT_CHARS - leftOut.length) + leftOut;
+  return { ...answer, summary: { ...summary, text, ...(kept.length > 0 ? { pngs: kept } : {}) }, ...notes };
 }
 
 export function boundedRelayCommit(answer: ThemeCommitAnswer): ThemeCommitAnswer {
@@ -190,6 +247,6 @@ export function boundedRelayCommit(answer: ThemeCommitAnswer): ThemeCommitAnswer
 export type UserThemeMethod = keyof UserThemeCalls;
 
 export const USER_THEME_METHODS: readonly UserThemeMethod[] = [
-  'read', 'uploadStart', 'uploadChunk', 'stage', 'commit', 'discard', 'preview', 'screenshotTake', 'screenshot', 'screenshotDrop',
+  'read', 'uploadStart', 'uploadChunk', 'stage', 'commit', 'discard', 'preview', 'screenshotTake', 'screenshotCapture', 'screenshot', 'screenshotDrop',
   'installPrepare', 'installCommit', 'installCancel',
 ];

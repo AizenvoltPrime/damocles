@@ -9,7 +9,7 @@ import { call, chatRequests, type OpenAIStub } from '../desktop/support/openai-s
 import { closeSettingsModal, openSettingsModal, settingsNav } from '../desktop/support/settings';
 import { overlayPage } from '../desktop/support/shell';
 import { dockShown, themeDockView, themeEditorPage, windowBackground, writeTheme } from '../desktop/support/themes';
-import { awaitTurnEnd, chatInput } from '../desktop/support/ui';
+import { awaitTurnEnd, chatInput, clickAnswer } from '../desktop/support/ui';
 import { shutdownHostDaemon } from './support/daemon-teardown';
 import { addHost, expect, hostLogs, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test } from './support/remote';
 import { TARGET_USER } from './support/sshd';
@@ -208,6 +208,79 @@ test('theme tools in a remote chat change this computer\'s app through the relay
     // the switch takes the tools out of the chat's eligible set, so pi answers for a tool the chat no longer has
     expect(toolResults(openai).at(-1)).toBe('Tool ThemeSet not found');
     expect(fs.readdirSync(themesDir)).toHaveLength(written);
+
+    await shutdownHostDaemon(desktop.app, hostId, fixture);
+  } finally {
+    await openai.close();
+  }
+});
+
+const shotCard = (tab: Page): Locator => tab.getByRole('region', { name: 'Send a screenshot of the window to the model?', exact: true });
+const grantStrip = (tab: Page): Locator => tab.getByRole('region', { name: 'Screenshots allowed for this chat.', exact: true });
+
+test("a remote chat's screenshot grant lives on this computer: Allow for this chat covers the next screenshot with no card, the strip's Revoke ends it here, and a draft's Allow once captures the draft here", { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
+  test.setTimeout(600_000);
+  const fixture = await sshd('prod-1');
+  const openai = await startTargetStub(home, fixture);
+  try {
+    writeUserSettings(home, { 'damocles.desktop.theme': 'dark', 'damocles.desktop.git.autofetch': false });
+    await fixture.sh(`mkdir -p ${APP}`, TARGET_USER);
+    const desktop = await launch({ env: { ...remoteEnv(ssh, mirror), DAMOCLES_E2E_HOOKS: '1' } });
+    const hostId = await addHost(desktop.app, { alias: 'prod-1', name: 'prod-1' });
+    await openRemoteFolder(desktop.app, hostId, APP);
+    const key = await remoteProjectKey(desktop.app, { authorityKey: `ssh+${hostId}` }, APP);
+    const tab = await newRemoteChat(desktop.app, key);
+    await turn(tab, openai, 'Load the theme tools.', call('ToolSearch', { tools: ['theme'] }));
+
+    // the card's Allow for this chat, pressed on this computer's page, grants the chat here
+    openai.replies.push(call('ThemeRead', { screenshot: true }));
+    await chatInput(tab).fill('Look at my window.');
+    await chatInput(tab).press('Enter');
+    await expect(shotCard(tab)).toBeVisible(CHECKED);
+    await clickAnswer(shotCard(tab).getByRole('option', { name: /^Allow for this chat/ }));
+    await expect(shotCard(tab)).toBeHidden(CHECKED);
+    await expect(tab.getByText('Echo: Look at my window.', { exact: true })).toBeVisible(CHECKED);
+    await awaitTurnEnd(tab);
+    await expect(tab.getByTestId('theme-tool-card').last()).toHaveAttribute('data-outcome', 'sent');
+    await expect(grantStrip(tab)).toBeVisible(CHECKED);
+    await expect.poll(() => mainLog(home), CHECKED).toContain(`[remote] a chat on ssh+${hostId} was granted screenshots on this computer`);
+
+    // the next screenshot raises no card: this computer's record of the grant decides it
+    await turn(tab, openai, 'Look again.', call('ThemeRead', { screenshot: true }));
+    await expect(tab.getByTestId('theme-tool-card').last()).toHaveAttribute('data-outcome', 'sent');
+    await expect.poll(() => mainLog(home), CHECKED).toContain(`[remote] user.theme.screenshotTake for ssh+${hostId}: the window, under the chat's grant`);
+
+    // the strip's Revoke ends the grant on this computer, and the next screenshot asks on its card again
+    const revoke = grantStrip(tab).getByRole('button', { name: 'Revoke', exact: true });
+    await expect(revoke).not.toHaveAttribute('aria-disabled', 'true', CHECKED);
+    await revoke.click();
+    await expect(grantStrip(tab)).toBeHidden(CHECKED);
+    await expect.poll(() => mainLog(home), CHECKED).toContain(`[remote] the screenshot grant of a chat on ssh+${hostId} was revoked on this computer`);
+    openai.replies.push(call('ThemeRead', { screenshot: true }));
+    await chatInput(tab).fill('One more look.');
+    await chatInput(tab).press('Enter');
+    await expect(shotCard(tab)).toBeVisible(CHECKED);
+    await clickAnswer(shotCard(tab).getByRole('option', { name: 'Deny', exact: true }));
+    await expect(tab.getByText('Echo: One more look.', { exact: true })).toBeVisible(CHECKED);
+    await awaitTurnEnd(tab);
+    await expect(tab.getByTestId('theme-tool-card').last()).toHaveAttribute('data-outcome', 'denied');
+
+    // a draft's screenshot: the card shows the draft here, and its Allow once makes this computer paint and capture it
+    // (user.theme.screenshotCapture) and records no grant
+    await turn(tab, openai, 'Stage a warm draft.', call('ThemeSet', { ...AMBER, stage: true }));
+    const draftId = /Draft ([^:\s]+):/.exec(toolResults(openai).at(-1) ?? '')?.[1];
+    expect(draftId).toBeDefined();
+    openai.replies.push(call('ThemeRead', { screenshot: true, draft: draftId }));
+    await chatInput(tab).fill('Look at the draft on my window.');
+    await chatInput(tab).press('Enter');
+    const draftCard = tab.getByRole('region', { name: 'Send the model a screenshot of a draft on the window?', exact: true });
+    await expect(draftCard).toBeVisible(CHECKED);
+    await clickAnswer(draftCard.getByRole('option', { name: 'Allow once', exact: true }));
+    await expect(tab.getByText('Echo: Look at the draft on my window.', { exact: true })).toBeVisible(CHECKED);
+    await awaitTurnEnd(tab);
+    await expect(tab.getByTestId('theme-tool-card').last()).toHaveAttribute('data-outcome', 'sent');
+    await expect.poll(() => mainLog(home), CHECKED).toContain(`[remote] user.theme.screenshotCapture for ssh+${hostId} after its Allow on this computer`);
+    await expect(grantStrip(tab)).toHaveCount(0);
 
     await shutdownHostDaemon(desktop.app, hostId, fixture);
   } finally {

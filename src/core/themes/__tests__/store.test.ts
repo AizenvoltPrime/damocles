@@ -11,13 +11,14 @@ import { validateTheme, type LookColors } from '../../../shared/themes/schema';
 import { systemTheme } from '../../../shared/themes/system-theme';
 import { THEMES_DARK_SETTING, THEMES_LIGHT_SETTING } from '../../../desktop/local-services/desktop-configuration';
 import { createAppearanceStore } from '../appearance-store';
-import { createDraftStore } from '../drafts';
+import { createDraftStore, DraftConflictError, MAX_DRAFT_SPRITES, type DraftBody } from '../drafts';
 import { createThemeService, PREFERRED_LOOK_SETTINGS, type ThemeService } from '../index';
 import { createThemePathRule } from '../network-rule';
+import { MAX_STATE_FILE_BYTES } from '../state-file';
 import { createThemeStore, removeOrphanedTemps, writeFileAtomic } from '../store';
 import { createWriteLane, LOCK_NAME } from '../write-lane';
 import { collectionFont, sfntFont, woff2Font, woffFont } from './font-fixtures';
-import { AGENT, draftOf, failReads, failWrites, fileSettings, named } from './service-fixtures';
+import { AGENT, draftOf, storedDraft, failReads, failWrites, fileSettings, named } from './service-fixtures';
 
 const ID = '0f8fad5b-d9cb-469f-a165-70867728950e';
 const OTHER = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
@@ -342,7 +343,7 @@ describe('theme service', () => {
     expect(fs.existsSync(path.dirname(themeFile(ID)))).toBe(false);
     expect((await themes.list()).map((entry) => entry.id)).toEqual(['damocles', 'damocles-system']);
     expect(await themes.duplicate('damocles', 'Mine')).toBe(ID);
-    const again = themes.applyDraft({ draft: draftOf(themes.drafts.newId(), ID, 'Again'), pick: [], actor: AGENT, onTheFly: false, currentArrangement: async () => undefined });
+    const again = themes.applyDraft({ draft: await storedDraft(themes, draftOf(themes.drafts.newId(), ID, 'Again')), pick: [], actor: AGENT, onTheFly: false, currentArrangement: async () => undefined });
     await expect(again).rejects.toThrow('The theme Again was not saved: a theme folder of its id is already there.');
     expect((JSON.parse(fs.readFileSync(themeFile(ID), 'utf8')) as { name: string }).name).toBe('Mine');
   });
@@ -526,9 +527,51 @@ describe('theme service', () => {
     });
   });
 
+  it('writes a draft one revision on from the one it was read at, and refuses a write from an older one', async () => {
+    const themes = service();
+    const body = draftOf(themes.drafts.newId(), ID);
+    expect((await themes.drafts.put(body, null)).revision).toBe(1);
+    expect((await themes.drafts.put(body, 1)).revision).toBe(2);
+    await expect(themes.drafts.put(body, 1)).rejects.toBeInstanceOf(DraftConflictError);
+    await expect(themes.drafts.put(body, null)).rejects.toBeInstanceOf(DraftConflictError);
+    expect((await themes.drafts.get(body.id))?.revision).toBe(2);
+  });
+
+  const sprite = { sha256: 'a'.repeat(64), asset: { kind: 'sprite', mime: 'image/png', bytes: 10, width: 16, height: 16, license: {} } } as const;
+  const manySprites = Object.fromEntries(Array.from({ length: MAX_DRAFT_SPRITES + 1 }, (_, i) => [`s${i}`, sprite]));
+
+  it('refuses to write a draft it would not read back, and writes nothing', async () => {
+    const themes = service();
+    const body = draftOf(themes.drafts.newId(), ID);
+    const unreadable: DraftBody[] = [
+      { ...body, sprites: manySprites },
+      { ...body, sprites: { 'no spaces': sprite } },
+      { ...body, sprites: { pip: { ...sprite, asset: { ...sprite.asset, kind: 'font' } } } },
+      { ...body, owner: { ...body.owner, toolCallId: 'x'.repeat(MAX_STATE_FILE_BYTES) } },
+    ];
+    for (const draft of unreadable) await expect(themes.drafts.put(draft, null)).rejects.toThrow(`The draft ${body.id} is not one the store reads back`);
+    expect(fs.existsSync(path.join(root, 'drafts', `${body.id}.json`))).toBe(false);
+    expect((await themes.drafts.put({ ...body, sprites: { pip: sprite } }, null)).sprites).toEqual({ pip: sprite });
+  });
+
+  it('leaves out a draft file with no revision or one that is no whole number from 1, and one naming too many sprites', async () => {
+    const themes = service();
+    const written = await storedDraft(themes, draftOf(themes.drafts.newId(), ID));
+    const file = path.join(root, 'drafts', `${written.id}.json`);
+    const stored = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    const { revision: _revision, ...unrevised } = stored;
+    for (const raw of [unrevised, { ...stored, revision: 0 }, { ...stored, revision: 1.5 }, { ...stored, revision: '1' }, { ...stored, sprites: manySprites }]) {
+      fs.writeFileSync(file, JSON.stringify(raw));
+      expect(await themes.drafts.get(written.id), JSON.stringify(raw).slice(0, 200)).toBeUndefined();
+      expect(await createDraftStore(root, writeFileAtomic).list()).toEqual([]);
+    }
+    fs.writeFileSync(file, JSON.stringify(stored));
+    expect((await themes.drafts.get(written.id))?.revision).toBe(1);
+  });
+
   it('sweeps every draft at core start and counts the drafts, not the other files beside them', async () => {
     const themes = service();
-    for (const themeId of [ID, OTHER]) await themes.drafts.put(draftOf(themes.drafts.newId(), themeId));
+    for (const themeId of [ID, OTHER]) await storedDraft(themes, draftOf(themes.drafts.newId(), themeId));
     fs.writeFileSync(path.join(root, 'drafts', `${ID}.json.${OTHER}.tmp`), 'half');
     fs.writeFileSync(path.join(root, 'drafts', 'notes.txt'), 'mine');
     expect(await themes.sweepDrafts()).toBe(2);

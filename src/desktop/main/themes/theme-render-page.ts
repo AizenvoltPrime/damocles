@@ -1,35 +1,41 @@
-// The theme renderer's page, window and session: the built theme-render entry under a fresh script nonce, with Damocles' own
-// font faces and nothing of the user's, in a hidden offscreen sandboxed window with no preload and no bridge, in a session of
-// its own.
+// The theme renderer's page, window and session: the built theme-render entry under a fresh nonce, whose page writes a window
+// job's appearance into its style elements, in a hidden offscreen sandboxed window with no preload and no bridge, in a session
+// of its own.
 import { randomBytes } from 'node:crypto';
 import { BrowserWindow, session as electronSession, type NativeImage, type Session } from 'electron';
 import { THEME_RENDER_SIZE } from '../../../shared/themes/agent';
+import { HOST_THEME_STYLE_ID, HOST_THEME_USER_STYLE_ID, HOST_TRUSTED_STYLE_ID } from '../../../shared/host-theme';
 import { APP_ORIGIN, handleThemeRenderProtocol, type ThemeRenderPages } from '../protocol';
 import { loadAppPage, restrictPermissions } from '../security';
 import { freshFrames } from './offscreen-frame';
+import { THEME_RENDER_PARTITION } from '../../preload/page-paths';
 import type { RenderPage } from './theme-renderer';
-
-// No `persist:` prefix, so nothing the page caches outlives the run.
-export const THEME_RENDER_PARTITION = 'theme-render';
 
 /**
  * Builds the theme renderer's session: the app scheme answered by its own handler, which alone serves a blob still under
- * analysis, no permission and no download. Call once per process, after `ready` and before the first page opens.
+ * analysis, no permission, no download, and every request cancelled but the app origin's and the page's own data and blob URLs.
+ * Call once per process, after `ready` and before the first page opens.
  */
 export function createThemeRenderSession(resourceRoot: string, pages: ThemeRenderPages): Session {
   const session = electronSession.fromPartition(THEME_RENDER_PARTITION);
   handleThemeRenderProtocol(session.protocol, resourceRoot, pages);
   restrictPermissions(session);
   session.on('will-download', (event) => event.preventDefault());
+  // a compromised renderer does not honour the page's CSP, so the session itself lets nothing reach the network
+  session.webRequest.onBeforeRequest((details, answer) => answer({ cancel: !details.url.startsWith(`${APP_ORIGIN}/`) && !/^(data|blob):/.test(details.url) }));
   return session;
 }
 
-/** The page's CSP: scripts only by nonce, images and fonts only from app:// and the job's data URLs, and no media: a video is decoded from fed bytes. */
+/**
+ * The page's CSP: scripts only by nonce, style elements only by nonce or from app://, images and fonts only from app:// and the
+ * job's data URLs, and no media: a video is decoded from fed bytes. Style attributes stay allowed: highlighted code carries them.
+ */
 export function themeRenderCsp(nonce: string): string {
-  return `default-src 'none'; script-src 'nonce-${nonce}'; style-src ${APP_ORIGIN} 'unsafe-inline'; img-src ${APP_ORIGIN} data: blob:; font-src ${APP_ORIGIN}; base-uri 'none'; form-action 'none';`;
+  return `default-src 'none'; script-src 'nonce-${nonce}'; style-src-elem ${APP_ORIGIN} 'nonce-${nonce}'; style-src-attr 'unsafe-inline'; img-src ${APP_ORIGIN} data: blob:; font-src ${APP_ORIGIN}; base-uri 'none'; form-action 'none';`;
 }
 
-export function themeRenderHtml(fontFaceCss: string): string {
+/** The page under a fresh nonce: the host theme, trusted and user style elements stand empty after the stylesheet, for the job's appearance. */
+export function themeRenderHtml(): string {
   const nonce = randomBytes(16).toString('base64');
   const assets = `${APP_ORIGIN}/desktop-shell/assets`;
   return `<!DOCTYPE html>
@@ -38,7 +44,9 @@ export function themeRenderHtml(fontFaceCss: string): string {
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="${themeRenderCsp(nonce)}">
   <link href="${assets}/theme-render.css" rel="stylesheet">
-  <style>${fontFaceCss.replace(/</g, '\\3c ')}</style>
+  <style id="${HOST_THEME_STYLE_ID}" nonce="${nonce}"></style>
+  <style id="${HOST_TRUSTED_STYLE_ID}" nonce="${nonce}"></style>
+  <style id="${HOST_THEME_USER_STYLE_ID}" nonce="${nonce}"></style>
   <title>Damocles theme render</title>
 </head>
 <body>
@@ -112,7 +120,18 @@ export async function openThemeRenderPage(url: string, gone: (reason: string) =>
       frames.resize(width, height);
     },
     // a frame from 'paint', Electron's documented offscreen output: capturePage here rejects with UnknownVizError under software compositing
-    capture: async (width, height) => new Uint8Array((await frames.fresh(width, height)).toPNG()),
-    close: destroy,
+    capture: async (width, height, crop) => {
+      const frame = await frames.fresh(width, height);
+      return new Uint8Array((crop ? frame.crop(crop) : frame).toPNG());
+    },
+    // settles on the page's destroyed event: until then it shares the session with whatever job runs next
+    close: () => new Promise<void>((resolve) => {
+      if (contents.isDestroyed()) {
+        resolve();
+        return;
+      }
+      contents.once('destroyed', () => resolve());
+      contents.close();
+    }),
   };
 }

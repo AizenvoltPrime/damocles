@@ -249,6 +249,7 @@ shows the project's letter until the theme names another image.
 | Field | Rule |
 | --- | --- |
 | `name` | The set's name, 1 to 64 characters, not only spaces, on one line as a theme's name is. |
+| `selection` | Optional, `outline` (the default) or `none`. It decides how the sidebar marks the selected project's character. |
 | `characters[].name` | 1 to 64 characters, not only spaces, on one line, unique in the set: a pin names a character by it. |
 | `characters[].alt` | Optional, at most 200 characters. |
 | `characters[].states.idle` | Required. `running` and `waiting` are optional; a state a character lacks shows its idle image. |
@@ -272,11 +273,24 @@ with "Blocked: flashes" and a seizure warning in the theme editor, until you cho
 stays on this computer. A strip of 6 frames a second or fewer cannot flash more than three times a second and moves without
 a check. An animated image or an SVG also gets its first frame drawn as `still.png`.
 
+The selected project's character in the sidebar gets an outline in the project's color that follows its opaque pixels, so
+a sprite on a clear background shows no box around it; under a Windows contrast theme the outline takes the system's
+highlight color. With `selection` `none` it gets no outline, and its row's highlight still shows which project is selected.
+A project shown by its letter keeps a ring around the letter's box. Theme CSS cannot change the outline, since it cannot set
+`filter`; `selection` is the way to turn it off.
+
 Each project gets one character of the shown theme's set by a hash of its project key, so it keeps the same one across
 restarts. The theme editor's Characters section pins one per project for that theme, or keeps it in every theme ("Keep in
 every theme"): that character then shows in every theme without a pin of its own, the built-in look included, and stays
 after the theme it came from is deleted. Pins are this computer's (`~/.damocles/themes/projects.json`), written only by
 Damocles, never part of a theme file or an export.
+
+The agent sees and pins only its own chat's project. ThemeRead `about: 'project'` names the character the project shows when
+it is selected and what decided it: a pin for the shown theme (`themePin`), a character kept in every theme (`everyTheme`)
+or the hash of its key (`projectKey`). ThemeSet `target: 'project'` with `pin: { character, theme?, everyTheme? }` pins a
+character of an installed theme (the one named, else the one whose set the project shows), keeps it in every theme, or with
+`character: null` removes the theme's pin (with `everyTheme: true`, the character kept in every theme), through the same card or keep-changes banner as any change, as one history entry that Undo
+reverses. A draft's characters can be pinned once the draft is applied, since a pin names an installed theme.
 
 Characters move as Settings › Appearance › Character motion says (`damocles.desktop.themes.characterMotion`): Always (the
 default), On hover (only while the pointer is over the character or its row) or Selected project. Reduce motion, the
@@ -285,10 +299,20 @@ character shows.
 
 The theme editor's Characters section picks the set (None, the theme's own, or a copy of another theme's), shows each
 character in idle, running and waiting, adds a character from an image (Frames in the image cuts a strip; 1 is a still
-image), replaces a state's image, removes a character, and edits the pins; pins are saved with the theme. A pick of another set,
-or of None, in place of the theme's own can be undone there until the set is edited again. The agent's
-ThemeSet sets `characters` from sprites it draws as pixel grids (`asset.from.pixels`: up to 32 x 32 pixels, 16 colors and
-12 frames), which Damocles turns into a sprite-strip SVG with crisp edges.
+image), replaces a state's image, removes a character, sets Selected project to Outline or None (`selection`), and edits the
+pins; pins are saved with the theme. A pick of another set,
+or of None, in place of the theme's own can be undone there until the set is edited again.
+
+The agent's ThemeSet draws sprites as pixel grids (`sprites`, up to 24 a call: each up to 32 x 32 pixels, 16 colors and 12
+frames), which Damocles turns into sprite-strip SVGs with crisp edges, and makes palette variants of them (`recolor`, which
+replaces palette colors and keeps the frames and the rate). Its draft keeps each sprite under a name, so a later call names a
+sprite instead of repeating it, and a name given a new sprite moves the states that showed the old one. `characters` replaces
+the whole set; `characterEdits` adds, changes, renames or removes characters by name and keeps the rest, so one state of one
+character changes without restating the set. ThemeRead `about: 'sprites'` gives back each pixel-grid sprite's palette, rows
+and frame size, and the characters and states that show it. ThemeRead and ThemeSet `preview: 'characters'` show the agent
+character sheets: each state of each character enlarged by a whole number on the sidebar's color, over the sidebar's
+wallpaper, as the selected project and at the sidebar's size at the default text size, and each frame of a strip over a checkerboard, in up to
+four images (docs/tools.md).
 
 ## How the colors are used
 
@@ -395,7 +419,7 @@ with the Damocles look in its place, and changes nothing.
 ```json
 "css": {
   "transcript": "[data-tool-card][data-tool-status=\"error\"] { border-color: var(--d-danger-fill); }",
-  "sidebar": "[role=\"option\"][aria-selected=\"true\"] { font-weight: 600; }"
+  "sidebar": "[data-chat-row][data-selected] { font-weight: 600; }"
 }
 ```
 
@@ -416,21 +440,77 @@ It stops at trusted UI and at safety marks inside it (host badges, the Untrusted
 which always paint above the content around them, and it cannot reach outside the element: the element clips what it
 paints, so nothing a theme draws can cover another part of the window. A tool card and a message bubble are inside their
 region's element, so a theme styles their own background, border and corners. Rules sit in the last CSS layer, so they
-win over Damocles' utility classes; the few app rules outside a layer win unless the theme's rule is `!important`, which is
-kept.
+win over every Damocles rule without `!important`. `!important` is kept, for a value an element's inline style sets, and
+it still loses to the rules that keep trusted UI and safety marks intact. A few Damocles rules inside these areas are
+`!important` themselves and also win over a theme's `!important`:
+
+- In the transcript, a code block's `pre`, `code`, lines and spans and the spans of a diff's code keep a transparent
+  background, since the highlighter writes backgrounds inline. Color the block around the code instead.
+- While reduce motion is on, every animation and transition takes no time, a theme's `transition` included.
 
 ### Hooks
 
-Tool cards in the transcript carry attributes a theme may select on, which keep their names and values across versions.
-`data-tool-status` may gain values in a later version, so style the card itself first and a status on top of it, and never
-treat the values below as the only ones:
+Each region carries attributes a theme may select on, which keep their names and values across versions. Each sits inside
+its region's element, so a rule on it applies without `!important`. A value list may gain values in a later version (a
+tool's status, a terminal's state), so style the element itself first and a value on top of it, and never treat the values
+below as the only ones. "Present or absent" marks an attribute with no value of its own: select it as `[data-selected]`.
 
-| Attribute | Values |
-| --- | --- |
-| `data-tool-card` | On every tool card. |
-| `data-tool` | The tool's own name: `Bash`, `Read`, `Edit`, `Agent`, `ThemeSet`, an MCP tool's full name, and so on. |
-| `data-tool-status` | `running` (started or about to), `done`, `error` (failed or denied), `stopped` (cancelled, never ran, or its outcome was not recorded) or `blocked` (waiting for your answer, or blocked by a rule). An agent or team card has the status of its agent or its run, not of the call that started it: a background agent's card is `running` until the agent ends, and a team's is `blocked` while a member waits for your answer. |
-| `data-part` | `header` (the card's top row), `tile` (the icon tile in it), `summary` (the call's one-line argument in it) and `body` (what the card shows below its header; a card with nothing there has none, and a folded detail still counts). Agent and team cards have `header` and `tile`. |
+```css
+[data-project-row][data-selected] { background-color: var(--d-hover); }
+[data-tool-card][data-tool-status="error"] [data-part="header"] { color: var(--d-danger); }
+```
+
+#### `transcript`
+
+| Selector | Values | Meaning |
+| --- | --- | --- |
+| `[data-tool-card]` | Present or absent | On every tool card. |
+| `[data-tool]` | A name | On a tool card: the tool's own name, such as `Bash`, `Read`, `Edit`, `Agent`, `ThemeSet` or an MCP tool's full name. |
+| `[data-tool-status]` | `running`, `done`, `error`, `stopped`, `blocked` | On a tool card: `running` (started or about to), `done`, `error` (failed or denied), `stopped` (cancelled, never ran, or its outcome was not recorded) or `blocked` (waiting for your answer, or blocked by a rule). An agent or team card has the status of its agent or its run, not of the call that started it: a background agent's card is `running` until the agent ends, and a team's is `blocked` while a member waits for your answer. |
+| `[data-part]` | `header`, `tile`, `summary`, `body` | Inside a tool card: `header` (the card's top row), `tile` (the icon tile in it), `summary` (the call's one-line argument in it) and `body` (what the card shows below its header; a card with nothing there has none, and a folded detail still counts). Agent and team cards have `header` and `tile`. |
+
+#### `sidebar`
+
+| Selector | Values | Meaning |
+| --- | --- | --- |
+| `[data-project-row]` | Present or absent | On each project row of the Projects section. |
+| `[data-project-state]` | `idle`, `running`, `waiting` | On a project row: `waiting` while one of its chats waits on you, else `running` while one runs, else `idle`. |
+| `[data-chat-row]` | Present or absent | On each chat row of the Chats section. |
+| `[data-chat-state]` | `idle`, `running`, `waiting` | On a chat row: `waiting` while the chat waits on you, `running` while it runs, else `idle`. |
+| `[data-selected]` | Present or absent | On the selected project row and its avatar, and on the selected chat row. |
+| `[data-avatar]` | `letter`, `character` | On a project's avatar: `letter` for the project's initial on its color, `character` for the theme's character. |
+| `[data-character]` | A name | On a character avatar: the character's name. |
+| `[data-character-state]` | `idle`, `running`, `waiting` | On a character avatar: the state it shows. |
+| `[data-character-moving]` | `true`, `false` | On a character avatar: whether it moves now. |
+| `[data-selection]` | `outline`, `none` | On a character avatar: the character set's `selection`, how the selected project's character is marked. |
+
+#### `titlebar`
+
+| Selector | Values | Meaning |
+| --- | --- | --- |
+| `[data-part]` | `brand`, `project`, `chat` | `brand` (the Damocles button), `project` (the breadcrumb's project, its avatar and name) and `chat` (the breadcrumb's chat title, once the chat has one). |
+| `[data-avatar]` | `letter`, `character` | On a project's avatar: `letter` for the project's initial on its color, `character` for the theme's character. |
+| `[data-character]` | A name | On a character avatar: the character's name. |
+| `[data-character-state]` | `idle`, `running`, `waiting` | On a character avatar: the state it shows. |
+| `[data-character-moving]` | `true`, `false` | On a character avatar: whether it moves now. |
+| `[data-selection]` | `outline`, `none` | On a character avatar: the character set's `selection`, how the selected project's character is marked. |
+
+#### `editorChrome`
+
+| Selector | Values | Meaning |
+| --- | --- | --- |
+| `[data-editor-tab]` | Present or absent | On each editor tab. |
+| `[data-active]` | Present or absent | On the active editor tab. |
+| `[data-dirty]` | Present or absent | On a tab with unsaved changes. |
+| `[data-breadcrumb-item]` | `place`, `path`, `current` | On each shown item of the breadcrumbs: `place` (the project folder or worktree the file is in), `path` (each item before the last: the project or host, then the folders) and `current` (the last item: the file, or a page's host). |
+
+#### `terminalChrome`
+
+| Selector | Values | Meaning |
+| --- | --- | --- |
+| `[data-terminal-row]` | Present or absent | On each row of the terminal list. |
+| `[data-active]` | Present or absent | On the active terminal's row. |
+| `[data-status]` | `starting`, `running`, `exited`, `reconnecting` | On a terminal row: the terminal's state. |
 
 ### Limits and rules
 

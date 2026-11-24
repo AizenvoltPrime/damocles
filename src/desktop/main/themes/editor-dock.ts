@@ -9,7 +9,6 @@ import { validateTheme, type Arrangement, type ThemeFile, themeErrorEnglish } fr
 import type { ThemeShowRefusal } from '../../../shared/themes/agent';
 import { MAX_STRIP_FRAMES, MAX_THEME_NAME_CHARS } from '../../../shared/themes/limits';
 import { SYSTEM_THEME_ID } from '../../../shared/themes/builtin';
-import type { LookKind } from '../../../shared/themes/tokens';
 import {
   OVERLAY_CHANNELS, THEME_EDITOR_CHANNELS, type ThemeEditorArrangementResult, type ThemeEditorFlashResult, type ThemeEditorFontResult, type ThemeEditorImageResult,
   type ThemeEditorOutside, type ThemeEditorResult, type ThemeEditorSession, type ThemeEditorSpriteResult,
@@ -18,7 +17,7 @@ import type { PanelTheme } from '../../preload/panel-channels';
 import { THEME_EDITOR_PAGE_URL } from '../protocol';
 import { loadAppPage, loggableUrl, mainFrameLoadFailed, registerLocalFontsContents } from '../security';
 import { isPanelSender } from '../views';
-import type { TransientPreview } from './appearance';
+import { transientPreviewOf, type TransientPreview } from './appearance';
 import type { NamedBlob } from './theme-blobs';
 import { MAX_PINNED_PROJECTS, MAX_SPRITE_FPS, type PinEdit, type SpriteImport } from '../../../shared/themes/characters';
 import type { StripCut } from '../../../core/themes/sprite-header';
@@ -399,11 +398,10 @@ export class ThemeEditorDock {
       }
       // main validates the draft as it validates a file before it paints any of it
       const result = validateTheme(theme, { folder: session.themeId });
-      const look = result.ok ? result.theme.looks[kind as LookKind] : undefined;
-      if (!result.ok || !look) return;
-      const { style, assets, css, characters } = result.theme;
-      const set = typeof setIndex === 'number' && Number.isInteger(setIndex) && setIndex >= 0 && setIndex < MAX_WALLPAPER_SETS ? { setIndex } : {};
-      this.previewRefused(this.deps.preview({ themeId: session.themeId, kind, look, ...(style ? { style } : {}), ...(assets ? { assets } : {}), ...(css ? { css } : {}), ...(characters ? { characters } : {}), ...set }));
+      const set = typeof setIndex === 'number' && Number.isInteger(setIndex) && setIndex >= 0 && setIndex < MAX_WALLPAPER_SETS ? setIndex : undefined;
+      const preview = result.ok ? transientPreviewOf(result.theme, kind, set) : undefined;
+      if (!preview) return;
+      this.previewRefused(this.deps.preview(preview));
     });
     ipc.handle(THEME_EDITOR_CHANNELS.allowFlash, async (event, raw: unknown): Promise<ThemeEditorFlashResult> => {
       if (!this.accepts(event, THEME_EDITOR_CHANNELS.allowFlash)) throw new Error('Rejected');

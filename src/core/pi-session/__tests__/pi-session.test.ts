@@ -559,7 +559,7 @@ function makeOptions(messages: ExtensionToWebviewMessage[], extra?: Partial<Sess
     settingsFolder: undefined,
     projectScope: true,
     platform: testPlatform,
-    permissionHandler: { sessionCwd: () => path.resolve('/cwd'), getPermissionMode: () => 'default', turnPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {}, setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [] } as unknown as SessionOptions['permissionHandler'],
+    permissionHandler: { sessionCwd: () => path.resolve('/cwd'), getPermissionMode: () => 'default', turnPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {}, setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [], endScreenshotGrantUnless: () => {} } as unknown as SessionOptions['permissionHandler'],
     onMessage: (m) => messages.push(m),
     model: 'claude-opus-5-5',
     resolveThinking: () => ({ thinkingDisabled: false, effort: null }),
@@ -686,6 +686,18 @@ describe('a daemon\'s core pins every run a panel\'s pi session starts', () => {
     host.set('clientUser', 'client-a', deviceSwitch(false));
     await panel.sendMessage('try a theme', undefined, 'c1', { content: 'try a theme' });
     expect(setActive.mock.calls.at(-1)?.[0]).not.toContain('ThemeSet');
+    await panel.dispose();
+  });
+
+  it("names the device's theme switch as why ToolSearch cannot load the theme group, since that is the switch a daemon's core read", async () => {
+    const host = createFakeRemoteHost();
+    const THEME_SWITCH = TOOL_GROUP_SETTINGS.theme;
+    host.set('clientUser', 'client-a', { settings: { [THEME_SWITCH]: false }, permissionRules: [] });
+    const get = ((key: string, fallback?: unknown) => (key === THEME_SWITCH ? (currentPin(host.remote).user?.settings[key] ?? fallback) : testPlatform.settings.get(key, fallback))) as typeof testPlatform.settings.get;
+    const settings = Object.assign(Object.create(testPlatform.settings) as typeof testPlatform.settings, { get });
+    const panel = new PiSession(makeOptions([], { platform: { ...testPlatform, settings, remote: host.remote }, panelId: 'panel-1', themeTools: { relayed: host.remote } }));
+    await panel.initializeEarly();
+    expect(runPinnedTurn(host.remote, 'panel-1', () => panel.deferrableToolsSnapshot().inert.get('theme'))).toEqual({ kind: 'themeOffOnDevice' });
     await panel.dispose();
   });
 
@@ -5196,6 +5208,7 @@ describe('plan-mode active set — exclusion model', () => {
     themeUnavailable: undefined,
     themeAvailable: true,
     themeEnabled: true,
+    themeSwitchOnDevice: false,
     mcpEnabled: true,
     mcpToolNames: ['mcp__git__status', 'mcp__git__commit'],
     mcpDeferrableToolNames: ['mcp__git__status', 'mcp__git__commit'],
@@ -5978,6 +5991,22 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
     await session.dispose();
   });
 
+  it("carries why each built-in group it cannot load is out, read from the session's own settings", async () => {
+    const cfg = vi.spyOn(testPlatform.settings, 'get');
+    cfg.mockImplementation(settingsReader((key: string) => (key === 'damocles.browser.enabled' ? true : key === 'damocles.pi.webSearch.enabled' ? false : undefined)));
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    stubPanelMcp({ allToolNames: () => [], getServerStatuses: () => [], getAllToolDescriptors: () => [] } as unknown as McpToolSource);
+
+    const { inert } = session.deferrableToolsSnapshot();
+    expect(inert.get('web')).toEqual({ kind: 'off', setting: 'damocles.pi.webSearch.enabled' });
+    expect(inert.get('theme')).toEqual({ kind: 'host' });
+    expect(inert.has('browser')).toBe(false);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
   it('on a daemon\'s core with no client attached keeps the browser tools eligible, but off the snapshot and off what a reopened chat restores, and loadable once a client attaches', async () => {
     const cfg = subsystemsOn();
     const fake = createFakeRemoteHost();
@@ -6133,6 +6162,20 @@ describe('PiSession.buildTeamEngine — team agents get uniform deferral (Slice 
     // …and the browser group it did NOT ask for stays deferred.
     for (const n of BROWSER_PI_TOOL_NAMES) expect(after, n).not.toContain(n);
 
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it("a team agent's ToolSearch names the panel's reason for a group that is off, read at spawn", async () => {
+    const cfg = vi.spyOn(testPlatform.settings, 'get');
+    cfg.mockImplementation(settingsReader((key: string) => (key === 'damocles.browser.enabled' || key === 'damocles.team.enabled' ? true : key === 'damocles.pi.webSearch.enabled' ? false : undefined)));
+    const session = await teamSession();
+    const nested = nestedPi(['read', TOOL_TOOL_SEARCH]);
+    const engine = session.buildTeamEngine();
+    const { mcp } = engine.buildAgentToolset(spawnCtx('agent-1'));
+    engine.buildExtensionFactory(spawnCtx('agent-1'), mcp, false)(nested.api);
+    const result = (await nested.registered.get(TOOL_TOOL_SEARCH)!.execute('tc-1', { tools: ['web'] }, undefined, undefined, execCtx)) as unknown as { content: Array<{ text: string }> };
+    expect(result.content[0]!.text).toContain('Not available in this session: web. The setting damocles.pi.webSearch.enabled is off; the user turns it on in Settings. The change reaches only agents started after it.');
     cfg.mockRestore();
     await session.dispose();
   });

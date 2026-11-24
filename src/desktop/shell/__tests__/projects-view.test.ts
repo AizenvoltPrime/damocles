@@ -5,7 +5,7 @@ import { canonicalHostColor } from '@shared/host-colors';
 import type { ProjectsView, ShellHost, ShellProject, ShellProjectGroups } from '../../preload/shell-channels';
 import ProjectsSection from '../components/ProjectsSection.vue';
 import { shellI18n } from '../i18n';
-import { FakeResizeObserver, STATE, fakeShellApi, type FakeShellApi } from './fakes';
+import { FakeResizeObserver, PAGE_PROVIDE, STATE, fakeShellApi, type FakeShellApi } from './fakes';
 
 const mounted: VueWrapper[] = [];
 
@@ -63,7 +63,7 @@ function mountSection(options: Options = {}): { wrapper: VueWrapper; api: FakeSh
       collapsed: false,
       bodySize: 200,
     },
-    global: { plugins: [shellI18n], stubs: { transition: false, 'transition-group': false } },
+    global: { provide: PAGE_PROVIDE, plugins: [shellI18n], stubs: { transition: false, 'transition-group': false } },
     attachTo: document.body,
   });
   mounted.push(wrapper);

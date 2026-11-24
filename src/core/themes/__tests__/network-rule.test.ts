@@ -139,7 +139,7 @@ describe.runIf(process.platform === 'win32')('the theme store under the network 
     fileLinkedOntoDevice(ctx, file);
     const { themes } = service();
     const draft = { id: DRAFT, owner: { authority: 'local', sessionId: 's', toolCallId: 't' }, createdAt: 1, baseThemeId: null, baseHash: null, theme: userTheme() };
-    await expect(themes.drafts.put(draft)).rejects.toMatchObject({ name: 'ConfigWriteRefused', file });
+    await expect(themes.drafts.put(draft, null)).rejects.toMatchObject({ name: 'ConfigWriteRefused', file });
     await expect(themes.collectBlobs()).rejects.toMatchObject({ name: 'ConfigReadRefused', file });
   });
 

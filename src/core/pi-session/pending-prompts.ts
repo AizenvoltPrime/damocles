@@ -126,8 +126,10 @@ function summaryOf(request: ExtensionToWebviewMessage, cwd: string): LocalizedTe
       const name = request.themeName === undefined ? undefined : oneLine(request.themeName, PROMPT_SUMMARY_MAX_CHARS);
       return name === undefined ? l('change the theme') : l('change the theme to {0}', name);
     }
-    case 'requestThemeScreenshot':
-      return l('send a screenshot of the window');
+    case 'requestThemeScreenshot': {
+      const draft = request.draft === undefined ? undefined : oneLine(request.draft.name, PROMPT_SUMMARY_MAX_CHARS);
+      return draft === undefined ? l('send a screenshot of the window') : l('send a screenshot of the window with the draft {0}', draft);
+    }
     case 'requestThemeInstall': {
       const name = oneLine(request.preview.about.name, PROMPT_SUMMARY_MAX_CHARS);
       return name === undefined ? l('install a theme') : l('install the theme {0}', name);

@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from 'vue';
+import { onBeforeUnmount, onMounted, provide } from 'vue';
 import type { DamoclesOverlayApi, OverlayState } from '../../preload/overlay-channels';
-import { setPageCharacters } from '../characters';
+import { createPageCharacters, PAGE_CHARACTERS } from '../characters';
 import { applyShellLocale } from '../i18n';
 import { createChime } from './chime';
 import ToastStack from './components/ToastStack.vue';
 
 // The desktop popup window's page (D52): the toast stack, the only place toasts render, and the popups' sound.
 const props = defineProps<{ api: DamoclesOverlayApi }>();
+const pageCharacters = createPageCharacters();
+provide(PAGE_CHARACTERS, pageCharacters.characters);
 
 const stops: Array<() => void> = [];
 onMounted(async () => {
@@ -17,7 +19,7 @@ onMounted(async () => {
   // Subscribed before the first read, so a language change between the two is not lost.
   const apply = (state: OverlayState): void => {
     void applyShellLocale(state.locale);
-    setPageCharacters(state.characters);
+    pageCharacters.set(state.characters);
   };
   stops.push(props.api.onState(apply));
   apply(await props.api.getState());

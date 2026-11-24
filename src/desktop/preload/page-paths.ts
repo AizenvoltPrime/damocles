@@ -3,3 +3,5 @@
 export const NOTIFIER_PAGE_PATH = '/notifier/index.html';
 // Where main serves the theme editor dock's page, which loads the overlay bundle at its editor route.
 export const THEME_EDITOR_PAGE_PATH = '/theme-editor/index.html';
+// The theme renderer's session. No `persist:` prefix, so nothing the page caches outlives the run.
+export const THEME_RENDER_PARTITION = 'theme-render';

@@ -17,6 +17,7 @@ import { createStreamingHandlers } from '@/composables/message-handler/handlers/
 import { createSubagentHandlers } from '@/composables/message-handler/handlers/subagent-handlers';
 import type { HandlerContext } from '@/composables/message-handler/types';
 import { inGreek } from '../../../__mocks__/greek-locale';
+import { CHAT_VIEW_PROVIDE } from '@/__tests__/code-highlighter';
 
 /**
  * The seam between the subagent transcript and the tool and diff overlays: both card sites must hand the
@@ -56,6 +57,7 @@ function open(state: SubagentState) {
   return mount(SubagentOverlay, {
     props: { subagent: state },
     global: {
+      provide: CHAT_VIEW_PROVIDE,
       plugins: [i18n],
       stubs: {
         OverlayShell: PassThroughStub,
@@ -118,7 +120,7 @@ describe('a steer row with images', () => {
     const state = defined(useSubagentStore().subagents[id], id);
     return mount(SubagentOverlay, {
       props: { subagent: state },
-      global: { plugins: [i18n], stubs: { OverlayShell: PassThroughStub, MarkdownRenderer: true, ThinkingIndicator: true, LoadingSpinner: true } },
+      global: { provide: CHAT_VIEW_PROVIDE, plugins: [i18n], stubs: { OverlayShell: PassThroughStub, MarkdownRenderer: true, ThinkingIndicator: true, LoadingSpinner: true } },
     });
   }
 
@@ -164,7 +166,7 @@ describe('the image lightbox of a steer row', () => {
     });
     return mount(Host, {
       attachTo: document.body,
-      global: { plugins: [i18n], stubs: { OverlayShell: PassThroughStub, MarkdownRenderer: true, ThinkingIndicator: true, LoadingSpinner: true } },
+      global: { provide: CHAT_VIEW_PROVIDE, plugins: [i18n], stubs: { OverlayShell: PassThroughStub, MarkdownRenderer: true, ThinkingIndicator: true, LoadingSpinner: true } },
     });
   }
 
@@ -204,7 +206,7 @@ describe('the subagent overlay meta chips', () => {
   function chips(state: SubagentState): string {
     return mount(SubagentOverlay, {
       props: { subagent: state },
-      global: { plugins: [i18n], stubs: { OverlayShell: Shell, MarkdownRenderer: true, ThinkingIndicator: true } },
+      global: { provide: CHAT_VIEW_PROVIDE, plugins: [i18n], stubs: { OverlayShell: Shell, MarkdownRenderer: true, ThinkingIndicator: true } },
     }).findAll('[data-testid="agent-chip"]').map((chip) => chip.text()).join(' | ');
   }
 
@@ -247,7 +249,7 @@ describe('a failed model call in the subagent overlay', () => {
     createSubagentHandlers().subagentMessagesUpdate!({ type: 'subagentMessagesUpdate', agentToolId: 'reloaded', messages: [{ role: 'error', contentBlocks: [{ type: 'text', text: 'Could not open file: subagent.jsonl' }], error: coreText }] }, ctx);
     const overlays = ['live', 'reloaded'].map((id) => mount(SubagentOverlay, {
       props: { subagent: store.subagents[id]! },
-      global: { plugins: [i18n], stubs: { OverlayShell: PassThroughStub, LiveOutputPane: true, MarkdownRenderer: true, ThinkingIndicator: true, LoadingSpinner: true } },
+      global: { provide: CHAT_VIEW_PROVIDE, plugins: [i18n], stubs: { OverlayShell: PassThroughStub, LiveOutputPane: true, MarkdownRenderer: true, ThinkingIndicator: true, LoadingSpinner: true } },
     }));
     for (const overlay of overlays) expect(overlay.get('[data-testid="agent-error"]').text()).toContain('Could not open file: subagent.jsonl');
 

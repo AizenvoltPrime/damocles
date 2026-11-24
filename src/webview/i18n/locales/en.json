@@ -4096,6 +4096,12 @@
         "touches": "set touches for {project}",
         "full": "gave {project} its own theme"
       },
+      "projectPin": {
+        "theme": "pinned {character} to {project} in {theme}",
+        "every": "kept {character} for {project} in every theme",
+        "themeCleared": "unpinned the character of {project} in {theme}",
+        "everyCleared": "stopped keeping a character for {project} in every theme"
+      },
       "storeRemoved": "applied the store's removal of {themes}",
       "wallpapersOff": "turned Show wallpapers off",
       "other": "a change made by a newer Damocles",
@@ -4141,12 +4147,24 @@
       "cssCleared": "Custom CSS removed from the {region}",
       "characters": "A set of {n} project character | A set of {n} project characters",
       "charactersNone": "No project characters",
+      "spritesDrawn": "{n} new character sprite | {n} new character sprites",
+      "spritesRecolored": "{n} recolored character sprite | {n} recolored character sprites",
+      "charactersAdded": "{n} project character added | {n} project characters added",
+      "charactersChanged": "{n} project character changed | {n} project characters changed",
+      "charactersRemoved": "{n} project character removed | {n} project characters removed",
+      "characterSet": "The project character set changes",
       "pick": "Shows it as your {looks} look",
       "scheduleOn": "Schedule on, {n} rule | Schedule on, {n} rules",
       "scheduleOff": "Schedule off",
       "undo": "Reverts the agent's change: {change}",
       "projectLookNone": "{project} uses the current theme again",
       "projectLookTouches": "Touches for {project}: {touches}",
+      "projectPin": {
+        "theme": "{project} shows {character} in {theme}",
+        "every": "{project} shows {character} in every theme",
+        "themeCleared": "{project} shows the theme's own pick of character in {theme}",
+        "everyCleared": "{project} no longer keeps a character in every theme"
+      },
       "projectLookFull": {
         "dark": "{project} gets its own theme: {theme}, dark look",
         "light": "{project} gets its own theme: {theme}, light look",
@@ -4254,10 +4272,23 @@
       "alt": "Screenshot of this window, {width} by {height}",
       "caption": "This window, {width} × {height}, taken just now",
       "note": "Only this image is sent, once. It may show file names and chat text.",
+      "titleDraft": "Send the model a screenshot of a draft on the window?",
+      "subtitleDraft": "ThemeRead asks to see the draft on the real window. Nothing changes and nothing is sent until you allow it.",
+      "draftCaption": "Draft {name}",
+      "draftNote": "If you allow it, the window shows the draft for a moment while the screenshot is taken, then your theme comes back. The screenshot is sent without being shown here first, and it may show file names and chat text.",
       "gone": "The window no longer holds this screenshot, so it cannot be sent. Deny it and ask again for a new one.",
       "answer": "Answer the screenshot request",
-      "allow": "Allow",
+      "allow": "Allow once",
+      "allowChat": "Allow for this chat",
+      "allowChatHint": "Later screenshots in this chat are sent without asking. A draft may show on the window for a moment while one is taken.",
       "deny": "Deny"
+    },
+    "grant": {
+      "title": "Screenshots allowed for this chat.",
+      "body": "Screenshots of this window go to the model without asking, and a draft may show on it for a moment.",
+      "details": "About the screenshot grant",
+      "revoke": "Revoke",
+      "revoking": "Revoking…"
     },
     "outcome": {
       "applied": "Applied",
@@ -4311,10 +4342,21 @@
       "sentLabel": "Sent",
       "denied": "Screenshot denied.",
       "deniedSub": "The agent sees the drawn preview only.",
+      "deniedNoPreviewSub": "No image was sent.",
       "deniedLabel": "Denied",
       "notSent": "Screenshot not sent.",
       "notSentSub": "Nobody answered its card in time, or the window no longer held the image.",
-      "notSentLabel": "Not sent"
+      "notSentLabel": "Not sent",
+      "notTaken": "Screenshot not taken.",
+      "notTakenLabel": "Not taken",
+      "shotRefused": {
+        "forcedColors": "Windows contrast themes are on, so the window shows Damocles' own look, not the theme.",
+        "safeStart": "This run shows the Damocles theme, so the window cannot show the theme.",
+        "windowHidden": "The window was minimized or hidden.",
+        "covered": "Another app covered the window. Bring Damocles to the front to take one.",
+        "noWindow": "There was no window to take a screenshot of.",
+        "timeout": "The window did not finish drawing the draft in time, so nothing was sent."
+      }
     }
   },
   "trusted": {

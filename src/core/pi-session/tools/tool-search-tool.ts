@@ -6,11 +6,13 @@ import { log } from '../../logger';
 import { mcpServerNamespaceKey } from '../../../shared/types/mcp';
 import { stripControlChars } from '../untrusted-text';
 import { BUILTIN_DEFERRED_GROUPS, resolveToolSearchEntries, userScopeToolNames } from './deferred-tools';
-import { browserClosedReason, forgeUnreachableReason, relayedMcpUnreachableReason, themeUnreachableReason, userScopeReach } from '../../user-scope';
+import { browserClosedReason, forgeUnreachableReason, relayedMcpUnreachableReason, themeOffReason, themeUnreachableReason, userScopeReach } from '../../user-scope';
 import { DESIGN_CHAT_FORGE_REFUSAL, FORGE_PI_TOOL_NAMES } from './forge-tool-specs';
 import { DESIGN_CHAT_THEME_REFUSAL, NESTED_THEME_REFUSAL, THEME_PI_TOOL_NAMES } from './theme-tool-specs';
 import { relayedServerNames, relayedServerOfTool } from '../mcp/relayed-tool-names';
 import { englishText } from '../../../shared/localized-text';
+import { TOOLS_DISABLED_SETTING } from '../../../shared/types/tools';
+import type { ToolExclusion, ToolGroupInertReason } from './inert-reason';
 
 /** One MCP tool's ToolSearch menu facts, taken from its descriptor. */
 export interface McpToolMenuEntry {
@@ -38,6 +40,65 @@ export interface DeferrableSnapshot {
   design?: boolean;
   /** A subagent or team member, which never loads the theme group. */
   nested?: boolean;
+  /** Each built-in group ToolSearch cannot load for a reason of its own, with why (`deferredInertReasons`); a nested agent's is the panel's at spawn. */
+  inert: ReadonlyMap<string, ToolGroupInertReason>;
+  /** Each built-in deferred tool excluded by name, with why (`deferredToolExclusions`); a nested agent's is the panel's at spawn. */
+  excluded?: ReadonlyMap<string, ToolExclusion>;
+}
+
+const UNAVAILABLE_TEXT: Readonly<Record<Extract<ToolGroupInertReason, { kind: 'unavailable' }>['reason'], string>> = {
+  noModel: 'Image generation has no model; the user picks an OpenRouter image model in Settings.',
+  unknownModel: 'The image model chosen in Settings is not one Damocles offers; the user picks another OpenRouter image model.',
+  noOpenRouterKey: 'Image generation needs an OpenRouter key, which the user adds in Settings.',
+  noResourceServer: 'No enabled MCP server offers resources.',
+};
+
+/** The reasons the user can change; a nested agent's toolset is frozen at spawn, so the change never reaches it. */
+function userFixable(reason: ToolGroupInertReason): boolean {
+  switch (reason.kind) {
+    case 'off':
+    case 'themeOffOnDevice':
+    case 'toolsOff':
+      return true;
+    case 'design': return reason.disabled.length > 0;
+    case 'unavailable': return reason.reason !== 'noResourceServer';
+    case 'host':
+    case 'notLoaded':
+    case 'agent':
+      return false;
+  }
+}
+
+function inertReasonText(reason: ToolGroupInertReason, group: string): string {
+  switch (reason.kind) {
+    case 'host': return 'This host has no such tools.';
+    case 'off': return `The setting ${reason.setting} is off; the user turns it on in Settings.`;
+    case 'themeOffOnDevice': return englishText(themeOffReason());
+    case 'toolsOff': return `Every ${group} tool is listed in ${TOOLS_DISABLED_SETTING} (${reason.tools.join(', ')}); the user turns them on in the Tools panel.`;
+    case 'design': {
+      if (reason.disabled.length === 0) return `A design chat's tool rules leave out every ${group} tool.`;
+      const one = reason.disabled.length === 1;
+      return `A design chat's tool rules leave out the other ${group} tools, and ${reason.disabled.join(', ')} ${one ? 'is' : 'are'} listed in ${TOOLS_DISABLED_SETTING}; the user turns ${one ? 'it' : 'them'} on in the Tools panel.`;
+    }
+    case 'unavailable': return UNAVAILABLE_TEXT[reason.reason];
+    case 'notLoaded': return `The ${group} tools are neither deferred nor active in this session, so ToolSearch has nothing to load.`;
+    case 'agent': return "This agent's tool list does not include it.";
+  }
+}
+
+/** What tells the model that `tools` of a group that loads are out by name; only the user's own list is the user's to change. */
+function excludedLine(why: ToolExclusion, tools: readonly string[], group: string, nested: boolean): string {
+  const one = tools.length === 1;
+  const rest = `The other ${group} tools load as usual.`;
+  if (why === 'design') return `A design chat's tool rules leave out ${tools.join(', ')}. ${rest}`;
+  const text = `${tools.join(', ')} ${one ? 'is' : 'are'} listed in ${TOOLS_DISABLED_SETTING}; the user turns ${one ? 'it' : 'them'} on in the Tools panel. ${rest}`;
+  return nested ? `${text} The change reaches only agents started after it.` : text;
+}
+
+/** What a reason tells the model; a nested agent learns that a fix by the user reaches only agents started after it. */
+function inertLine(reason: ToolGroupInertReason, group: string, nested: boolean): string {
+  const text = inertReasonText(reason, group);
+  return nested && userFixable(reason) ? `${text} The change reaches only agents started after it.` : text;
 }
 
 /** What the description advertises: the caller's deferrable universe, plus MCP menu facts when it has any. */
@@ -302,10 +363,41 @@ export function createToolSearchTool(port: ToolActivationPort): ToolDefinition {
       // a design chat's and a nested agent's own rules decide the theme tools, wherever this core runs
       const blockedTheme = snapshot.design === true || snapshot.nested === true ? [...new Set(entries.filter(themeEntry))] : [];
       const ruled = (entry: string): boolean => designForge.includes(entry) || blockedTheme.includes(entry);
-      const unavailable = entries.filter((entry) => !ruled(entry) && (
+      const deferrable = new Set(snapshot.names);
+      // a requested group or tool name that loads nothing, with its built-in group's reason; a nested agent's tool list can
+      // leave out a group the panel has
+      const inertOf = (entry: string): { group: string; reason: ToolGroupInertReason } | undefined => {
+        if (!resolution.unknown.includes(entry) && !resolution.inertGroups.includes(entry)) return undefined;
+        const group = BUILTIN_DEFERRED_GROUPS.find((g) => g.group === entry) ?? BUILTIN_DEFERRED_GROUPS.find((g) => g.names.includes(entry));
+        if (!group) return undefined;
+        const reason = snapshot.inert.get(group.group) ?? (snapshot.nested === true && !group.names.some((name) => deferrable.has(name)) ? { kind: 'agent' as const } : undefined);
+        return reason && { group: group.group, reason };
+      };
+      // a group this session has switched off says so before any reach of its service
+      const unavailable = entries.filter((entry) => !ruled(entry) && inertOf(entry) === undefined && (
         userScope.has(entry) || relayedGroup(entry) !== undefined || BUILTIN_DEFERRED_GROUPS.some((g) => g.group === entry && g.names.some((name) => userScope.has(name)))));
-      const unknown = resolution.unknown.filter((entry) => !unavailable.includes(entry) && !ruled(entry));
-      const inertGroups = resolution.inertGroups.filter((entry) => !unavailable.includes(entry) && !ruled(entry));
+      const answered = (entry: string): boolean => unavailable.includes(entry) || ruled(entry);
+      const inertEntries = new Map<string, { reason: ToolGroupInertReason; entries: string[] }>();
+      for (const entry of new Set(entries)) {
+        const inert = answered(entry) ? undefined : inertOf(entry);
+        if (!inert) continue;
+        const known = inertEntries.get(inert.group);
+        if (known) known.entries.push(entry);
+        else inertEntries.set(inert.group, { reason: inert.reason, entries: [entry] });
+      }
+      // an exact name left out of a group that loads, by the user's list or a design chat's rules
+      const excludedEntries = new Map<string, { group: string; why: ToolExclusion; entries: string[] }>();
+      for (const entry of new Set(resolution.unknown)) {
+        const why = answered(entry) || inertOf(entry) !== undefined ? undefined : snapshot.excluded?.get(entry);
+        const group = why && BUILTIN_DEFERRED_GROUPS.find((g) => g.names.includes(entry))?.group;
+        if (!why || !group) continue;
+        const known = excludedEntries.get(`${group}:${why}`);
+        if (known) known.entries.push(entry);
+        else excludedEntries.set(`${group}:${why}`, { group, why, entries: [entry] });
+      }
+      const excludedNames = new Set([...excludedEntries.values()].flatMap((found) => found.entries));
+      const unknown = resolution.unknown.filter((entry) => !answered(entry) && inertOf(entry) === undefined && !excludedNames.has(entry));
+      const inertGroups = resolution.inertGroups.filter((entry) => !answered(entry) && inertOf(entry) === undefined);
       const requested = matches.filter((name) => !snapshot.loaded.has(name));
       if (matches.length > 0) port.activate(sessionId, matches);
 
@@ -321,7 +413,6 @@ export function createToolSearchTool(port: ToolActivationPort): ToolDefinition {
       // unknown entry cannot be steered back at a group that is switched off — or at an MCP group whose
       // name a built-in shadows, which the resolver would hand to the built-in anyway.
       const builtinGroupNames = new Set<string>(BUILTIN_DEFERRED_GROUPS.map((g) => g.group));
-      const deferrable = new Set(snapshot.names);
       const groupNames = [
         ...BUILTIN_DEFERRED_GROUPS.filter((g) => g.names.some((name) => deferrable.has(name))).map((g) => g.group),
         ...[...snapshot.mcpGroups.keys()].filter((g) => !builtinGroupNames.has(g)),
@@ -368,9 +459,14 @@ export function createToolSearchTool(port: ToolActivationPort): ToolDefinition {
       for (const server of new Set(unavailableMcp.map((entry) => unavailableServer(entry)!))) {
         lines.push(`Not available: ${names(unavailableMcp.filter((entry) => unavailableServer(entry) === server))}. ${englishText(relayedMcpUnreachableReason(stripControlChars(server)))}`);
       }
-      if (inertGroups.length > 0) {
-        lines.push(`Not available in this session: ${inertGroups.join(', ')} — the subsystem is disabled or every tool in it is turned off, so it cannot be loaded here.`);
+      for (const [group, { reason, entries: groupEntries }] of inertEntries) {
+        lines.push(`Not available in this session: ${names(groupEntries)}. ${inertLine(reason, group, snapshot.nested === true)}`);
       }
+      for (const { group, why, entries: tools } of excludedEntries.values()) {
+        lines.push(`Not available in this session: ${names(tools)}. ${excludedLine(why, tools.map(stripControlChars), group, snapshot.nested === true)}`);
+      }
+      // an MCP server group that resolved to nothing this session can load
+      if (inertGroups.length > 0) lines.push(`Not available in this session: ${names(inertGroups)}.`);
       if (unknown.length > 0) {
         // With nothing deferrable there is no group to name, and "use one of: ," reads as a bug.
         const options = groupNames.length > 0 ? `use one of: ${groupNames.join(', ')}, or an exact tool name from the description` : 'nothing is deferred in this session, so there is nothing to load';

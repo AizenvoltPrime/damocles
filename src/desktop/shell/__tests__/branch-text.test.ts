@@ -12,7 +12,7 @@ import TabPlaceChip from '../editor/TabPlaceChip.vue';
 import Breadcrumbs from '../editor/Breadcrumbs.vue';
 import { createOverlaySettingsBridge } from '../overlay/settings/overlay-bridge';
 import { shellI18n } from '../i18n';
-import { FakeResizeObserver, STATE, chat, fakeOverlayApi, fakeShellApi, opened, type FakeOverlayApi } from './fakes';
+import { FakeResizeObserver, PAGE_PROVIDE, STATE, chat, fakeOverlayApi, fakeShellApi, opened, type FakeOverlayApi } from './fakes';
 
 // A ref name may carry a right-to-left override (git's check-ref-format allows it), which would make it read as another.
 const BIDI = 'main\u202Eevil';
@@ -172,7 +172,7 @@ describe('git branch names show their hidden characters', () => {
 
   it('on the Projects list', () => {
     const projects = [{ ...STATE.projects[0]!, branch: BIDI }];
-    const wrapper = track(mount(ProjectsSection, { props: { api: fakeShellApi(), projects, selectedKey: 'p1', hosts: [], view: 'flat', groups: STATE.projectGroups, platform: 'win32', collapsed: false, bodySize: 150 }, global: { plugins: [shellI18n] }, attachTo: document.body }));
+    const wrapper = track(mount(ProjectsSection, { props: { api: fakeShellApi(), projects, selectedKey: 'p1', hosts: [], view: 'flat', groups: STATE.projectGroups, platform: 'win32', collapsed: false, bodySize: 150 }, global: { provide: PAGE_PROVIDE, plugins: [shellI18n] }, attachTo: document.body }));
     expect(wrapper.get('[data-testid="project-branch"]').text()).toBe(SHOWN);
     expect(shownText(wrapper.element)).not.toContain(RAW);
   });

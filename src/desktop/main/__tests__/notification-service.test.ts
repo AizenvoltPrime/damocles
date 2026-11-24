@@ -29,6 +29,7 @@ function newHost(): OverlayHost {
     state: () => ({ locale: 'en', platform: 'win32' }),
     focusOutside: () => undefined,
     awaitActivation: () => undefined,
+    modeChanged: () => undefined,
     popupsClosed: () => undefined,
     canRasterize: () => undefined,
     log: () => undefined,

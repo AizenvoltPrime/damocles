@@ -53,21 +53,21 @@ const costClasses = computed(() => (props.variant === 'card' ? `font-medium ${pr
     <template v-if="totalTokens > 0">
       <span :class="separatorClasses">{{ separatorText }}</span>
       <span
-        data-part="tokens"
+        data-usage="tokens"
         :title="tokensTooltip"
       >{{ t('agentUsage.tokens', { n: formatTokenCount(totalTokens, locale) }, totalTokens) }}</span>
     </template>
     <template v-if="cachePct !== null">
       <span :class="separatorClasses">{{ separatorText }}</span>
       <span
-        data-part="cache"
+        data-usage="cache"
         :title="t('agentUsage.cacheHitTooltip')"
       >{{ t('agentUsage.cacheHit', { pct: cachePct }) }}</span>
     </template>
     <template v-if="usage.costUsd > 0">
       <span :class="separatorClasses">{{ separatorText }}</span>
       <span
-        data-part="cost"
+        data-usage="cost"
         :class="costClasses"
         :title="costTitle(dollarBilled)"
       >{{ costLabel(usage.costUsd, dollarBilled) }}</span>

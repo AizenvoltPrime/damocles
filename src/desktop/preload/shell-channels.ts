@@ -120,6 +120,10 @@ export const SHELL_CHANNELS = {
   keepThemeChanges: 'damocles:shell:themes:keep',
   revertThemeChanges: 'damocles:shell:themes:revert',
   stopShowingProposal: 'damocles:shell:themes:stop-showing',
+  // renderer → main, invoke { id }: the screenshot notice's Revoke ends the chat's screenshot grant; Dismiss closes the notice
+  revokeScreenshotGrant: 'damocles:shell:themes:revoke-screenshot-grant',
+  dismissScreenshotNotice: 'damocles:shell:themes:dismiss-screenshot-notice',
+  holdScreenshotNotice: 'damocles:shell:themes:hold-screenshot-notice',
   // renderer → main, send
   contentBounds: 'damocles:shell:content-bounds',
   // ContentBounds | null: the theme editor dock's slot, where main places its view; null while the shell shows none
@@ -128,6 +132,8 @@ export const SHELL_CHANNELS = {
   pageMotion: 'damocles:shell:page-motion',
   // string: the IANA zone Intl resolves in the page, which follows the OS, on load and when it changes
   timeZone: 'damocles:shell:time-zone',
+  // number: the ShellState.themeRevision the page painted, with its theme, fonts, wallpapers and characters, two frames since
+  themeApplied: 'damocles:shell:theme-applied',
   sidebarLayout: 'damocles:shell:sidebar-layout',
   gridSizes: 'damocles:shell:grid-sizes',
   focusedPart: 'damocles:shell:focused-part',
@@ -1851,6 +1857,22 @@ export function hostAttention(host: Pick<ShellHost, 'connection' | 'signInNeeded
   return host.connection === 'offline' || host.connection === 'failed' ? 'offline' : undefined;
 }
 
+/**
+ * The notice of a capture under a chat's screenshot grant, named only from this computer's records: chat, the granting chat's
+ * title as main's chat list has it ('' while it has none); origin, `local` or the remote host's authority; host, a remote
+ * chat's host as the host store names it.
+ */
+export interface ShellScreenshotNotice {
+  readonly id: string;
+  readonly chat: string;
+  readonly origin: string;
+  readonly host?: { readonly name: string; readonly color?: HostColor };
+}
+
+// What the shell reports holding the notice open: the pointer, or keyboard focus, inside it.
+export const SCREENSHOT_NOTICE_HOLDS = ['pointer', 'focus'] as const;
+export type ScreenshotNoticeHold = (typeof SCREENSHOT_NOTICE_HOLDS)[number];
+
 export interface ShellState {
   // counts the states main gave this page; a chat list or search names the one its project key came from
   readonly revision: number;
@@ -1885,6 +1907,10 @@ export interface ShellState {
   readonly keepChanges?: KeepChangesState;
   // a theme card's proposal paints the window (Show in window); absent while none does
   readonly themeProposal?: ThemeProposalStrip;
+  // a capture under a chat's screenshot grant while another chat shows in the chat slot; main closes it after a few seconds
+  readonly screenshotNotice?: ShellScreenshotNotice;
+  // main's theme revision (PanelTheme.revision), which the page acknowledges on SHELL_CHANNELS.themeApplied once painted
+  readonly themeRevision: number;
   // the shown look's wallpapers, which the shell draws under its panes; absent while none shows
   readonly wallpapers?: readonly ShellWallpaper[];
   // why moving wallpapers show their still frame now (main/themes/appearance.ts wallpaperMotion); empty while they play
@@ -2052,6 +2078,15 @@ export interface DamoclesShellApi {
   revertThemeChanges(): Promise<void>;
   // the Show in window strip's Stop showing: the window shows the current theme again and the card's toggle turns off
   stopShowingProposal(): Promise<void>;
+  // the screenshot notice of `id`: Revoke ends its chat's grant and closes it, Dismiss only closes it
+  revokeScreenshotGrant(id: string): Promise<void>;
+  dismissScreenshotNotice(id: string): Promise<void>;
+  // the pointer or keyboard focus entered (held) or left the notice of `id`; main counts its time only while nothing holds it
+  holdScreenshotNotice(id: string, reason: ScreenshotNoticeHold, held: boolean): void;
+  // the preload applied main's theme message of `revision` to the page, after the page's own copy of it
+  onThemeRevision(listener: (revision: number) => void): () => void;
+  // the page painted ShellState.themeRevision `revision`
+  reportThemeApplied(revision: number): void;
   // the sidebar's width, section sizes and Search states; main keeps the sidebar's visibility
   reportSidebarLayout(layout: ShellSidebarLayout): void;
   // the grid's sash sizes; main keeps the slots, visibility and maximized pane

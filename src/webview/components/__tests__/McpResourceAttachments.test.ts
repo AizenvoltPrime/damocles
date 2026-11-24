@@ -87,20 +87,22 @@ async function chatPage(host: 'vscode' | 'desktop') {
       for (const listener of [...listeners]) listener(message);
     };
   }
-  const [{ mount }, { setActivePinia, createPinia }, { default: App }, { i18n }, { useSettingsStore }, { VSCODE_HOST_CAPABILITIES }] = await Promise.all([
+  const [{ mount }, { setActivePinia, createPinia }, { default: App }, { i18n }, { useSettingsStore }, { VSCODE_HOST_CAPABILITIES }, { CHAT_VIEW_PROVIDE }] = await Promise.all([
     import('@vue/test-utils'),
     import('pinia'),
     import('@/App.vue'),
     import('@/i18n'),
     import('@/stores/useSettingsStore'),
     import('@shared/types/messages'),
+    // imported with the app, so its injection key is the reset module registry's
+    import('@/__tests__/code-highlighter'),
   ]);
   setActivePinia(createPinia());
   i18n.global.locale.value = 'en';
   useSettingsStore().hostCapabilities = host === 'vscode'
     ? VSCODE_HOST_CAPABILITIES
     : { ...VSCODE_HOST_CAPABILITIES, settingsInPanel: false, historyInPanel: false, folderPickerInPanel: false, windowLayout: true, worktrees: true };
-  app = mount(App, { global: { plugins: [i18n] }, attachTo: document.body });
+  app = mount(App, { global: { plugins: [i18n], provide: CHAT_VIEW_PROVIDE }, attachTo: document.body });
   await frames();
   const send = async (message: ExtensionToWebviewMessage) => {
     deliver(message);

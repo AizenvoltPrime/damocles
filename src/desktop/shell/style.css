@@ -18,6 +18,9 @@
   --font-mono: var(--d-mono);
 }
 
+/* The app layer runs to the end of the file, unindented; a rule outside every layer fails the build (scripts/protected-layer.ts). */
+@layer app {
+
 /* A custom property inherits its value already resolved, so trusted UI, whose --d-mono is Damocles' own, resolves it again. */
 [data-trusted] {
   --font-mono: var(--d-mono);
@@ -37,11 +40,23 @@
   -webkit-app-region: no-drag;
 }
 
+/* The selection mark keeps 3:1 against the sidebar pane in each palette (avatar-mark-contrast.test.ts). :where() keeps the
+   light value at the specificity of the forced-colors one below. */
+.project-avatar,
+.project-character {
+  --avatar-mark: oklch(0.72 0.14 var(--avatar-hue));
+}
+
+:where(.vscode-light) .project-avatar,
+:where(.vscode-light) .project-character {
+  --avatar-mark: oklch(0.58 0.14 var(--avatar-hue));
+}
+
 /* --avatar-hue comes from project-avatar.ts; the light palette needs a darker initial to keep AA contrast. */
 .project-avatar {
   background-color: oklch(0.72 0.13 var(--avatar-hue) / 0.2);
   color: oklch(0.72 0.14 var(--avatar-hue));
-  transition: box-shadow 0.2s;
+  transition: box-shadow 0.2s var(--ease-out);
 }
 
 .vscode-light .project-avatar {
@@ -49,13 +64,31 @@
   color: oklch(0.46 0.14 var(--avatar-hue));
 }
 
-.project-avatar-ring {
-  box-shadow: 0 0 0 1.5px oklch(0.72 0.14 var(--avatar-hue));
+/* The selected project's letter gets a ring around its box; its character gets an outline that follows its opaque pixels. */
+.project-avatar[data-selected] {
+  box-shadow: 0 0 0 1.5px var(--avatar-mark);
 }
 
 /* A character keeps its own palette and its pixels square at any size. */
 .project-character {
-  transition: box-shadow 0.2s;
+  transition: filter 0.2s var(--ease-out);
+}
+
+.project-character[data-selected][data-selection="outline"] {
+  filter: drop-shadow(1.5px 0 0 var(--avatar-mark)) drop-shadow(-1.5px 0 0 var(--avatar-mark)) drop-shadow(0 1.5px 0 var(--avatar-mark)) drop-shadow(0 -1.5px 0 var(--avatar-mark));
+}
+
+/* Forced colors drop every box-shadow, so the letter's ring becomes an outline there, with no transition to a system color. */
+@media (forced-colors: active) {
+  .project-avatar,
+  .project-character {
+    --avatar-mark: Highlight;
+    transition: none;
+  }
+
+  .project-avatar[data-selected] {
+    outline: 1.5px solid var(--avatar-mark);
+  }
 }
 
 .project-character-image {
@@ -1123,8 +1156,9 @@
 .monaco-editor .qd-conflict-incoming { background: color-mix(in srgb, var(--d-info-fill) 12%, transparent); }
 .monaco-editor .qd-conflict-base { background: color-mix(in srgb, var(--d-muted) 10%, transparent); }
 .monaco-editor .qd-conflict-splitter { background: color-mix(in srgb, var(--d-muted) 18%, transparent); }
-/* Marker lines are not code: syntax colours such as light --s-type fall under AA on the header tints, so they read in --d-text. */
-.monaco-editor .view-line .qd-conflict-marker-text { color: var(--d-text); }
+/* Marker lines are not code: syntax colours such as light --s-type fall under AA on the header tints, so they read in --d-text.
+   Important against Monaco's token colors (.mtk*), which it injects outside every layer. */
+.monaco-editor .view-line .qd-conflict-marker-text { color: var(--d-text) !important; }
 
 /* Review comments: a box or card unfolds when the user opens or adds it and folds away before it goes; a scrolled-in row stays still. */
 .review-comment-in {
@@ -1223,4 +1257,6 @@
   position: absolute;
   z-index: 5;
   overflow: hidden;
+}
+
 }

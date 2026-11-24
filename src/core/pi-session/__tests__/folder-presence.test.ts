@@ -38,7 +38,7 @@ describe('a chat in a missing folder', () => {
       settingsFolder: undefined,
       projectScope: true,
       platform,
-      permissionHandler: { getPermissionMode: () => 'default', turnPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {}, setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [] } as unknown as SessionOptions['permissionHandler'],
+      permissionHandler: { getPermissionMode: () => 'default', turnPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {}, setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [], endScreenshotGrantUnless: () => {} } as unknown as SessionOptions['permissionHandler'],
       onMessage: () => {},
       resolveThinking: () => ({ thinkingDisabled: false, effort: null }),
     });

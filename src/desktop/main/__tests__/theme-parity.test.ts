@@ -6,7 +6,8 @@ vi.mock('electron', () => ({ nativeTheme: { shouldUseDarkColors: true, on: vi.fn
 
 import { DESKTOP_FONT_FILES, DESKTOP_FONT_LICENSES } from '../desktop-fonts';
 import { DARK_THEME, LIGHT_THEME } from '../../theme-palettes';
-import { FONT_FACE_CSS, themeCss } from '../theme';
+import { themeCss } from '../theme';
+import { FONT_FACE_CSS } from '../themes/shown-appearance';
 import { HOST_TONES } from '../../../shared/host-colors';
 import { TONES } from '../../../shared/themes/tokens';
 

@@ -29,6 +29,7 @@ const emit = defineEmits<{ trust: []; hostDetails: [badge: HTMLElement] }>();
 const { t } = useI18n();
 
 const remote = computed(() => props.project.authority.kind !== 'local');
+const state = computed(() => characterState(props.project));
 const title = computed(() => {
   const { presence, fsPath } = props.project;
   const path = presence ? t(`projects.presence.${presence}Title`, { path: fsPath }) : fsPath;
@@ -59,6 +60,9 @@ function openDetails(event: MouseEvent): void {
     role="option"
     :aria-selected="selected"
     :data-project-key="project.key"
+    data-project-row
+    :data-selected="selected ? '' : undefined"
+    :data-project-state="state"
     data-character-host
     :data-flip="flip ? `p:${project.key}` : undefined"
     :title="title"
@@ -72,11 +76,11 @@ function openDetails(event: MouseEvent): void {
     <ProjectAvatar
       :name="project.name"
       :project-key="project.key"
-      :state="characterState(project)"
+      :state="state"
       :active="selected"
+      :selected="selected"
       decorative
       class="size-5.5 rounded-md text-11"
-      :class="selected ? 'project-avatar-ring' : ''"
     />
     <span class="flex min-w-0 flex-1 flex-col leading-tight">
       <span class="flex min-w-0 items-center gap-1.25">

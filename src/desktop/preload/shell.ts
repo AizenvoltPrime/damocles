@@ -259,7 +259,11 @@ const scm: DamoclesScmApi = {
 };
 
 // The shell HTML carries the tokens from its creation; main sends the theme once each document loads (custom CSS arrives only here) and after each change.
-ipcRenderer.on(SHELL_CHANNELS.theme, (_event, theme: PanelTheme) => applyHostTheme(theme));
+const themeRevisionListeners = new Set<(revision: number) => void>();
+ipcRenderer.on(SHELL_CHANNELS.theme, (_event, theme: PanelTheme) => {
+  applyHostTheme(theme);
+  if (theme.revision !== undefined) for (const listener of [...themeRevisionListeners]) listener(theme.revision);
+});
 
 const review: DamoclesReviewApi = {
   fileDiff: (request) => ipcRenderer.invoke(REVIEW_CHANNELS.fileDiff, { reviewId: request.reviewId, path: request.path }) as Promise<ChatReviewFileDiffResult>,
@@ -388,6 +392,20 @@ const api: DamoclesShellApi = {
   keepThemeChanges: () => ipcRenderer.invoke(SHELL_CHANNELS.keepThemeChanges, {}) as Promise<void>,
   revertThemeChanges: () => ipcRenderer.invoke(SHELL_CHANNELS.revertThemeChanges, {}) as Promise<void>,
   stopShowingProposal: () => ipcRenderer.invoke(SHELL_CHANNELS.stopShowingProposal, {}) as Promise<void>,
+  revokeScreenshotGrant: (id) => ipcRenderer.invoke(SHELL_CHANNELS.revokeScreenshotGrant, { id: String(id) }) as Promise<void>,
+  dismissScreenshotNotice: (id) => ipcRenderer.invoke(SHELL_CHANNELS.dismissScreenshotNotice, { id: String(id) }) as Promise<void>,
+  holdScreenshotNotice: (id, reason, held) => {
+    ipcRenderer.send(SHELL_CHANNELS.holdScreenshotNotice, { id: String(id), reason: String(reason), held: held === true });
+  },
+  onThemeRevision: (listener) => {
+    themeRevisionListeners.add(listener);
+    return () => {
+      themeRevisionListeners.delete(listener);
+    };
+  },
+  reportThemeApplied: (revision) => {
+    ipcRenderer.send(SHELL_CHANNELS.themeApplied, Number(revision));
+  },
   reportSidebarLayout: (layout) => {
     ipcRenderer.send(SHELL_CHANNELS.sidebarLayout, { sidebarWidth: layout.sidebarWidth, sections: layout.sections, sectionOrder: layout.sectionOrder, search: layout.search, scm: layout.scm, repositories: layout.repositories, graph: layout.graph });
   },

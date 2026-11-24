@@ -183,6 +183,11 @@ describe('ShellHost', () => {
       revertThemeChanges: vi.fn(async () => undefined),
       stopShowingProposal: vi.fn(async () => undefined),
       projectLook: vi.fn(async () => ({ kind: 'cancelled' })),
+      revokeScreenshotGrant: vi.fn(async () => undefined),
+      dismissScreenshotNotice: vi.fn(),
+      holdScreenshotNotice: vi.fn(),
+      themeApplied: vi.fn(),
+      documentGone: vi.fn(),
       rendererGone: vi.fn(),
       setSidebarLayout: vi.fn(),
       setGridSizes: vi.fn(),
@@ -254,6 +259,59 @@ describe('ShellHost', () => {
     expect(actions[action]).not.toHaveBeenCalled();
     await call(own);
     expect(actions[action]).toHaveBeenCalledOnce();
+  });
+
+  it('takes a theme acknowledgement from the window page only, as a non-negative safe integer', () => {
+    host();
+    const report = ipc.listeners.get(SHELL_CHANNELS.themeApplied)!;
+    report(foreign, 3);
+    for (const malformed of [-1, 1.5, '3', Number.MAX_SAFE_INTEGER + 1, null]) report(own, malformed);
+    expect(actions.themeApplied).not.toHaveBeenCalled();
+    expect(lines.filter((line) => line.includes('malformed theme acknowledgement'))).toHaveLength(5);
+    report(own, 0);
+    report(own, 3);
+    expect(vi.mocked(actions.themeApplied).mock.calls).toEqual([[0], [3]]);
+  });
+
+  it("passes a screenshot notice's Revoke and Dismiss on with the id alone, refusing any other shape", async () => {
+    host();
+    const revoke = ipc.handlers.get(SHELL_CHANNELS.revokeScreenshotGrant)!;
+    const dismiss = ipc.handlers.get(SHELL_CHANNELS.dismissScreenshotNotice)!;
+    await expect(revoke(foreign, { id: 'n-1' })).rejects.toThrow('Rejected');
+    for (const malformed of [{ id: '' }, { id: 'x'.repeat(65) }, { id: 7 }, { id: 'n-1', extra: 1 }, 'n-1', null]) {
+      await expect(revoke(own, malformed)).rejects.toThrow('Malformed screenshot notice id');
+      await expect(dismiss(own, malformed)).rejects.toThrow('Malformed screenshot notice id');
+    }
+    expect(actions.revokeScreenshotGrant).not.toHaveBeenCalled();
+    expect(actions.dismissScreenshotNotice).not.toHaveBeenCalled();
+    await revoke(own, { id: 'n-1' });
+    await dismiss(own, { id: 'x'.repeat(64) });
+    expect(actions.revokeScreenshotGrant).toHaveBeenCalledWith('n-1');
+    expect(actions.dismissScreenshotNotice).toHaveBeenCalledWith('x'.repeat(64));
+  });
+
+  it("passes a screenshot notice's pointer and focus holds on, logging and dropping any other shape", () => {
+    host();
+    const hold = ipc.listeners.get(SHELL_CHANNELS.holdScreenshotNotice)!;
+    hold(foreign, { id: 'n-1', reason: 'pointer', held: true });
+    const malformed = [{ id: '', reason: 'focus', held: true }, { id: 'x'.repeat(65), reason: 'focus', held: true }, { id: 'n-1', reason: 'window', held: true }, { id: 'n-1', reason: 'focus', held: 'yes' }, { id: 'n-1', reason: 'focus' }, { id: 'n-1', reason: 'focus', held: true, extra: 1 }, null];
+    for (const raw of malformed) hold(own, raw);
+    expect(actions.holdScreenshotNotice).not.toHaveBeenCalled();
+    expect(lines.filter((line) => line.includes('malformed screenshot notice hold'))).toHaveLength(malformed.length);
+    hold(own, { id: 'n-1', reason: 'pointer', held: true });
+    hold(own, { id: 'n-1', reason: 'focus', held: false });
+    expect(vi.mocked(actions.holdScreenshotNotice).mock.calls).toEqual([['n-1', 'pointer', true], ['n-1', 'focus', false]]);
+  });
+
+  it("tells main the page's document is going when its main frame starts another document or its renderer ends", () => {
+    host();
+    contents.emit('did-start-navigation', { url: SHELL_PAGE_URL, isMainFrame: false, isSameDocument: false });
+    contents.emit('did-start-navigation', { url: `${SHELL_PAGE_URL}#part`, isMainFrame: true, isSameDocument: true });
+    expect(actions.documentGone).not.toHaveBeenCalled();
+    contents.emit('did-start-navigation', { url: SHELL_PAGE_URL, isMainFrame: true, isSameDocument: false });
+    expect(actions.documentGone).toHaveBeenCalledTimes(1);
+    contents.emit('render-process-gone', {}, { reason: 'clean-exit' });
+    expect(actions.documentGone).toHaveBeenCalledTimes(2);
   });
 
   it("opens a project's look for the window page only, refusing a key that is no id", async () => {
@@ -954,7 +1012,7 @@ describe('terminal channels', () => {
     gestures = Object.fromEntries(['pasteKey', 'middleClick', 'contextMenu', 'blurred'].map((name) => [name, vi.fn()]));
     openAppMenu = vi.fn();
     showSidebar = vi.fn();
-    const actions = { terminal, gestures, openAppMenu, showSidebar, state: vi.fn(() => ({ projects: [], selected: {} })), setFocusedPart: vi.fn(), editor: { setFocusOverlay: vi.fn() }, design: { shellLoaded: vi.fn() } } as unknown as ShellActions;
+    const actions = { terminal, gestures, openAppMenu, showSidebar, state: vi.fn(() => ({ projects: [], selected: {} })), setFocusedPart: vi.fn(), documentGone: vi.fn(), editor: { setFocusOverlay: vi.fn() }, design: { shellLoaded: vi.fn() } } as unknown as ShellActions;
     shell = new ShellHost(window, actions, (line) => lines.push(line), () => undefined);
   });
 

@@ -16,7 +16,7 @@ import type { PanelStateStore } from '../panel-state-store';
 import { CHAT_WORKER_SRC, DesktopPanel, type PagesHost, type PanelViews } from '../views';
 
 function panel(kind: PanelOptions['kind']): DesktopPanel {
-  const deps = { window: {} as never, preloadPath: '', resourceRoot: '', pageStrings: vi.fn(), language: () => 'en', hostLabel: () => undefined, hostNames: () => ({}), onHostAction: vi.fn(), onAllowYolo: vi.fn(async () => false), connection: () => undefined, onQueueAction: vi.fn(), takeCoreMessage: (_panel: unknown, _type: string, json: string) => json, openRemoteLink: vi.fn(), states: { set: vi.fn() } as unknown as PanelStateStore, pages: {} as PagesHost, log: vi.fn(), onChange: vi.fn(), onRestack: vi.fn(), onReveal: vi.fn(), onRendererGaveUp: vi.fn(), onRendererGone: vi.fn(), onSavedSessionChange: vi.fn(), onModalChange: vi.fn(), popupOpen: () => false, withholds: () => false };
+  const deps = { window: {} as never, preloadPath: '', resourceRoot: '', pageStrings: vi.fn(), language: () => 'en', hostLabel: () => undefined, hostNames: () => ({}), onHostAction: vi.fn(), onAllowYolo: vi.fn(async () => false), connection: () => undefined, onQueueAction: vi.fn(), takeCoreMessage: (_panel: unknown, _type: string, json: string) => json, openRemoteLink: vi.fn(), states: { set: vi.fn() } as unknown as PanelStateStore, pages: {} as PagesHost, log: vi.fn(), onChange: vi.fn(), onRestack: vi.fn(), onReveal: vi.fn(), onRendererGaveUp: vi.fn(), onRendererGone: vi.fn(), onSavedSessionChange: vi.fn(), onThemeApplied: vi.fn(), onDocumentGone: vi.fn(), onModalChange: vi.fn(), popupOpen: () => false, withholds: () => false };
   return new DesktopPanel({} as PanelViews, deps, { options: { kind, title: '', localResourceRoots: [] } }, undefined);
 }
 

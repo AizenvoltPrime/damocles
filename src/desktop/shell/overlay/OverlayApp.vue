@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
+import { nextTick, onBeforeUnmount, onMounted, provide, ref, shallowRef } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { DamoclesOverlayApi, InputBrowseResult, OverlayAnswer, OverlayRequest, OverlayState, PaletteCommand, QuickOpenResponse, QuickOpenScope } from '../../preload/overlay-channels';
 import type { ShellPlatform } from '../../preload/shell-channels';
 import { applyShellLocale, createLocaleHold } from '../i18n';
-import { setPageCharacters } from '../characters';
+import { createPageCharacters, PAGE_CHARACTERS } from '../characters';
 import { answerOf } from './popup-answer';
 import ContextMenu from './components/ContextMenu.vue';
 import ConfirmDialog from './components/ConfirmDialog.vue';
@@ -42,6 +42,8 @@ const { t, locale } = useI18n();
 
 // QuickInput's path check follows main's platform; win32's rules, the strictest, until main's state arrives
 const platform = ref<ShellPlatform>('win32');
+const pageCharacters = createPageCharacters();
+provide(PAGE_CHARACTERS, pageCharacters.characters);
 
 // Mounted before main's state arrives: main sends requests from did-finish-load and this page acknowledges them from its
 // mount, so no load may hold the mount. The entry starts the catalogs' loads from <html lang>, each state loads the language
@@ -51,7 +53,7 @@ function applyState(state: OverlayState): void {
   void applyShellLocale(state.locale);
   void applySettingsLocale(state.locale);
   platform.value = state.platform;
-  setPageCharacters(state.characters);
+  pageCharacters.set(state.characters);
 }
 
 // In arrival order; the last one is on top and receives Escape. shown settles once main has been told the popup is on screen.
