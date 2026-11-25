@@ -62,6 +62,11 @@ export class ChatUnloads<C> {
     return answer;
   }
 
+  /** Resolves once core answered the chat's unload, at once when nothing is unloading it; a held show stays held. */
+  settled(chat: C): Promise<void> {
+    return this.asked.get(chat) ?? Promise.resolve();
+  }
+
   /** A show of the chat: false when nothing is unloading it, so it shows now; else then runs once core answered. */
   defer(chat: C, then: () => void): boolean {
     const settled = this.asked.get(chat);

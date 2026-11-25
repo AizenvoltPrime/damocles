@@ -169,4 +169,27 @@ describe('ChatUnloads', () => {
     expect(shown).toEqual([]);
     expect(unloads.defer('a', () => shown.push('a'))).toBe(false);
   });
+
+  it('settles a wait on a chat once core answered its unload, failed or not, and never drops a held show', async () => {
+    const unloads = new ChatUnloads<string>();
+    const core = answerLater();
+    void unloads.unload('a', core.ask);
+    const shown: string[] = [];
+    unloads.defer('a', () => shown.push('a'));
+    let settled = false;
+    const waited = unloads.settled('a').then(() => { settled = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    core.answer(true);
+    await waited;
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(shown).toEqual(['a']);
+    // nothing unloading: settled at once
+    await expect(unloads.settled('b')).resolves.toBeUndefined();
+    let fail!: (err: Error) => void;
+    unloads.unload('c', () => new Promise<boolean>((_resolve, reject) => { fail = reject; })).catch(() => undefined);
+    const failed = unloads.settled('c');
+    fail(new Error('the connection closed'));
+    await expect(failed).resolves.toBeUndefined();
+  });
 });

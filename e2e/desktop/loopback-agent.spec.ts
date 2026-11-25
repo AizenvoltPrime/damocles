@@ -15,7 +15,7 @@ import { chatRequests, type OpenAIStub, type StubReply } from './support/openai-
 import { readyOverlay } from './support/overlay';
 import { openProjectChat, setReducedMotion, showShellTheme, THEMES } from './support/screenshots';
 import { holdToast, overlayPage, popupPage, popupToasts, recordedToasts, recordLaunchSelection, recordToasts, setWindowFocused, shellPage, shellState } from './support/shell';
-import { awaitTurnEnd, chatInput, clickMenu, hostMessages, postFromWebview, recordHostMessages } from './support/ui';
+import { awaitTurnEnd, chatInput, clickAnswer, clickMenu, hostMessages, postFromWebview, recordHostMessages } from './support/ui';
 import { openTerminal } from './support/terminal';
 import { openedExternally, recordOpenExternal } from './support/updates';
 import { optIn, setupReview } from './support/worktree-chat';
@@ -38,7 +38,7 @@ const prompt = (tab: Page): Locator => tab.locator(`section[role="region"][aria-
 const yes = async (tab: Page): Promise<void> => {
   const card = prompt(tab);
   const handle = await card.elementHandle();
-  await card.getByRole('option', { name: 'Yes', exact: true }).click();
+  await clickAnswer(card.getByRole('option', { name: 'Yes', exact: true }));
   await handle!.waitForElementState('hidden');
 };
 

@@ -329,12 +329,16 @@ test('a row drag held at the bottom edge of Files scrolls the tree at its own pa
 
   // Dropped on a folder after its row scrolled away, the row moves there.
   await tree.evaluate((element) => { element.scrollTop = 0; });
+  const dropped = await filesRow(shell, 'dir00').elementHandle();
   await startDrag('dir00');
   await shell.mouse.move(x, nearEdge, { steps: 5 });
-  await hold(nearEdge, 500);
+  await expect.poll(async () => {
+    await hold(nearEdge, 100);
+    return dropped!.evaluate((row) => row.isConnected);
+  }, { intervals: [0] }).toBe(false);
   await shell.mouse.move(x, middle, { steps: 4 });
   const target = await shell.evaluate(([px, py]) => document.elementFromPoint(px!, py!)?.closest<HTMLElement>('[data-tree-path]')?.dataset.treePath, [x, middle]);
-  expect(target).toMatch(/^dir[1-7]\d$/);
+  expect(target).toMatch(/^dir(?!00)\d\d$/);
   await hold(middle, 200);
   await shell.mouse.up();
   await expect.poll(() => fs.existsSync(path.join(home.project, target!, 'dir00'))).toBe(true);

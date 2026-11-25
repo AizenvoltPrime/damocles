@@ -3103,7 +3103,9 @@ class DesktopApp {
       // so the selection stays on the remote chat, and stays loaded while the settings show.
       const local = (this.views?.chats() ?? []).filter((chat) => chat.authority === 'local').sort((a, b) => (this.lastViewed.get(b) ?? 0) - (this.lastViewed.get(a) ?? 0))[0];
       this.settingsLocalChat = local;
-      let panelId = local ? (await this.restoredCorePanel(local)).corePanelId : undefined;
+      // the hold above stops later unloads only: one core was asked for before it may still close the chat
+      if (local) await this.unloads.settled(local);
+      let panelId = local && !local.isDisposed ? (await this.restoredCorePanel(local)).corePanelId : undefined;
       if (panelId === undefined) {
         const opened = await this.settingsOpening.run(() => core.client.promptTarget(), (chat) => this.showChat(chat, { focus: true }));
         panelId = opened.panelId;

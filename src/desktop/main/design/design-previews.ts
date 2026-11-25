@@ -199,8 +199,27 @@ const DECISION_ID = /^D[1-9][0-9]{0,5}$/;
 // coordinates past this many CSS px from the viewport are clamped, so no page can hand main an unbounded number
 const FREEZE_PX = 100_000;
 
+// The renderer applies main's setBounds and setZoomFactor a frame or more after them, so a freeze right after a resize
+// waits this long for the view's CSS width to reach the tab's.
+const FREEZE_SETTLE_MS = 1_000;
+
 // Runs in the freeze world, so the page's scripts cannot reach its globals; bounded here, then parsed as hostile in main.
-const FREEZE_SCRIPT = `(() => {
+const freezeScript = (width: number): string => `(async () => {
+  const settled = () => Math.abs(window.innerWidth - ${width}) <= 1;
+  if (!settled()) {
+    await new Promise((resolve) => {
+      const finish = () => {
+        clearTimeout(timer);
+        window.removeEventListener('resize', onResize);
+        resolve();
+      };
+      const onResize = () => {
+        if (settled()) finish();
+      };
+      const timer = setTimeout(finish, ${FREEZE_SETTLE_MS});
+      window.addEventListener('resize', onResize);
+    });
+  }
   const cut = (value) => (value === null ? null : String(value).slice(0, ${MAX_MARKUP_FACT_CHARS}));
   const out = { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio, els: [] };
   let size = 0;
@@ -774,10 +793,11 @@ export class DesignPreviews {
 
   private async capture(tab: DesignTab, live: LiveView, info: DesignPreviewInfo): Promise<DesignFreeze> {
     const contents = live.view.webContents;
-    const zoom = contents.getZoomFactor();
-    const page = parseFreezeOutput(await answerWithin(contents.executeJavaScriptInIsolatedWorld(FREEZE_WORLD_ID, [{ code: FREEZE_SCRIPT }]), FREEZE_CAPTURE_MS, 'The preview did not answer the element read'));
+    const page = parseFreezeOutput(await answerWithin(contents.executeJavaScriptInIsolatedWorld(FREEZE_WORLD_ID, [{ code: freezeScript(tab.width) }]), FREEZE_CAPTURE_MS, 'The preview did not answer the element read'));
     // the 0.35 s preset glide changes the zoom before the width, so a freeze during it would map marks to the wrong width
     if (Math.abs(page.width - tab.width) > 1) throw new Error('The preview is changing width');
+    // read once the renderer shows the tab's width, so it is the zoom that width was laid out at
+    const zoom = contents.getZoomFactor();
     if (page.height < 1) throw new Error('The preview showed nothing to capture');
     if (tab.live !== live || !this.tabExists(tab)) throw new Error('The preview closed during the capture');
     const captured = await captureAtScale(contents, tab.width, page.height, zoom);
