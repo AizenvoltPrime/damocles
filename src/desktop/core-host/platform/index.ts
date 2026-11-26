@@ -84,7 +84,7 @@ export function createCorePlatform(
   // panels exists by the time a reply is spoken
   const remote = init.remote ? createRemoteHost(endpoint, { ...init, remote: init.remote }, clients, (host) => panels.idOf(host)) : undefined;
   const local = createLocal({ endpoint, init, workspaceFolders, trust, state, notifications, remote });
-  const panels = createCorePanels({ endpoint, resourceRoot: local.paths.resourceRoot });
+  const panels = createCorePanels({ endpoint, resourceRoot: local.paths.resourceRoot, merges: init.remote !== undefined });
   const secrets = createSecretsProxy(endpoint, init);
   const editor = createEditorProxy(endpoint, init, remote?.clients);
   const window = createWindowProxy(endpoint, init, panels, remote?.clients);

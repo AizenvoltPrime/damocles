@@ -1380,6 +1380,8 @@ These npm packages ship inside the VSIX, the desktop app or both. esbuild bundle
   — line and patch diffs: bundled into `dist/extension.cjs` and `dist/desktop/main.js` (tool patches, edit proposals and chat review), the chat webview (`dist/webview/`) and the desktop shell, its quick diff worker included.
 - **monaco-editor** (v0.57.0) — MIT, Copyright (c) 2016 - present Microsoft Corporation — https://github.com/microsoft/monaco-editor
   — the desktop app's file and diff editor. Monaco vendors further components (among them marked and DOMPurify); their notices are in Monaco's `ThirdPartyNotices.txt`, which the desktop app ships as `resources/monaco-editor-ThirdPartyNotices.txt`, and DOMPurify's license comment stays in the bundle.
+- **koffi** (v3.1.6) — MIT, Copyright (C) 2026 Niels Martignène <niels.martignene@protonmail.com> — https://github.com/Koromix/koffi
+  — Windows API calls (job objects, process identity and kill, ports, DOS device paths); shipped as `node_modules/koffi` with its license file in the desktop app and in Windows server packages, never bundled.
 - **electron-updater** (v6.8.9) — MIT, Copyright (c) 2015 Loopline Systems — https://github.com/electron-userland/electron-builder
   — the desktop app's update client; shipped as `node_modules/electron-updater` with its dependencies and their license files.
 - **@parcel/watcher** (v2.6.0) — MIT, Copyright (c) 2017-present Devon Govett — https://github.com/parcel-bundler/watcher
@@ -1509,7 +1511,7 @@ SOFTWARE.
 
 ## Desktop terminal: xterm.js and node-pty — MIT
 
-The desktop app's integrated terminal. Vite bundles xterm.js and its addons into the shell renderer (`dist/desktop-shell/`), and esbuild bundles the headless xterm.js with the serialize and Unicode 11 addons into the pty host (`dist/pty-host.js`); electron-builder ships node-pty as `node_modules/node-pty` with its license file and only the target platform's prebuild. Each remote server package (`damocles-server-<version>-<target>`) carries the same pty host and node-pty, with node-pty's license file and only its target's prebuild (on Alpine, node-pty compiled against musl).
+The desktop app's integrated terminal. Vite bundles xterm.js and its addons into the shell renderer (`dist/desktop-shell/`), and esbuild bundles the headless xterm.js with the serialize and Unicode 11 addons into the pty host (`dist/pty-host.js`); electron-builder ships node-pty as `node_modules/node-pty` with its license file and only the target platform's prebuild. Each remote server package (`damocles-server-<version>-<target>`) carries the terminal host (`dist/terminal-host.js`), into which esbuild bundles the same headless xterm.js and addons, and node-pty as `node_modules/node-pty`, with node-pty's license file and only its target's prebuild (on Alpine, node-pty compiled against musl).
 
 - **@xterm/xterm** (v6.0.0) — MIT, Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js); Copyright (c) 2014-2016, SourceLair Private Company (https://www.sourcelair.com); Copyright (c) 2012-2013, Christopher Jeffrey (https://github.com/chjj/) — https://github.com/xtermjs/xterm.js
   — the terminal emulator.
@@ -1521,11 +1523,11 @@ The desktop app's integrated terminal. Vite bundles xterm.js and its addons into
 - **@xterm/addon-unicode11** (v0.9.0) — MIT, Copyright (c) 2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
   — Unicode 11 character widths.
 - **@xterm/headless** (v6.0.0) — MIT, Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js); Copyright (c) 2014-2016, SourceLair Private Company (https://www.sourcelair.com); Copyright (c) 2012-2013, Christopher Jeffrey (https://github.com/chjj/) — https://github.com/xtermjs/xterm.js
-  — each terminal's screen, kept in the pty host.
+  — each terminal's screen, kept in the pty host or the terminal host.
 - **@xterm/addon-serialize** (v0.14.0) — MIT, Copyright (c) 2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
   — the screen as the sequences that redraw it.
 - **node-pty** (v1.2.0-beta.15) — MIT, Copyright (c) 2012-2015, Christopher Jeffrey (https://github.com/chjj/); Copyright (c) 2016, Daniel Imms (http://www.growingwiththeweb.com); Copyright (c) 2018 - present Microsoft Corporation — https://github.com/microsoft/node-pty
-  — the pseudoterminal the pty host runs shells in. Its Windows prebuild includes `conpty.dll` and `OpenConsole.exe` from Microsoft's Windows Terminal (MIT, Copyright (c) Microsoft Corporation, https://github.com/microsoft/terminal).
+  — the pseudoterminal the pty host and the terminal host run shells in. Its Windows prebuild includes `conpty.dll` and `OpenConsole.exe` from Microsoft's Windows Terminal (MIT, Copyright (c) Microsoft Corporation, https://github.com/microsoft/terminal).
 
 These components are distributed under the MIT License, with the copyright lines given for each above:
 

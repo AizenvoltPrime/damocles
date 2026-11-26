@@ -62,6 +62,13 @@ export interface WireHostSettingsRead {
 // The pty host requests a client posts; killAll and shutdown never cross, a client detaches instead.
 export type TerminalPost = Exclude<HostRequest, { readonly type: 'killAll' | 'shutdown' }>;
 
+// hostPid: the terminal's terminal host
+export interface TerminalResponding {
+  readonly id: string;
+  readonly hostPid: number;
+  readonly responding: boolean;
+}
+
 export interface WatchLimits {
   readonly roots: readonly string[];
   readonly limit: number | null;
@@ -183,6 +190,9 @@ export interface WorkspaceRequests {
   'terminals.linkKind': Call<{ readonly project: Project; readonly relativePath: string } & Links, TerminalLinkKind | null>;
   // every terminal the host keeps; posting serialize for one attaches this connection to it
   'terminals.list': Call<object, readonly LiveTerminal[]>;
+  // (feature terminals.notResponding) ends a terminal host that is not responding, and with it every terminal it holds;
+  // ended false, and nothing touched, for any other pid
+  'terminals.endHost': Call<{ readonly hostPid: number }, { readonly ended: boolean }>;
   // the host's Windows build, which its screens and its terminals' views give xterm; null off Windows
   'terminals.windowsBuild': Call<object, number | null>;
 }
@@ -206,7 +216,11 @@ export interface WorkspaceHostEvents {
   'quickOpen.end': { readonly runId: number; readonly error?: string };
   // a pty host message for a terminal this connection spawned or attached
   'terminals.message': { readonly message: HostMessage };
-  // the host's pty host ended; every terminal it held is gone
+  // (feature terminals.notResponding, sent only to a client listing it) a terminal this connection views: its terminal host
+  // stopped responding, or answers again
+  'terminals.responding': TerminalResponding;
+  // from a daemon that forks a pty host: it ended, and every terminal it held is gone. A daemon whose terminals run in
+  // terminal hosts never sends it
   'terminals.hostExit': PtyHostEnd;
 }
 
@@ -324,7 +338,9 @@ const hostOutcome: Parser<HostOutcome> = either(
 const profile: Parser<TerminalProfile> = obj({ id: nonEmpty(MAX_KEY_CHARS), name: str(MAX_KEY_CHARS), file: filePath, args, icon: oneOf(TERMINAL_ICONS) });
 const injectionRequest: Parser<ShellInjectionRequest> = obj({ file: filePath, args, nonce: nonEmpty(256), env });
 const terminalView: Parser<TerminalView> = (raw) => parseTerminalView(raw) ?? INVALID;
-const liveTerminal: Parser<LiveTerminal> = obj({ id: (raw: unknown) => (isTerminalId(raw) ? raw : INVALID), pid: int(0, 2 ** 32), cols: int(1, 100_000), rows: int(1, 100_000), view: opt(terminalView) });
+const terminalId: Parser<string> = (raw) => (isTerminalId(raw) ? raw : INVALID);
+const hostPid = int(1, 2 ** 32);
+const liveTerminal: Parser<LiveTerminal> = obj({ id: terminalId, pid: int(0, 2 ** 32), cols: int(1, 100_000), rows: int(1, 100_000), view: opt(terminalView), notRespondingHost: opt(hostPid) });
 const terminalPost: Parser<TerminalPost> = (raw) => {
   const request = parseHostRequest(raw);
   return request === undefined || request.type === 'killAll' || request.type === 'shutdown' ? INVALID : request;
@@ -420,6 +436,7 @@ export const CLIENT_TO_WORKSPACE: Tables<ClientToWorkspace> = {
     'terminals.injection': method(obj({ request: injectionRequest }), maybe(obj({ args, env }))),
     'terminals.linkKind': method(obj({ project, relativePath: relative, links }), either(oneOf(['file', 'folder'] as const), nul)),
     'terminals.list': method(nothing, arr(liveTerminal, MAX_ITEMS)),
+    'terminals.endHost': method(obj({ hostPid }), obj({ ended: bool })),
     'terminals.windowsBuild': method(nothing, either(int(0, Number.MAX_SAFE_INTEGER), nul)),
   },
   events: {
@@ -443,6 +460,7 @@ export const WORKSPACE_TO_CLIENT: Tables<WorkspaceToClient> = {
     'quickOpen.files': obj({ runId, files: arr(relativeFile, WALK_BATCH_FILES, 1) }),
     'quickOpen.end': obj({ runId, error: opt(message) }),
     'terminals.message': obj({ message: hostMessage }),
+    'terminals.responding': obj({ id: terminalId, hostPid, responding: bool }),
     'terminals.hostExit': obj({ code: exitCode, reason: either(message, nul), error: either(message, nul) }),
   },
   mirrors: {},

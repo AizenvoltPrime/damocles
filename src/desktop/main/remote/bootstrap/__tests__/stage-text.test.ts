@@ -8,8 +8,7 @@ import WINDOWS_TEMPLATE from '../stage1-windows.ps1';
 import { buildPosixStage1, buildWindowsStage1, validateInstallFolder } from '../stage1';
 import REMOVE_POSIX from '../remove-posix.sh';
 import REMOVE_WINDOWS from '../remove-windows.ps1';
-import { ATTACH_DEADLINE_MS, LOCK_STALE_MS, TAKEOVER_STALE_MS } from '../../../../daemon/lock-timing';
-import { AUTH_TIMEOUT_MS } from '../../../../../remote/handshake';
+import { LOCK_STALE_MS, TAKEOVER_STALE_MS } from '../../../../daemon/lock-timing';
 import { posixShell, powerShell, runWithBytes } from './shells';
 
 const sha = (text: string): string => createHash('sha256').update(text).digest('hex');
@@ -32,8 +31,10 @@ describe('stage 0', () => {
 
   it('is under cmd PowerShell with the script as UTF-16LE base64, and under PowerShell the script itself', () => {
     const encoded = Buffer.from(WINDOWS_STAGE0_SCRIPT, 'utf16le').toString('base64');
-    expect(windowsStage0('cmd')).toBe(`powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`);
+    expect(windowsStage0('cmd')).toBe(`powershell -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encoded}`);
     expect(windowsStage0('powershell')).toBe(WINDOWS_STAGE0_SCRIPT);
+    // -ExecutionPolicy would replace the session's own policy before the script could keep it for the stage's children
+    expect(WINDOWS_STAGE0_SCRIPT.startsWith("$DamoclesInheritedExecutionPolicy=$env:PSExecutionPolicyPreference;$env:PSExecutionPolicyPreference='Bypass';")).toBe(true);
     // Win32-OpenSSH hands a PowerShell default shell the command inside double quotes
     expect(WINDOWS_STAGE0_SCRIPT).not.toMatch(/["\r\n]/);
   });
@@ -94,6 +95,7 @@ describe('stage 1 text', () => {
   it('replaces only the POSIX parameter block, with each value as a quoted literal', () => {
     const text = buildPosixStage1({ manifest, releasesUrl: RELEASES, installFolder: "/opt/my 'tools' $x", previousInstallFolder: null });
     const block = [
+      "D_AUTOMATIC='1'",
       "D_INSTALL_FOLDER='/opt/my '\\''tools'\\'' $x'",
       "D_PREVIOUS_KIND='default'",
       "D_PREVIOUS_FOLDER=''",
@@ -111,6 +113,13 @@ describe('stage 1 text', () => {
     // the folder is named by the server version alone, so no app version parameter is left
     expect(POSIX_TEMPLATE).not.toContain('D_VERSION');
     expect(WINDOWS_TEMPLATE).not.toContain('D_VERSION');
+  });
+
+  it('tells both stages whether the user started the connect, an automatic one unless said', () => {
+    expect(buildPosixStage1({ manifest, releasesUrl: RELEASES, userStarted: true })).toContain("\nD_AUTOMATIC='0'\n");
+    expect(buildPosixStage1({ manifest, releasesUrl: RELEASES })).toContain("\nD_AUTOMATIC='1'\n");
+    expect(buildWindowsStage1({ manifest, releasesUrl: RELEASES, userStarted: true })).toContain("\n$D_AUTOMATIC = '0'\n");
+    expect(buildWindowsStage1({ manifest, releasesUrl: RELEASES })).toContain("\n$D_AUTOMATIC = '1'\n");
   });
 
   it('gives an unpublished build, which has no release URL, the URL - on every package line', () => {
@@ -148,13 +157,12 @@ describe('stage 1 text', () => {
   it('replaces only the Windows parameter block, with each value as a PowerShell literal', () => {
     const text = buildWindowsStage1({ manifest, releasesUrl: RELEASES, previousInstallFolder: "C:\\it's" });
     const block = [
+      "$D_AUTOMATIC = '1'",
       "$D_INSTALL_FOLDER = ''",
       "$D_PREVIOUS_KIND = 'folder'",
       "$D_PREVIOUS_FOLDER = 'C:\\it''s'",
       `$D_WIN32_X64 = 'damocles-server-3.7.0-win32-x64.zip ${sha('win')} 73875504 3.7.0+bbbbbbbbbbbb ${RELEASES}/download/v3.7.0/damocles-server-3.7.0-win32-x64.zip'`,
       "$D_WIN32_ARM64 = ''",
-      `$D_ATTACH_DEADLINE_MS = ${ATTACH_DEADLINE_MS}`,
-      `$D_AUTH_TIMEOUT_MS = ${AUTH_TIMEOUT_MS}`,
     ].join('\n');
     expect(text).toBe(WINDOWS_TEMPLATE.replace(/# BEGIN PARAMETERS\r?\n[\s\S]*?# END PARAMETERS/, `# BEGIN PARAMETERS\n${block}\n# END PARAMETERS`));
   });

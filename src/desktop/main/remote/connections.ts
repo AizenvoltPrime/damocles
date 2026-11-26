@@ -13,6 +13,7 @@ import {
   type SshPromptAnswer,
 } from '../../preload/overlay-channels';
 import type { ProjectConnection } from '../../preload/shell-channels';
+import type { HostRemoved } from '../../../shared/host-connection';
 import type { ContainerHostRecord, HostRecord, SshHostRecord, WslHostRecord } from './host-store';
 import type { LoopAttempt } from './reconnect';
 import { knownHostsRemoveCommand, SshConnectError, type SshAttemptHooks } from './ssh';
@@ -20,9 +21,12 @@ import { knownHostsRemoveCommand, SshConnectError, type SshAttemptHooks } from '
 // a watched container's build and the steps stage 1 reports on the target, which outlast any fixed bound
 const STAGE_STEPS: ReadonlySet<Attempt['step']> = new Set<Attempt['step']>(['building', 'checking', 'installing', 'starting']);
 
+// userStarted: the user started or joined the attempt, so its stage 1 installs where Remove Damocles server ran; read when stage 1
+// is built, which a user joining an automatic attempt before then still reaches
 export interface SshStartRequest {
   readonly host: SshHostRecord;
   readonly signal: AbortSignal;
+  readonly userStarted: () => boolean;
   readonly hooks: SshAttemptHooks;
   readonly savePlatform: (platform: CachedPlatform) => Promise<void>;
   readonly installFolderSettled: () => Promise<void>;
@@ -31,6 +35,7 @@ export interface SshStartRequest {
 export interface WslStartRequest {
   readonly host: WslHostRecord;
   readonly signal: AbortSignal;
+  readonly userStarted: () => boolean;
   readonly hooks: SshAttemptHooks;
   readonly installFolderSettled: () => Promise<void>;
 }
@@ -38,6 +43,7 @@ export interface WslStartRequest {
 export interface ContainerStartRequest {
   readonly host: ContainerHostRecord;
   readonly signal: AbortSignal;
+  readonly userStarted: () => boolean;
   // building while `devcontainer up` runs, then the stage's steps; buildLog: the log's lines as they come
   readonly hooks: Pick<SshAttemptHooks, 'step' | 'progress' | 'notice'> & { buildLog(log: BuildLog): void };
   // a user watches the attempt in the Connect dialog now; only then may it ask, or build
@@ -93,9 +99,13 @@ interface Attempt {
   progress?: number | undefined;
   prompt?: PendingPrompt | undefined;
   failure?: ConnectFailure;
+  // the failure the started bridge itself reported, where the handshake would start
+  refusal?: ConnectError;
   readonly notices: HostNotice[];
   // a user waits on it in the Connect dialog; an attempt nobody watches holds its prompt behind the sign-in banner
   watched: boolean;
+  // the user started or joined it (SshStartRequest.userStarted)
+  user: boolean;
   // settles once the attempt connected or failed, rejecting with the transport's or the handshake's error
   done: Promise<void>;
   // an ssh call that is no connect (the removal stage), which shows only its prompts
@@ -109,6 +119,8 @@ interface HostState {
   started?: SshStarted | undefined;
   // ssh's stderr tail as the last bridge left it
   lastStderr: string;
+  // the device that removed the host's server (HostRemoved), until the next attempt starts
+  removedBy?: string;
 }
 
 // An error the transport throws: an SshFailureCode with its parameters and ssh's stderr tail.
@@ -150,6 +162,8 @@ export function isCancelled(err: unknown): boolean {
 export class RemoteConnections {
   private readonly deps: RemoteConnectionsDeps;
   private readonly hosts = new Map<string, HostState>();
+  // hosts whose Forget host began: their records stay until the forget ends, but nothing reaches them again
+  private readonly forgotten = new Set<string>();
   private disposed = false;
 
   constructor(deps: RemoteConnectionsDeps) {
@@ -160,16 +174,18 @@ export class RemoteConnections {
    * Connects the host, or joins its attempt in flight; resolves the attempt's id at once. watched: a user waits on it in the
    * Connect dialog, so a prompt shows there instead of behind the sign-in banner. A suspect connection is joined, since only
    * the keepalive timeout decides a drop, unless force (Reconnect now) gives up its transport. A watched join tells the attempt
-   * as it stands, so the dialog that started it shows main's step, never one of its own.
+   * as it stands, so the dialog that started it shows main's step, never one of its own. user: the user's gesture started
+   * it (Connect, Reconnect, opening a project or chat), which installs where Remove Damocles server ran; absent: automatic.
    */
-  connect(hostId: string, watched: boolean, options: { readonly force?: boolean } = {}): string {
+  connect(hostId: string, watched: boolean, options: { readonly force?: boolean; readonly user?: boolean } = {}): string {
     if (this.disposed) throw new Error('The app is quitting');
-    const record = this.deps.host(hostId);
+    const record = this.host(hostId);
     if (!record) throw new Error(`No saved host ${hostId}`);
     const state = this.stateOf(hostId);
     const running = this.running(state);
     if (running?.stage) throw new Error(`An ssh call to ${hostId} is running; connect once it finished`);
     if (running) {
+      if (options.user === true) running.user = true;
       if (watched) {
         running.watched = true;
         this.deps.changed(hostId);
@@ -181,8 +197,9 @@ export class RemoteConnections {
       if (watched) this.deps.changed(hostId);
       return state.attempt.id;
     }
-    const attempt: Attempt = { id: randomUUID(), hostId, transport: record.kind, controller: new AbortController(), step: 'connecting', visited: ['connecting'], notices: [], watched, done: Promise.resolve() };
+    const attempt: Attempt = { id: randomUUID(), hostId, transport: record.kind, controller: new AbortController(), step: 'connecting', visited: ['connecting'], notices: [], watched, user: options.user === true, done: Promise.resolve() };
     state.attempt = attempt;
+    delete state.removedBy;
     this.deps.changed(hostId);
     attempt.done = this.deps.connect(hostId).then(() => {
       if (state.attempt !== attempt) return;
@@ -192,7 +209,7 @@ export class RemoteConnections {
       this.deps.changed(hostId);
     }, (err: unknown) => {
       // Cancel, Escape or Disconnect Host ended it, whatever the transport or the handshake threw on the way out
-      const ended = attempt.controller.signal.aborted && !isCancelled(err) ? new SshConnectError('cancelled', {}, state.started?.stderrTail() ?? state.lastStderr) : err;
+      const ended = attempt.refusal ?? (attempt.controller.signal.aborted && !isCancelled(err) ? new SshConnectError('cancelled', {}, state.started?.stderrTail() ?? state.lastStderr) : err);
       if (state.attempt === attempt) this.fail(attempt, ended);
       throw ended;
     });
@@ -207,12 +224,15 @@ export class RemoteConnections {
 
   /**
    * The reconnect loop's attempt: joins a connect attempt in flight, which only its own caller ends, else connects unwatched,
-   * cancelled by signal until it settles.
+   * cancelled by signal until it settles. user: the user's Reconnect or Retry started it.
    */
-  loopAttempt(hostId: string, signal: AbortSignal, force: boolean): LoopAttempt {
+  loopAttempt(hostId: string, signal: AbortSignal, force: boolean, user: boolean): LoopAttempt {
     const running = this.running(this.stateOf(hostId));
-    if (running && !running.stage) return { joined: true, outcome: running.done };
-    const attemptId = this.connect(hostId, false, { force });
+    if (running && !running.stage) {
+      if (user) running.user = true;
+      return { joined: true, outcome: running.done };
+    }
+    const attemptId = this.connect(hostId, false, { force, user });
     const cancel = (): void => this.cancel(attemptId);
     signal.addEventListener('abort', cancel, { once: true });
     return { joined: false, outcome: this.attemptById(attemptId)!.done.finally(() => signal.removeEventListener('abort', cancel)) };
@@ -223,11 +243,11 @@ export class RemoteConnections {
    * whose resume the daemon refused.
    */
   async transport(hostId: string): Promise<Duplex> {
+    const host = this.host(hostId);
     const state = this.stateOf(hostId);
     const attempt = state.attempt;
-    const host = this.deps.host(hostId);
     if (!attempt || attempt.step === 'connected' || attempt.step === 'failed' || !host) throw new Error(`No connection attempt for ${hostId} is waiting on its transport`);
-    const common = { signal: attempt.controller.signal, hooks: this.hooksOf(attempt), installFolderSettled: () => this.deps.installFolderSettled(hostId) };
+    const common = { signal: attempt.controller.signal, userStarted: () => attempt.user, hooks: this.hooksOf(attempt), installFolderSettled: () => this.deps.installFolderSettled(hostId) };
     const starting = host.kind === 'wsl'
       ? this.deps.startWsl({ host, ...common })
       : host.kind === 'container'
@@ -238,6 +258,10 @@ export class RemoteConnections {
       throw err;
     });
     state.started = started;
+    // the bridge's own refusal ends its stream with the failure, which the handshake reading it would report as its own
+    started.stream.once('error', (err: unknown) => {
+      if (isConnectError(err)) attempt.refusal = err;
+    });
     // the bridge's end, a drop or a cancel during the handshake: ssh goes and its last stderr stays for Show log
     started.stream.once('close', () => {
       state.lastStderr = started.stderrTail();
@@ -276,11 +300,11 @@ export class RemoteConnections {
    * host's attempt is what it was afterwards. A connect meanwhile is refused.
    */
   async withPrompts<T>(hostId: string, run: (prompt: SshAttemptHooks['prompt'], signal: AbortSignal) => Promise<T>): Promise<T> {
-    if (this.deps.host(hostId)?.kind !== 'ssh') throw new Error(`The host ${hostId} is reached over no ssh`);
+    if (this.host(hostId)?.kind !== 'ssh') throw new Error(`The host ${hostId} is reached over no ssh`);
     const state = this.stateOf(hostId);
     const previous = state.attempt;
     if (previous && previous.step !== 'connected' && previous.step !== 'failed') throw new Error(`An attempt to reach ${hostId} is running`);
-    const attempt: Attempt = { id: randomUUID(), hostId, transport: 'ssh', controller: new AbortController(), step: 'authenticating', visited: ['authenticating'], notices: [], watched: true, done: Promise.resolve(), stage: true };
+    const attempt: Attempt = { id: randomUUID(), hostId, transport: 'ssh', controller: new AbortController(), step: 'authenticating', visited: ['authenticating'], notices: [], watched: true, user: true, done: Promise.resolve(), stage: true };
     state.attempt = attempt;
     this.deps.changed(hostId);
     try {
@@ -319,8 +343,9 @@ export class RemoteConnections {
     return running.done.then(() => undefined, () => undefined);
   }
 
-  /** Forget host: its attempt in flight ends and nothing of the host stays: attempt, notices, stderr tail. */
+  /** Forget host: its attempt in flight ends, nothing of the host stays (attempt, notices, stderr tail) and nothing connects it again. */
   forget(hostId: string): void {
+    this.forgotten.add(hostId);
     const state = this.hosts.get(hostId);
     if (!state) return;
     this.hosts.delete(hostId);
@@ -385,6 +410,19 @@ export class RemoteConnections {
     return this.hosts.get(hostId)?.attempt?.failure;
   }
 
+  /** Another device removed the host's server (its control.removing event), until the next attempt starts. */
+  markRemoved(hostId: string, by: string): void {
+    this.stateOf(hostId).removedBy = by;
+    this.deps.changed(hostId);
+  }
+
+  /** The host's server was removed, as the latest event or attempt found it; undefined once an attempt started after it. */
+  removed(hostId: string): HostRemoved | undefined {
+    const state = this.hosts.get(hostId);
+    if (state?.removedBy !== undefined) return { by: state.removedBy };
+    return state?.attempt?.failure?.code === 'serverRemoved' ? {} : undefined;
+  }
+
   /** The host's last attempt stopped where only an attempt a user watches goes on (a container to build). */
   needsWatchedAttempt(hostId: string): boolean {
     return this.failure(hostId)?.code === 'containerNeedsBuild';
@@ -420,6 +458,16 @@ export class RemoteConnections {
       }
       state.started?.dispose();
     }
+  }
+
+  private host(hostId: string): ReturnType<RemoteConnectionsDeps['host']> {
+    if (this.forgotten.has(hostId)) throw new Error(`The host ${hostId} is being forgotten`);
+    return this.deps.host(hostId);
+  }
+
+  /** Whether Forget host began on the host, whose record may still exist. */
+  isForgotten(hostId: string): boolean {
+    return this.forgotten.has(hostId);
   }
 
   private stateOf(hostId: string): HostState {

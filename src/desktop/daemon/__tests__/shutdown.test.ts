@@ -1,4 +1,4 @@
-import { existsSync, promises as fs } from 'node:fs';
+import { existsSync, promises as fs, realpathSync } from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -6,23 +6,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sendCliRequest, type CliAnswer } from '../../cli/cli-protocol';
 import { agentSocketFile } from '../../core-protocol/agent-sockets';
 import { WALK_CLOSE_WAIT_MS, type WalkChild } from '../../../core/search-walk/walk-host';
-import type { HostStarters, PtyHostProcess } from '../../workspace/host-starters';
 import type { TerminalPost } from '../../workspace/messages';
 import { CLI_HOOK_ENV } from '../../workspace/terminal/terminal-env';
+import { activeLinkPath } from '../active-link';
 import { daemonAnswers } from '../attach';
 import type { CoreAttach } from '../control-messages';
 import type { ForkedChild } from '../process-starts';
-import { buildDaemon, EXIT_LOCK_LOST, EXIT_SHUTDOWN_FAILED, type Daemon, type DaemonDeps } from '../serve';
+import { buildDaemon, EXIT_LOCK_LOST, EXIT_SHUTDOWN_FAILED, type Daemon, type DaemonDeps, type DaemonStarters } from '../serve';
+import { createTerminalHosts } from '../terminal-hosts';
+import { IDLE_EXIT_MS } from '../lifetime';
 import { LOCK_UPDATE_MS } from '../lock-timing';
 import { acquireDaemonLock } from '../singleton';
-import { makeRunDir, readPidFile, runPaths, tokenPath, writePidFile, type PidRecord, type RunPaths } from '../token';
-import { REPO_ROOT, startInProcessDaemon, TEST_FACTS, type InProcessDaemon } from './in-process-daemon';
+import { localRunPaths, makeRunDir, readHostRecords, readPidFile, runPaths, tokenPath, writePidFile, type PidRecord, type RunPaths } from '../token';
+import { REPO_ROOT, startInProcessDaemon, startTestHost, TEST_FACTS, type InProcessDaemon, type TestHost } from './in-process-daemon';
 import { connectClient, type TestClient } from './test-client';
 
 const NOT_CONNECTED: CliAnswer = { ok: false, code: 'notConnected', language: 'en' };
 
-const NO_HOSTS: HostStarters = {
-  startPtyHost: () => { throw new Error('no pty host in this test'); },
+const NO_HOSTS: DaemonStarters = {
   startFormatterHost: () => { throw new Error('no formatter host in this test'); },
 };
 
@@ -37,27 +38,17 @@ const CORE_ATTACH: CoreAttach = {
   mirrors: { trust: { keys: [] }, folders: { folders: [] }, editor: {}, terminal: { shown: false, shortcut: '' }, language: { language: 'en' }, clientAuth: { providers: {} }, clientUser: { settings: {}, permissionRules: [] }, clientPolicy: { voice: false, allowBypass: false } },
 };
 
-// a pty host that ignores its shutdown and ends only when killed
-function stubbornPtyHost(): { start: () => PtyHostProcess; posted: unknown[]; started: () => boolean; killed: () => boolean } {
-  const posted: unknown[] = [];
-  let started = false;
-  let killed = false;
+// the terminal host the daemon starts for its first terminal: the real host in this process, over ptys the test reads
+function terminalHost(): { start: () => Promise<number>; started: () => TestHost | undefined; stop: () => Promise<void> } {
+  let host: TestHost | undefined;
   return {
-    posted,
-    started: () => started,
-    killed: () => killed,
-    start: () => {
-      started = true;
-      let exit: (end: { code: number; reason: null; error: null }) => void = () => undefined;
-      return {
-        postMessage: (message) => posted.push(message),
-        onMessage: () => undefined,
-        onExit: (listener) => { exit = listener; },
-        kill: () => {
-          killed = true;
-          exit({ code: 1, reason: null, error: null });
-        },
-      };
+    start: async () => {
+      host = await startTestHost(await localRunPaths());
+      return host.pid;
+    },
+    started: () => host,
+    stop: async () => {
+      if (host && !host.hasExited()) await host.stop();
     },
   };
 }
@@ -108,6 +99,17 @@ function answeringCore(): { fork: () => ForkedChild } {
   };
 }
 
+const markFile = (at: RunPaths): string => path.join(at.runDir, 'handed-over.json');
+
+// the hand-over mark as it lies in the run folder, or undefined when there is none
+async function readMark(at: RunPaths): Promise<unknown> {
+  const text = await fs.readFile(markFile(at), 'utf8').catch((err: NodeJS.ErrnoException) => {
+    if (err.code === 'ENOENT') return undefined;
+    throw err;
+  });
+  return text === undefined ? undefined : JSON.parse(text);
+}
+
 let home: string;
 let paths: RunPaths;
 
@@ -129,6 +131,7 @@ function daemonWith(closeEndpoint: DaemonDeps['closeEndpoint'], lines: string[] 
     git: { available: false, reason: 'not probed in tests' },
     e2eHooks: false,
     root: REPO_ROOT,
+    terminalRoot: REPO_ROOT,
     version: '0.0.0-test',
     facts: TEST_FACTS,
     paths,
@@ -146,29 +149,96 @@ describe('daemon shutdown', () => {
   it('still runs every later step and exits, with a failure code, when closing the endpoint fails', async () => {
     const lines: string[] = [];
     const { daemon, exited } = daemonWith(() => Promise.reject(new Error('the run folder is gone')), lines);
-    await daemon.shutdown('control.shutdownNow');
+    await daemon.shutdown('control.shutdownNow', 'end');
     expect(await exited).toEqual({ reason: 'control.shutdownNow', code: EXIT_SHUTDOWN_FAILED });
     expect(lines).toContain('[daemon] shutdown: closing the endpoint failed: the run folder is gone');
   });
 
   it('exits with 0 when every step succeeds', async () => {
     const { daemon, exited } = daemonWith(async () => undefined);
-    await daemon.shutdown('idle');
+    await daemon.shutdown('idle', 'release');
     expect(await exited).toEqual({ reason: 'idle', code: 0 });
   });
 
-  it('stops at once when another daemon took its lock, killing its children and leaving the new owner\'s pid file and lock alone', async () => {
-    const pty = stubbornPtyHost();
+  // a daemon with one terminal in the terminal host it started
+  async function daemonWithTerminal(): Promise<{ daemon: InProcessDaemon; client: TestClient; host: TestHost; stop: () => Promise<void> }> {
+    const pty = terminalHost();
+    const daemon = await startInProcessDaemon({ starters: NO_HOSTS, startTerminalHost: pty.start });
+    const client = await connectClient(await daemon.connect());
+    client.workspace.emit('terminals.post', { request: SPAWN });
+    await vi.waitFor(async () => expect(await client.workspace.request('terminals.list', {})).toHaveLength(1));
+    return { daemon, client, host: pty.started()!, stop: pty.stop };
+  }
+
+  it.each([
+    ['a stop signal', (daemon: InProcessDaemon) => daemon.daemon.shutdown('it received SIGTERM', 'release'), false],
+    ['control.handOver now', (_daemon: InProcessDaemon, client: TestClient) => client.control.request('handOver', { when: 'now' }), true],
+    ['control.handOver idle with no chat run', (_daemon: InProcessDaemon, client: TestClient) => client.control.request('handOver', { when: 'idle' }), true],
+    ['control.handOverIfIdle with no chat run', (_daemon: InProcessDaemon, client: TestClient) => client.control.request('handOverIfIdle', {}), true],
+  ] as const)('leaves every terminal with its host on %s, and the next daemon adopts it', async (_name, stop, marks) => {
+    const { daemon, client, host, stop: stopHost } = await daemonWithTerminal();
+    try {
+      await fs.rm(markFile(daemon.paths), { force: true });
+      await stop(daemon, client);
+      expect(await daemon.exitCode).toBe(0);
+      expect(await readMark(daemon.paths)).toEqual(marks ? { version: daemon.version, at: expect.any(Number) } : undefined);
+      expect(host.ptys.map((pty) => pty.killed)).toEqual([false]);
+      expect(host.hasExited()).toBe(false);
+      const next = await startInProcessDaemon({ starters: NO_HOSTS, startTerminalHost: () => Promise.reject(new Error('no start in this test')) });
+      const again = await connectClient(await next.connect());
+      expect((await again.workspace.request('terminals.list', {})).map((terminal) => `${terminal.id} ${terminal.pid}`)).toEqual([`term-1 ${host.ptys[0]!.pid}`]);
+      // the frozen shutdownNow still ends every terminal, and with them the host
+      await again.control.request('shutdownNow', {});
+      expect(await next.exitCode).toBe(0);
+      expect(await host.exited).toBe('a daemon asked it to shut down');
+      expect(host.ptys.map((pty) => pty.killed)).toEqual([true]);
+    } finally {
+      await stopHost();
+    }
+  }, 20_000);
+
+  it('leaves no hand-over mark when it exits on shutdownWhenIdle or once idle', async () => {
+    const daemon = await startInProcessDaemon({ starters: NO_HOSTS });
+    await fs.rm(markFile(daemon.paths), { force: true });
+    const client = await connectClient(await daemon.connect());
+    await client.control.request('shutdownWhenIdle', {});
+    expect(await daemon.exitCode).toBe(0);
+    expect(await readMark(daemon.paths)).toBeUndefined();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { exited } = daemonWith(async () => undefined);
+      await vi.advanceTimersByTimeAsync(IDLE_EXIT_MS);
+      expect(await exited).toEqual({ reason: `no client, run or terminal for ${IDLE_EXIT_MS} ms`, code: 0 });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(await readMark(paths)).toBeUndefined();
+  });
+
+  it('ends every terminal and its host on a removal\'s shutdown', async () => {
+    const { daemon, client, host, stop: stopHost } = await daemonWithTerminal();
+    try {
+      await client.control.request('shutdownForRemoval', {});
+      expect(await daemon.exitCode).toBe(0);
+      expect(await host.exited).toBe('a daemon asked it to shut down');
+      expect(await readHostRecords(daemon.paths)).toEqual([]);
+    } finally {
+      await stopHost();
+    }
+  }, 20_000);
+
+  it('stops at once when another daemon took its lock, killing its children, leaving the new owner\'s pid file and lock alone, and ending no terminal host', async () => {
+    const pty = terminalHost();
     const core = stubbornCore();
     const lines: string[] = [];
-    const daemon = await startInProcessDaemon({ starters: { ...NO_HOSTS, startPtyHost: pty.start }, forkCore: core.fork, credentialRelay: true, log: (line) => lines.push(line) });
+    const daemon = await startInProcessDaemon({ starters: NO_HOSTS, startTerminalHost: pty.start, forkCore: core.fork, credentialRelay: true, log: (line) => lines.push(line) });
     // the folders under the socket base are this daemon's alone, so they go even when the run folder is left to the new owner
     const ownFolders = [daemon.daemon.agentProxy.folder(), process.platform === 'win32' ? undefined : path.dirname(daemon.relay!.identity().handle)].filter((folder) => folder !== undefined);
     expect(ownFolders).toHaveLength(process.platform === 'win32' ? 0 : 2);
     const client = await connectClient(await daemon.connect());
     await client.control.request('attachCore', CORE_ATTACH);
     // a damocles --wait whose client never answers holds no step
-    const { answer } = await waitingCliRequest(client, pty.posted);
+    const { answer } = await waitingCliRequest(client, pty.started);
     expect(core.started()).toBe(true);
     // the new owner's lock has its own mtime, and its pid file names it
     const newer: PidRecord = { ...(await readPidFile(daemon.paths.pidFile))!, pid: process.pid + 1, updatedAt: Date.now() };
@@ -180,8 +250,18 @@ describe('daemon shutdown', () => {
     expect(await daemon.exited).toBe('the daemon lock was compromised');
     await expect(answer).resolves.toEqual(NOT_CONNECTED);
     expect(await client.closed).toBeTruthy();
-    expect(pty.killed() && core.killed()).toBe(true);
-    expect(pty.posted).not.toContainEqual({ type: 'shutdown' });
+    expect(core.killed()).toBe(true);
+    // the lock's new owner adopts the host: its terminal runs on, and its record still names it
+    const host = pty.started()!;
+    expect(host.ptys.map((terminal) => terminal.killed)).toEqual([false]);
+    expect(host.hasExited()).toBe(false);
+    const owner = createTerminalHosts({ paths: daemon.paths, version: daemon.version, start: () => Promise.reject(new Error('no start in this test')), log: () => undefined });
+    const adopted: string[][] = [];
+    owner.onLink((link) => adopted.push(link.terminals.map((terminal) => terminal.id)));
+    await owner.adoptAll();
+    expect(adopted).toEqual([['term-1']]);
+    owner.release('the test ended');
+    await pty.stop();
     expect(JSON.stringify(core.posted)).not.toContain('core.shutdown');
     expect(lines.some((line) => line.startsWith('[daemon] shutting down'))).toBe(false);
     expect(await readPidFile(daemon.paths.pidFile)).toEqual(newer);
@@ -231,12 +311,12 @@ describe('daemon shutdown', () => {
   });
 
   it('holds the daemon lock until its last step, so a start waiting for it never runs beside the shutdown', async () => {
-    // a pty host that ends only when killed holds the shutdown for the terminals' limit, after the endpoint closed
-    const pty = stubbornPtyHost();
-    const daemon = await startInProcessDaemon({ starters: { ...NO_HOSTS, startPtyHost: pty.start } });
+    // ending a terminal host's terminals holds the shutdown after the endpoint closed
+    const pty = terminalHost();
+    const daemon = await startInProcessDaemon({ starters: NO_HOSTS, startTerminalHost: pty.start });
     const client = await connectClient(await daemon.connect());
     client.workspace.emit('terminals.post', { request: SPAWN });
-    await vi.waitFor(() => expect(pty.started()).toBe(true));
+    await vi.waitFor(() => expect(pty.started()?.ptys).toHaveLength(1));
     let exited = false;
     void daemon.exited.then(() => {
       exited = true;
@@ -251,26 +331,27 @@ describe('daemon shutdown', () => {
   }, 20_000);
 
   it('ends while a terminal\'s damocles --wait waits for its client, answering it not connected', async () => {
-    const pty = stubbornPtyHost();
-    const daemon = await startInProcessDaemon({ starters: { ...NO_HOSTS, startPtyHost: pty.start } });
+    const pty = terminalHost();
+    const daemon = await startInProcessDaemon({ starters: NO_HOSTS, startTerminalHost: pty.start });
     const client = await connectClient(await daemon.connect());
-    const { answer } = await waitingCliRequest(client, pty.posted);
+    const { answer } = await waitingCliRequest(client, pty.started);
     await daemon.shutdown();
     expect(await daemon.exitCode).toBe(0);
     await expect(answer).resolves.toEqual(NOT_CONNECTED);
   }, 20_000);
 
-  it('gives a checkout daemon\'s terminals the damocles and BROWSER the desktop build writes', async () => {
-    const pty = stubbornPtyHost();
-    const daemon = await startInProcessDaemon({ starters: { ...NO_HOSTS, startPtyHost: pty.start } });
+  it('gives a checkout daemon\'s terminals the damocles and BROWSER the desktop build writes, through the active link', async () => {
+    const pty = terminalHost();
+    const daemon = await startInProcessDaemon({ starters: NO_HOSTS, startTerminalHost: pty.start });
     const client = await connectClient(await daemon.connect());
     client.workspace.emit('terminals.post', { request: SPAWN });
     const env = await vi.waitFor(() => {
-      expect(spawnEnv(pty.posted)).toBeDefined();
-      return spawnEnv(pty.posted)!;
+      expect(spawnEnv(pty.started)).toBeDefined();
+      return spawnEnv(pty.started)!;
     });
     try {
-      const bin = path.join(REPO_ROOT, 'dist', 'server-bin');
+      expect(realpathSync(activeLinkPath(daemon.paths.runDir))).toBe(realpathSync(REPO_ROOT));
+      const bin = path.join(activeLinkPath(daemon.paths.runDir), 'dist', 'server-bin');
       expect(env['BROWSER']).toBe(path.join(bin, 'helpers', process.platform === 'win32' ? 'browser.exe' : 'browser.sh'));
       const searchPath = Object.entries(env).find(([key]) => key.toUpperCase() === 'PATH')?.[1];
       expect(searchPath?.split(path.delimiter)[0]).toBe(path.join(bin, 'remote-cli'));
@@ -280,13 +361,41 @@ describe('daemon shutdown', () => {
   }, 20_000);
 });
 
-// the environment of the spawn the daemon posted to its pty host
-function spawnEnv(posted: readonly unknown[]): Record<string, string> | undefined {
-  return posted.find((message): message is { type: 'spawn'; env: Record<string, string> } => (message as { type?: string }).type === 'spawn')?.env;
+describe.runIf(process.platform !== 'win32')('a daemon whose active link cannot be pointed', () => {
+  it('gives its terminals the package\'s own paths, as a shell that outlives it then does', async () => {
+    // a folder in the link's place, which rename(2) does not replace; an earlier test's daemon left a link there, which goes
+    // as a link, never through it
+    const runDir = (await localRunPaths()).runDir;
+    await fs.unlink(activeLinkPath(runDir)).catch((err: unknown) => {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    });
+    await fs.mkdir(path.join(activeLinkPath(runDir), 'kept'), { recursive: true });
+    const pty = terminalHost();
+    const lines: string[] = [];
+    const daemon = await startInProcessDaemon({ starters: NO_HOSTS, startTerminalHost: pty.start, log: (line) => lines.push(line) });
+    try {
+      const client = await connectClient(await daemon.connect());
+      client.workspace.emit('terminals.post', { request: SPAWN });
+      const env = await vi.waitFor(() => {
+        expect(spawnEnv(pty.started)).toBeDefined();
+        return spawnEnv(pty.started)!;
+      });
+      expect(env['BROWSER']).toBe(path.join(REPO_ROOT, 'dist', 'server-bin', 'helpers', 'browser.sh'));
+      expect(lines.some((line) => line.startsWith(`[daemon] pointing ${activeLinkPath(runDir)} at ${REPO_ROOT} failed, so terminals name ${REPO_ROOT}`))).toBe(true);
+    } finally {
+      await daemon.shutdown();
+      await fs.rm(activeLinkPath(runDir), { recursive: true, force: true });
+    }
+  }, 20_000);
+});
+
+// the environment the daemon's terminal host started its first pty with
+function spawnEnv(host: () => TestHost | undefined): Readonly<Record<string, string>> | undefined {
+  return host()?.ptys[0]?.env;
 }
 
 // Spawns a terminal through client and sends `damocles --wait` on its socket; client takes the relay and never answers.
-async function waitingCliRequest(client: TestClient, posted: readonly unknown[]): Promise<{ readonly answer: Promise<CliAnswer> }> {
+async function waitingCliRequest(client: TestClient, host: () => TestHost | undefined): Promise<{ readonly answer: Promise<CliAnswer> }> {
   const relayed: unknown[] = [];
   client.workspace.serve('cli.request', (relay) => {
     relayed.push(relay);
@@ -294,8 +403,8 @@ async function waitingCliRequest(client: TestClient, posted: readonly unknown[])
   });
   client.workspace.emit('terminals.post', { request: SPAWN });
   const hook = await vi.waitFor(() => {
-    expect(spawnEnv(posted)?.[CLI_HOOK_ENV]).toBeDefined();
-    return spawnEnv(posted)![CLI_HOOK_ENV]!;
+    expect(spawnEnv(host)?.[CLI_HOOK_ENV]).toBeDefined();
+    return spawnEnv(host)![CLI_HOOK_ENV]!;
   });
   const answer = sendCliRequest(() => net.connect(hook), { kind: 'open', cwd: '/srv', items: [{ path: '/srv/COMMIT_EDITMSG' }], wait: true });
   await vi.waitFor(() => expect(relayed).toHaveLength(1));

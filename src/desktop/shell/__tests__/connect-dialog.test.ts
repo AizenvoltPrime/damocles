@@ -376,6 +376,13 @@ describe('host card', () => {
     expect(hostNotices({ name: 'prod', notices: [], clockSkewMs: 119_000 }, t, 'en')).toEqual([]);
   });
 
+  it('says when the host forwards the agent and no agent answers on this computer, in English and Greek', () => {
+    const notice = () => hostNotices({ name: 'prod', notices: [{ code: 'agentNotRunning', params: {} }] }, t, shellI18n.global.locale.value);
+    expect(notice()).toEqual([{ key: 'agentNotRunning', text: 'Forward my SSH agent is on, but no SSH agent answers on this computer, so git on prod cannot use your local keys. Start the agent, then connect again.' }]);
+    shellI18n.global.locale.value = 'el';
+    expect(notice()[0]!.text).toBe('Η Προώθηση του SSH agent μου είναι ενεργή, αλλά κανένας SSH agent δεν απαντά σε αυτόν τον υπολογιστή, οπότε το git στο prod δεν μπορεί να χρησιμοποιήσει τα τοπικά σας κλειδιά. Ξεκινήστε τον agent και συνδεθείτε ξανά.');
+  });
+
   it('names the other machines sharing the home, with the plural for several, in English and Greek', () => {
     const shared = (hosts: string) => hostNotices({ name: 'prod', notices: [{ code: 'sharedHome', params: { hosts } }] }, t, shellI18n.global.locale.value);
     expect(shared('lab-03')).toEqual([{ key: 'sharedHome', text: 'lab-03 also runs Damocles in this home. Chats and memories are shared between them.' }]);
@@ -560,6 +567,28 @@ describe('connect dialog', () => {
     press('ArrowUp');
     press('ArrowUp');
     expect(document.activeElement?.getAttribute('aria-label')).toBe('Search hosts or enter a new one');
+  });
+
+  it('names each card\'s state as main publishes it, with the phrase its update pip shows, on saved hosts, distros and containers', async () => {
+    const outdated = { source: 'otherProtocol', phase: 'appOutdated', outdated: 'runs', serverVersion: '3.9.0', targetVersion: '3.7.0', runningAgents: 0, runningTerminals: 0, terminalsSurvive: true, waitingSince: 0 } as const;
+    const offer = { ...outdated, phase: 'offer', outdated: undefined, serverVersion: '3.7.0', targetVersion: '3.9.0', runningAgents: 1 } as const;
+    const wsl: HostCardInfo = { ...PROD, hostId: 'w1', kind: 'wsl', name: 'ubuntu', destinationLabel: 'Ubuntu-24.04', update: offer, wsl: { distro: 'Ubuntu-24.04', version: 2, state: 'running', isDefault: false } };
+    const container: HostCardInfo = { ...PROD, hostId: 'c1', kind: 'container', name: 'api-shell', destinationLabel: 'api', update: outdated, container: { origin: 'attach', state: 'running', engine: 'docker', containerName: 'api', user: 'root' } };
+    // main publishes a host whose daemon is of another protocol as not connected
+    await openConnect({ hosts: [{ ...PROD, update: outdated }, wsl, container], distros: [{ distro: 'Ubuntu-24.04', state: 'running', version: 2, isDefault: false, hostId: 'w1' }] });
+    const card = (testId: string): HTMLElement => dialog().querySelector<HTMLElement>(`[data-testid="${testId}"]`)!;
+    expect(contentName(card('host-card-button'))).toBe('prod deploy@10.0.0.7:22 Not connected, update this app');
+    expect(contentName(card('distro-card'))).toBe('ubuntu Ubuntu-24.04 · WSL 2 · Not connected, update pending');
+    expect(contentName(card('container-card'))).toBe('api-shell Attach · Not connected, update this app');
+    for (const [testId, pip] of [['host-card-button', 'diamond'], ['distro-card', 'circle'], ['container-card', 'diamond']] as const) {
+      expect(card(testId).querySelector('[data-testid="host-update-pip"]')?.getAttribute('data-pip')).toBe(pip);
+      expect(card(testId).querySelector('[data-testid="host-status-dot"]')?.getAttribute('data-shape')).toBe('offline');
+    }
+    // a published failure reads as one on the dot and in the name alike
+    api.connectHosts([{ ...PROD, connection: 'failed', update: outdated }]);
+    await flushPromises();
+    expect(contentName(card('host-card-button'))).toBe('prod deploy@10.0.0.7:22 Couldn\'t connect, update this app');
+    expect(card('host-card-button').querySelector('[data-testid="host-status-dot"]')?.getAttribute('data-shape')).toBe('failed');
   });
 
   it('tints a saved host\'s card icon with its custom color', async () => {
@@ -919,6 +948,26 @@ describe('connect dialog', () => {
     api.connectHosts([{ ...PROD, name: 'prod-1', connection: 'offline' }]);
     await flushPromises();
     expect(api.hostRuns).toHaveBeenCalledTimes(2);
+  });
+
+  it('lists the runs again when this window\'s not-responding terminals of the host change, and after End terminal host', async () => {
+    vi.mocked(api.hostRuns).mockResolvedValue(opened([{ id: 'term-1', title: 'bash', state: 'running' as const, canOpen: false }]));
+    await openConnect({ hosts: [{ ...PROD, connection: 'connected' }] });
+    dialog().querySelector<HTMLElement>('button[aria-label="Details for prod"]')!.click();
+    await vi.waitFor(() => expect(dialog().querySelector('button[aria-label="Kill bash"]')).not.toBeNull());
+    vi.mocked(api.hostRuns).mockResolvedValue(opened([{ id: 'term-1', title: 'bash', state: 'running' as const, canOpen: false, notResponding: true as const }]));
+    api.connectHosts([{ ...PROD, connection: 'connected', notRespondingTerminals: ['term-1'] }]);
+    await vi.waitFor(() => expect(dialog().querySelector('[data-testid="host-run"]')?.getAttribute('data-state')).toBe('notResponding'));
+    expect(api.hostRuns).toHaveBeenCalledTimes(2);
+    vi.mocked(api.hostRuns).mockResolvedValue(opened([]));
+    const end = dialog().querySelector<HTMLElement>('[data-testid="host-end-terminal-host"]')!;
+    end.focus();
+    end.click();
+    await vi.waitFor(() => expect(api.hostRuns).toHaveBeenCalledTimes(3));
+    expect(api.endTerminalHost).toHaveBeenCalledWith('h1');
+    await vi.waitFor(() => expect(dialog().querySelector('[data-testid="host-terminal-host-not-responding"]')).toBeNull());
+    // the notice took the focused button with it, so the card's heading holds the focus
+    expect(document.activeElement).toBe(dialog().querySelector('[data-testid="host-card"] h2'));
   });
 
   it('opens another device\'s terminal from the card and makes way for its tab, listing the runs again when main refuses', async () => {

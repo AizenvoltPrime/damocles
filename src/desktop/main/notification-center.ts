@@ -128,10 +128,19 @@ function sameChat(ref: ChatRef, chat: ChatKey): boolean {
 }
 
 // Bodies that pop up whatever silences popups: main's and core's notices, and a target's request to open a page, which the
-// user's own terminal program made.
+// user's own terminal program made. A host update's notice follows the popup policy as the seven kinds do.
 function alwaysPopsUp(body: NotificationBody): boolean {
   return body.kind === 'notice' || body.kind === 'link';
 }
+
+type NoticeBody = Extract<NotificationBody, { readonly kind: 'notice' | 'hostUpdate' }>;
+
+// Bodies whose text is already localized and whose actions answer by index.
+function isNotice(body: NotificationBody): body is NoticeBody {
+  return body.kind === 'notice' || body.kind === 'hostUpdate';
+}
+
+const hostFields = (host: NotificationHost): { host: string; hostColor?: HostColor } => ({ host: host.name, ...(host.color !== undefined ? { hostColor: host.color } : {}) });
 
 /** A notice that stays until it is answered: its toast never times out, and its center row offers its actions meanwhile. */
 export interface StickyNotice {
@@ -287,6 +296,8 @@ export class NotificationCenter {
   private readonly notifiedPrompts = new Map<string, Set<string>>();
   // entries that flashed the taskbar button and still wait on the user
   private readonly flashing = new Set<string>();
+  // those of them that flash whatever silences popups
+  private readonly timeSensitive = new Set<string>();
   // each sticky notice waiting for its answer, by entry id
   private readonly sticky = new Map<string, (index: number | undefined) => void>();
   private attention = 0;
@@ -359,18 +370,35 @@ export class NotificationCenter {
     this.deps.recordUsageWarning(crossing);
   }
 
-  /** A notification: always an entry and a toast, answered with its chosen action's index or undefined; host names a remote core's. */
-  notice(severity: NoticeSeverity, message: string, actions: readonly string[], host?: NotificationHost, title?: string): Promise<number | undefined> {
+  /**
+   * A notification: always an entry and a toast, answered with its chosen action's index or undefined; host names a remote
+   * core's. timeSensitive: it also flashes the taskbar button until the window is focused, whatever silences popups.
+   */
+  notice(severity: NoticeSeverity, message: string, actions: readonly string[], host?: NotificationHost, title?: string, options: { readonly timeSensitive?: boolean } = {}): Promise<number | undefined> {
     return new Promise((resolve) => {
-      this.raise({ kind: 'notice', severity, ...(title !== undefined ? { title } : {}), message, actions: [...actions], ...(host !== undefined ? { host: host.name, ...(host.color !== undefined ? { hostColor: host.color } : {}) } : {}) }, { kind: 'none' }, { answer: resolve });
+      this.raise({ kind: 'notice', severity, ...(title !== undefined ? { title } : {}), message, actions: [...actions], ...(host !== undefined ? hostFields(host) : {}) }, { kind: 'none' }, { answer: resolve, ...(options.timeSensitive ? { timeSensitive: true } : {}) });
     });
   }
 
-  /** A main notice that waits for its answer, popped up whatever silences popups, until answered or withdrawn. */
-  stickyNotice(severity: NoticeSeverity, message: string, actions: readonly string[]): StickyNotice {
+  /**
+   * A host's pending server switch, a reminder or the result of a switch the user chose: always an entry, and a toast unless
+   * Do not disturb or Notify me silences popups, answered with its chosen action's index or undefined.
+   */
+  hostUpdate(host: NotificationHost, severity: NoticeSeverity, title: string, message: string, actions: readonly string[]): Promise<number | undefined> {
+    return new Promise((resolve) => {
+      this.raise({ kind: 'hostUpdate', severity, title, message, actions: [...actions], ...hostFields(host) }, { kind: 'none' }, { answer: resolve });
+    });
+  }
+
+  /**
+   * A main notice that waits for its answer, popped up whatever silences popups, until answered or withdrawn; host names the
+   * remote host it is about. countdownTo (epoch ms): its title ends with the time left. timeSensitive: as notice's.
+   */
+  stickyNotice(severity: NoticeSeverity, message: string, actions: readonly string[], host?: NotificationHost, options: { readonly title?: string; readonly countdownTo?: number; readonly timeSensitive?: boolean } = {}): StickyNotice {
     const id = randomUUID();
     const answer = new Promise<number | undefined>((resolve) => this.sticky.set(id, resolve));
-    this.raise({ kind: 'notice', severity, message, actions: [...actions] }, { kind: 'none' }, { id, sticky: true });
+    const body: NotificationBody = { kind: 'notice', severity, ...(options.title !== undefined ? { title: options.title } : {}), message, actions: [...actions], ...(host !== undefined ? hostFields(host) : {}), ...(options.countdownTo !== undefined ? { countdownTo: options.countdownTo } : {}) };
+    this.raise(body, { kind: 'none' }, { id, sticky: true, ...(options.timeSensitive ? { timeSensitive: true } : {}) });
     return { answer, withdraw: () => this.settleSticky(id, undefined) };
   }
 
@@ -413,7 +441,7 @@ export class NotificationCenter {
     const live = this.toasts.get(id);
     if (!live) return;
     const allowed = action === undefined
-      || (live.body.kind === 'notice' ? isActionIndex(action, live.body.actions) : action === TOAST_OPEN_ACTION);
+      || (isNotice(live.body) ? isActionIndex(action, live.body.actions) : action === TOAST_OPEN_ACTION);
     if (!allowed) {
       this.deps.log(`[notifications] ignored an answer that is not one of toast ${id}'s actions`);
       return;
@@ -496,7 +524,7 @@ export class NotificationCenter {
   relabelHost(from: string, to: NotificationHost): void {
     const colorOf = (color: HostColor | undefined): { hostColor?: HostColor } => (color !== undefined ? { hostColor: color } : {});
     const relabel = (body: NotificationBody): NotificationBody => {
-      if (body.kind === 'notice' || body.kind === 'link') {
+      if (isNotice(body) || body.kind === 'link') {
         if (body.host !== from) return body;
         const { hostColor: _color, ...rest } = body;
         return { ...rest, host: to.name, ...colorOf(to.color) };
@@ -548,8 +576,8 @@ export class NotificationCenter {
   }
 
   /**
-   * Do not disturb or Notify me changed. While either silences, the seven kinds' toasts and the flash go and the entries
-   * keep collecting; notices stay.
+   * Do not disturb or Notify me changed. While either silences, the seven kinds' and the host updates' toasts and their
+   * flash go and the entries keep collecting; notices and a time-sensitive notice's flash stay.
    */
   popupPolicyChanged(): void {
     if (this.silenced()) {
@@ -558,7 +586,7 @@ export class NotificationCenter {
         this.finish(live, undefined);
         this.hide(live);
       }
-      this.stopFlashing();
+      for (const entryId of [...this.flashing]) if (!this.timeSensitive.has(entryId)) this.stopFlash(entryId);
     }
     this.deps.changed();
   }
@@ -592,9 +620,10 @@ export class NotificationCenter {
     this.sticky.clear();
   }
 
-  // Notices always pop up; the seven kinds pop up, and anything rings or flashes, only while Do not disturb is off and
-  // pop-ups are on. An entry about the chat the user is looking at arrives read.
-  private raise(body: NotificationBody, action: EntryAction, options: { readonly id?: string; readonly quiet?: boolean; readonly answer?: (index: number | undefined) => void; readonly sticky?: true } = {}): void {
+  // Notices always pop up; the seven kinds and a host update pop up, and anything rings or flashes, only while Do not disturb
+  // is off and pop-ups are on, but for a time-sensitive notice, which flashes regardless. An entry about the chat the user is
+  // looking at arrives read.
+  private raise(body: NotificationBody, action: EntryAction, options: { readonly id?: string; readonly quiet?: boolean; readonly answer?: (index: number | undefined) => void; readonly sticky?: true; readonly timeSensitive?: true } = {}): void {
     const viewed = this.deps.viewedChat();
     const chat = chatOfAction(action);
     const read = viewed !== undefined && chat !== undefined && sameChat(chat, viewed);
@@ -604,7 +633,7 @@ export class NotificationCenter {
     const toast = !options.quiet && (alwaysPopsUp(body) || allowed);
     if (toast) {
       // a link request is sticky, so its life is never counted
-      const lifeMs = body.kind === 'link' ? 0 : body.kind === 'notice'
+      const lifeMs = body.kind === 'link' ? 0 : isNotice(body)
         ? (body.actions.length > 0 ? NOTICE_LIFE_MS.withActions : NOTICE_LIFE_MS[body.severity])
         : KIND_LIFE_MS[body.kind];
       this.present({
@@ -626,8 +655,10 @@ export class NotificationCenter {
     }
     if (toast && allowed) this.deps.chime(chimeTone(body));
     // Only an entry that waits on the user flashes, and only while the window is unfocused; the others count and pop up.
-    if (toast && allowed && ATTENTION_KINDS.has(body.kind) && !this.deps.windowFocused()) {
+    const urgent = options.timeSensitive === true;
+    if (toast && (urgent || (allowed && ATTENTION_KINDS.has(body.kind))) && !this.deps.windowFocused()) {
       this.flashing.add(entry.id);
+      if (urgent) this.timeSensitive.add(entry.id);
       this.deps.flash(true);
     }
     this.deps.changed();
@@ -638,11 +669,13 @@ export class NotificationCenter {
   }
 
   private stopFlash(entryId: string): void {
+    this.timeSensitive.delete(entryId);
     if (!this.flashing.delete(entryId) || this.flashing.size > 0) return;
     this.deps.flash(false);
   }
 
   private stopFlashing(): void {
+    this.timeSensitive.clear();
     if (this.flashing.size === 0) return;
     this.flashing.clear();
     this.deps.flash(false);

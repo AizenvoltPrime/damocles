@@ -62,9 +62,9 @@ export async function inDistro(distro: string, script: string, user?: 'root'): P
 }
 
 // The argv of every process a server package starts: <install>/<version>-<target>/node/node <same>/dist/<entry>.js
-const SERVER_PROCESS = /\/node\/node .*\/dist\/(daemon|core-host|pty-host|formatter-host)\.js\b/;
+const SERVER_PROCESS = /\/node\/node .*\/dist\/(daemon|core-host|terminal-host|pty-host|formatter-host)\.js\b/;
 
-/** The server package's processes in the distro: the daemon and its bridge, core, the pty and formatter hosts. */
+/** The server package's processes in the distro: the daemon and its bridge, core, the terminal (or an older package's pty) and formatter hosts. */
 export async function serverProcesses(distro: string): Promise<string[]> {
   const listed = await inDistro(distro, 'for p in /proc/[0-9]*; do tr "\\0" " " < "$p/cmdline" 2>/dev/null; echo; done');
   return listed.split('\n').filter((line) => SERVER_PROCESS.test(line));
@@ -78,7 +78,8 @@ export async function shutdownDistroDaemon(app: ElectronApplication, hostId: str
 
 /** Ends the daemon in the distro with no app to ask, and waits until none of its processes is left. */
 export async function endDistroDaemon(distro: string): Promise<void> {
-  await inDistro(distro, 'for p in /proc/[0-9]*; do [ "${p#/proc/}" = "$$" ] && continue; case "$(tr "\\0" " " < "$p/cmdline" 2>/dev/null)" in *"/dist/daemon.js serve"*) kill "${p#/proc/}";; esac; done');
+  // a daemon's SIGTERM leaves its terminal hosts running, so each host gets its own, which ends its terminals
+  await inDistro(distro, 'for p in /proc/[0-9]*; do [ "${p#/proc/}" = "$$" ] && continue; case "$(tr "\\0" " " < "$p/cmdline" 2>/dev/null)" in *"/dist/daemon.js serve"*|*"/dist/terminal-host.js "*) kill "${p#/proc/}";; esac; done');
   await expect.poll(() => serverProcesses(distro), { timeout: 60_000 }).toEqual([]);
 }
 

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { readServerVersion } from '../server-version';
+import { readMinimumServerVersion, readServerVersion } from '../server-version';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -28,6 +28,18 @@ describe('the server version a daemon runs as', () => {
   it('refuses a server-package.json without a server version the handshake takes, rather than reading package.json', async () => {
     for (const info of [{ version: '3.7.0' }, { version: '3.7.0', serverVersion: '3.7.0 0123456789ab' }, null]) {
       await expect(readServerVersion(root({ 'package.json': { version: '3.7.0' }, 'server-package.json': info })), JSON.stringify(info)).rejects.toThrow('server-package.json names no server version');
+    }
+  });
+
+  it('reads the minimum server version its package carries, and none from a package without one or from the checkout', async () => {
+    expect(await readMinimumServerVersion(root({ 'package.json': { version: '3.7.0' }, 'server-package.json': { version: '3.7.0', serverVersion: '3.7.0+0123456789ab', minimumServerVersion: '3.6.0' } }))).toBe('3.6.0');
+    expect(await readMinimumServerVersion(root({ 'package.json': { version: '3.7.0' }, 'server-package.json': { version: '3.7.0', serverVersion: '3.7.0+0123456789ab' } }))).toBeUndefined();
+    expect(await readMinimumServerVersion(root({ 'package.json': { version: '3.7.0' } }))).toBeUndefined();
+  });
+
+  it('refuses a minimum server version that is no app version', async () => {
+    for (const minimumServerVersion of ['3.6', '3.6.0+0123456789ab', 36, null]) {
+      await expect(readMinimumServerVersion(root({ 'server-package.json': { version: '3.7.0', serverVersion: '3.7.0+0123456789ab', minimumServerVersion } })), String(minimumServerVersion)).rejects.toThrow('names a minimum server version that is no app version');
     }
   });
 

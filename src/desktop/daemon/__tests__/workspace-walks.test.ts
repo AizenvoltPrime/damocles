@@ -37,7 +37,7 @@ describe('the walks a connection holds open', () => {
     const files = { walk: endless };
     const host = createWorkspaceHost({
       files: { ...files, under: () => files },
-      hub: { detach: () => undefined } as unknown as TerminalHub,
+      hub: { detach: () => undefined, onResponding: () => ({ dispose: () => undefined }) } as unknown as TerminalHub,
       cli: { connected: () => ({ dispose: () => undefined }) },
       watchLimits: { roots: () => [], onReached: () => ({ dispose: () => undefined }), limit: async () => null },
     } as unknown as WorkspaceModules, () => undefined);
@@ -69,7 +69,7 @@ describe('the workspace host\'s transfer requests', () => {
           return files;
         },
       },
-      hub: { detach: () => undefined } as unknown as TerminalHub,
+      hub: { detach: () => undefined, onResponding: () => ({ dispose: () => undefined }) } as unknown as TerminalHub,
       cli: { connected: () => ({ dispose: () => undefined }) },
       watchLimits: { roots: () => [], onReached: () => ({ dispose: () => undefined }), limit: async () => null },
     } as unknown as WorkspaceModules, () => undefined);
@@ -197,7 +197,7 @@ describe('Search\'s contract', () => {
           return { kill: () => undefined };
         },
       },
-      hub: { detach: () => undefined } as unknown as TerminalHub,
+      hub: { detach: () => undefined, onResponding: () => ({ dispose: () => undefined }) } as unknown as TerminalHub,
       cli: { connected: () => ({ dispose: () => undefined }) },
       watchLimits: { roots: () => [], onReached: () => ({ dispose: () => undefined }), limit: async () => null },
     } as unknown as WorkspaceModules, () => undefined);

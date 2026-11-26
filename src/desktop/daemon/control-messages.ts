@@ -1,5 +1,5 @@
-// ControlContract: the `control` channel. listRuns, shutdownWhenIdle, shutdownNow and mirror.sync are frozen: their shapes
-// never change, and they stay served after `refused { reason: 'protocol' }`. shutdownWhenIdle exits once no run, no terminal
+// ControlContract: the `control` channel. listRuns, shutdownWhenIdle, shutdownNow, handOver and mirror.sync are frozen: their
+// shapes never change, and they stay served after `refused { reason: 'protocol' }`. shutdownWhenIdle exits once no run, no terminal
 // and no connected client but those that asked is left, the ask lasting as long as its connection (feature
 // control.shutdownWhenIdle.clients; before it, once no run and no terminal was left, whoever was connected).
 
@@ -17,6 +17,8 @@ export const MAX_LOG_READ_BYTES: number = 4 * 1024 * 1024;
 export const MAX_TERMINAL_IDLE_DAYS = 3650;
 // listRuns is frozen: the daemon clamps a longer title, or one run would fail the whole answer
 export const MAX_RUN_TITLE_CHARS = 1024;
+// the least time between two runs events to one client
+export const RUNS_EVENT_MS = 250;
 // the handshake's bound on a hello's deviceName
 export const MAX_DEVICE_NAME_CHARS = 256;
 // a user name as `loginctl enable-linger` takes it, SSSD's and Active Directory's `@` and `\` included (systemd's relaxed
@@ -41,6 +43,12 @@ export interface Run {
   readonly state: 'running' | 'waiting' | 'background';
   // the providers the run's broker cache used; empty for a terminal
   readonly providers: readonly string[];
+}
+
+export interface RunsEvent {
+  readonly runs: readonly Run[];
+  // each pending damocles --wait's files, which hold a handOver idle; welcome.features lists runs.cliWaits
+  readonly cliWaits?: readonly string[];
 }
 
 // listOwnRuns only: listRuns is frozen, so its Run never carries configuredProviders
@@ -132,12 +140,20 @@ export const HOST_ID: RegExp = /^[A-Za-z0-9_-]{1,64}$/;
 
 export interface ControlRequests {
   // the client's values the daemon takes; the latest attach's terminalIdleDays applies. watchClients: the client takes
-  // `clients` events from then on (welcome.features lists clients)
-  attach: Call<{ readonly terminalIdleDays: number; readonly watchClients?: boolean }, void>;
+  // `clients` events from then on (welcome.features lists clients); watchRuns: `runs` events (welcome.features lists
+  // control.runs); watchRemoval: a `removing` event (welcome.features lists control.removing); watchHandOver: a `handingOver`
+  // event (welcome.features lists control.handingOver)
+  attach: Call<{ readonly terminalIdleDays: number; readonly watchClients?: boolean; readonly watchRuns?: boolean; readonly watchRemoval?: boolean; readonly watchHandOver?: boolean }, void>;
   listRuns: Call<object, { readonly runs: readonly Run[] }>;
   shutdownWhenIdle: Call<object, void>;
-  // answers, then ends every terminal and exits
+  // answers, then ends the terminals of every attached host and exits
   shutdownNow: Call<object, void>;
+  // idle: exits once no chat run is left and every connected connection asked (this or shutdownWhenIdle), the ask lasting as
+  // long as its connection; now: answers, stops the chat runs and exits. Either way every terminal stays with its terminal host
+  handOver: Call<{ readonly when: 'idle' | 'now' }, void>;
+  // decided on the daemon's own runs as it arrives: with no chat run and no pending damocles --wait, whoever is connected, as
+  // handOver now; else as handOver idle. Answers which; called only when welcome.features lists control.handOverIfIdle
+  handOverIfIdle: Call<object, { readonly when: 'idle' | 'now' }>;
   'mirror.sync': Call<{ readonly projectKey: string; readonly budgetBytes: number; readonly files: readonly MirrorFile[] }, { readonly changes: readonly MirrorChange[] }>;
   'logs.list': Call<object, { readonly logs: readonly LogEntry[] }>;
   // bytes from offset, at most length; size is the log's size as read
@@ -251,6 +267,15 @@ export interface ControlEvents {
   coreState: CoreState;
   // the attached clients, on every attach, detach and replacement; sent only to a client whose attach asked (watchClients)
   clients: { readonly clients: readonly AttachedClient[] };
+  // listRuns' answer at the attach and after the runs change, at most one per RUNS_EVENT_MS; sent only to a client whose attach
+  // asked (watchRuns)
+  runs: RunsEvent;
+  // another client asked control.shutdownForRemoval: its hello's device name, sent before any connection ends, only to a
+  // connected client whose attach asked (watchRemoval)
+  removing: { readonly deviceName: string };
+  // a switch ends the daemon (handOver, handOverIfIdle, shutdownWhenIdle or shutdownNow): the hello device name of the client
+  // whose ask ended it, sent before any connection ends, only to another connected client whose attach asked (watchHandOver)
+  handingOver: { readonly deviceName: string };
   // a file under the session folder of a project this connection mirrors changed since its last mirror.sync of that project
   // began; once per such sync (welcome.features lists mirror.changed). After mirror.syncProject also a file under one of its
   // worktree chats' session folders or the worktree registry file, which names the first project this connection followed it
@@ -278,7 +303,7 @@ export interface ControlToClient extends Contract {
   readonly panelOps: Record<string, never>;
 }
 
-export type FrozenControl = Pick<ControlRequests, 'listRuns' | 'shutdownWhenIdle' | 'shutdownNow' | 'mirror.sync'>;
+export type FrozenControl = Pick<ControlRequests, 'listRuns' | 'shutdownWhenIdle' | 'shutdownNow' | 'handOver' | 'mirror.sync'>;
 
 export interface FrozenClientToControl extends Contract {
   readonly requests: FrozenControl;
@@ -379,17 +404,20 @@ const CONTAINER_REQUESTS = {
   ),
 } satisfies Partial<Tables<ClientToControl>['requests']>;
 
+const runList = obj({ runs: arr(run, MAX_ITEMS) });
 const FROZEN_REQUESTS: Tables<FrozenClientToControl>['requests'] = {
-  listRuns: method(nothing, obj({ runs: arr(run, MAX_ITEMS) })),
+  listRuns: method(nothing, runList),
   shutdownWhenIdle: method(nothing, none),
   shutdownNow: method(nothing, none),
+  handOver: method(obj({ when: oneOf(['idle', 'now'] as const) }), none),
   'mirror.sync': method(obj({ projectKey: nonEmpty(MAX_PATH_CHARS), budgetBytes: count, files: arr(mirrorFile, MAX_ITEMS) }), obj({ changes: arr(change, MAX_ITEMS) })),
 };
 
 export const CLIENT_TO_CONTROL: Tables<ClientToControl> = {
   requests: {
     ...FROZEN_REQUESTS,
-    attach: method(obj({ terminalIdleDays: int(0, MAX_TERMINAL_IDLE_DAYS), watchClients: opt(bool) }), none),
+    attach: method(obj({ terminalIdleDays: int(0, MAX_TERMINAL_IDLE_DAYS), watchClients: opt(bool), watchRuns: opt(bool), watchRemoval: opt(bool), watchHandOver: opt(bool) }), none),
+    handOverIfIdle: method(nothing, obj({ when: oneOf(['idle', 'now'] as const) })),
     'logs.list': method(nothing, obj({ logs: arr(obj({ name: logName, size: count, mtimeMs: num }), MAX_ITEMS) })),
     'logs.read': method(obj({ name: logName, offset: count, length: int(0, MAX_LOG_READ_BYTES) }), obj({ bytes: bytes(MAX_LOG_READ_BYTES), size: count })),
     attachCore: method(coreAttach, parseCoreState),
@@ -423,6 +451,9 @@ export const CONTROL_TO_CLIENT: Tables<ControlToClient> = {
   events: {
     coreState: parseCoreState,
     clients: obj({ clients: arr(obj({ deviceName: displayText(MAX_DEVICE_NAME_CHARS), self: bool }), MAX_ITEMS) }),
+    runs: obj({ runs: arr(run, MAX_ITEMS), cliWaits: opt(arr(str(MAX_RUN_TITLE_CHARS), MAX_ITEMS)) }),
+    removing: obj({ deviceName: displayText(MAX_DEVICE_NAME_CHARS) }),
+    handingOver: obj({ deviceName: displayText(MAX_DEVICE_NAME_CHARS) }),
     'mirror.changed': obj({ projectKey: nonEmpty(MAX_PATH_CHARS) }),
     'mirror.subcallsChanged': nothing,
     'agent.request': obj({ request: agentRequest }),

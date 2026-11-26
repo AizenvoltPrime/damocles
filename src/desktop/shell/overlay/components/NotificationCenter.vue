@@ -9,6 +9,7 @@ import { trapTab } from '../focus-trap';
 import { answerOf } from '../popup-answer';
 import { notificationView, relativeTime, TONE_CLASSES } from '../notification-view';
 import HostBadge from '@/components/HostBadge.vue';
+import CountdownClock from '@/components/CountdownClock.vue';
 import ToggleSwitch from '@/components/ToggleSwitch.vue';
 import { Button } from '@/components/ui/button';
 import { remPx } from '@/composables/useRemPx';
@@ -75,7 +76,7 @@ function answer(entry: NotificationEntry, index: number): void {
 
 // A notice main keeps until it is answered offers its actions under its row.
 function actionsOf(entry: NotificationEntry): readonly string[] {
-  return entry.awaitingAnswer && entry.body.kind === 'notice' ? entry.body.actions : [];
+  return entry.awaitingAnswer && (entry.body.kind === 'notice' || entry.body.kind === 'hostUpdate') ? entry.body.actions : [];
 }
 
 // The center shows only the state main pushes, so a failed action leaves main's state on screen; this says it failed.
@@ -281,7 +282,10 @@ onBeforeUnmount(() => {
               />
               <span class="flex min-w-0 flex-1 flex-col">
                 <span class="flex items-baseline gap-2">
-                  <span class="min-w-0 truncate text-12.5 font-semibold">{{ view.title || view.where }}</span>
+                  <span class="min-w-0 truncate text-12.5 font-semibold">{{ view.countdownTo === undefined ? view.title || view.where : `${view.title} ` }}<CountdownClock
+                    v-if="view.countdownTo !== undefined"
+                    :to="view.countdownTo"
+                  /></span>
                   <HostBadge
                     v-if="view.host"
                     :name="view.host"

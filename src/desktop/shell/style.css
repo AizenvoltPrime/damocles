@@ -9,6 +9,7 @@
 @source "../../webview/components/HostBadge.vue";
 @source "../../webview/components/HostUpdateBanner.vue";
 @source "../../webview/components/banner-tone.ts";
+@source "../../webview/components/CountdownClock.vue";
 @source "../../webview/components/OverflowSlider.vue";
 @source "../../webview/components/design/design-strip.ts";
 @source "../../webview/components/design/design-tone.ts";

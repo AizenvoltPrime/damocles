@@ -1,5 +1,6 @@
-import type { ChatConnection, HeldMessageAction } from './host-connection';
+import type { ChatConnection, HeldMessageAction, HostRemoved } from './host-connection';
 import type { HostColor } from './host-colors';
+import type { HostUpdate } from './host-update';
 
 export interface BridgeHost {
   readonly hostId: string;
@@ -7,8 +8,12 @@ export interface BridgeHost {
   readonly color?: HostColor;
   readonly computer: string;
   readonly attention?: 'offline' | 'signIn';
-  // a daemon of another protocol still runs agents on the host: its app version, how many, and whether a switch waits for them
-  readonly update?: { readonly serverVersion: string; readonly runningAgents: number; readonly phase: 'offer' | 'waiting' };
+  // Remove Damocles server ran on the host, by another device or as an automatic connect found it
+  readonly removed?: HostRemoved;
+  // a pending server switch on the host, or this app being too old for it
+  readonly update?: HostUpdate;
+  // the app's updater runs, so the update banner offers Check for updates; absent in the unpackaged app
+  readonly canCheckForUpdates?: true;
   // the host has a saved record, so allowYolo may ask; absent for a host main never asks about
   readonly canAllowYolo?: true;
 }
@@ -30,9 +35,9 @@ export interface DamoclesBridge {
   // waits for the user to sign in
   getHost(): BridgeHost | undefined;
   onHost(listener: (host: BridgeHost) => void): () => void;
-  // the banner's Reconnect (Reconnect now, Retry), Sign in, Show log or Edit host, and the update banner's two switches, on
-  // the page's own host
-  hostAction(action: 'reconnect' | 'signIn' | 'showLog' | 'editHost' | 'switchWhenIdle' | 'switchNow'): void;
+  // the banner's Reconnect (Reconnect now, Retry), Sign in, Show log or Edit host, and the update banner's two switches and
+  // Check for updates, on the page's own host
+  hostAction(action: 'reconnect' | 'signIn' | 'showLog' | 'editHost' | 'switchWhenIdle' | 'switchNow' | 'checkForUpdates'): void;
   // the composer's locked YOLO: main asks to allow YOLO on the page's own host, hung from anchor (page CSS pixels), and
   // answers whether the host allows YOLO now; rejects when main refused the ask (no click or key it observed in the shown
   // chat, a popup open) or the ask failed

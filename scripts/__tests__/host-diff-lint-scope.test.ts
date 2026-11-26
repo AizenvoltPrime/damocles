@@ -21,6 +21,7 @@ const TREE_ROOTS = [
   'src/desktop/local-services',
   'src/desktop/workspace',
   'src/desktop/daemon',
+  'src/desktop/terminal-host',
   'src/remote',
   'src/platform',
   'src/shared',

@@ -1758,7 +1758,8 @@ export class DocumentService {
     if (document) delete document.uploadConflict;
   }
 
-  private connected(location: Pick<Location, 'projectKey' | 'host'>): boolean {
+  /** Whether the authority holding the file is reachable now; this computer's always is. */
+  connected(location: Pick<Location, 'projectKey' | 'host'>): boolean {
     try {
       this.filesAt(location);
       return true;

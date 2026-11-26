@@ -299,7 +299,7 @@ test.describe('Dev Containers on this computer', () => {
       await server.close();
     }
   });
-  test('this computer\'s SSH agent reaches the container only behind the container\'s own switch: a publickey push failure offers it, a terminal and a push over ssh then use it, and turning it off closes the socket at once with no reconnect', { tag: DEVCONTAINER_TAG }, async ({ foreground: _foreground, home, launch, sshd }) => {
+  test('this computer\'s SSH agent reaches the container only behind the container\'s own switch: a publickey push failure offers it, a terminal and a push over ssh then use it, and turning it off refuses the agent at once with no reconnect', { tag: DEVCONTAINER_TAG }, async ({ foreground: _foreground, home, launch, sshd }) => {
     test.setTimeout(900_000);
     // the launch names the stub as this computer's agent, so nothing here can reach the developer's own
     const agent = await startSshAgentStub(home.root);
@@ -373,14 +373,18 @@ test.describe('Dev Containers on this computer', () => {
       await connect.keyboard.press('Escape');
       await expect(connectDialog(connect)).toBeHidden();
 
-      // off mid-session: the socket and every connection close at once, with no reconnect
+      // off mid-session: the daemon's socket and every connection close at once, with no reconnect
       const { overlay: settings, block } = await openRemoteHostSettings(app, record.hostId);
       await expect(block.getByRole('switch', { name: 'Forward my SSH agent', exact: true })).toHaveAttribute('aria-checked', 'true');
       await shootThemes(app, settings, 'container-agent-settings', settingsModal(settings));
       await setHostSwitch(block, 'Forward my SSH agent', false);
       await closeSettingsModal(settings);
-      await expect.poll(() => agentSockets(containerId), { timeout: 60_000 }).toEqual([]);
-      expect(await agentInTerminal(app, containerId, 'agent-cut')).toMatchObject({ sock: on.sock, code: 2 });
+      // the daemon's own socket goes; the terminal's, its terminal host's for the shell's life, refuses every connection
+      await expect.poll(() => agentSockets(containerId), { timeout: 60_000 }).toEqual([`600 node ${on.sock}`]);
+      const cut = await agentInTerminal(app, containerId, 'agent-cut');
+      expect(cut).toMatchObject({ sock: on.sock });
+      expect(cut.code).not.toBe(0);
+      expect(cut.output).not.toContain('damocles-e2e-agent');
       expect((await lastConnectStep(app, record.hostId))?.attemptId).toBe(attempt);
       expect((await containerProject(app, record.authorityKey))?.connection).toBe('connected');
     } finally {

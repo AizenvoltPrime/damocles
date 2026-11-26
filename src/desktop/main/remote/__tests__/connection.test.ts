@@ -28,6 +28,8 @@ describe('connect', () => {
     let handed: OtherProtocolDaemon | undefined;
     await expect(connect({ ...options, protocolVersion: 99, stream: await daemon.connect(), onOtherProtocol: (other) => { handed = other; } })).rejects.toBeInstanceOf(OtherProtocolError);
     expect(handed?.protocolVersion).not.toBe(99);
+    // the refusal's names: this daemon serves handOver on its frozen endpoint
+    expect(handed?.frozenFeatures).toEqual(['control.handOver']);
     expect(await handed!.control.request('listRuns', {})).toEqual({ runs: [] });
     expect(await handed!.control.request('mirror.sync', { projectKey: '/srv/none', budgetBytes: 1024, files: [] })).toEqual({ changes: [] });
     handed!.close('done');
@@ -66,6 +68,52 @@ describe('connect', () => {
     const closed = new Promise<string>((resolve) => connection.onClose(resolve));
     connection.close('done');
     expect(await closed).toBe('done');
+  });
+
+  it('watches the runs of a daemon that lists control.runs, and a listener hears the latest runs at once', async () => {
+    const connection = await connect({ ...options, stream: await daemon.connect() });
+    expect(connection.features).toContain('control.runs');
+    const heard: unknown[] = [];
+    connection.onRuns((runs) => heard.push(runs));
+    expect(heard).toEqual([[]]);
+    connection.close('done');
+  });
+
+  it('hears that another device removes the server, by that device\'s name, before its connection closes', async () => {
+    const remover = await connect({ ...options, clientId: 'remover', deviceName: 'DESKTOP-A', stream: await daemon.connect() });
+    const other = await connect({ ...options, clientId: 'other', deviceName: 'Laptop B', stream: await daemon.connect() });
+    expect(other.features).toContain('control.removing');
+    const heard: string[] = [];
+    remover.onRemoving((deviceName) => heard.push(`remover heard ${deviceName}`));
+    other.onRemoving((deviceName) => heard.push(`other heard ${deviceName}`));
+    // the daemon's end reads as a drop, which a connection that resumes holds
+    const ended = new Promise<void>((resolve) => other.onLost(() => {
+      heard.push('other ended');
+      resolve();
+    }));
+    await remover.control.request('shutdownForRemoval', {});
+    await ended;
+    expect(heard).toEqual(['other heard DESKTOP-A', 'other ended']);
+    other.close('done');
+    remover.close('done');
+  });
+
+  it('hears that another device\'s switch ends the server, by that device\'s name, before its connection ends', async () => {
+    const asker = await connect({ ...options, clientId: 'asker', deviceName: 'DESKTOP-A', stream: await daemon.connect() });
+    const other = await connect({ ...options, clientId: 'other', deviceName: 'Laptop B', stream: await daemon.connect() });
+    expect(other.features).toContain('control.handingOver');
+    const heard: string[] = [];
+    asker.onHandingOver((deviceName) => heard.push(`asker heard ${deviceName}`));
+    other.onHandingOver((deviceName) => heard.push(`other heard ${deviceName}`));
+    const ended = new Promise<void>((resolve) => other.onLost(() => {
+      heard.push('other ended');
+      resolve();
+    }));
+    expect(await asker.control.request('handOverIfIdle', {})).toEqual({ when: 'now' });
+    await ended;
+    expect(heard).toEqual(['other heard DESKTOP-A', 'other ended']);
+    other.close('done');
+    asker.close('done');
   });
 
   it('runs every close listener when one throws, and logs the throw', async () => {

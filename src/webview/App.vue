@@ -54,6 +54,7 @@ import ElicitationPrompt from "./components/ElicitationPrompt.vue";
 import SignInPrompt from "./components/SignInPrompt.vue";
 import { useJarvisLifecycle } from "./composables/useJarvisLifecycle";
 import { provideMessageListRef } from "./composables/useMessageListRef";
+import { providePageHeading } from "./composables/usePageHeading";
 
 useJarvisLifecycle();
 
@@ -321,6 +322,8 @@ const messageContainerRef = ref<HTMLElement | null>(null);
 provide("messageScrollContainer", messageContainerRef);
 const messageListRef = ref<InstanceType<typeof VirtualizedMessageList> | null>(null);
 provideMessageListRef(messageListRef);
+const chatHeaderRef = ref<InstanceType<typeof ChatHeader> | null>(null);
+providePageHeading(() => chatHeaderRef.value?.title);
 const designStore = useDesignStore();
 const themePromptStore = useThemePromptStore();
 const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null);
@@ -1016,6 +1019,7 @@ provideSendPrompt(handleSuggestion);
        Its scrollbar takes no room: the narrowest host panel (170px) has no width to give one. -->
   <div class="flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto bg-(--d-pane-chat) text-(--d-text) [scrollbar-width:none]">
     <ChatHeader
+      ref="chatHeaderRef"
       :pinned-prompt="messageListRef?.hiddenPin ?? null"
       @action="(action: HeaderAction) => HEADER_ACTIONS[action]()"
       @restore-pin="messageListRef?.restorePin()"
@@ -1320,6 +1324,7 @@ provideSendPrompt(handleSuggestion);
           <MirroredChatCard
             v-if="offline"
             :host-name="offline.hostName"
+            :outdated="chatHost?.update?.outdated"
           />
           <WorktreeDeletedCard
             v-else-if="uiStore.worktree?.phase === 'deleted'"

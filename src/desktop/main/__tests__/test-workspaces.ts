@@ -108,7 +108,7 @@ export function testRemote(options: TestWorkspaceOptions & { readonly authorityK
   const log = options.log ?? (() => undefined);
   const authorityKey = options.authorityKey ?? 'loopback';
   const modules = localModules(options);
-  const hub = { list: async () => [], post: () => { throw new Error('no terminal hub in this test'); }, detach: () => undefined } as unknown as TerminalHub;
+  const hub = { list: async () => [], post: () => { throw new Error('no terminal hub in this test'); }, detach: () => undefined, onResponding: () => ({ dispose: () => undefined }) } as unknown as TerminalHub;
   const watchLimits = options.watchLimits ?? { roots: () => [], onReached: () => ({ dispose: () => undefined }), limit: async () => null };
   const host = createWorkspaceHost({ ...modules, hub, cli: { connected: () => ({ dispose: () => undefined }) }, terminalCredentials: () => ({}), watchLimits }, log);
   const [clientEnd, hostEnd] = channel();

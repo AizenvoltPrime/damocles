@@ -34,6 +34,8 @@ export interface CorePanels extends Disposable {
 export interface CorePanelsDeps {
   readonly endpoint: CoreEndpoint;
   readonly resourceRoot: string;
+  // a daemon's core, whose panels several devices show: a panel can hand its views to another (views.merge)
+  readonly merges?: boolean;
 }
 
 const isBinary = (value: unknown): boolean => value instanceof ArrayBuffer || ArrayBuffer.isView(value);
@@ -193,6 +195,19 @@ export function createCorePanels(deps: CorePanelsDeps): CorePanels {
           return false;
         });
       },
+      ...(deps.merges === true ? {
+        mergeInto: (holder: PanelHost) => {
+          const into = ids.get(holder);
+          if (closed || into === undefined) {
+            log(`[core-host] not merging view ${panelId}: ${closed ? 'it closed' : 'the holder is no panel of this core'}`);
+            return Promise.resolve(false);
+          }
+          return endpoint.request('views.merge', { viewId: panelId, into }).catch((err: unknown) => {
+            log(`[core-host] merging view ${panelId} into ${into} failed: ${err instanceof Error ? err.message : String(err)}`);
+            return false;
+          });
+        },
+      } : {}),
       close: () => {
         post(panelId, 'close', {});
         dispose(undefined);

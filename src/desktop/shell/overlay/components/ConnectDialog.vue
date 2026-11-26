@@ -32,6 +32,8 @@ import { distroDetail, isDefiniteRefusal, otherDeviceCount, refusalText, wslVers
 import HostBadge from '@/components/HostBadge.vue';
 import { hostColorLook } from '@shared/host-colors';
 import HostStatusDot from '../../components/HostStatusDot.vue';
+import { withUpdatePhrase } from '../../host-label';
+import { useUpdateClock } from '@/components/host-update-clock';
 import DistroStateDot from '../../components/DistroStateDot.vue';
 import ContainerStateDot from '../../components/ContainerStateDot.vue';
 import ContainerRebuild from './ContainerRebuild.vue';
@@ -51,6 +53,7 @@ type View = 'hosts' | 'name' | 'card' | 'timeline' | 'folders' | 'where' | 'atta
 const props = defineProps<{ api: DamoclesOverlayApi; request: Extract<OverlayRequest, { kind: 'connect' }>; shown: Promise<void> }>();
 const emit = defineEmits<{ answer: [answer: OverlayAnswer] }>();
 const { t } = useI18n();
+const clock = useUpdateClock();
 
 const hosts = shallowRef<readonly HostCardInfo[]>(props.request.hosts);
 const distros = shallowRef<readonly WslDistroInfo[]>(props.request.distros);
@@ -176,8 +179,12 @@ const shownDistros = computed(() => distros.value.flatMap((info): DistroCard[] =
   const name = saved?.name ?? info.distro;
   return matches(name, info.distro) ? [saved ? { info, host: saved, name } : { info, name }] : [];
 }));
-// the host's connection once it is anything but offline, else whether wsl.exe runs the distro
-const distroStateText = (card: DistroCard): string => (card.host && card.host.connection !== 'offline' ? t(`projects.connection.${card.host.connection}`) : t(`remote.distro.state.${card.info.state}`));
+// a saved host's dot once it is anything but offline or has an update for its pip, else the distro's or container's own state
+const showsHost = (saved: HostCardInfo): boolean => saved.connection !== 'offline' || saved.update !== undefined;
+// the host's state as its dot shows it, else whether wsl.exe runs the distro
+const distroStateText = (card: DistroCard): string => (card.host && showsHost(card.host)
+  ? withUpdatePhrase(t(`projects.connection.${card.host.connection}`), card.host.update, t, clock)
+  : t(`remote.distro.state.${card.info.state}`));
 // The second line: the distro when the name differs, WSL 2 (WSL 1 has its chip) and the state, as the mockup's "WSL 2 · running".
 const distroLine = (card: DistroCard): string[] => [
   ...(card.name === card.info.distro ? [] : [card.info.distro]),
@@ -185,8 +192,8 @@ const distroLine = (card: DistroCard): string[] => [
   distroStateText(card),
 ];
 
-// the host's connection once it is anything but offline, else the container's state as docker last reported it
-const containerStateText = (saved: HostCardInfo): string => (saved.connection !== 'offline' || !saved.container ? t(`projects.connection.${saved.connection}`) : t(`remote.container.state.${saved.container.state}`));
+// the host's state as its dot shows it, else the container's state as docker last reported it
+const containerStateText = (saved: HostCardInfo): string => (showsHost(saved) || !saved.container ? withUpdatePhrase(t(`projects.connection.${saved.connection}`), saved.update, t, clock) : t(`remote.container.state.${saved.container.state}`));
 // The second line, as the mockup's "Attach · typescript-node:22 · running", with the SSH host it runs on.
 const containerLine = (saved: HostCardInfo): string => {
   const container = saved.container;
@@ -443,9 +450,29 @@ watch(() => (view.value === 'card' ? host.value?.connection : undefined), (now, 
   if (id !== undefined && now !== undefined && before !== undefined && now !== before) void loadRuns(id);
 });
 
+// a terminal host this window views stops or starts answering: its rows' state changes
+watch(() => (view.value === 'card' ? (host.value?.notRespondingTerminals ?? []).join(' ') : undefined), (now, before) => {
+  const id = hostId.value;
+  if (id !== undefined && now !== undefined && before !== undefined && now !== before) void loadRuns(id);
+});
+
 async function kill(runId: string): Promise<void> {
   const id = hostId.value;
   if (id !== undefined && (await act(() => ran(props.api.killHostRun(id, runId))))) await loadRuns(id);
+}
+
+// Main asks first, then waits for the hosts to end; whatever it answers, the rows show what the host runs now.
+const endingTerminalHost = ref(false);
+async function endTerminalHost(): Promise<void> {
+  const id = hostId.value;
+  if (id === undefined || endingTerminalHost.value) return;
+  endingTerminalHost.value = true;
+  try {
+    await act(() => answerOf(props.api.endTerminalHost(id)));
+    await loadRuns(id);
+  } finally {
+    endingTerminalHost.value = false;
+  }
 }
 
 // A saved host's Edit host opens its card with the name field open, as the shell banner's does.
@@ -590,8 +617,11 @@ onMounted(() => {
   const target = id === undefined ? undefined : hosts.value.find((candidate) => candidate.hostId === id);
   if (picker) view.value = 'folders';
   else if (props.request.attempt) view.value = 'timeline';
-  else if (target && props.request.card !== undefined) void openCard(target.hostId);
-  else if (target) connectSaved(target);
+  else if (target && props.request.card !== undefined) {
+    void openCard(target.hostId);
+    // the dialog's open focus ran before the card rendered; a pending switch's first action takes the focus once it has
+    if (target.update) void nextTick(focusView);
+  } else if (target) connectSaved(target);
   else if (query.value !== '') void onQuery();
 });
 onBeforeUnmount(() => {
@@ -862,7 +892,8 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                       </span>
                       <HostStatusDot
                         :connection="saved.connection"
-                        :label="t('projects.connection.' + saved.connection)"
+                        :update="saved.update"
+                        :label="withUpdatePhrase(t('projects.connection.' + saved.connection), saved.update, t, clock)"
                       />
                     </button>
                     <Button
@@ -997,8 +1028,9 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                         class="flex shrink-0 items-center"
                       >
                         <HostStatusDot
-                          v-if="card.host && card.host.connection !== 'offline'"
+                          v-if="card.host && showsHost(card.host)"
                           :connection="card.host.connection"
+                          :update="card.host.update"
                           :label="distroStateText(card)"
                         />
                         <DistroStateDot
@@ -1124,8 +1156,9 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                         class="flex shrink-0 items-center"
                       >
                         <HostStatusDot
-                          v-if="saved.connection !== 'offline' || !saved.container"
+                          v-if="showsHost(saved) || !saved.container"
                           :connection="saved.connection"
+                          :update="saved.update"
                           :label="containerStateText(saved)"
                         />
                         <ContainerStateDot
@@ -1227,6 +1260,7 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
             data-view
             :host="host"
             :runs="runs"
+            :ending-terminal-host="endingTerminalHost"
             :start-renaming="renameOnCard"
             :hide-back="popover !== undefined"
             :check-name="(name) => answerOf(api.checkHostName(name, host!.hostId))"
@@ -1240,7 +1274,9 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
             @show-log="showLog(host!.hostId)"
             @open-settings="openSettings(host!.hostId)"
             @kill="kill"
+            @end-terminal-host="endTerminalHost"
             @open-run="openRun"
+            @update-action="(action) => act(() => ran(api.hostUpdateAction(host!.hostId, action)))"
             @close="close"
           >
             <template
@@ -1375,7 +1411,8 @@ const viewIcon = computed(() => (view.value === 'hosts' ? Plug : view.value === 
                   </span>
                   <HostStatusDot
                     :connection="saved.connection"
-                    :label="t('projects.connection.' + saved.connection)"
+                    :update="saved.update"
+                    :label="withUpdatePhrase(t('projects.connection.' + saved.connection), saved.update, t, clock)"
                   />
                 </button>
               </div>

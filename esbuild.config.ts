@@ -258,6 +258,15 @@ const ptyHostOptions: BundleOptions = {
   external: ['node-pty'],
 };
 
+const terminalHostOptions: BundleOptions = {
+  ...ptyHostOptions,
+  entryPoints: ['src/desktop/terminal-host/main.ts'],
+  // A daemon starts it detached and a later daemon adopts it, so it never loads the daemon bundle; electron-builder never lists it.
+  outfile: 'dist/terminal-host.js',
+  // koffi (win32-processes.ts reads start identities through it) resolves its native module relative to its own folder
+  external: ['node-pty', 'koffi'],
+};
+
 const quickOpenWorkerOptions: BundleOptions = {
   ...formatterHostOptions,
   entryPoints: ['src/desktop/quick-open-worker/index.ts'],
@@ -348,14 +357,14 @@ export function copyCliScripts(dir = 'dist/bin'): void {
 }
 
 /**
- * The bundles a server package carries in dist/ (scripts/build-server.ts): the daemon, Damocles Core, the hosts the daemon
- * forks, every worker in CoreInit.paths.workers (the walk process's included), the watch worker, the askpass helper and the terminals'
- * damocles command.
+ * The bundles a server package carries in dist/ (scripts/build-server.ts): the daemon, Damocles Core, the terminal host the
+ * daemon starts detached, the formatter host it forks, every worker in CoreInit.paths.workers (the walk process's included),
+ * the watch worker, the askpass helper and the terminals' damocles command.
  */
 export const SERVER_BUNDLES: BundleOptions[] = [
   daemonOptions,
   coreHostOptions,
-  ptyHostOptions,
+  terminalHostOptions,
   formatterHostOptions,
   processLauncherWorkerOptions,
   sentinelOptions,
@@ -384,6 +393,7 @@ export const DESKTOP_BUNDLES: BundleOptions[] = [
   desktopMainOptions,
   coreHostOptions,
   daemonOptions,
+  terminalHostOptions,
   desktopPreloadOptions,
   desktopShellPreloadOptions,
   desktopOverlayPreloadOptions,

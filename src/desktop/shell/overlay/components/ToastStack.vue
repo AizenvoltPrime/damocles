@@ -9,6 +9,8 @@ import { notificationView, relativeTime, TONE_CLASSES, type NotificationView } f
 import { linkUrlParts } from '../link-url';
 import NotificationAvatar from './NotificationAvatar.vue';
 import HostBadge from '@/components/HostBadge.vue';
+import CountdownClock from '@/components/CountdownClock.vue';
+import { minutesLeft } from '@/components/host-update-clock';
 import ToastLife from './ToastLife.vue';
 import { Button } from '@/components/ui/button';
 import { remPx } from '@/composables/useRemPx';
@@ -58,13 +60,18 @@ interface Announcement {
   readonly text: string;
 }
 const announcements = shallowRef<Readonly<Record<Politeness, readonly Announcement[]>>>({ polite: [], assertive: [] });
+// A countdown is heard once, with the minutes left, rounded up, when it arrived.
+function spokenTitle(shown: NotificationView): string {
+  if (shown.countdownTo === undefined) return shown.title;
+  return `${shown.title} ${t('hostUpdate.minutes', { count: minutesLeft(shown.countdownTo - Date.now()) })}`;
+}
 function announce(toast: OverlayToast): void {
   const shown = viewOf(toast);
   const live: Politeness = shown.urgent ? 'assertive' : 'polite';
   // a link request reads as its sentence: "prod-1 wants to open https://…"
   const text = shown.kind === 'link'
     ? `${shown.title} ${shown.message}`
-    : [shown.where, shown.host ?? '', shown.title, `${shown.lead} ${shown.message}`.trim()].filter((part) => part !== '').join(': ');
+    : [shown.where, shown.host ?? '', spokenTitle(shown), `${shown.lead} ${shown.message}`.trim()].filter((part) => part !== '').join(': ');
   announcements.value = { ...announcements.value, [live]: [...announcements.value[live], { id: toast.id, text }] };
 }
 
@@ -126,10 +133,10 @@ function dismissAll(): void {
   remove(() => false);
 }
 
-// A click on a kind's card is its action, as in the reference; a core notice has no action of its own, and a link request
-// opens its page only from its Open button.
+// A click on a kind's card is its action, as in the reference; a notice, a host update's included, has no action of its own,
+// and a link request opens its page only from its Open button.
 function openFromCard(toast: OverlayToast): void {
-  if (toast.body.kind !== 'notice' && toast.body.kind !== 'link') resolve(toast.id, TOAST_OPEN_ACTION);
+  if (toast.body.kind !== 'notice' && toast.body.kind !== 'hostUpdate' && toast.body.kind !== 'link') resolve(toast.id, TOAST_OPEN_ACTION);
 }
 
 // Copy on a link request: main copies the URL it holds and the toast stays, its button saying Copied.
@@ -353,7 +360,7 @@ onBeforeUnmount(() => {
         data-toast-part
         :data-toast-id="toast.id"
         :data-kind="shown.kind"
-        :data-severity="toast.body.kind === 'notice' ? toast.body.severity : undefined"
+        :data-severity="toast.body.kind === 'notice' || toast.body.kind === 'hostUpdate' ? toast.body.severity : undefined"
         class="toast-card pointer-events-auto relative flex w-full gap-3 overflow-hidden rounded-14 border border-(--d-border2) bg-(--d-card) p-3 pb-3.25 text-(--d-text) shadow-[0_1px_2px_rgb(0_0_0/0.12),0_4px_12px_-2px_rgb(0_0_0/0.24)]"
         :class="shown.kind === 'notice' || shown.kind === 'link' ? '' : 'cursor-pointer'"
         @mouseenter="hold(toast.id, 'pointer', true)"
@@ -407,7 +414,11 @@ onBeforeUnmount(() => {
             <span
               v-if="shown.title"
               class="text-13.5 font-semibold wrap-break-word"
-            >{{ shown.title }}</span>
+              data-testid="overlay-toast-title"
+            >{{ shown.countdownTo === undefined ? shown.title : `${shown.title} ` }}<CountdownClock
+              v-if="shown.countdownTo !== undefined"
+              :to="shown.countdownTo"
+            /></span>
             <p
               class="max-h-40 overflow-y-auto text-12.5 wrap-break-word whitespace-pre-wrap"
               :class="shown.title ? 'text-pretty text-(--d-muted)' : 'text-(--d-text)'"

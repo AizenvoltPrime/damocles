@@ -542,6 +542,12 @@ describe('the Connect dialog request', () => {
     const full = {
       ...card, color: 'danger', os: 'win32', lastUsed: 5, clockSkewMs: -180000, installFolder: 'D:\\damocles', defaultPermissionMode: 'plan',
       failure: { code: 'timedOut', params: {} }, reconnect: { phase: 'waiting', since: 1, retryAt: 2 }, devices: [{ deviceName: 'laptop', self: true }],
+      removed: { by: 'Laptop B' },
+      update: {
+        source: 'otherProtocol', phase: 'appOutdated', outdated: 'runs', serverVersion: '3.9.0', targetVersion: '3.7.0', runningAgents: 0, runningTerminals: 1,
+        cliWaits: 2, terminalsSurvive: false, otherDevices: 1, drainEndsAt: 9, waitingSince: 3, required: { deadline: 10, countdown: false },
+      },
+      canCheckForUpdates: true,
     };
     const attempt = { attemptId: 'a', hostId: 'h1', transport: 'ssh', step: 'authenticating', visited: ['connecting', 'authenticating'], prompt: { promptId: 'p', kind: 'secret', secretKind: 'password', text: 'Password:', offerRemember: true }, notices: [] };
     const parsed = parseConnectRequest({ ...request, hostId: 'h1', hosts: [{ ...full, extra: 'x' }], attempt: { ...attempt, extra: 'x' }, extra: 'x' });
@@ -554,6 +560,13 @@ describe('the Connect dialog request', () => {
       { color: '#ff0000' }, { os: 'freebsd' }, { installFolder: '' }, { installFolder: 'x'.repeat(4097) }, { clockSkewMs: 1.5 }, { lastUsed: -1 },
       { defaultPermissionMode: 'yolo' }, { allowBypass: undefined }, { passwordless: 'yes' }, { connection: 'up' },
       { failure: { code: 'notACode', params: {} } }, { reconnect: { phase: 'failed', since: 1, code: 'timedOut' } }, { devices: [{ deviceName: '', self: true }] },
+      { removed: true }, { removed: { by: '' } }, { removed: { by: 'x'.repeat(65) } }, { removed: { by: 'Laptop B', at: 1 } },
+      { canCheckForUpdates: false }, { update: { source: 'compatible', phase: 'waiting', serverVersion: '3.6.9', targetVersion: '3.7.0', runningAgents: -1, runningTerminals: 0, terminalsSurvive: false, waitingSince: 1 } },
+      { update: { source: 'compatible', phase: 'pending', serverVersion: '3.6.9', targetVersion: '3.7.0', runningAgents: 0, runningTerminals: 0, terminalsSurvive: false, waitingSince: 1 } },
+      { update: { source: 'compatible', phase: 'waiting', serverVersion: '3.6.9', targetVersion: '3.7.0', runningAgents: 0, runningTerminals: 0, cliWaits: 0.5, terminalsSurvive: true, waitingSince: 1 } },
+      // outdated says why this app is too old, so it comes with appOutdated and only with it
+      { update: { source: 'otherProtocol', phase: 'appOutdated', serverVersion: '3.9.0', targetVersion: '3.7.0', runningAgents: 0, runningTerminals: 0, terminalsSurvive: true, waitingSince: 1 } },
+      { update: { source: 'otherProtocol', phase: 'offer', outdated: 'runs', serverVersion: '3.6.9', targetVersion: '3.7.0', runningAgents: 1, runningTerminals: 0, terminalsSurvive: true, waitingSince: 1 } },
     ]) expect(parseConnectRequest({ ...request, hosts: [{ ...card, ...bad }] })).toBeUndefined();
     const attempt = { attemptId: 'a', hostId: 'h1', transport: 'ssh', step: 'installing', visited: ['connecting'], notices: [] };
     for (const bad of [
@@ -568,6 +581,14 @@ describe('the Connect dialog request', () => {
     expect(parseConnectRequest({ ...request, hosts: [{ ...card, latency }] })).toBeDefined();
     expect(parseConnectRequest({ ...request, hosts: [{ ...card, latency: { ...latency, measurements: undefined } }] })).toBeUndefined();
     expect(parseConnectRequest({ ...request, hosts: [{ ...card, latency: { ...latency, measurements: 0 } }] })).toBeUndefined();
+  });
+
+  it('takes the ids of the host\'s not-responding terminals this window shows, as terminal ids within the item bound', () => {
+    const ids = ['term-1', 'term-22'];
+    expect(parseConnectRequest({ ...request, hosts: [{ ...card, notRespondingTerminals: ids }] })).toEqual({ ...request, hosts: [{ ...card, notRespondingTerminals: ids }] });
+    for (const bad of [[], ['term-1', 'term-1'], [''], ['term 1'], [7], 'term-1', Array.from({ length: MAX_OVERLAY_ITEMS + 1 }, (_, index) => `term-${index}`)]) {
+      expect(parseConnectRequest({ ...request, hosts: [{ ...card, notRespondingTerminals: bad }] })).toBeUndefined();
+    }
   });
 
   it('opens a host\'s card for a rename only with that host named', () => {

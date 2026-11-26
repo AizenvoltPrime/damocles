@@ -1,9 +1,9 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProjectPresences, type CheckedProject } from '../../project-presence';
-import { keptChatFate, type KeptChatProjects } from '../kept-remote-chats';
+import { keptChatFate, oncePerConversation, reopenKeptChat, type KeptChatProjects } from '../kept-remote-chats';
 import { RemoteState, type RemoteChatRecord } from '../remote-state';
 
 const AUTHORITY = 'ssh+h1';
@@ -52,5 +52,52 @@ describe('a kept remote chat at its host\'s attach', () => {
     expect(fates.filter(({ fate }) => fate === 'open').map(({ record }) => record.panelToken)).toEqual(['a1']);
     await state.setChats(AUTHORITY, fates.filter(({ fate }) => fate !== 'dropped').map(({ record }) => record), null);
     expect((await RemoteState.open(userData, () => undefined)).chats(AUTHORITY)).toEqual([chat('a1', APP.key)]);
+  });
+});
+
+describe('a kept remote chat reopening on its host\'s core', () => {
+  // the core answers the join with whether a panel was found
+  const opening = (joined: boolean) => ({
+    join: vi.fn(async (_viewKey: string | undefined, _sessionId: string | undefined) => joined),
+    restoreJoining: vi.fn(async () => undefined),
+    restore: vi.fn(async () => undefined),
+  });
+
+  it('under a new epoch joins the panel another device restored its conversation into, by that conversation, and creates no panel', async () => {
+    const open = opening(true);
+    await reopenKeptChat(chat('a1'), false, open);
+    expect(open.join).toHaveBeenCalledWith(undefined, 's-a1');
+    expect(open.restoreJoining).not.toHaveBeenCalled();
+    expect(open.restore).not.toHaveBeenCalled();
+  });
+
+  it('under a new epoch restores its conversation into the view when no panel holds it', async () => {
+    const open = opening(false);
+    await reopenKeptChat(chat('a1'), false, open);
+    expect(open.join).toHaveBeenCalledWith(undefined, 's-a1');
+    expect(open.restoreJoining).toHaveBeenCalledTimes(1);
+    expect(open.restore).not.toHaveBeenCalled();
+  });
+
+  it('under a new epoch restores a chat with no conversation at once, since no panel can hold it', async () => {
+    const open = opening(true);
+    await reopenKeptChat({ panelToken: 'n1' }, false, open);
+    expect(open.join).not.toHaveBeenCalled();
+    expect(open.restore).toHaveBeenCalledTimes(1);
+  });
+
+  it('under the epoch it was open in rejoins its panel by its page token, else restores it', async () => {
+    const open = opening(false);
+    await reopenKeptChat(chat('a1'), true, open);
+    expect(open.join).toHaveBeenCalledWith('a1', 's-a1');
+    expect(open.restoreJoining).toHaveBeenCalledTimes(1);
+    expect(open.restore).not.toHaveBeenCalled();
+  });
+
+  it('reopens one chat per conversation, and none of a conversation the window already shows', () => {
+    const records = [chat('a1'), { ...chat('b2'), sessionId: 's-a1' }, chat('c3'), { authority: AUTHORITY, panelToken: 'n1' }, { authority: AUTHORITY, panelToken: 'n2' }];
+    expect(oncePerConversation(records, ['s-c3']).map((record) => record.panelToken)).toEqual(['a1', 'n1', 'n2']);
+    // the record of the chat selected when the core went is the one kept, so it is selected again
+    expect(oncePerConversation(records, [], 'b2').map((record) => record.panelToken)).toEqual(['b2', 'c3', 'n1', 'n2']);
   });
 });

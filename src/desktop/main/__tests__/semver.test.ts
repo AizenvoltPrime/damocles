@@ -9,10 +9,12 @@ describe('compareVersions', () => {
       expect(compareVersions(ordered[i + 1]!, ordered[i]!)).toBeGreaterThan(0);
     }
     expect(compareVersions('3.4.0', '3.4.0')).toBe(0);
+    expect(compareVersions('1.0.0-9007199254740993', '1.0.0-9007199254740992')).toBeGreaterThan(0);
   });
 
   it('throws on a string that is not a version', () => {
     expect(() => compareVersions('3.4', '3.4.0')).toThrow('Not a version: "3.4"');
-    for (const value of ['3.4', 'v3.4.0', '3.4.0 ', '3.4.0/../x', 'x'.repeat(65), 7]) expect(isVersion(value)).toBe(false);
+    expect(() => compareVersions('3.4.0', '3.4.01')).toThrow('Not a version: "3.4.01"');
+    for (const value of ['3.4', 'v3.4.0', '3.4.0 ', '3.4.0/../x', 'x'.repeat(65), 7, '03.4.0', '3.4.0-01', '3.4.0-a..b', '3.4.0+0123456789ab']) expect(isVersion(value), String(value)).toBe(false);
   });
 });

@@ -57,7 +57,7 @@ export function provideDesktopPrefs(api: DamoclesOverlayApi): DesktopPrefs {
           // The modal closed before main wrote it; the next open reads every value again.
           if (!result) return;
           if (result.ok) writes.settle({ type: 'settingWriteResult', key, ok: true, scope: 'user', file: result.file });
-          else writes.settleError(key, { verbatim: result.error });
+          else writes.settleError(key, result.refusal !== undefined ? { key: `settingsHost.prefRefusal.${result.refusal}` } : { verbatim: result.error });
         },
         () => {
           answered(key);

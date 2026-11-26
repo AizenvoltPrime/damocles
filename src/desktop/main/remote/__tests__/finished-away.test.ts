@@ -45,12 +45,21 @@ describe('finished while away', () => {
     expect(finishedChats([chat('host-1', 'a'), chat('host-2', 'b')], [run('host-2', 'b')])).toEqual([chat('host-1', 'a')]);
   });
 
-  it('tells about every chat that finished in one notification, each chat an action, and keeps the ones still running', async () => {
+  it('tells about every chat that finished in one notification, each chat an action, and forgets the ones still running', async () => {
     const { value, stored, notices, opened } = deps([chat('host-1', 'Fix the parser'), chat('host-2', 'Write docs'), chat('host-3', 'Still going')], [run('host-3', 'Still going')], () => 1);
     await announceFinishedAway(value, 'ssh+h1');
     expect(notices).toEqual([{ message: '2 chats on prod-1 finished while you were away', actions: ['Fix the parser', 'Write docs'] }]);
     expect(opened).toEqual([chat('host-2', 'Write docs')]);
-    expect(stored.get('ssh+h1')).toEqual([chat('host-3', 'Still going')]);
+    expect(stored.get('ssh+h1')).toEqual([]);
+  });
+
+  // a chat still running at the attach ends in sight of this app, so a later restart of its core is no news of being away
+  it('tells nothing at a later attach after a restart, about a chat that was still running at the attach before', async () => {
+    const first = deps([chat('host-1', 'Still going')], [run('host-1', 'Still going')]);
+    await announceFinishedAway(first.value, 'ssh+h1');
+    const later = { ...first.value, coreRestarted: () => true };
+    await announceFinishedAway(later, 'ssh+h1');
+    expect(first.notices).toEqual([]);
   });
 
   it('opens the chosen chat by its action\'s index, also among chats of one title', async () => {

@@ -207,6 +207,19 @@ describe('RemoteConnections', () => {
     expect(failureOf(new Error('refused protocol 1'))).toEqual({ code: 'handshakeFailed', params: { reason: 'refused protocol 1' } });
   });
 
+  it('fails with the bridge\'s own refusal, not with what the handshake made of its ended stream', async () => {
+    const bridge = started();
+    const { connections, settled } = harness(async () => bridge, (stream) => new Promise<void>((_resolve, reject) => {
+      stream.once('error', () => reject(new Error('The connection closed before the daemon answered')));
+    }));
+    const attemptId = connections.connect('h1', false);
+    await flush();
+    bridge.stream.destroy(new TransportError('belowFloor', { floor: '3.9.0' }, ''));
+    await settled();
+    await expect(connections.outcome(attemptId)).rejects.toMatchObject({ code: 'belowFloor' });
+    expect(connections.failure('h1')).toEqual({ code: 'belowFloor', params: { floor: '3.9.0' } });
+  });
+
   it('ends ssh when the bridge\'s stream closes, and keeps its last stderr', async () => {
     const bridge = started();
     const { connections } = harness(async () => bridge);
@@ -352,7 +365,7 @@ describe('RemoteConnections ended by the user', () => {
     connections.connect('h1', false);
     await flush();
     await connections.cancelHost('h1');
-    const attempt = connections.loopAttempt('h1', new AbortController().signal, true);
+    const attempt = connections.loopAttempt('h1', new AbortController().signal, true, false);
     expect(attempt.joined).toBe(false);
     await flush();
     expect(starts).toBe(2);
@@ -378,6 +391,20 @@ describe('RemoteConnections ended by the user', () => {
     // the cancelled attempt settles without reporting for the forgotten host
     expect(changed).not.toHaveBeenCalled();
   });
+
+  it('starts no attempt or ssh call for a host once its forget began, while its record still exists', async () => {
+    let starts = 0;
+    const { connections } = harness(() => {
+      starts += 1;
+      return new Promise(() => undefined);
+    });
+    connections.forget('h1');
+    expect(() => connections.connect('h1', false, { user: true })).toThrow('h1 is being forgotten');
+    await expect(connections.withPrompts('h1', async () => 'ran')).rejects.toThrow('h1 is being forgotten');
+    await flush();
+    expect(starts).toBe(0);
+    expect(connections.attempt('h1')).toBeUndefined();
+  });
 });
 
 describe('RemoteConnections and the reconnect loop', () => {
@@ -391,7 +418,7 @@ describe('RemoteConnections and the reconnect loop', () => {
     const watchedId = connections.connect('h1', true);
     await flush();
     const loop = new AbortController();
-    const attempt = connections.loopAttempt('h1', loop.signal, false);
+    const attempt = connections.loopAttempt('h1', loop.signal, false, false);
     expect(attempt.joined).toBe(true);
     loop.abort();
     expect(sshSignal?.aborted).toBe(false);
@@ -407,7 +434,7 @@ describe('RemoteConnections and the reconnect loop', () => {
       return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new TransportError('cancelled', {}, ''))));
     });
     const loop = new AbortController();
-    const attempt = connections.loopAttempt('h1', loop.signal, false);
+    const attempt = connections.loopAttempt('h1', loop.signal, false, false);
     expect(attempt.joined).toBe(false);
     await flush();
     expect(connections.isWatched('h1')).toBe(false);
@@ -417,12 +444,56 @@ describe('RemoteConnections and the reconnect loop', () => {
 
     const removed = vi.spyOn(AbortSignal.prototype, 'removeEventListener');
     const next = new AbortController();
-    const second = connections.loopAttempt('h1', next.signal, false);
+    const second = connections.loopAttempt('h1', next.signal, false, false);
     await flush();
     connections.cancel(connections.attempt('h1')!.attemptId);
     await second.outcome.catch(() => undefined);
     expect(removed.mock.contexts).toContain(next.signal);
     removed.mockRestore();
+  });
+
+  it('starts an attempt as automatic unless the user started it, and a user joining an automatic one before its transport makes it the user\'s', async () => {
+    const users: boolean[] = [];
+    // read once ssh is up, as the transport builds stage 1
+    const { connections, setConnected } = harness(async ({ userStarted }) => {
+      await flush();
+      users.push(userStarted());
+      return started();
+    });
+    connections.connect('h1', false);
+    await flush();
+    await flush();
+    setConnected(false);
+    connections.connect('h1', true, { user: true });
+    await flush();
+    await flush();
+    setConnected(false);
+    await connections.loopAttempt('h1', new AbortController().signal, false, false).outcome;
+    setConnected(false);
+    await connections.loopAttempt('h1', new AbortController().signal, true, true).outcome;
+    setConnected(false);
+    connections.connect('h1', false);
+    connections.connect('h1', true, { user: true });
+    await flush();
+    await flush();
+    expect(users).toEqual([false, true, false, true, true]);
+  });
+
+  it('shows the host removed by another device, or as an automatic attempt found it, until the next attempt starts', async () => {
+    const { connections, changed, setConnected } = harness(async ({ userStarted }) => {
+      if (!userStarted()) throw new TransportError('serverRemoved', {}, '');
+      return started();
+    });
+    connections.markRemoved('h1', 'DESKTOP-A');
+    expect(connections.removed('h1')).toEqual({ by: 'DESKTOP-A' });
+    expect(changed).toHaveBeenCalledWith('h1');
+    await connections.loopAttempt('h1', new AbortController().signal, false, false).outcome.catch(() => undefined);
+    expect(connections.removed('h1')).toEqual({});
+    connections.connect('h1', true, { user: true });
+    expect(connections.removed('h1')).toBeUndefined();
+    await flush();
+    setConnected(true);
+    expect(connections.attempt('h1')).toMatchObject({ step: 'connected' });
   });
 
   it('tells the loop when a user watches the attempt and when stage 1 runs on the target', async () => {

@@ -18,8 +18,9 @@ export interface RemoteSelectionDeps<C extends AuthorityChat, V extends Authorit
   readonly selectedProject: () => string | undefined;
   readonly selectedChat: () => V | undefined;
   readonly host: (authority: string) => SelectionHost<C> | undefined;
-  // moves Files, Search, Quick Open and new terminals to the project and connects its authority; opens no chat
-  readonly showProject: (key: string) => void;
+  // moves Files, Search, Quick Open and new terminals to the project and connects its authority, as the user's connect when
+  // userStarted; opens no chat
+  readonly showProject: (key: string, userStarted: boolean) => void;
   // the project's last viewed chat while it exists, once it is gone the top of its Chats list, else a new chat; never viewed: a new chat
   readonly selectChatOf: (core: C, key: string) => Promise<void>;
 }
@@ -37,9 +38,12 @@ export function keptChatWithheld(projectKey: string | undefined, chat: Authority
 
 export function remoteSelection<C extends AuthorityChat, V extends AuthorityChat>(deps: RemoteSelectionDeps<C, V>) {
   return {
-    /** Selects the remote project, and its chat now when its core runs, else once that core opened its chats. */
-    async select(key: string): Promise<void> {
-      deps.showProject(key);
+    /**
+     * Selects the remote project, and its chat now when its core runs, else once that core opened its chats. userStarted: the
+     * user selected it, as opposed to a launch restoring it.
+     */
+    async select(key: string, userStarted: boolean): Promise<void> {
+      deps.showProject(key, userStarted);
       const host = deps.host(authorityKeyOfProject(key));
       if (host?.current()) await host.run('Select Project', (core) => deps.selectChatOf(core, key));
     },

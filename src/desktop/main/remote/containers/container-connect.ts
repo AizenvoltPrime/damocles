@@ -24,6 +24,8 @@ export interface ContainerConnectDeps {
   readonly dataVolumeMissing: () => void;
   readonly hooks: Pick<SshAttemptHooks, 'step' | 'progress' | 'notice'> & { buildLog(log: BuildLog): void };
   readonly signal: AbortSignal;
+  // the user started or joined the attempt (stage1.ts StageParameters.userStarted)
+  readonly userStarted: () => boolean;
   // a user watches the attempt now; an attempt nobody watches never runs the gate or up
   readonly watched: () => boolean;
   installFolderSettled(): Promise<void>;
@@ -125,6 +127,7 @@ export async function connectContainer(deps: ContainerConnectDeps, record: Conta
     ...(record.settings.installFolder !== undefined ? { installFolder: record.settings.installFolder } : {}),
     ...(record.previousInstallFolder !== undefined ? { previousInstallFolder: record.previousInstallFolder } : {}),
     signal: deps.signal,
+    userStarted: deps.userStarted,
     hooks: deps.hooks,
     installFolderSettled: () => deps.installFolderSettled(),
     manifest,

@@ -8,6 +8,7 @@ import NotifierApp from '../overlay/NotifierApp.vue';
 import OverlayApp from '../overlay/OverlayApp.vue';
 import TitleBar from '../components/TitleBar.vue';
 import { shellI18n } from '../i18n';
+import el from '../locales/el.json' with { type: 'json' };
 import { createOverlaySettingsBridge } from '../overlay/settings/overlay-bridge';
 import { FakeResizeObserver, PAGE_PROVIDE, fakeOverlayApi, fakeShellApi, STATE, type FakeOverlayApi } from './fakes';
 
@@ -815,5 +816,116 @@ describe('a link request toast', () => {
     (card(wrapper).get('[data-testid="link-copy"]').element as HTMLElement).focus();
     press('Escape');
     expect(api.resolveToast).toHaveBeenCalledExactlyOnceWith('l1', undefined);
+  });
+});
+
+describe('a host update\'s notices', () => {
+  const REMINDER: NotificationBody = { kind: 'hostUpdate', severity: 'warning', title: 'prod-1 still runs Damocles 3.7.0', message: 'It must switch to Damocles 3.9.0 by 16:30, in 3 h.', actions: ['Switch now', 'Show host'], host: 'prod-1', hostColor: 'danger' };
+  const card = (wrapper: VueWrapper, id: string) => wrapper.get(`[data-toast-id="${id}"]`);
+
+  it('shows a reminder as a notice whose actions answer by index, and a click on its card sends nothing', async () => {
+    const wrapper = mountNotifier();
+    await flushPromises();
+    api.toast(toast('u1', REMINDER));
+    await flushPromises();
+    const reminder = card(wrapper, 'u1');
+    expect(reminder.attributes()).toMatchObject({ 'data-kind': 'notice', 'data-severity': 'warning' });
+    expect(reminder.classes()).not.toContain('cursor-pointer');
+    expect(reminder.get('[data-testid="host-name-badge"]').text()).toBe('prod-1');
+    expect(reminder.get('[data-testid="overlay-toast-title"]').text()).toBe('prod-1 still runs Damocles 3.7.0');
+    expect(reminder.get('[data-testid="overlay-toast-message"]').text()).toBe('It must switch to Damocles 3.9.0 by 16:30, in 3 h.');
+    expect(reminder.find('[data-testid="overlay-toast-life"]').exists()).toBe(true);
+    expect(wrapper.get('[data-testid="overlay-toasts-polite"]').text()).toBe('Warning: prod-1: prod-1 still runs Damocles 3.7.0: It must switch to Damocles 3.9.0 by 16:30, in 3 h.');
+    const actions = reminder.findAll('.mt-2 button');
+    expect(actions.map((action) => action.text())).toEqual(['Switch now', 'Show host']);
+    expect(actions[0]!.classes()).toEqual(expect.arrayContaining(['bg-(--d-warning-fill)/16', 'text-(--d-warning-text)']));
+
+    await reminder.get('[data-testid="overlay-toast-message"]').trigger('click');
+    await reminder.trigger('click');
+    expect(api.resolveToast).not.toHaveBeenCalled();
+    await actions[1]!.trigger('click');
+    expect(api.resolveToast).toHaveBeenCalledExactlyOnceWith('u1', 1);
+  });
+
+  it('shows what a chosen switch stopped with no actions', async () => {
+    const wrapper = mountNotifier();
+    await flushPromises();
+    api.toast(toast('u2', { kind: 'hostUpdate', severity: 'info', title: 'prod-1 now runs Damocles 3.9.0', message: '2 agents stopped; their chats are kept.', actions: [], host: 'prod-1' }));
+    await flushPromises();
+    expect(card(wrapper, 'u2').attributes('data-severity')).toBe('info');
+    expect(card(wrapper, 'u2').findAll('button').map((button) => button.attributes('aria-label'))).toEqual(['Dismiss notification']);
+    await card(wrapper, 'u2').trigger('click');
+    expect(api.resolveToast).not.toHaveBeenCalled();
+  });
+
+  it('ticks the sticky countdown\'s title each second, and a screen reader hears it once, with the minutes left rounded up', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 0, 15, 13, 30));
+    const wrapper = mountNotifier();
+    await flushPromises();
+    const countdown: NotificationBody = { kind: 'notice', severity: 'error', title: 'prod-1 switches in', message: 'Damocles 3.9.0 is required. 2 agents stop then; their chats are kept.', actions: ['Switch now'], host: 'prod-1', countdownTo: Date.now() + (12 * 60 + 41) * 1000 };
+    api.toast({ ...toast('k1', countdown), sticky: true });
+    await flushPromises();
+    const sticky = card(wrapper, 'k1');
+    const title = sticky.get('[data-testid="overlay-toast-title"]');
+    const clock = title.get('[data-testid="countdown-clock"]');
+    const spoken = title.get('[data-testid="countdown-spoken"]');
+    expect(sticky.attributes('data-severity')).toBe('error');
+    expect(sticky.find('[data-testid="overlay-toast-life"]').exists()).toBe(false);
+    expect(title.element.textContent).toBe('prod-1 switches in 12:4113 minutes');
+    expect(clock.attributes('aria-hidden')).toBe('true');
+    expect(spoken.classes()).toContain('sr-only');
+    // the toast is heard once, through the stack's live region, so its minutes are no live region of their own
+    expect(spoken.attributes('aria-live')).toBeUndefined();
+    const announced = 'Error: prod-1: prod-1 switches in 13 minutes: Damocles 3.9.0 is required. 2 agents stop then; their chats are kept.';
+    expect(wrapper.get('[data-testid="overlay-toasts-assertive"]').text()).toBe(announced);
+
+    const heard: Array<[string, string]> = [[clock.text(), spoken.text()]];
+    let last = clock.text();
+    for (let second = 0; second < 12 * 60 + 41; second++) {
+      vi.advanceTimersByTime(1000);
+      await wrapper.vm.$nextTick();
+      expect(clock.text()).not.toBe(last);
+      last = clock.text();
+      if (spoken.text() !== heard.at(-1)![1]) heard.push([clock.text(), spoken.text()]);
+    }
+    expect(heard).toEqual([['12:41', '13 minutes'], ...Array.from({ length: 12 }, (_, index) => 12 - index).map((left) => [`${String(left).padStart(2, '0')}:00`, left === 1 ? '1 minute' : `${left} minutes`]), ['00:00', 'less than a minute']]);
+    expect(clock.text()).toBe('00:00');
+    expect(wrapper.get('[data-testid="overlay-toasts-assertive"]').text()).toBe(announced);
+    expect(wrapper.get('[data-testid="overlay-toasts-assertive"]').findAll('p')).toHaveLength(1);
+
+    await sticky.trigger('click');
+    expect(api.resolveToast).not.toHaveBeenCalled();
+    await sticky.get('[data-toast-primary]').trigger('click');
+    expect(api.resolveToast).toHaveBeenCalledExactlyOnceWith('k1', 0);
+  });
+
+  it('says the countdown\'s minutes in Greek', async () => {
+    const wrapper = mountNotifier();
+    await flushPromises();
+    // after the page took main's language
+    shellI18n.global.setLocaleMessage('el', el);
+    shellI18n.global.locale.value = 'el';
+    api.toast({ ...toast('k2', { kind: 'notice', severity: 'error', title: 'Το prod-1 μεταβαίνει σε', message: 'Το Damocles 3.9.0 είναι υποχρεωτικό.', actions: ['Μετάβαση τώρα'], host: 'prod-1', countdownTo: Date.now() + 30_000 }), sticky: true });
+    await flushPromises();
+    expect(card(wrapper, 'k2').get('[data-testid="overlay-toast-title"]').element.textContent).toBe('Το prod-1 μεταβαίνει σε 00:301 λεπτό');
+  });
+
+  it('keeps the countdown ticking on its center row, with its action under it', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 0, 15, 13, 30));
+    const countdown: NotificationBody = { kind: 'notice', severity: 'error', title: 'prod-1 switches in', message: 'Damocles 3.9.0 is required.', actions: ['Switch now'], host: 'prod-1', countdownTo: Date.now() + 90_000 };
+    api.center.state = { entries: [{ ...entry('k1', countdown), awaitingAnswer: true }, entry('u1', REMINDER)], doNotDisturb: false, popupsOff: false };
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'c1', CENTER);
+    await flushPromises();
+    const row = wrapper.get('[data-entry-id="k1"]');
+    expect(row.text()).toContain('prod-1 switches in 01:302 minutes');
+    vi.advanceTimersByTime(31_000);
+    await wrapper.vm.$nextTick();
+    expect(row.text()).toContain('prod-1 switches in 00:591 minute');
+    expect(wrapper.get('[data-entry-id="u1"]').text()).toContain('prod-1 still runs Damocles 3.7.0');
+    expect(wrapper.findAll('[data-testid="notification-row-action"]').map((action) => action.text())).toEqual(['Switch now']);
   });
 });

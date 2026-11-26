@@ -132,8 +132,16 @@ describe('the pill actions', () => {
     expect(opened).toEqual([{ section: 'about' }, { section: 'about' }]);
   });
 
-  it('names only the four actions', () => {
-    expect(['restart', 'releaseNotes', 'showLog', 'releasePage'].every(isUpdateAction)).toBe(true);
+  it('checks as Help does from the host update strip, and refuses while the updater is off', async () => {
+    await runUpdateAction('check', deps);
+    expect(calls).toEqual(['check:help']);
+    state = { kind: 'disabled' };
+    await expect(runUpdateAction('check', deps)).rejects.toThrow('This app does not update itself');
+    expect(calls).toEqual(['check:help']);
+  });
+
+  it('names only the five actions', () => {
+    expect(['restart', 'releaseNotes', 'showLog', 'releasePage', 'check'].every(isUpdateAction)).toBe(true);
     for (const value of ['install', 'openExternal', '', null, 1, ['restart']]) expect(isUpdateAction(value)).toBe(false);
   });
 });

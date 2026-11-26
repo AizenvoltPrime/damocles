@@ -7,7 +7,8 @@ import { SHELL_ENV_TIMEOUT_MS } from '../../local-services/shell-env';
 import type { HostStarters } from '../../workspace/host-starters';
 import { connectToDaemon, daemonAnswers } from '../attach';
 import { removeStaleSocket } from '../endpoint-server';
-import { DAEMON_START_MS, LOCK_STALE_MS, TAKEOVER_STALE_MS } from '../lock-timing';
+import { AUTH_TIMEOUT_MS } from '../../../remote/handshake';
+import { DAEMON_START_MS, IDENTITY_READ_TIMEOUT_MS, LOCK_STALE_MS, LOCK_UPDATE_MS, LOCK_WAIT_MS, REMOVAL_SHUTDOWN_MAX_MS, TAKEOVER_STALE_MS } from '../lock-timing';
 import { acquireDaemonLock } from '../singleton';
 import { createSocketFolder, localRunPaths, makeRunDir, pipeName, socketFolderBase, socketPath, tokenPath, writePidFile, writeToken } from '../token';
 import { startInProcessDaemon, type InProcessDaemon } from './in-process-daemon';
@@ -29,8 +30,13 @@ afterEach(async () => {
 });
 
 describe('the daemon singleton', () => {
-  it('gives a start past the lock longer than the login shell\'s environment may take', () => {
-    expect(DAEMON_START_MS).toBeGreaterThan(SHELL_ENV_TIMEOUT_MS);
+  it('gives a start past the lock longer than the login shell\'s environment may take, beside the terminal hosts\' adoption', () => {
+    expect(DAEMON_START_MS - AUTH_TIMEOUT_MS - IDENTITY_READ_TIMEOUT_MS).toBeGreaterThan(SHELL_ENV_TIMEOUT_MS);
+  });
+
+  // a holder may keep its lock fresh through a removal's shutdown and then die
+  it('waits for a held lock as long as a removal\'s shutdown, then the stale bound, may take', () => {
+    expect(LOCK_WAIT_MS).toBeGreaterThanOrEqual(LOCK_STALE_MS + LOCK_UPDATE_MS + REMOVAL_SHUTDOWN_MAX_MS);
   });
 
   it('holds one lock per user and host', async () => {

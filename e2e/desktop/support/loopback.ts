@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication, TestInfo } from '@playwright/test';
 import { createLauncherPool, installProcessLauncher, type Launcher } from '../../../src/core/process-launcher';
-import { localRunPaths } from '../../../src/desktop/daemon/token';
+import { localRunPaths, readHostRecords, type RunPaths } from '../../../src/desktop/daemon/token';
 import { expect } from './fixtures';
 import { LOOPBACK_HOME_IN_USER_DATA, REPO_ROOT, type HermeticHome } from './hermetic';
 import { isAlive, run, windowsProcessTree } from './app';
@@ -46,13 +46,20 @@ export const serverDir = (home: HermeticHome): string => path.join(loopbackHome(
 // the daemon's machine key reads the machine id through the launcher on Windows and macOS
 let launcher: Launcher | undefined;
 
-/** The pid file of the daemon of a home, in the run folder the daemon and its bridge key by this machine's id. */
-async function pidFileIn(daemonHome: string): Promise<string> {
+/** The run folder of the daemon of a home, which the daemon and its bridge key by this machine's id. */
+function runPathsIn(daemonHome: string): Promise<RunPaths> {
   if (!launcher) {
     launcher = createLauncherPool({ workerPath: path.join(REPO_ROOT, 'dist', 'process-launcher-worker.js'), sentinelPath: path.join(REPO_ROOT, 'dist', 'sentinel.js') });
     installProcessLauncher(launcher);
   }
-  return (await localRunPaths(daemonHome)).pidFile;
+  return localRunPaths(daemonHome);
+}
+
+const pidFileIn = async (daemonHome: string): Promise<string> => (await runPathsIn(daemonHome)).pidFile;
+
+/** The pids of the live terminal hosts of a home's run folder, which outlive the daemon that started them. */
+export async function terminalHostPids(daemonHome: string): Promise<number[]> {
+  return (await readHostRecords(await runPathsIn(daemonHome))).map((entry) => entry.pid).filter(isAlive);
 }
 
 const pidFile = (home: HermeticHome): Promise<string> => pidFileIn(loopbackHome(home));
@@ -121,11 +128,12 @@ export function listRuns(app: ElectronApplication): Promise<{ runs: Run[] }> {
 }
 
 /**
- * Ends the daemon with control.shutdownNow and waits until neither it nor any process it started (pty host, formatter
- * hosts, the shells in its terminals) is alive. Every spec that starts a daemon ends with this.
+ * Ends the daemon with control.shutdownNow and waits until neither it, nor any process it started (formatter hosts), nor a
+ * terminal host of its run folder with the shells in its terminals is alive. Every spec that starts a daemon ends with this.
  */
 export async function shutdownDaemon(app: ElectronApplication, home: HermeticHome): Promise<void> {
-  const tree = await processTree(await daemonPid(home));
+  // a terminal host is detached, so no daemon's tree holds it
+  const tree = (await Promise.all([await daemonPid(home), ...(await terminalHostPids(loopbackHome(home)))].map(processTree))).flat();
   const file = await pidFile(home);
   await app.evaluate(() => (globalThis as unknown as LoopbackHooks).__damoclesE2e.loopback.shutdownNow());
   await expect.poll(() => tree.filter(isAlive), { timeout: 30_000 }).toEqual([]);
@@ -147,21 +155,27 @@ function running(app: ElectronApplication): boolean {
  * asks through the app while the app runs, and kills the daemon's process tree when no app is left to ask.
  */
 export async function endLeftoverDaemon(app: ElectronApplication | undefined, home: HermeticHome): Promise<void> {
-  if (!fs.existsSync(await pidFile(home))) return;
-  if (app && running(app)) {
+  if (fs.existsSync(await pidFile(home)) && app && running(app)) {
     await shutdownDaemon(app, home);
     return;
   }
   await killDaemonIn(loopbackHome(home));
 }
 
-/** Kills the process tree of the daemon whose pid file is in `daemonHome`'s run folder; nothing when no daemon.js serve runs. */
+/**
+ * Kills the process trees of the daemon whose pid file is in `daemonHome`'s run folder and of the terminal hosts whose records
+ * are there; nothing when neither a daemon.js serve nor a terminal-host.js runs.
+ */
 export async function killDaemonIn(daemonHome: string): Promise<void> {
-  const root = await pidIn(daemonHome);
-  if (root === undefined) return;
-  // a stale pid file can name a pid the system has since given to a process that is no daemon (daemon.js serve)
-  if (!/daemon\.js\S*\s+serve\b/.test((await commandLineOf(root)) ?? '')) return;
-  const tree = await processTree(root);
+  const daemon = await pidIn(daemonHome);
+  const named: Array<readonly [number, RegExp]> = [
+    ...(daemon === undefined ? [] : [[daemon, /daemon\.js\S*\s+serve\b/] as const]),
+    ...(await terminalHostPids(daemonHome)).map((pid) => [pid, /terminal-host\.js\b/] as const),
+  ];
+  // a stale record can name a pid the system has since given to a process that is neither
+  const roots: number[] = [];
+  for (const [pid, program] of named) if (program.test((await commandLineOf(pid)) ?? '')) roots.push(pid);
+  const tree = (await Promise.all(roots.map(processTree))).flat();
   for (const pid of tree.filter(isAlive)) process.kill(pid, 'SIGKILL');
   await expect.poll(() => tree.filter(isAlive), { timeout: 30_000 }).toEqual([]);
 }
@@ -176,11 +190,13 @@ export async function cleanUp(testInfo: TestInfo, failure: unknown, step: () => 
   }
 }
 
-/** Every file below `dir`, relative and '/'-separated; empty when it does not exist. */
+/** Every file below `dir`, relative and '/'-separated, never through a link; empty when it does not exist. */
 export function filesUnder(dir: string): string[] {
   if (!fs.existsSync(dir)) return [];
-  return (fs.readdirSync(dir, { recursive: true, withFileTypes: true }) as fs.Dirent[])
-    .filter((entry) => entry.isFile())
-    .map((entry) => path.relative(dir, path.join(entry.parentPath, entry.name)).split(path.sep).join('/'))
-    .sort();
+  // readdir's recursive mode enters a Windows junction, such as a run folder's `active` link to the daemon's package
+  const walk = (folder: string): string[] => fs.readdirSync(folder, { withFileTypes: true }).flatMap((entry) => {
+    const full = path.join(folder, entry.name);
+    return entry.isDirectory() ? walk(full) : entry.isFile() ? [full] : [];
+  });
+  return walk(dir).map((file) => path.relative(dir, file).split(path.sep).join('/')).sort();
 }

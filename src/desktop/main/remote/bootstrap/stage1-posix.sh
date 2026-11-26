@@ -3,6 +3,7 @@
 # app's channel, so every tool writes to stderr and only say() writes to stdout, until the bridge takes stdout over.
 # Everything above "BEGIN MAIN" only defines; the tests source that part and call the functions.
 # BEGIN PARAMETERS
+D_AUTOMATIC='1'
 D_INSTALL_FOLDER=''
 D_PREVIOUS_KIND='none'
 D_PREVIOUS_FOLDER=''
@@ -432,11 +433,21 @@ installed() {
   [ -x "$1/bin/damocles-server" ] && [ -f "$1/server-package.json" ]
 }
 
-# The versions recently touched pid files name, on this machine or another sharing the home; with $1, only those another
-# host wrote, since daemon_runs_from reads this machine's own.
+# Whether $1 exists and is a daemon's pid file or a terminal host's record <pid>.json, the only names token.ts reads.
+# remove-posix.sh has the same function.
+is_pid_file() {
+  [ -e "$1" ] || return 1
+  record_name=$(basename "$1")
+  [ "$record_name" = daemon.pid ] && return 0
+  case "${record_name%.json}" in [1-9]*) ;; *) return 1 ;; esac
+  case "${record_name%.json}" in *[!0-9]*) return 1 ;; esac
+}
+
+# The versions recently touched pid files name, a daemon's or a terminal host's, on this machine or another sharing the home;
+# with $1, only those another host wrote, since daemon_runs_from reads this machine's own.
 live_versions() {
-  for pid_file in "$HOME"/.damocles/server/run-*/daemon.pid; do
-    [ -e "$pid_file" ] || continue
+  for pid_file in "$HOME"/.damocles/server/run-*/daemon.pid "$HOME"/.damocles/server/run-*/terminal-hosts/*.json; do
+    is_pid_file "$pid_file" || continue
     if [ -n "$1" ] && [ "$(sed -n 's/.*"hostname":"\([^"]*\)".*/\1/p' "$pid_file")" = "$(uname -n)" ]; then continue; fi
     if [ -n "$(find "$pid_file" -mmin -"$LIVE_PID_FILE_MIN" 2>/dev/null)" ]; then
       sed -n 's/.*"version":"\([0-9A-Za-z.+-]*\)".*/\1/p' "$pid_file"
@@ -449,7 +460,8 @@ listed() {
   printf '%s\n' "$2" | grep -Fqx -- "$1"
 }
 
-# Keeps $2 (the current version), every version a live pid file names, and the newest previous one.
+# Keeps $2 (the current version), every version a live daemon's or terminal host's pid file names, every folder a live one of
+# this machine runs from (a record a suspend kept from its touch looks stale), and the newest previous one.
 prune() {
   keep_versions=$(live_versions '')
   newest_previous=''
@@ -460,15 +472,15 @@ prune() {
   for dir in "$1"/*-*; do
     if [ "$dir" = "$2" ] || [ "$dir" = "$newest_previous" ]; then continue; fi
     version=$(version_of_dir "$dir")
-    if [ -n "$version" ] && ! listed "$version" "$keep_versions"; then rm -rf "$dir"; fi
+    if [ -n "$version" ] && ! listed "$version" "$keep_versions" && ! daemon_runs_from "$(canonical "$dir")"; then rm -rf "$dir"; fi
   done
 }
 
-# Whether a live daemon on this machine runs from a program under the canonical folder $1.
+# Whether a live daemon or terminal host on this machine runs from a program under the canonical folder $1.
 daemon_runs_from() {
   [ -n "$1" ] || return 1
-  for pid_file in "$HOME"/.damocles/server/run-*/daemon.pid; do
-    [ -e "$pid_file" ] || continue
+  for pid_file in "$HOME"/.damocles/server/run-*/daemon.pid "$HOME"/.damocles/server/run-*/terminal-hosts/*.json; do
+    is_pid_file "$pid_file" || continue
     pid=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$pid_file")
     if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then continue; fi
     if [ -e "/proc/$pid/exe" ]; then
@@ -534,9 +546,16 @@ read_package() {
 # run, then renamed into place.
 install_version() {
   take_lock
+  # again under the lock: a removal may have written the marker since
+  forget_removal
   if installed "$version_dir"; then
     release_lock
     return 0
+  fi
+  # Remove Damocles server's marker (remove-posix.sh mark_removed): only a connect the user started installs again
+  if [ "$D_AUTOMATIC" = 1 ] && { [ -e "$install/removed" ] || [ -L "$install/removed" ]; }; then
+    release_lock
+    fail serverRemoved
   fi
   step installing
   remove_old_staging "$install"
@@ -586,6 +605,11 @@ install_version() {
   rm -rf "$staging"
   prune "$install" "$version_dir"
   release_lock
+}
+
+# A connect the user started deletes Remove Damocles server's marker in $install, so later automatic connects install again.
+forget_removal() {
+  if [ "$D_AUTOMATIC" != 1 ]; then rm -f "$install/removed" >&2; fi
 }
 
 # BEGIN MAIN
@@ -661,6 +685,7 @@ version_dir="$install/$server_version-$target"
 lock="$install/install.lock"
 takeover="$install/install.lock.takeover"
 
+forget_removal
 if ! installed "$version_dir"; then
   install_version
 fi

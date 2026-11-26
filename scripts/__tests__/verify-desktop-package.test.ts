@@ -105,10 +105,10 @@ afterEach(() => {
 });
 
 describe('WORKERS', () => {
-  it('names every top-level dist script the desktop build writes but Damocles Core, which stays packed, the loopback daemon, which never ships, and a target terminal\'s damocles command, which only a server package carries', async () => {
+  it('names every top-level dist script the desktop build writes but Damocles Core, which stays packed, the loopback daemon and its terminal host, which never ship, and a target terminal\'s damocles command, which only a server package carries', async () => {
     const { DESKTOP_BUNDLES } = await import('../../esbuild.config.ts');
     const outfiles = DESKTOP_BUNDLES.map((bundle) => /^dist\/([^/]+\.js)$/.exec(bundle.outfile)?.[1])
-      .filter((name): name is string => name !== undefined && name !== 'core-host.js' && name !== 'daemon.js' && name !== 'cli-remote.js');
+      .filter((name): name is string => name !== undefined && name !== 'core-host.js' && name !== 'daemon.js' && name !== 'terminal-host.js' && name !== 'cli-remote.js');
     expect(outfiles).toContain('cli.js');
     expect(outfiles).toContain('process-launcher-worker.js');
     expect([...WORKERS].sort()).toEqual(outfiles.sort());
@@ -200,6 +200,12 @@ describe('checkNoDaemon', () => {
     expect(failures(checkNoDaemon([{ path: 'dist/core-host.js', entry: { unpacked: false } }], []))).toEqual([]);
     expect(checkNoDaemon([{ path: 'dist/daemon.js', entry: { unpacked: false } }], [])[0]!.detail).toBe('dist/daemon.js ships in app.asar');
     expect(checkNoDaemon([], ['dist/daemon.js'])[0]!.detail).toBe('dist/daemon.js ships in app.asar.unpacked');
+  });
+
+  it('fails a package that ships the terminal host, which only the loopback daemon starts', () => {
+    expect(checkNoDaemon([{ path: 'dist/terminal-host.js', entry: { unpacked: false } }], [])[0]!.detail).toBe('dist/terminal-host.js ships in app.asar');
+    expect(checkNoDaemon([], ['dist/terminal-host.js'])[0]!.detail).toBe('dist/terminal-host.js ships in app.asar.unpacked');
+    expect(checkNoDaemon([{ path: 'dist/daemon.js', entry: { unpacked: false } }], ['dist/terminal-host.js'])[0]!.detail).toBe('dist/daemon.js ships in app.asar; dist/terminal-host.js ships in app.asar.unpacked');
   });
 });
 
@@ -455,6 +461,14 @@ describe('checkServerManifest', () => {
     expect(checkServerManifest(JSON.stringify({ ...release('3.7.0', 'a'), version: '..' }), '3.7.0', release('3.7.0', 'a'))[0]!.detail).toMatch(/does not parse/);
     expect(checkServerManifest(JSON.stringify(release('3.6.0', 'a')), '3.7.0', release('3.7.0', 'a'))[0]!.detail).toMatch(/it is for 3\.6\.0, the app is 3\.7\.0/);
     expect(checkServerManifest(JSON.stringify(release('3.7.0', 'b')), '3.7.0', release('3.7.0', 'a'))[0]!.detail).toBe(`linux-x64 is not damocles-server-3.7.0-linux-x64.tar.gz with its SHA-256, size and server version 3.7.0+${'a'.repeat(12)}; win32-x64 is not damocles-server-3.7.0-win32-x64.zip with its SHA-256, size and server version 3.7.0+${'a'.repeat(12)}`);
+  });
+
+  it('fails a packed requirement that differs from the source\'s', () => {
+    const requirement = { minimumServerVersion: '3.6.0', graceHours: 72 };
+    expect(failures(checkServerManifest(JSON.stringify({ ...release('3.7.0', 'a'), requirement }), '3.7.0', { ...release('3.7.0', 'a'), requirement }))).toEqual([]);
+    expect(checkServerManifest(JSON.stringify(release('3.7.0', 'a')), '3.7.0', { ...release('3.7.0', 'a'), requirement })[0]!.detail).toBe('it requires nothing, server-requirement.ts servers of 3.6.0 or later within 72 hours');
+    expect(checkServerManifest(JSON.stringify({ ...release('3.7.0', 'a'), requirement: { ...requirement, graceHours: 24 } }), '3.7.0', { ...release('3.7.0', 'a'), requirement })[0]!.detail).toMatch(/within 24 hours, server-requirement\.ts servers of 3\.6\.0 or later within 72 hours/);
+    expect(checkServerManifest(JSON.stringify({ ...release('3.7.0', 'a'), requirement }), '3.7.0', release('3.7.0', 'a'))[0]!.detail).toMatch(/server-requirement\.ts nothing$/);
   });
 
   it('fails an unpublished manifest, whose hosts would never download, and another build\'s server versions', () => {

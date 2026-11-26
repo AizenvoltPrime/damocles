@@ -1743,6 +1743,129 @@ describe('remote terminals across connections', () => {
     h.service.join(id, []);
     expect(h.logs).toContain(`[terminal] not joining terminals to ${id}: it is in the editor`);
   });
+
+  it('shows a terminal not responding while its terminal host does not answer, sends the keys already on their way to the daemon, and runs again once the host answers', async () => {
+    const connection = fakeConnection();
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    const created = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    const other = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    if (!created.ok || !other.ok) throw new Error('no remote terminals');
+    await settle();
+    connection.daemon({ type: 'ready', id: created.id, pid: 5 });
+    connection.daemon({ type: 'ready', id: other.id, pid: 6 });
+    // another connection's backend names no terminal of this one
+    h.service.responding(fakeConnection().workspace.terminals, { id: created.id, hostPid: 41, responding: false });
+    expect(statusOf(h, created.id)).toBe('running');
+    h.service.responding(connection.workspace.terminals, { id: created.id, hostPid: 41, responding: false });
+    expect([statusOf(h, created.id), statusOf(h, other.id)]).toEqual(['notResponding', 'running']);
+    expect(h.service.notResponding('loopback')).toEqual([created.id]);
+    expect(h.service.notResponding('ssh+other')).toEqual([]);
+    // keys the renderer sent before it saw the state: the daemon holds them for the host
+    h.service.input(created.id, 'a');
+    expect(connection.posts.flatMap((request) => (request.type === 'input' ? [request.data] : []))).toEqual(['a']);
+    h.service.responding(connection.workspace.terminals, { id: created.id, hostPid: 41, responding: true });
+    expect(statusOf(h, created.id)).toBe('running');
+    expect(h.service.notResponding('loopback')).toEqual([]);
+  });
+
+  it('lets a dropped connection show reconnecting over not responding, and a resume show not responding again until the host answers', async () => {
+    const connection = fakeConnection();
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    const created = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    if (!created.ok) throw new Error('no remote terminal');
+    await settle();
+    connection.daemon({ type: 'ready', id: created.id, pid: 5 });
+    h.service.responding(connection.workspace.terminals, { id: created.id, hostPid: 41, responding: false });
+    h.service.connectionLost('loopback');
+    expect(statusOf(h, created.id)).toBe('reconnecting');
+    h.service.connectionResumed('loopback');
+    expect(statusOf(h, created.id)).toBe('notResponding');
+    h.service.connectionLost('loopback');
+    // the replay carries the host's answer while the tab still shows reconnecting
+    h.service.responding(connection.workspace.terminals, { id: created.id, hostPid: 41, responding: true });
+    expect(statusOf(h, created.id)).toBe('reconnecting');
+    h.service.connectionResumed('loopback');
+    expect(statusOf(h, created.id)).toBe('running');
+  });
+
+  it('exits a not-responding terminal its host reports ended, and ignores the host\'s state after that', async () => {
+    const connection = fakeConnection();
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    const created = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    if (!created.ok) throw new Error('no remote terminal');
+    await settle();
+    connection.daemon({ type: 'ready', id: created.id, pid: 5 });
+    h.service.responding(connection.workspace.terminals, { id: created.id, hostPid: 41, responding: false });
+    connection.daemon({ type: 'exit', id: created.id, exitCode: 1 });
+    expect(statusOf(h, created.id)).toBe('exited');
+    h.service.responding(connection.workspace.terminals, { id: created.id, hostPid: 41, responding: true });
+    expect(statusOf(h, created.id)).toBe('exited');
+    expect(h.service.notResponding('loopback')).toEqual([]);
+  });
+
+  it('reattaches a terminal whose host the daemon lists as not responding in that state', async () => {
+    let connection = fakeConnection();
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    const created = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    const answering = h.service.create({ profileId: 'pwsh', target: { project: REMOTE.key } }, false);
+    if (!created.ok || !answering.ok) throw new Error('no remote terminals');
+    await settle();
+    const kept = h.remote.at(-1)!;
+    h.service.connectionLost('loopback');
+    connection.close('network');
+    connection = fakeConnection([{ id: created.id, pid: 5, cols: 80, rows: 24, notRespondingHost: 41 }, { id: answering.id, pid: 6, cols: 80, rows: 24 }]);
+    await h.service.reattach(connection.workspace.terminals, 'loopback', kept, []);
+    expect([statusOf(h, created.id), statusOf(h, answering.id)]).toEqual(['notResponding', 'running']);
+    h.service.responding(connection.workspace.terminals, { id: created.id, hostPid: 41, responding: true });
+    expect(statusOf(h, created.id)).toBe('running');
+  });
+
+  it('restores a launch placeholder whose host the daemon never attached as not responding, and lets the other tab\'s screen and keys through while its screen waits', async () => {
+    const [hung, other] = ['term-111111111111111', 'term-222222222222222'];
+    const connection = fakeConnection([{ id: hung, pid: 5, cols: 80, rows: 24, notRespondingHost: 77 }, { id: other, pid: 6, cols: 80, rows: 24 }]);
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    h.service.restore([keptRecord(hung), keptRecord(other)]);
+    expect([statusOf(h, hung), statusOf(h, other)]).toEqual(['reconnecting', 'reconnecting']);
+    await h.service.reattach(connection.workspace.terminals, 'loopback', [keptRecord(hung), keptRecord(other)], []);
+    expect([statusOf(h, hung), statusOf(h, other)]).toEqual(['notResponding', 'running']);
+    expect(h.logs.some((line) => line.includes(`not restoring ${hung}`))).toBe(false);
+    expect(h.remote.at(-1)!.map((record) => record.id).sort()).toEqual([hung, other]);
+    expect(h.service.notResponding('loopback')).toEqual([hung]);
+    expect(connection.posts.flatMap((request) => (request.type === 'serialize' ? [request.id] : []))).toEqual([hung, other]);
+    connection.daemon({ type: 'screen', id: other, data: '$ ', cols: 80, rows: 24, marks: [], sequences: 0 });
+    expect(h.screens.at(-1)).toMatchObject({ id: other, data: '$ ' });
+    h.service.input(other, 'ls');
+    expect(connection.posts.at(-1)).toEqual({ type: 'input', id: other, data: 'ls' });
+    // the host attaches at last: its state clears before the screen it held
+    h.service.responding(connection.workspace.terminals, { id: hung, hostPid: 77, responding: true });
+    expect(statusOf(h, hung)).toBe('running');
+    connection.daemon({ type: 'screen', id: hung, data: 'kept$ ', cols: 80, rows: 24, marks: [], sequences: 0 });
+    expect(h.screens.at(-1)).toMatchObject({ id: hung, data: 'kept$ ' });
+  });
+
+  it('restores terminals the daemon lists running while it waits for their host, shows them not responding once it gives up, and follows the host\'s later attach', async () => {
+    const [held, gone] = ['term-111111111111111', 'term-222222222222222'];
+    const connection = fakeConnection(liveOf(held, gone));
+    const h = harness({ remote: () => connection.workspace });
+    h.projects = [REMOTE];
+    h.service.restore([keptRecord(held), keptRecord(gone)]);
+    await h.service.reattach(connection.workspace.terminals, 'loopback', [keptRecord(held), keptRecord(gone)], []);
+    expect([statusOf(h, held), statusOf(h, gone)]).toEqual(['running', 'running']);
+    for (const id of [held, gone]) h.service.responding(connection.workspace.terminals, { id, hostPid: 77, responding: false });
+    expect([statusOf(h, held), statusOf(h, gone)]).toEqual(['notResponding', 'notResponding']);
+    expect(h.service.notResponding('loopback')).toEqual([held, gone]);
+    // the attach: the host still holds one terminal, and the other ended while it hung
+    for (const id of [held, gone]) h.service.responding(connection.workspace.terminals, { id, hostPid: 77, responding: true });
+    connection.daemon({ type: 'exit', id: gone, exitCode: 1 });
+    expect([statusOf(h, held), statusOf(h, gone)]).toEqual(['running', 'exited']);
+    expect(h.service.notResponding('loopback')).toEqual([]);
+    expect(h.remote.at(-1)!.map((record) => record.id)).toEqual([held]);
+  });
 });
 
 describe('a reload of the shell page with several terminals', () => {

@@ -74,6 +74,7 @@ function connect(host: ReturnType<typeof passwordOnlyHost>, answers: string[], e
     destination: { kind: 'alias', alias: 'prod-1' },
     forwardAgent: false,
     signal: new AbortController().signal,
+    userStarted: () => false,
     hooks: {
       step: () => undefined,
       progress: () => undefined,
@@ -93,7 +94,7 @@ function connect(host: ReturnType<typeof passwordOnlyHost>, answers: string[], e
     log: () => undefined,
     ...extra,
   } as unknown as SshTransportOptions;
-  const done = startSshTransport(options, { resolveSsh: async () => 'C:\\Windows\\System32\\OpenSSH\\ssh.exe', launcher: () => host.launcher, run, env: {}, userInfo: () => os.userInfo() });
+  const done = startSshTransport(options, { resolveSsh: async () => 'C:\\Windows\\System32\\OpenSSH\\ssh.exe', launcher: () => host.launcher, run, env: {}, userInfo: () => os.userInfo(), agentAnswers: async () => true });
   return { asked, done };
 }
 

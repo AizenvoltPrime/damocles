@@ -124,6 +124,7 @@ describe.skipIf(!runnable)('startSshTransport against a Docker sshd (needs Docke
     destination: { kind: 'alias', alias: 'fixture' },
     forwardAgent: false,
     signal: new AbortController().signal,
+    userStarted: () => false,
     hooks,
     savePlatform: vi.fn(async () => undefined),
     installFolderSettled: vi.fn(async () => undefined),
@@ -177,7 +178,7 @@ describe.skipIf(!runnable)('startSshTransport against a Docker sshd (needs Docke
         },
       };
     };
-    const deps: SshTransportDeps = { resolveSsh: async () => ssh, launcher, run: runSsh, env: process.env, userInfo: () => os.userInfo() };
+    const deps: SshTransportDeps = { resolveSsh: async () => ssh, launcher, run: runSsh, env: process.env, userInfo: () => os.userInfo(), agentAnswers: async () => true };
     const attempt = options({ step: () => undefined, progress: () => undefined, prompt, notice: () => undefined }, { cachedPlatform: { os: 'linux' } });
     const failure = await startSshTransport(attempt, deps).then(() => undefined, (err: unknown) => err as SshConnectError);
     expect(failure?.params).toEqual({ reason: 'noPackage', target: 'alpine-x64' });

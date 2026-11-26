@@ -3,7 +3,7 @@ import type { ChatMessage } from '@shared/types/session';
 import type { ContentBlock } from '@shared/types/content';
 import { useStreamingStore } from '@/stores/useStreamingStore';
 import { i18n } from '@/i18n';
-import { clockFormatter } from '@/utils/clock';
+import { clockFormatter } from '@shared/clock';
 
 export interface EnrichedPrompt {
   messageId: string;

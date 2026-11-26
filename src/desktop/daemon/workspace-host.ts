@@ -12,10 +12,10 @@ import type { HostLinkRefusal, LinkRule } from '../local-services/confine';
 import type { DeleteResult, EntryIdentity, EntryResult, LocalFileSystem, WorkspaceFileSystem } from '../workspace/file-system';
 import type { MoveResult, ReadRangeResult, ReadResult, TransferEntry, TransferResult } from '../workspace/transfer-ops';
 import type { Formatter } from '../workspace/format/formatter';
-import { CLIENT_TO_WORKSPACE, WORKSPACE_TO_CLIENT, type ClientToWorkspace, type WalkPage, type WireConfinedEntry, type WireReadRangeResult, type WireReadResult, type WireIdentity, type WireTransferEntry, type WorkspaceToClient } from '../workspace/messages';
+import { CLIENT_TO_WORKSPACE, WORKSPACE_TO_CLIENT, type ClientToWorkspace, type TerminalResponding, type WalkPage, type WireConfinedEntry, type WireReadRangeResult, type WireReadResult, type WireIdentity, type WireTransferEntry, type WorkspaceToClient } from '../workspace/messages';
 import type { QuickOpenListing } from '../workspace/quick-open-listing';
 import type { SearchRunner } from '../workspace/search/search-runner';
-import type { HostTerminalBackend } from '../workspace/terminal/terminal-backend';
+import type { DaemonTerminalBackend } from '../workspace/terminal/terminal-backend';
 import type { HostTreeListing } from '../workspace/tree-listing';
 import type { CliServer } from './cli-server';
 import type { HubClient, TerminalHub } from './terminal-hub';
@@ -27,8 +27,8 @@ export interface WorkspaceModules {
   readonly search: SearchRunner;
   readonly quickOpen: QuickOpenListing;
   readonly format: Formatter;
-  // detection, environment, injection and links; its own pty host is never started, the hub's is
-  readonly terminals: Omit<HostTerminalBackend, 'startHost' | 'list'>;
+  // detection, environment, injection and links
+  readonly terminals: DaemonTerminalBackend;
   readonly hub: TerminalHub;
   // the terminals' damocles command sockets, which relay to the connection that most recently attached a terminal's view
   readonly cli: Pick<CliServer, 'connected'>;
@@ -48,6 +48,9 @@ export interface WorkspaceHost {
   // stream the client opened on this connection, once; lost: the connection dropped and waits inside its grace;
   // clientFeatures: the FEATURES of the connection's latest control.attachCore, none before it
   serve(connectionId: string, clientId: string, transport: CoreTransport, onViolation: (reason: string) => void, claimStream: (id: number) => StreamChannel | undefined, lost: () => boolean, clientFeatures: () => ReadonlySet<string>): Disposable;
+  // the connection's control.attachCore landed: its features may now admit what was withheld, so it gets each viewed
+  // terminal's responding state
+  attached(connectionId: string): void;
 }
 
 // walks one connection holds open: each is a client's transfer, which ends or returns its walk
@@ -56,6 +59,9 @@ export const MAX_WALKS = 64;
 // a client that lists it parses sessionFile as an entry's or a transfer's reason, and notOwned as sessionFiles.write's answer
 // (core-routes.ts)
 export const SESSION_FILE_REFUSAL_FEATURE = 'files.sessionFileRefusal';
+
+// a client that lists it parses terminals.responding; one that does not would end the connection on it
+export const NOT_RESPONDING_FEATURE = 'terminals.notResponding';
 
 // sessionFile as a client without SESSION_FILE_REFUSAL_FEATURE reads it: an existing reason with the refusal's words
 const SESSION_FILE_FAILED = { ok: false, reason: 'failed', message: englishText(l('Chat session files are kept there, and only Damocles changes them.')) } as const;
@@ -72,8 +78,11 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
   // each connection's format.retain; the formatter keeps the union
   const retained = new Map<string, readonly string[]>();
   const retain = (): void => modules.format.retain([...new Set([...retained.values()].flat())]);
+  // each served connection's resend of its viewed terminals' responding state
+  const resends = new Map<string, () => void>();
 
   return {
+    attached: (connectionId) => resends.get(connectionId)?.(),
     serve(connectionId, clientId, transport, onViolation, claimStream, lost, clientFeatures) {
       const endpoint = createEndpoint<WorkspaceToClient, ClientToWorkspace>({
         transport,
@@ -117,7 +126,6 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
       const client: HubClient = {
         id: connectionId,
         message: (message) => endpoint.emit('terminals.message', { message }),
-        hostExit: (end) => endpoint.emit('terminals.hostExit', end),
       };
 
       endpoint.serve('files.confineExisting', ({ project, relativePath, links, spell }) => files.confineExisting(project, relativePath, ruleOf(links), spell ? { spell } : {}));
@@ -266,11 +274,19 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
       endpoint.serve('terminals.injection', ({ request }) => terminals.injection(request));
       endpoint.serve('terminals.linkKind', ({ project, relativePath, links }) => terminals.under(ruleOf(links)).linkKind(project, relativePath));
       endpoint.serve('terminals.list', () => hub.list());
+      endpoint.serve('terminals.endHost', async ({ hostPid }) => ({ ended: await hub.endHost(hostPid) }));
       endpoint.serve('terminals.windowsBuild', () => terminals.windowsBuild());
+      const responding = (change: TerminalResponding): void => {
+        if (clientFeatures().has(NOT_RESPONDING_FEATURE)) endpoint.emit('terminals.responding', change);
+      };
+      resends.set(connectionId, () => hub.respondingOf(client).forEach(responding));
       const subscriptions = [
         modules.cli.connected(connectionId, { clientId, lost, relay: (relay) => endpoint.request('cli.request', relay) }),
         endpoint.onEvent('terminals.post', ({ request, projectKey }) => hub.post(client, request, projectKey)),
         endpoint.onEvent('terminals.detach', () => hub.detach(client)),
+        hub.onResponding((viewer, change) => {
+          if (viewer === client) responding(change);
+        }),
         // every client hears it: the watch is shared, and each one names its own project from the folder
         modules.watchLimits.onReached((root) => {
           void modules.watchLimits.limit().then((limit) => endpoint.emit('files.watchLimit', { root, limit }));
@@ -279,6 +295,7 @@ export function createWorkspaceHost(modules: WorkspaceModules, log: (line: strin
 
       return {
         dispose: () => {
+          resends.delete(connectionId);
           subscriptions.forEach((subscription) => subscription.dispose());
           endpoint.close('the connection closed');
           for (const watch of watches.values()) watch.dispose();

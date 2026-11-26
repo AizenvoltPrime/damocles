@@ -3583,6 +3583,9 @@
   "remote": {
     "offline": "Το {host} είναι εκτός σύνδεσης",
     "offlineNote": "Αυτή η συνομιλία είναι μόνο για ανάγνωση μέχρι να επανασυνδεθεί το {host}. Η καταγραφή της είναι το αντίγραφο που κρατά αυτός ο υπολογιστής.",
+    "outdatedTitle": "Το {host} τρέχει νεότερο Damocles",
+    "outdatedFloorTitle": "Το {host} χρειάζεται νεότερο Damocles",
+    "outdatedNote": "Αυτή η συνομιλία είναι μόνο για ανάγνωση μέχρι να ενημερωθεί αυτή η εφαρμογή. Η καταγραφή της είναι το αντίγραφο που κρατά αυτός ο υπολογιστής.",
     "signIn": "Το {host} περιμένει να συνδεθείτε",
     "reconnect": "Επανασύνδεση",
     "signInAction": "Σύνδεση στο {host}",
@@ -3594,6 +3597,9 @@
     "showLog": "Εμφάνιση αρχείου καταγραφής",
     "editHost": "Επεξεργασία απομακρυσμένου υπολογιστή",
     "reconnected": "Επανασυνδέθηκε με το {host}",
+    "removedBy": "Ο διακομιστής Damocles στο {host} αφαιρέθηκε από τη συσκευή {device}. Συνδεθείτε για να εγκατασταθεί ξανά.",
+    "removedFound": "Ο διακομιστής Damocles αφαιρέθηκε από το {host}. Συνδεθείτε για να εγκατασταθεί ξανά.",
+    "connect": "Σύνδεση",
     "announce": {
       "reconnecting": "Επανασύνδεση με το {host}",
       "failed": "Δεν ήταν δυνατή η επανασύνδεση με το {host}"
@@ -3617,10 +3623,34 @@
     "stop": "Διακοπή"
   },
   "hostUpdate": {
-    "running": "Στο {host} τρέχει {count} agent στο Damocles {version} | Στο {host} τρέχουν {count} agents στο Damocles {version}",
-    "waiting": "Αναμονή να ολοκληρωθούν οι agents στο {host}",
+    "running": "Στο {host} τρέχει {count} agent στο Damocles {from}. Το Damocles {to} είναι έτοιμο. | Στο {host} τρέχουν {count} agents στο Damocles {from}. Το Damocles {to} είναι έτοιμο.",
+    "runningTerminals": "Στο {host} τρέχει {count} τερματικό στο Damocles {from}. Το Damocles {to} είναι έτοιμο. | Στο {host} τρέχουν {count} τερματικά στο Damocles {from}. Το Damocles {to} είναι έτοιμο.",
+    "waiting": "Το {host} μεταβαίνει στο Damocles {to} όταν ολοκληρωθεί {count} agent. | Το {host} μεταβαίνει στο Damocles {to} όταν ολοκληρωθούν {count} agents.",
+    "waitingTerminals": "Το {host} μεταβαίνει στο Damocles {to} όταν κλείσει {count} τερματικό. | Το {host} μεταβαίνει στο Damocles {to} όταν κλείσουν {count} τερματικά.",
+    "waitingDevices": "Το {host} μεταβαίνει στο Damocles {to} όταν αποσυνδεθεί {count} ακόμη συσκευή. | Το {host} μεταβαίνει στο Damocles {to} όταν αποσυνδεθούν {count} ακόμη συσκευές.",
+    "waitingFree": "Το {host} μεταβαίνει στο Damocles {to} όταν ελευθερωθεί.",
+    "switching": "Μετάβαση του {host} στο Damocles {to}.",
+    "appOutdated": "Το {host} τρέχει Damocles {from}. Ενημερώστε αυτή την εφαρμογή για να το χρησιμοποιήσετε.",
+    "appOutdatedFloor": "Το {host} χρειάζεται Damocles {from} ή νεότερο. Ενημερώστε αυτή την εφαρμογή για να το χρησιμοποιήσετε.",
+    "waitingDrain": "Το {host} μεταβαίνει στο Damocles {to} στις {time}. Τότε επανασυνδέεται {count} ακόμη συσκευή. | Το {host} μεταβαίνει στο Damocles {to} στις {time}. Τότε επανασυνδέονται {count} ακόμη συσκευές.",
+    "required": "Το {host} πρέπει να μεταβεί στο Damocles {to} {by}{left}.",
+    "byTime": "έως τις {time}",
+    "byDay": "έως {day} στις {time}",
+    "left": ", {in}",
+    "requiredAgents": "Τρέχει ακόμη {count} agent. | Τρέχουν ακόμη {count} agents.",
+    "countdown": "Το {host} μεταβαίνει στο Damocles {to} σε {clock}.",
+    "countdownAgents": "Θα σταματήσει {count} agent. | Θα σταματήσουν {count} agents.",
+    "inHours": "σε {count} ώρα | σε {count} ώρες",
+    "inMinutes": "σε {count} λεπτό | σε {count} λεπτά",
+    "minutes": "λιγότερο από ένα λεπτό | {count} λεπτό | {count} λεπτά",
+    "terminalsClose": "Το τερματικό του κλείνει με τη μετάβαση. | Τα {count} τερματικά του κλείνουν με τη μετάβαση.",
+    "waitingCliWaits": "Το {host} μεταβαίνει στο Damocles {to} όταν κλείσετε το αρχείο που περιμένει ένα τερματικό. | Το {host} μεταβαίνει στο Damocles {to} όταν κλείσετε τα αρχεία που περιμένουν {count} τερματικά.",
+    "cliWaits": "{count} τερματικό περιμένει αρχείο. | {count} τερματικά περιμένουν αρχεία.",
+    "countdownCliWaits": "Θα σταματήσει να περιμένει το αρχείο του {count} τερματικό. | Θα σταματήσουν να περιμένουν τα αρχεία τους {count} τερματικά.",
     "switchWhenIdle": "Μετάβαση όταν ολοκληρωθούν",
-    "switchNow": "Μετάβαση τώρα"
+    "switchWhenClosed": "Μετάβαση όταν κλείσουν",
+    "switchNow": "Μετάβαση τώρα",
+    "checkUpdates": "Έλεγχος για ενημερώσεις"
   },
   "design": {
     "markup": {

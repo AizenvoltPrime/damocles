@@ -30,6 +30,8 @@ export interface WslTransportOptions {
   readonly previousInstallFolder?: string | null;
   // aborting before the connect resolves kills wsl.exe and rejects with cancelled
   readonly signal: AbortSignal;
+  // the user started or joined the attempt (stage1.ts StageParameters.userStarted), read as stage 1 is built
+  readonly userStarted: () => boolean;
   // a wsl attempt reports connecting, then stage 1's steps; it never prompts
   readonly hooks: Pick<SshAttemptHooks, 'step' | 'progress' | 'notice'>;
   installFolderSettled(): Promise<void>;
@@ -101,6 +103,7 @@ export async function startWslTransport(options: WslTransportOptions, deps: WslT
   if (!isWslMappableFolder(cacheFolder)) log(`the package cache ${cacheFolder} is no drive path wslpath maps; the stage downloads or uploads the package`);
   const stage1 = buildPosixStage1({
     manifest: options.manifest,
+    userStarted: options.userStarted(),
     ...(options.releasesUrl !== undefined ? { releasesUrl: options.releasesUrl } : {}),
     ...(options.installFolder !== undefined ? { installFolder: options.installFolder } : {}),
     ...(options.previousInstallFolder !== undefined ? { previousInstallFolder: options.previousInstallFolder } : {}),

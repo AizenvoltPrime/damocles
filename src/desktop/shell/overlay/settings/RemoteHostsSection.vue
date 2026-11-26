@@ -8,7 +8,7 @@ import GitlabMark from '@/components/icons/GitlabMark.vue';
 import type { HostDefaultsView } from '@shared/forge/bindings';
 import SettingsRow from '@/components/settings/SettingsRow.vue';
 import SettingButton from '@/components/settings/controls/SettingButton.vue';
-import SettingInput from '@/components/settings/controls/SettingInput.vue';
+import SettingInput, { type InputParse } from '@/components/settings/controls/SettingInput.vue';
 import SettingSelect, { type SelectOption } from '@/components/settings/controls/SettingSelect.vue';
 import SettingSwitch from '@/components/settings/controls/SettingSwitch.vue';
 import { ColorPicker } from '@/components/ui/color-picker';
@@ -16,7 +16,7 @@ import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { canonicalHexColor, hexColorParts, type HexColor } from '@shared/hex-color';
 import { HOST_TONES, canonicalHostColor, hostColorLook, isHostTone, type CustomHostColor, type HostTone } from '@shared/host-colors';
 import { PERMISSION_MODES, type PermissionMode } from '@shared/types/settings';
-import { DESKTOP_CONFIGURATION, REMOTE_TERMINAL_IDLE_DAYS_SETTING } from '../../../local-services/desktop-configuration';
+import { DESKTOP_CONFIGURATION, REMOTE_SSH_PATH_SETTING, REMOTE_TERMINAL_IDLE_DAYS_SETTING } from '../../../local-services/desktop-configuration';
 import type { AlwaysForgeAccount, HostSettingChange, NameCheck, RemoteHostEntry } from '../../../preload/overlay-channels';
 import type { ShellPlatform } from '../../../preload/shell-channels';
 import { THEME_PALETTES } from '../../../theme-palettes';
@@ -130,6 +130,12 @@ function failedOn(entry: RemoteHostEntry, key: HostSettingChange['key']): boolea
 
 const idleDays = computed(() => String(prefs.values.value[REMOTE_TERMINAL_IDLE_DAYS_SETTING] ?? DESKTOP_CONFIGURATION[REMOTE_TERMINAL_IDLE_DAYS_SETTING]!.default));
 const parseIdleDays = integerSetting(REMOTE_TERMINAL_IDLE_DAYS_SETTING, t);
+const sshPath = computed(() => {
+  const value = prefs.values.value[REMOTE_SSH_PATH_SETTING];
+  return typeof value === 'string' ? value : '';
+});
+// empty stores '' for the default client; main checks that a path is absolute and names a file
+const parseSshPath: InputParse<string> = (raw) => ({ ok: true, value: raw.trim() });
 
 // The host picker and the swatches are radio groups of buttons with a roving tab stop; no shadcn part draws either.
 function moveRadio(event: KeyboardEvent, count: number, index: number, pick: (next: number) => void): void {
@@ -435,6 +441,16 @@ watch(() => host.value?.hostId, () => {
       />
       <span class="text-12 text-(--d-faint-text)">{{ t('remoteHosts.days') }}</span>
     </span>
+  </SettingsRow>
+  <SettingsRow :id="REMOTE_SSH_PATH_SETTING">
+    <SettingInput
+      :model-value="sshPath"
+      :parse="parseSshPath"
+      :label="t('settingsHost.rows.remoteSshPath.label')"
+      :placeholder="t('remoteHosts.sshPathDefault')"
+      wide
+      @commit="(value: string) => prefs.set(REMOTE_SSH_PATH_SETTING, value)"
+    />
   </SettingsRow>
   <SettingsRow
     id="remote-hosts"

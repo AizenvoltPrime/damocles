@@ -86,7 +86,8 @@ async function remove(options: RemoveServerOptions | null): Promise<void> {
   await runRemoval(() => props.api.removeServer(props.hostId, options));
 }
 
-// Try again after daemonRunning: main runs the same removal stage over ssh, with no connection to the host needed.
+// Try again after daemonRunning or terminalHostRunning: main runs the same removal stage over ssh, with no connection to the
+// host needed.
 async function retryRemoval(): Promise<void> {
   failedCall.value = undefined;
   await runRemoval(() => props.api.retryRemoval(props.hostId));
@@ -116,14 +117,25 @@ function chooseForget(choice: 'cancel' | 'removeFirst' | 'forget'): void {
   else if (choice === 'forget') void forget();
 }
 
+// A command that ends the named processes on the host. PowerShell's kill takes comma-separated IDs, so a Windows host gets
+// taskkill, which runs the same in cmd and PowerShell; /F ends a process with no window.
+function endCommand(os: string | undefined, pids: readonly string[]): string {
+  return os === 'win32' ? `taskkill /F ${pids.map((pid) => `/PID ${pid}`).join(' ')}` : `kill ${pids.join(' ')}`;
+}
+
 const removedText = computed(() => {
   const result = removed.value;
   if (!result) return undefined;
   if (!result.ok && result.code === 'stageFailed') return t(`remote.removeServer.stageFailed.${String(result.params['code'])}`, { name: props.hostName, ...result.params });
+  if (!result.ok && result.code === 'terminalHostRunning') {
+    const pids = String(result.params['pids']).split(' ');
+    const key = result.params['os'] === 'win32' ? 'terminalHostRunningWindows' : 'terminalHostRunning';
+    return t(`remote.removeServer.failure.${key}`, pids.length, { named: { name: props.hostName, pids: pids.join(' '), command: endCommand(result.params['os'], pids) } });
+  }
   if (!result.ok) return t(`remote.removeServer.failure.${result.code}`, { name: props.hostName, ...result.params });
   return [
     t('remote.removeServer.done', { name: props.hostName }),
-    ...result.notices.map((notice) => t(`remote.removeServer.notice.${notice.code}`, { name: props.hostName, ...notice.params })),
+    ...result.notices.map((notice) => t(`remote.removeServer.notice.${notice.code === 'floorKept' ? `floorKept.${notice.params['files']}` : notice.code}`, { name: props.hostName, ...notice.params })),
   ].join(' ');
 });
 </script>
@@ -208,7 +220,7 @@ const removedText = computed(() => {
         {{ removedText }}
       </p>
       <Button
-        v-if="removed.code === 'daemonRunning'"
+        v-if="removed.code === 'daemonRunning' || removed.code === 'terminalHostRunning'"
         type="button"
         variant="outline"
         size="sm"

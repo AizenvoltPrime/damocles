@@ -156,7 +156,7 @@ describe('exitControlMaster', () => {
 describe.skipIf(process.platform === 'win32')('the private ControlPath folder on a POSIX client', () => {
   it('makes a folder this user owns 0700, and refuses a link', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'cm-'));
-    const { makePrivateFolder } = systemControlMasterDeps(path.join(root, 'cm'), () => undefined);
+    const { makePrivateFolder } = systemControlMasterDeps(path.join(root, 'cm'), () => ({}), () => undefined);
     mkdirSync(path.join(root, 'cm'), { mode: 0o755 });
     expect(await makePrivateFolder(path.join(root, 'cm'))).toBe(true);
     expect(statSync(path.join(root, 'cm')).mode & 0o777).toBe(0o700);

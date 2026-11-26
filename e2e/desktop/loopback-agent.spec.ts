@@ -10,7 +10,7 @@ import { activePageTab, browserTabs, chromeEnv, PAGE_TIMEOUT, systemChrome } fro
 import { followEditorLink, openInEditor } from './support/editor';
 import { chatRow, projectRow } from './support/shell-ui';
 import { attachDaemonLogs, credentialRequests, filesHolding, mergeJson, newLoopbackChat, sendPrompt, servedProviders, startLoopbackStub, systemPrompts, targetAgentDir, targetDamoclesDir, witnessCommand, witnessed, WITNESS } from './support/loopback-agent';
-import { cleanUp, daemonPid, endLeftoverDaemon, filesUnder, listRuns, LOCAL_DAEMON, loopbackHome, LOOPBACK_ENV, LOOPBACK_TAG, processTree, REVIEW_SHOTS, shutdownDaemon } from './support/loopback';
+import { cleanUp, daemonPid, endLeftoverDaemon, filesUnder, listRuns, LOCAL_DAEMON, loopbackHome, LOOPBACK_ENV, LOOPBACK_TAG, processTree, REVIEW_SHOTS, shutdownDaemon, terminalHostPids } from './support/loopback';
 import { chatRequests, type OpenAIStub, type StubReply } from './support/openai-stub';
 import { readyOverlay } from './support/overlay';
 import { openProjectChat, setReducedMotion, showShellTheme, THEMES } from './support/screenshots';
@@ -447,7 +447,7 @@ test('a trusted loopback project runs its hooks and its .mcp.json stdio server o
   }
 });
 
-test('a worktree chat on a loopback project is created, set up in a Setup terminal on the daemon\'s pty host, and applied to the project folder', { tag: LOOPBACK_TAG }, async ({ foreground: _foreground, home, launch }, testInfo) => {
+test('a worktree chat on a loopback project is created, set up in a Setup terminal on the daemon\'s terminal host, and applied to the project folder', { tag: LOOPBACK_TAG }, async ({ foreground: _foreground, home, launch }, testInfo) => {
   test.setTimeout(360_000);
   const stub = await startLoopbackStub(home);
   mergeJson(path.join(home.damoclesDir, 'settings.json'), { 'damocles.desktop.terminal.confirmOnKill': 'never' });
@@ -469,10 +469,13 @@ test('a worktree chat on a loopback project is created, set up in a Setup termin
     await expect(setupReview(overlay)).toBeVisible({ timeout: 60_000 });
     await setupReview(overlay).getByTestId('worktree-dialog-run').click();
 
-    // Setup runs in a terminal of the daemon's pty host: its process is under the daemon, and control.listRuns lists the terminal.
+    // Setup runs in a terminal of the daemon's terminal host: its process is under that host, and control.listRuns lists the
+    // terminal.
     await expect.poll(() => witnessed(setupWitness).length, { timeout: 60_000 }).toBe(1);
     const [setupRun] = witnessed(setupWitness);
-    expect(await processTree(await daemonPid(home))).toContain(setupRun!.pid);
+    const hosts = await terminalHostPids(loopbackHome(home));
+    expect(hosts).toHaveLength(1);
+    expect(await processTree(hosts[0]!)).toContain(setupRun!.pid);
     expect(await processTree((await corePid(app))!)).not.toContain(setupRun!.pid);
     expect(path.resolve(setupRun!.home)).toBe(path.resolve(loopbackHome(home)));
     const terminals = (await listRuns(app)).runs.filter((run) => run.kind === 'terminal');

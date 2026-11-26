@@ -1,13 +1,15 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication } from '@playwright/test';
+import { writeUserSettings } from '../desktop/support/hermetic';
 import { filesUnder } from '../desktop/support/loopback';
 import { sendPrompt } from '../desktop/support/loopback-agent';
 import { shellPage } from '../desktop/support/shell';
 import { listChats } from '../desktop/support/shell-ui';
+import { activeTerminal, openTerminal, readFromTerminal, runInTerminal, terminalText, waitForOutputLine } from '../desktop/support/terminal';
 import { awaitTurnEnd } from '../desktop/support/ui';
 import { shutdownHostDaemon } from './support/daemon-teardown';
-import { daemonVersions, installOlderServer, versionFolder } from './support/older-server';
+import { daemonVersions, installOlderServer, packageHolds, terminalHostVersions, versionFolder } from './support/older-server';
 import { LINUX_TARGET, serverVersionOf } from './support/release-mirror';
 import { addHost, control, expect, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test } from './support/remote';
 import { allowSleep, chatShowing, closeRemoteDialog, exited, requestQuit, sleeping, SLEEP, targetSessions } from './support/remote-runs';
@@ -18,6 +20,7 @@ import { newRemoteChat, startTargetStub } from './support/target-agent';
 const REFERENCE = process.env['DAMOCLES_E2E_REFERENCE_PACKAGE'];
 const APP = '/srv/app';
 const TURN_STOPPED = '"customType":"damocles-turn-stopped"';
+const REFERENCE_TERMINAL_HOST = 'dist/terminal-host.js';
 
 function referencePackage(): string {
   if (REFERENCE === undefined || !fs.existsSync(REFERENCE)) {
@@ -105,6 +108,42 @@ test('this tree\'s app attaches to the reference server package\'s busy daemon, 
   } finally {
     await stub.close();
   }
+});
+
+test('this tree\'s daemon adopts the reference package\'s terminal host: the reference\'s shell comes back in its tab with its screen and the same pid, and takes input', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
+  test.setTimeout(600_000);
+  // A reference daemon that forks a pty host has no terminal host to adopt (docs/release.md "Remote end-to-end suites").
+  test.skip(!packageHolds(referencePackage(), REFERENCE_TERMINAL_HOST), `the reference package holds no ${REFERENCE_TERMINAL_HOST}`);
+  writeUserSettings(home, { 'damocles.desktop.terminal.defaultProfile': 'bash', 'damocles.desktop.terminal.confirmOnKill': 'never' });
+  const fixture = await sshd('prod-1');
+  const reference = await installOlderServer(fixture, referencePackage());
+  const env = remoteEnv(ssh, mirror);
+  // The reference's own app version starts its daemon, whose terminal host holds one shell when the app quits.
+  const old = await launch({ env: { ...env, DAMOCLES_E2E_APP_VERSION: reference } });
+  await connect(old.app);
+  const shell = await openTerminal(old.app);
+  const id = (await activeTerminal(shell).getAttribute('data-terminal-id'))!;
+  await runInTerminal(shell, "echo shell''-pid-$$");
+  const pid = await readFromTerminal(shell, /^shell-pid-(\d+)$/m);
+  expect(await terminalHostVersions(fixture)).toEqual([reference]);
+  await old.close();
+  expect(await daemonVersions(fixture)).toEqual([reference]);
+
+  // This tree's app hands the reference daemon over, since no agent runs on it, and its own daemon adopts the host through
+  // the frozen terminal host contract.
+  const { app } = await launch({ env });
+  const hostId = await hostIdOf(app);
+  await expect.poll(() => daemonVersions(fixture), { timeout: 120_000 }).toEqual([serverVersionOf(LINUX_TARGET)]);
+  await remoteProjectKey(app, { authorityKey: `ssh+${hostId}` }, APP);
+  expect(await terminalHostVersions(fixture)).toEqual([reference]);
+  expect(((await control(app, hostId, 'listRuns')) as { runs: Array<{ kind: string; id: string }> }).runs.filter((run) => run.kind === 'terminal').map((run) => run.id)).toEqual([id]);
+  const adopted = await shellPage(app);
+  await expect(activeTerminal(adopted)).toHaveAttribute('data-terminal-id', id, { timeout: 60_000 });
+  await expect(activeTerminal(adopted)).toHaveAttribute('data-status', 'running', { timeout: 60_000 });
+  await expect.poll(async () => (await terminalText(adopted)).split('\n').filter((row) => row === `shell-pid-${pid}`), { timeout: 30_000 }).toHaveLength(1);
+  await runInTerminal(adopted, "echo again''-$$");
+  await waitForOutputLine(adopted, `again-${pid}`);
+  await shutdownHostDaemon(app, hostId, fixture);
 });
 
 test('with a run on the reference daemon, this tree\'s app streams it, and once it finishes the reference exits and the next connection runs this app\'s version', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {

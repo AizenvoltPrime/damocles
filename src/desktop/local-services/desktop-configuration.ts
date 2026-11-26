@@ -54,6 +54,8 @@ export const REMOTE_CLOSE_WITH_RUNNING_AGENTS_SETTING = 'damocles.desktop.remote
 export const REMOTE_AUTO_FORWARD_PORTS_SETTING = 'damocles.desktop.remote.autoForwardPorts';
 export const REMOTE_AUTO_FORWARD_PORTS_FALLBACK_SETTING = 'damocles.desktop.remote.autoForwardPortsFallback';
 export const REMOTE_CONTAINER_ENGINE_SETTING = 'damocles.desktop.remote.containerEngine';
+// Written only as '' or an absolute path to a file: main's writeDesktopSetting checks it with sshClientPathRefusal.
+export const REMOTE_SSH_PATH_SETTING = 'damocles.desktop.remote.sshPath';
 // equals MCP_REMOTE_AVAILABLE_SETTING in shared/types/mcp.ts, which core reads (this file takes no imports)
 export const MCP_REMOTE_AVAILABLE_SETTING = 'damocles.desktop.mcp.remoteAvailable';
 // equals FORGE_SHOW_AVATARS_SETTING in core/forge/types.ts, which core reads (this file takes no imports)
@@ -543,6 +545,12 @@ export const DESKTOP_CONFIGURATION: Readonly<Record<string, DesktopSettingProper
     default: 'docker',
     scope: 'application',
     description: 'The container engine a new dev container or attached container uses, on this computer or on the SSH host it runs on. A saved container keeps the engine it was made with.',
+  },
+  [REMOTE_SSH_PATH_SETTING]: {
+    type: 'string',
+    default: '',
+    scope: 'application',
+    description: "The SSH client Damocles runs to reach SSH hosts, as an absolute path to its ssh program; ssh-keygen and ssh-add come from the same folder. Empty: on Windows the first OpenSSH for Windows client on PATH or in System32\\OpenSSH, since an MSYS or Cygwin ssh such as Git Bash's cannot use the Windows ssh-agent; elsewhere the first ssh on PATH.",
   },
   [REMOTE_CLOSE_WITH_RUNNING_AGENTS_SETTING]: {
     type: 'string',

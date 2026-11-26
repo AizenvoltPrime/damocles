@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { clockFormatter, commitTime, formatClock, formatDateTime, formatResetTime } from '../clock';
+import { clockFormatter } from '@shared/clock';
+import { commitTime, formatClock, formatDateTime, formatResetTime } from '../clock';
 
 const AFTERNOON = new Date(2026, 4, 12, 14, 5, 9);
 const PAST_MIDNIGHT = new Date(2026, 4, 12, 0, 5, 9);
@@ -60,5 +61,10 @@ describe('reset time', () => {
 
   it('adds the date a week or more out, where a weekday would repeat', () => {
     expect(formatResetTime(new Date(2026, 0, 7, 9, 0).getTime(), NOW, 'en-US')).toEqual({ day: 'Jan 7', time: '09:00' });
+  });
+
+  it('shortens the weekday where room is tight', () => {
+    expect(formatResetTime(new Date(2026, 0, 3, 5, 0).getTime(), NOW, 'en-US', { weekday: 'short' })).toEqual({ day: 'Sat', time: '05:00' });
+    expect(formatResetTime(new Date(2026, 0, 7, 9, 0).getTime(), NOW, 'en-US', { weekday: 'short' })).toEqual({ day: 'Jan 7', time: '09:00' });
   });
 });

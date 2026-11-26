@@ -12,6 +12,7 @@ import { locateSettingsFile, saveSettingsFileText } from '../../core/chat-panel/
 import { installPlatform } from '../../core/platform-host';
 import { l, verbatim } from '../../core/l10n';
 import type { ChatActivity } from '../../core/pi-session/session-state';
+import { clockFormatter } from '../../shared/clock';
 import { LANGUAGE_PREFERENCE_KEY } from '../../shared/language-preference';
 import type { CatalogResult } from '../../core/chat-panel/session-catalog';
 import { movePreferApiKeyFlagsToSettings, runLegacySettingsMigrations } from '../../core/config/legacy-settings-migrations';
@@ -20,7 +21,7 @@ import { deleteRetiredSecrets } from '../../core/config/retired-secrets';
 import { providerKeyStored } from '../../core/pi-session/custom-providers';
 import { PROVIDER_SECRET_KEYS } from '../../core/pi-session/explore-providers';
 import { DAMOCLES_DESIGNS_DIR, DAMOCLES_HOME_DIR, FOLDER_IDENTITIES_PATH, THEMES_DIR, WORKTREES_ROOT_DIR } from '../../core/paths';
-import { resolveSshExecutable, resolveSshKeygenExecutable } from '../../core/system-tools';
+import { resolveSshExecutable, resolveSshKeygenExecutable, type SshClientChoice } from '../../core/system-tools';
 import { folderKey, folderKeyOn } from '../../core/workspace-folders/folder-key';
 import { chatRecordHolding, folderContains, liveWorkingFolders } from '../../core/worktrees/records';
 import { homeDirectory } from '../../core/workspace-folders/folder-registry';
@@ -33,7 +34,7 @@ import type { ChatPermissions, CoreRequests, PanelCreate } from '../core-protoco
 import type { RelayView } from './core-services/host-services';
 import type { StoredSession } from '../../shared/types/session';
 import type { ChatAttachmentInput } from '../../shared/types/chat-attachment';
-import { MAX_OVERLAY_TAGS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRect, type OverlayRequest, type OverlaySettingsAwayState, type OverlayState, type OverlayThemesResult, type ThemeEditorResult } from '../preload/overlay-channels';
+import { MAX_OVERLAY_TAGS, OVERLAY_CHANNELS, type HostNotice, type HostUpdateAction, type OverlayAnswer, type OverlayRect, type OverlayRequest, type OverlaySettingsAwayState, type OverlayState, type OverlayThemesResult, type ThemeEditorResult } from '../preload/overlay-channels';
 import { characterAssets, characterState, parseProjectsFile, PROJECTS_FILE, type PinEdit } from '../../shared/themes/characters';
 import type { NotificationHost, NotificationProject } from '../preload/notifications';
 import { canCheck, type UpdateSnapshot, type VersionInfo } from '../preload/updates';
@@ -137,7 +138,7 @@ import { followsLocalLinksOnly, type Project } from '../local-services/confine';
 import type { OpenFolder } from '../../platform/workspace-folders';
 import { DocumentService, RefusedPathError, type Location, type TextDocument } from './documents/document-service';
 import { sessionFileEngines } from './documents/session-files';
-import { EditorPane, editorSettings, type RemoteDiffTarget, type RootCloseAnswers } from './editor-pane';
+import { EditorPane, editorSettings, withoutHosts, type RemoteDiffTarget, type RootCloseAnswers } from './editor-pane';
 import { FormatService } from './formatting/format-service';
 import { FileTree, type FilesTarget } from './files/file-tree';
 import { FileTransferService } from './files/file-transfer';
@@ -172,7 +173,7 @@ import {
 import { windowsBuildNumber } from '../workspace/terminal/profiles';
 import { detectedProfile, profileFileKind, TerminalProfileCatalog, type LaunchProfile } from './terminal/user-profiles';
 import { TerminalService, terminalSettings, terminalTabId, type TerminalGitCredentials } from './terminal/terminal-service';
-import { killQuestion } from './terminal/kill-confirmation';
+import { endTerminalHostQuestion, killQuestion } from './terminal/kill-confirmation';
 import { folderLinkAction, TerminalLinks, type LinkBase } from './terminal/terminal-links';
 import { pasteText, TerminalPasteGate } from './terminal/terminal-paste';
 import { askShellMenu, GestureGrant } from './clipboard-gestures';
@@ -323,7 +324,8 @@ import { UsageWarningStore } from './usage-warning-store';
 import { HostStore, type HostRecord, type SshHostRecord } from './remote/host-store';
 import { parseContent, RemoteState, type RemoteTerminalRecord } from './remote/remote-state';
 import { startLoopbackTransport } from './remote/loopback-transport';
-import type { OtherProtocolDaemon, RemoteConnection } from './remote/connection';
+import { HAND_OVER_FEATURE, HAND_OVER_IF_IDLE_FEATURE, HANDING_OVER_FEATURE, type OtherProtocolDaemon, type RemoteConnection } from './remote/connection';
+import { followOwnRuns } from './remote/own-runs';
 import { MAX_LOG_READ_BYTES, type ClientToControl } from '../daemon/control-messages';
 import { Authorities, type RemoteProject } from './remote/authorities';
 import { failureOf, RemoteConnections } from './remote/connections';
@@ -342,8 +344,10 @@ import {
   runSshStage,
   sshEnvironment,
   sshVersion,
+  sshClientChoice,
   startSshTransport,
   systemControlMasterDeps,
+  systemSshTransportDeps,
   type ControlMasterDeps,
   type ControlMasterPlan,
   type RememberedOption,
@@ -352,7 +356,8 @@ import {
 } from './remote/ssh';
 import { validateInstallFolder } from './remote/bootstrap';
 import { readServerManifest } from './remote/server-manifest';
-import { appVersionOf, type ServerManifest } from './remote/server-manifest-format';
+import { appVersionOf, requiredOf, type ServerManifest } from './remote/server-manifest-format';
+import { createSwitchReminders, switchNowText, type NoticeText } from './remote/switch-reminders';
 import { createArtifactCache, releasesUrlOf, type ArtifactCache } from './remote/artifact-cache';
 import { createAskpassServer, PROMPT_CANCELLED, type AskpassServer } from '../../core/scm/askpass/askpass-server';
 import { asConfigParams, credentialHelperPath, managedEntries, type ManagedServer } from '../../core/scm/askpass/credential-config';
@@ -374,7 +379,7 @@ import { mirroredCopy, OfflineTranscripts } from './remote/offline-transcripts';
 import { MAX_HELD_BYTES, MAX_HELD_PER_PANEL, OfflineQueue } from './remote/offline-queue';
 import { e2eManifest, remoteE2eEnvironment } from './remote/remote-e2e-environment';
 import { visibleLines } from '../../shared/visible-text';
-import { adoptCompatibleDaemon, FollowedDaemons, followOtherProtocolDaemon, otherDeviceCount, SHUTDOWN_WHEN_IDLE_CLIENTS_FEATURE, shutDownNow, type SwitchListing } from './remote/app-update-flow';
+import { adoptCompatibleDaemon, belowFloorSwitch, followCompatibleDaemon, followOtherProtocolDaemon, handOverIfIdle, handOverNow, otherDeviceCount, PendingSwitches, requiredDeadline, serverInUseNotice, SHUTDOWN_WHEN_IDLE_CLIENTS_FEATURE, shutDownNow, supersedes, type SwitchListing } from './remote/app-update-flow';
 import { askRemoteRuns, closeRowId, CONFIGURED_PROVIDERS_FEATURE, listHostRuns, type CloseWithRunningAgents, type HostRuns } from './remote/close-remote';
 import { CloseRelease } from './close-release';
 import { announceFinishedAway, awayChats } from './remote/finished-away';
@@ -400,17 +405,17 @@ import { devcontainersCliPath } from './platform/app-paths';
 import type { ContainerHostRecord } from './remote/host-store';
 import type { EditorOpenLink, ProjectLookResult, ReopenInContainerResult } from '../preload/shell-channels';
 import type { ProjectLookImageResult } from '../preload/overlay-channels';
-import { FILES_CONFIRM_DRAG_AND_DROP_SETTING, FILES_CONFIRM_PASTE_NATIVE_SETTING, REMOTE_CONTAINER_ENGINE_SETTING } from '../local-services/desktop-configuration';
+import { FILES_CONFIRM_DRAG_AND_DROP_SETTING, FILES_CONFIRM_PASTE_NATIVE_SETTING, REMOTE_CONTAINER_ENGINE_SETTING, REMOTE_SSH_PATH_SETTING } from '../local-services/desktop-configuration';
 import { openAsProject, openFolderAsProject, type OpenAsProjectDeps } from './open-as-project';
 import { waitForRemoteFolderConnection } from './e2e-open-folder';
 import { RELOCATE_FEATURE, RemoteCore, type RemoteHostedCore } from './remote/remote-core';
 import { remoteRelocation } from './remote/relocate-remote-project';
 import { clientGitCredential, createGitCredentialClient, type GitCredentialClient } from './remote/git-credential-client';
-import { keptChatFate } from './remote/kept-remote-chats';
+import { keptChatFate, oncePerConversation, reopenKeptChat } from './remote/kept-remote-chats';
 import { remoteServices } from './remote/remote-services';
 import { chatOfSelectedProject, keptChatWithheld, remoteSelection } from './remote/remote-selection';
 import type { RemoteChatRecord } from './remote/remote-state';
-import type { DesignMarkupSendRequest, DesignMarkupSent, DesignTweakKeepRequest, OpenAsProjectRequest, OpenAsProjectResult, ProjectsView, ShellEngine } from '../preload/shell-channels';
+import type { DesignMarkupSendRequest, DesignMarkupSent, DesignTweakKeepRequest, OpenAsProjectRequest, OpenAsProjectResult, ProjectsView, ShellEngine, ShellHost as SavedShellHost } from '../preload/shell-channels';
 import type { HostServicesDeps, HostTrust } from './core-services/host-services';
 import { ERROR_PAGE_STRINGS } from '../../shared/panel-html';
 import { createProjectTrust, createRemoteTrust, remoteHostTrust, type HostTrustFolder, type RemoteTrustTarget } from './remote/remote-trust';
@@ -483,8 +488,9 @@ const THEME_E2E_STORE = (() => {
   const publicKeyPem = E2E_HOOKS ? process.env['DAMOCLES_E2E_THEME_STORE_KEY'] : undefined;
   return listUrl !== undefined && publicKeyPem !== undefined && THEME_E2E_DOWNLOADS !== undefined ? { listUrl, publicKeyPem } : undefined;
 })();
-// how often a busy daemon of another protocol is asked for its runs and its mirror: its frozen commands carry no events
-const OTHER_PROTOCOL_POLL_MS = 5000;
+// how often a pending switch asks the old daemon for its runs (and a daemon of another protocol for its mirror) when it pushes
+// no runs events: a daemon without control.runs, or one of another protocol, whose frozen commands carry no events
+const SWITCH_POLL_MS = 5000;
 // the window an OS shutdown or an update's quit gives the token pushes, inside the quit's own bound
 const UNATTENDED_PUSH_MS = 3000;
 // the daemon ends a connection at once on control.disconnect
@@ -698,8 +704,36 @@ class DesktopApp {
   private offlineQueue: OfflineQueue | undefined;
   // the connections whose device list the host cards follow
   private readonly devicesWatched = new WeakSet<RemoteConnection>();
-  // a busy daemon of another protocol per authority, which the update banner offers to switch from
-  private readonly otherProtocolHosts = new FollowedDaemons();
+  // the connections whose terminals.responding events main follows
+  private readonly respondingWatched = new WeakSet<RemoteConnection>();
+  // each authority's pending server switch, of either protocol, which every update surface reads
+  private readonly pendingSwitches = new PendingSwitches();
+  // each authority's reminders of its pending switch, the countdown of a required one and what a sent switch stopped
+  private readonly switchReminders = createSwitchReminders({
+    wording: (authority) => {
+      const localization = this.requireLocalization();
+      // the clock the strip, card and tag show, in the app's language
+      const clock = clockFormatter(localization.language);
+      return { t: (message, ...args) => localization.t(message, ...args), hostName: this.hostName(authority), time: (at) => clock.format(at), now: Date.now() };
+    },
+    remind: (authority, notice) => this.remindOfSwitch(authority, notice),
+    countDown: (authority, notice, deadline) => this.countDownToSwitch(authority, notice, deadline),
+    switched: (authority, notice, forced) => {
+      const host = this.notificationHost(authority);
+      // the forced one breaks through Do not disturb; the one the user chose follows it
+      const shown = forced
+        ? this.notificationCenter.notice(notice.severity, notice.message, [], host, notice.title, { timeSensitive: true })
+        : this.notificationCenter.hostUpdate(host, notice.severity, notice.title, notice.message, []);
+      shown.catch(this.report('Showing what the switch stopped'));
+    },
+    log: (line) => log(line),
+  });
+  // the 15 minutes a connect that found a required deadline passed gave its daemon, kept for the run so a reconnect adds none
+  private readonly missedDeadlines = new Map<string, { readonly serverVersion: string; readonly deadline: number }>();
+  // the connections of older daemons this app uses as they are because other computers use them (the serverInUse notice)
+  private readonly olderInUse = new WeakSet<RemoteConnection>();
+  // the connections a switch brought, whose restart the switch's own notice tells instead of hostRestarted
+  private readonly switchTold = new WeakSet<RemoteConnection>();
   // the remote agents', terminals' and editors' questions of a close or quit; lifecycle.release shares one among every caller
   private readonly closeRelease = new CloseRelease({
     remote: (unattended) => askRemoteRuns(this.closeRemoteDeps(), unattended),
@@ -791,11 +825,11 @@ class DesktopApp {
     selectedProject: () => this.selectedProjectKey,
     selectedChat: () => this.views?.selected(),
     host: (authority) => this.remoteCores.get(authority)?.host,
-    showProject: (key) => {
+    showProject: (key, userStarted) => {
       const project = this.remoteProject(key);
       if (!project) throw new Error(this.requireLocalization().t('The project is no longer in the project list.'));
       // a connection that is not up is tried again
-      this.connectAuthority(project.authorityKey);
+      this.connectAuthority(project.authorityKey, userStarted);
       if (key === this.selectedProjectKey) return;
       this.selectedProjectKey = key;
       const saved = this.remoteState?.selected();
@@ -1459,7 +1493,7 @@ class DesktopApp {
       if (!this.requireEditorPane().closeRoot(key, answers)) log(`[projects] the moved project's tabs stay open: one was edited after its question`);
     },
     reopenChats: (toKey) => this.reopenSkippedChats(toKey),
-    select: (key) => this.selectProject(key),
+    select: (key) => this.selectProject(key, false),
     announce: (message) => { void this.notificationCenter.notice('info', message, []); },
     describe: (failure, project) => relocationText(failure, project, (message, ...args) => this.requireLocalization().t(message, ...args)),
     report: (action, err) => this.report(action)(err),
@@ -2108,7 +2142,8 @@ class DesktopApp {
     // an SSH host connects in the background and a prompt waits behind its sign-in banner, while its tabs show the offline
     // placeholder until it connects. The loopback daemon, which never asks, is waited for, so its tabs reopen through it.
     const authorities = this.requireAuthorities();
-    const savedEditor = this.windowLayout.editor();
+    // a layout saved before Forget host closed a host's tabs may still name it
+    const savedEditor = withoutHosts(this.windowLayout.editor(), (authority) => this.forgottenHostAuthority(authority));
     const backups = await this.backups.list();
     const remoteState = this.requireRemoteState();
     const savedRemoteSelection = remoteState.selected();
@@ -2131,7 +2166,7 @@ class DesktopApp {
       selectedProjectKey: launchSelection?.projectKey,
       isSavedHost: (authority) => this.savedHostRecord(authority) !== undefined,
     });
-    for (const key of launchAuthorities) if (this.savedHostIdOf(key) !== undefined) this.connectAuthority(key);
+    for (const key of launchAuthorities) if (this.savedHostIdOf(key) !== undefined) this.connectAuthority(key, false);
     await Promise.all(launchAuthorities.filter((key) => this.savedHostIdOf(key) === undefined).map((key) => authorities.connect(key).catch(this.report(`Connecting to ${key}`))));
     // Saved tabs come back with "Reopen where I left off"; a backup comes back either way, since it holds text the user never discarded.
     await this.requireEditorPane().restore(savedEditor, backups);
@@ -2147,7 +2182,7 @@ class DesktopApp {
     // A saved selection on a remote project stays selected, its host connecting or offline; its saved chat shows once that
     // core reopened it, or as its mirrored transcript while the host is away. select shows the project synchronously, before
     // the local chats reopen, so openInitialChats shows none of them.
-    if (savedRemote) this.remoteSelection.select(savedRemote.key).catch(this.report('Selecting the saved remote project'));
+    if (savedRemote) this.remoteSelection.select(savedRemote.key, false).catch(this.report('Selecting the saved remote project'));
     this.tray = new AppTray(trayIcon(resourceRoot), {
       windowVisible: () => this.window?.isVisible() ?? false,
       toggleWindow: () => {
@@ -3145,11 +3180,13 @@ class DesktopApp {
   }
 
   private settingsHostAway(authority: string): OverlaySettingsAwayState | undefined {
+    const pending = this.pendingSwitches.get(authority);
     return hostAwayOf(hostCoreFacts({
       connection: this.authorities?.connection(authority),
       reconnect: this.reconnectPhaseOf(authority)?.phase,
       state: this.authorities?.state(authority) ?? 'offline',
-      followed: this.otherProtocolHosts.get(authority),
+      // only a daemon of another protocol holds the host away; a compatible one's switch is a reconnect
+      followed: pending?.following() !== undefined ? pending : undefined,
       core: this.remoteCores.get(authority),
       reopeningSelected: this.reopeningSelectedAuthority() === authority,
     }));
@@ -3773,7 +3810,7 @@ class DesktopApp {
       return;
     }
     if (!chatId.startsWith(NEW_CHAT_ID_PREFIX)) this.selectChat(chatId, panel.authority).catch(this.report('Selecting a chat core unloaded'));
-    else if (projectKey !== undefined) this.selectProject(projectKey).catch(this.report('Selecting the project of a chat core unloaded'));
+    else if (projectKey !== undefined) this.selectProject(projectKey, false).catch(this.report('Selecting the project of a chat core unloaded'));
   }
 
   // Records the selected chat's project, its place in the project memory and panels.json.
@@ -3947,17 +3984,19 @@ class DesktopApp {
   }
 
   // The project's last viewed chat while it exists, once it is gone the top of its Chats list, else a new chat; never viewed: a new chat.
-  private async selectProject(key: string): Promise<void> {
+  // userStarted: the user picked the project, so a remote one's host connects as the user's connect, which installs the server
+  // where Remove Damocles server ran; a selection that follows another action never does
+  private async selectProject(key: string, userStarted: boolean): Promise<void> {
     const turn = this.selectionTurns.begin();
     try {
-      await this.selectProjectWhile(key, turn.current);
+      await this.selectProjectWhile(key, turn.current, userStarted);
     } finally {
       turn.settle();
     }
   }
 
-  // current: whether no later selection overtook this one
-  private async selectProjectWhile(key: string, current: () => boolean): Promise<void> {
+  // current: whether no later selection overtook this one; userStarted: the user selected it, so its host connects as the user's
+  private async selectProjectWhile(key: string, current: () => boolean, userStarted: boolean): Promise<void> {
     if (authorityKeyOfProject(key) !== 'local') {
       const project = this.remoteProject(key);
       if (project) await this.remotePresences.check([{ key, fsPath: project.fsPath }]);
@@ -3966,7 +4005,7 @@ class DesktopApp {
         this.showAbsentProject(key);
         return;
       }
-      return this.remoteSelection.select(key);
+      return this.remoteSelection.select(key, userStarted);
     }
     const folder = this.listedFolder(key);
     if (folder) {
@@ -4033,7 +4072,7 @@ class DesktopApp {
   private async selectIfCameBack(cameBack: readonly string[]): Promise<void> {
     const key = this.selectedProjectKey;
     const current = this.selectionTurns.join();
-    if (key !== undefined && current && cameBack.includes(key)) await this.selectProjectWhile(key, current);
+    if (key !== undefined && current && cameBack.includes(key)) await this.selectProjectWhile(key, current, false);
   }
 
   private presenceChanged(key: string, presence: FolderPresence, previous: ProjectPresence): void {
@@ -4344,8 +4383,10 @@ class DesktopApp {
     // the selected remote project's chat reopens (reselectRemote) or its host connects at launch never moves the selection
     const selectedAuthority = this.selectedProjectKey === undefined ? undefined : authorityKeyOfProject(this.selectedProjectKey);
     if (selectedAuthority !== undefined && selectedAuthority !== panel.authority) return;
-    const key = projectKey ?? this.client()?.defaultTarget()?.key;
-    if (key !== undefined) this.selectProject(key).catch(this.report('Selecting a chat after a close'));
+    // a host being forgotten closes its chats while its projects are still listed, and selecting one would connect it again
+    const forgotten = panel.authority !== 'local' && this.hostBeingForgotten(panel.authority);
+    const key = (forgotten ? undefined : projectKey) ?? this.client()?.defaultTarget()?.key;
+    if (key !== undefined) this.selectProject(key, false).catch(this.report('Selecting a chat after a close'));
   }
 
   private onChatActivity(chatKey: string, activity: ChatActivity): void {
@@ -4902,7 +4943,7 @@ class DesktopApp {
         if (!this.requireEditorPane().closeRoot(key, answers)) log(`[projects] the moved project's tabs stay open: one was edited after its question`);
       },
       reopenChats: (toKey) => this.reopenSkippedRemoteChats(toKey),
-      select: (key) => this.selectProject(key),
+      select: (key) => this.selectProject(key, false),
       announce: (message) => { void this.notificationCenter.notice('info', message, []); },
       describe: (failure, project) => relocationText(failure, project, (message, ...args) => this.requireLocalization().t(message, ...args)),
       report: (action, err) => this.report(action)(err),
@@ -5063,7 +5104,7 @@ class DesktopApp {
     this.removingProjects.delete(key);
     if (!this.views || this.views.selected()) return;
     if (this.projects.has(fsPath)) {
-      this.selectProject(key).catch(this.report('Selecting a chat after a refused removal'));
+      this.selectProject(key, false).catch(this.report('Selecting a chat after a refused removal'));
       return;
     }
     this.core.run('Select Project', async (core) => {
@@ -5536,7 +5577,7 @@ class DesktopApp {
         }
       },
       removeProject: (key) => this.removeProject(key),
-      selectProject: reportFailure((key: string) => this.selectProject(key), this.shellFailure('Select Project', 'Damocles could not open the project: {0}')),
+      selectProject: reportFailure((key: string) => this.selectProject(key, true), this.shellFailure('Select Project', 'Damocles could not open the project: {0}')),
       grantTrust: reportFailure(async (key: string) => {
         const remote = this.remoteProject(key);
         await (remote ? this.requestProjectTrust(remote) : this.trust.requestTrust(this.projectByKey(key).fsPath));
@@ -6243,7 +6284,8 @@ class DesktopApp {
         if (authority === 'local') await this.addProjectAt(folder);
         else await this.addRemoteProject(authority, folder);
       },
-      selectProject: (projectKey) => this.selectProject(projectKey),
+      // Source Control's Open Worktree, the user's
+      selectProject: (projectKey) => this.selectProject(projectKey, true),
       worktrees: this.scmWorktreeDeps(),
       gitFound: git.available,
       quickPick: createQuickPickAsker({
@@ -6386,7 +6428,7 @@ class DesktopApp {
           cutTransport: (hostId: string, options?: { readonly hold?: boolean }) => this.cutTransport(this.authorityOfHost(hostId), options?.hold === true),
           releaseTransport: (hostId: string) => this.heldTransports.delete(this.authorityOfHost(hostId)),
           reconnectPhase: (authorityKey: string) => this.reconnector?.phase(authorityKey),
-          reconnectNow: (authorityKey: string) => this.reconnector?.reconnectNow(authorityKey),
+          reconnectNow: (authorityKey: string) => this.reconnector?.reconnectNow(authorityKey, true),
           latency: (authorityKey: string) => this.latency?.latency(authorityKey),
           // the picker a remote core's dialogs.pickFile or dialogs.pickFolder opens, answered as core would be
           pick: (authorityKey: string, kind: 'file' | 'folder', { title, ...options }: { readonly title?: string; readonly defaultPath?: string; readonly buttonLabel?: string }) => {
@@ -7110,6 +7152,8 @@ class DesktopApp {
   // connection closes, so nothing connects until the user does. Settles once the attempt it ended settled.
   private disconnectAuthority(authorityKey: string): Promise<void> {
     this.reconnector?.disconnected(authorityKey);
+    // nothing switches on a host not connected; the next connect finds the switch again from the stored pendingSince
+    this.settleSwitch(authorityKey);
     const hostId = this.savedHostIdOf(authorityKey);
     const attemptEnded = hostId === undefined ? Promise.resolve() : (this.remoteConnections?.cancelHost(hostId) ?? Promise.resolve());
     this.authorities?.disconnect(authorityKey);
@@ -7283,7 +7327,8 @@ class DesktopApp {
     for (const view of moved) if (view.state === 'coreDone') this.movedProjects.set(this.relocationKey(core.authority, view.to), this.relocationKey(core.authority, view.from));
     const projects = { known: (key: string) => this.projectListed(key) || this.movedFrom(key) !== undefined, absent: (key: string) => this.remotePresences.absent(key) };
     for (const [panelToken, skipped] of [...this.skippedRemoteChats]) if (skipped.authority === core.authority) this.skippedRemoteChats.delete(panelToken);
-    for (const record of this.requireRemoteState().chats(core.authority)) {
+    const shown = this.remoteChatViews(core.authority).flatMap((view) => this.sessionIdOf(view) ?? []);
+    for (const record of oncePerConversation(this.requireRemoteState().chats(core.authority), shown, this.reselectRemote.get(core.authority))) {
       if (this.remoteChatViews(core.authority).some((view) => view.panelToken === record.panelToken)) continue;
       const fate = keptChatFate(record.projectKey, projects);
       if (fate === 'dropped') continue;
@@ -7301,20 +7346,20 @@ class DesktopApp {
     await this.remoteSelection.coreOpened(core).catch(this.report('Opening the selected project\'s chat'));
   }
 
-  // One kept chat into a new panel: rejoined under the epoch it was open in, else restored, resuming its session.
+  // One kept chat into a new view: rejoined under the epoch it was open in, under a new one joined to the panel another device
+  // restored its conversation into, else restored into a new panel, resuming its session (reopenKeptChat).
   private openRemoteChat(core: RemoteHostedCore, record: RemoteChatRecord, rejoin: boolean, permissions: ChatPermissions | undefined): Promise<void> {
     const host = this.requireViews().create({ options: CHAT_PANEL, restore: { panelId: randomUUID(), state: { ...(record.sessionId !== undefined ? { sessionId: record.sessionId } : {}), panelToken: record.panelToken } }, authority: core.authority });
     this.trackChat(host, keptRemoteChatProjectKey(record, { listed: (key) => this.projectListed(key), movedFrom: (key) => this.movedFrom(key), defaultKey: this.defaultProjectKey(core) }));
     this.lastViewed.set(host, ++this.viewCount);
     if (this.reselectRemote.get(core.authority) === record.panelToken && !this.views?.selected()) this.showChat(host, { focus: 'whenReady' });
-    const restore = (async () => {
-      if (!rejoin) {
-        await core.client.restoreChat(host, undefined, permissions);
-        return;
-      }
-      if (await core.rejoin(host, record.panelToken, record.sessionId)) return;
-      if (!host.isDisposed) await core.client.restoreRelayed(host.panelId, permissions);
-    })();
+    const restore = reopenKeptChat(record, rejoin, {
+      join: (viewKey, sessionId) => core.rejoin(host, viewKey, sessionId),
+      restoreJoining: async () => {
+        if (!host.isDisposed) await core.client.restoreRelayed(host.panelId, permissions);
+      },
+      restore: () => core.client.restoreChat(host, undefined, permissions),
+    });
     this.chatRestores.set(host, restore);
     return restore;
   }
@@ -7758,11 +7803,11 @@ class DesktopApp {
   }
 
   // An SSH host connects through its attempt, whose prompt waits behind the sign-in banner, since no user waits in the Connect
-  // dialog; its failure shows on the host, not as a toast.
-  private connectAuthority(authorityKey: string): void {
+  // dialog; its failure shows on the host, not as a toast. userStarted: the user's gesture (opening a project) started it.
+  private connectAuthority(authorityKey: string, userStarted: boolean): void {
     const hostId = this.savedHostIdOf(authorityKey);
     if (hostId !== undefined) {
-      if (this.hostStore?.host(hostId)) this.requireRemoteConnections().connect(hostId, false);
+      if (this.hostStore?.host(hostId)) this.requireRemoteConnections().connect(hostId, false, { user: userStarted });
       return;
     }
     this.authorities?.connect(authorityKey).catch(this.report(`Connecting to ${authorityKey}`));
@@ -7803,8 +7848,8 @@ class DesktopApp {
       return;
     }
     const authority = this.authorityOfHost(hostId);
-    if (this.hasOpenViews(authority)) this.reconnector?.reconnectNow(authority);
-    else this.requireRemoteConnections().connect(hostId, false, { force: true });
+    if (this.hasOpenViews(authority)) this.reconnector?.reconnectNow(authority, true);
+    else this.requireRemoteConnections().connect(hostId, false, { force: true, user: true });
   }
 
   // Disconnect Host: the selected project's host connection ends; its daemon and terminals keep running there.
@@ -7821,7 +7866,11 @@ class DesktopApp {
     const authorities = this.requireAuthorities();
     const hostOf = (authority: string): string | undefined => this.savedHostIdOf(authority);
     this.reconnector = new Reconnector({
-      handedOff: (authority) => this.otherProtocolHosts.has(authority),
+      // a host whose security floor is above this app reads as the one whose newer daemon the flow follows: no loop, no failed phase
+      handedOff: (authority) => {
+        const pending = this.pendingSwitches.get(authority);
+        return pending?.following() !== undefined || pending?.update()?.outdated === 'floor';
+      },
       state: (authority) => authorities.state(authority),
       usable: (authority) => authorities.connection(authority) !== undefined,
       held: (authority) => authorities.heldConnection(authority),
@@ -7830,7 +7879,7 @@ class DesktopApp {
         return hostId === undefined ? authority === 'loopback' : this.hostStore?.host(hostId) !== undefined;
       },
       hasOpenViews: (authority) => this.hasOpenViews(authority),
-      attempt: (authority, signal, force) => this.reconnectAttempt(authority, signal, force),
+      attempt: (authority, signal, force, user) => this.reconnectAttempt(authority, signal, force, user),
       staging: (authority) => {
         const hostId = hostOf(authority);
         return hostId !== undefined && (this.remoteConnections?.staging(hostId) ?? false);
@@ -7870,7 +7919,12 @@ class DesktopApp {
       },
       log: (line) => log(line),
     });
-    const resumed = (): void => this.reconnector?.wake('the computer resumed from sleep');
+    const resumed = (): void => {
+      // their timers' clock stopped during sleep on macOS and Linux, as Chromium's base::WallClockTimer knows
+      this.pendingSwitches.resumed();
+      this.switchReminders.resumed();
+      this.reconnector?.wake('the computer resumed from sleep');
+    };
     powerMonitor.on('resume', resumed);
     this.disposables.push({
       dispose: () => {
@@ -7883,10 +7937,10 @@ class DesktopApp {
 
   // One unwatched attempt of the loop: an SSH host's through its attempt, whose prompt waits behind the sign-in banner, the
   // loopback daemon's straight through Authorities.
-  private reconnectAttempt(authority: string, signal: AbortSignal, force: boolean): LoopAttempt {
+  private reconnectAttempt(authority: string, signal: AbortSignal, force: boolean, user: boolean): LoopAttempt {
     const hostId = this.savedHostIdOf(authority);
     if (hostId === undefined) return { joined: false, outcome: this.requireAuthorities().connect(authority) };
-    return this.requireRemoteConnections().loopAttempt(hostId, signal, force);
+    return this.requireRemoteConnections().loopAttempt(hostId, signal, force, user);
   }
 
   // A change only a new ssh session applies (agent forwarding): the connection ends, Damocles' master with it, and the host
@@ -7916,7 +7970,9 @@ class DesktopApp {
         // the shell's engines are read off remoteCores, and a forgotten host has no name to give its engine
         const remote = this.remoteCores.get(authority);
         this.remoteCores.delete(authority);
-        this.otherProtocolHosts.forget(authority);
+        this.pendingSwitches.forget(authority);
+        this.switchReminders.forget(authority);
+        this.missedDeadlines.delete(authority);
         this.sentChatConnection.delete(authority);
         this.sentHostAttention.delete(hostId);
         await remote?.dispose();
@@ -7954,7 +8010,12 @@ class DesktopApp {
   }
 
   private controlMasterDeps(): ControlMasterDeps {
-    return systemControlMasterDeps(path.join(DAMOCLES_HOME_DIR, 'ssh', 'cm'), (line) => log(line));
+    return systemControlMasterDeps(path.join(DAMOCLES_HOME_DIR, 'ssh', 'cm'), () => this.sshClient(), (line) => log(line));
+  }
+
+  // The SSH client path setting, read at each ssh start; a user setting only, never a project's.
+  private sshClient(): SshClientChoice {
+    return sshClientChoice(this.requirePlatform().settings.get<unknown>(REMOTE_SSH_PATH_SETTING));
   }
 
   private async controlPlan(hostId: string, destination: SshDestination): Promise<ControlMasterPlan> {
@@ -8016,7 +8077,7 @@ class DesktopApp {
     if (gain.how === 'resumed') this.offlineQueue?.hostResumed(authority);
     else this.offlineQueue?.connectionEnded(authority);
     this.flushHeldMessages(authority);
-    if (gain.restarted) this.hostRestarted(authority, gain.restarted);
+    if (gain.restarted && !this.switchTold.has(connection)) this.hostRestarted(authority, gain.restarted);
   }
 
   /** The authorities whose project a visible, non-minimized window shows: only their latency is measured. */
@@ -8034,7 +8095,7 @@ class DesktopApp {
     const install = this.serverInstall;
     this.remoteConnections = new RemoteConnections({
       host: (hostId) => store.host(hostId),
-      startSsh: async ({ host, signal, hooks, savePlatform, installFolderSettled }) => {
+      startSsh: async ({ host, signal, userStarted, hooks, savePlatform, installFolderSettled }) => {
         const { manifest, artifacts, releasesUrl, askpass } = await install();
         const destination = sshDestination(host.destination, (line) => log(line));
         const plan = await this.controlPlan(host.id, destination);
@@ -8048,6 +8109,7 @@ class DesktopApp {
           ...(host.identityFile !== undefined ? { identityFile: host.identityFile } : {}),
           ...this.rememberedOption(host),
           signal,
+          userStarted,
           hooks,
           savePlatform,
           installFolderSettled,
@@ -8059,9 +8121,9 @@ class DesktopApp {
           controlMaster: plan,
           hostLabel: host.name,
           log: (line) => log(`[ssh ${host.id}] ${line}`),
-        });
+        }, systemSshTransportDeps(() => this.sshClient()));
       },
-      startWsl: async ({ host, signal, hooks, installFolderSettled }) => {
+      startWsl: async ({ host, signal, userStarted, hooks, installFolderSettled }) => {
         const { manifest, artifacts, releasesUrl } = await install();
         return startWslTransport({
           distro: host.distro,
@@ -8070,6 +8132,7 @@ class DesktopApp {
           ...(host.settings.installFolder !== undefined ? { installFolder: host.settings.installFolder } : {}),
           ...(host.previousInstallFolder !== undefined ? { previousInstallFolder: host.previousInstallFolder } : {}),
           signal,
+          userStarted,
           hooks,
           installFolderSettled,
           manifest,
@@ -8078,7 +8141,7 @@ class DesktopApp {
           log: (line) => log(`[wsl ${host.id}] ${line}`),
         });
       },
-      startContainer: async ({ host, signal, hooks, watched, installFolderSettled }) => connectContainer({
+      startContainer: async ({ host, signal, userStarted, hooks, watched, installFolderSettled }) => connectContainer({
         side: this.containerSide(host.via, install),
         install,
         gate: () => this.containerTrustGate(host.id, install, signal, watched),
@@ -8086,6 +8149,7 @@ class DesktopApp {
         dataVolumeMissing: () => this.notifyContainerWithoutDataVolume(host.id),
         hooks,
         signal,
+        userStarted,
         watched,
         installFolderSettled,
         log: (line) => log(`[container ${host.id}] ${line}`),
@@ -8100,6 +8164,10 @@ class DesktopApp {
         return this.authorities?.connection(authority) ? 'usable' : 'suspect';
       },
       changed: (hostId) => {
+        const failure = this.remoteConnections?.failure(hostId);
+        if (failure?.code === 'belowFloor' && typeof failure.params['floor'] === 'string') this.belowFloor(this.authorityOfHost(hostId), failure.params['floor']);
+        // the reconnect loop stops here as after Disconnect: only a connect the user starts installs the server again
+        if (failure?.code === 'serverRemoved' && this.authorities?.state(this.authorityOfHost(hostId)) !== 'offline') void this.disconnectAuthority(this.authorityOfHost(hostId));
         this.remoteHosts?.hostChanged(hostId);
         this.reconnector?.attemptChanged(this.authorityOfHost(hostId));
         this.shellStateChanged();
@@ -8120,6 +8188,7 @@ class DesktopApp {
       terminals: {
         canOpen: (authorityKey, terminal) => this.terminals?.canOpen(authorityKey, terminal) === true,
         open: (authorityKey, id) => this.openHostTerminal(authorityKey, id),
+        notResponding: (authorityKey) => this.terminals?.notResponding(authorityKey) ?? [],
       },
       projects: (hostId) => this.remoteProjects().filter((project) => project.authorityKey === this.authorityOfHost(hostId)),
       pickRoots: (authorityKey) => {
@@ -8127,7 +8196,16 @@ class DesktopApp {
         return [...projects, ...this.remoteFileRoots(authorityKey).filter((root) => !projects.some((project) => project.key === root.key))];
       },
       hostName: (authorityKey) => this.hostName(authorityKey),
-      update: (authorityKey) => this.otherProtocolHosts.get(authorityKey)?.update(),
+      update: (authorityKey) => this.pendingSwitches.get(authorityKey)?.update(),
+      serverInUse: (authorityKey) => this.serverInUse(authorityKey),
+      canCheckForUpdates: () => this.canCheckForUpdates(),
+      updateAction: (hostId, action) => this.hostUpdateAction(hostId, action),
+      confirmEndTerminalHost: async (hostId, titles) => {
+        const localization = this.requireLocalization();
+        const answer = await this.ask(endTerminalHostQuestion(this.hostName(this.authorityOfHost(hostId)), titles, (message, ...args) => localization.t(message, ...args)));
+        log(`[remote] ${hostId}: End terminal host of ${titles.length} terminals: ${answer === 0 ? 'confirmed' : 'cancelled'}`);
+        return answer === 0;
+      },
       parse: (input) => parseSshCommand(input),
       // ssh reads ~/.ssh/config from the passwd entry's home, never HOME
       sshConfigAliases: () => configuredAliases(SSH_ENVIRONMENT, process.platform, process.env, (line) => log(line)),
@@ -8152,14 +8230,23 @@ class DesktopApp {
       reconnectFresh: (hostId) => this.reconnectFresh(hostId),
       deleteRememberedSecrets: (hostId) => this.rememberedSecrets().deleteAllForHost(hostId),
       forgetLocalData: (hostId) => this.forgetHostData(hostId),
+      confirmCloseTabs: async (hostIds) => {
+        const editor = this.editorPane;
+        if (!editor) return () => undefined;
+        const authorities = hostIds.map((hostId) => this.authorityOfHost(hostId));
+        const answers = await editor.confirmCloseHosts(authorities);
+        return answers && (() => {
+          if (!editor.closeHosts(authorities, answers)) log(`[remote] the forgotten host's tabs stay open: one was edited after its question`);
+        });
+      },
       disconnect: (hostId) => this.disconnectAuthority(this.authorityOfHost(hostId)),
       exitControlMaster: (hostId) => this.exitHostControlMaster(hostId),
       openSettings: (hostId) => this.openSettings({ section: 'remoteHosts', host: hostId }),
       keySetup: {
         folder: keyFolder(DAMOCLES_HOME_DIR),
         clientName: os.hostname(),
-        resolveKeygen: () => resolveSshKeygenExecutable(),
-        resolveSsh: () => resolveSshExecutable(),
+        resolveKeygen: () => resolveSshKeygenExecutable(process.env, process.platform, this.sshClient()),
+        resolveSsh: () => resolveSshExecutable(process.env, process.platform, this.sshClient()),
         run: (spec, options) => runProcess(spec, options),
         sshQuery: runSsh,
         askpass: async () => this.mainAskpass(),
@@ -8187,7 +8274,7 @@ class DesktopApp {
           prompt,
           signal,
           log: (line) => log(`[ssh ${hostId}] ${line}`),
-        }, script);
+        }, script, systemSshTransportDeps(() => this.sshClient()));
       }),
       reconnect: (authorityKey) => this.reconnectPhaseOf(authorityKey),
       latency: (authorityKey) => this.latency?.latency(authorityKey),
@@ -8235,7 +8322,7 @@ class DesktopApp {
       log: (line) => log(line),
     });
     // the e2e hooks install and run another version, which a test placed on the target itself
-    const manifest = REMOTE_E2E.appVersion === undefined ? found.manifest : e2eManifest(found.manifest, REMOTE_E2E.appVersion);
+    const manifest = REMOTE_E2E.appVersion === undefined && REMOTE_E2E.requirement === undefined ? found.manifest : e2eManifest(found.manifest, REMOTE_E2E.appVersion, REMOTE_E2E.requirement);
     return { manifest, artifacts, ...(releasesUrl !== undefined ? { releasesUrl } : {}), askpass: this.mainAskpass() };
   }
 
@@ -8413,7 +8500,8 @@ class DesktopApp {
         const projectKey = await opening().projectKeyOf(authorityKey, folder);
         return { projectKey, listed: opening().isProject(projectKey) };
       },
-      selectProject: (projectKey) => this.selectProject(projectKey),
+      // the damocles command the user ran
+      selectProject: (projectKey) => this.selectProject(projectKey, true),
       addFolder: async (authorityKey, folder) => {
         await openFolderAsProject(opening(), authorityKey, folder);
       },
@@ -8572,8 +8660,38 @@ class DesktopApp {
     this.ports?.connected(hostId, connection);
     if (this.hostStore?.host(hostId)?.kind === 'container') this.agentRelays?.attach(this.authorityOfHost(hostId), connection);
     const following = followMirrorChanges(connection, () => this.syncMirror(hostId, connection));
-    connection.onClose(() => following.dispose());
+    const removing = connection.onRemoving((deviceName) => this.serverRemovedElsewhere(hostId, deviceName));
+    // a daemon that names another device's switch lists this device's own runs, which the switch's notice counts
+    const ownRuns = connection.features.includes(HANDING_OVER_FEATURE) ? followOwnRuns(connection, (line) => log(line)) : undefined;
+    const handingOver = connection.onHandingOver((deviceName) => this.handingOverElsewhere(hostId, connection, deviceName, ownRuns?.count() ?? 0));
+    connection.onClose(() => {
+      following.dispose();
+      removing.dispose();
+      ownRuns?.dispose();
+      handingOver.dispose();
+    });
     this.syncMirror(hostId, connection);
+  }
+
+  // Another device removed the host's server: the host goes offline as it does after this device's own removal, so nothing
+  // reconnects and installs it again, and it says by whom until the user connects.
+  private serverRemovedElsewhere(hostId: string, deviceName: string): void {
+    const authority = this.authorityOfHost(hostId);
+    log(`[remote] ${hostId}: ${deviceName} removes the Damocles server; the host goes offline`);
+    this.requireRemoteConnections().markRemoved(hostId, deviceName);
+    void this.disconnectAuthority(authority);
+    const { t } = this.requireLocalization();
+    this.notificationCenter.notice('warning', t('The Damocles server on {0} was removed from {1}. Connect to install it again.', this.hostName(authority), deviceName), [t('Connect')], this.notificationHost(authority)).then((answer) => {
+      if (answer === 0) this.reconnectHost(hostId);
+    }).catch(this.shellFailure('Connect', 'Damocles could not reconnect to the host: {0}'));
+  }
+
+  // Another device's switch ends the host's daemon: the next attach that finds another version says who switched it and how many
+  // of this device's own agent runs (listOwnRuns, as of the latest runs event) it stopped.
+  private handingOverElsewhere(hostId: string, connection: RemoteConnection, deviceName: string, agentsStopped: number): void {
+    const authority = this.authorityOfHost(hostId);
+    log(`[update] ${authority}: ${deviceName} switches the daemon of ${connection.serverVersion}; ${agentsStopped} of this device's agents stop`);
+    this.switchReminders.handingOver(authority, { deviceName, agentsStopped, serverVersion: connection.serverVersion });
   }
 
   // A fresh connection's chats reopened: the chats left running at the last detach that ended meanwhile make one notice.
@@ -8597,41 +8715,167 @@ class DesktopApp {
     }, authority).catch(this.report('Telling which chats finished while away'));
   }
 
-  // A saved host's daemon of the same protocol and another build, before the connection is published: replaced at once while
-  // it is idle and alone, else asked to exit once idle (after which the next connection starts this build), or used as it is
-  // while other devices use it and this app may not switch it (Compatibility). A check that fails keeps the daemon.
+  // A saved host's daemon of the same protocol and another build, before the connection is published (adoptCompatibleDaemon).
+  // A check that fails keeps the daemon; either way this connection settles the switch the one before waited for.
   private async adoptDaemonVersion(authority: string, connection: RemoteConnection): Promise<'kept' | 'replaced'> {
     // the loopback daemon has no host record and runs this app's own build
     if (this.savedHostIdOf(authority) === undefined) return 'kept';
+    // a switch's own notice tells this restart
+    if (this.switchReminders.arrived(authority, connection.serverVersion)) this.switchTold.add(connection);
     try {
       // the manifest every saved host's connect installs from
       const { manifest } = await this.serverInstall();
-      const outcome = await adoptCompatibleDaemon(manifest, {
+      const required = await this.requiredDeadlineOf(authority, manifest, connection.serverVersion);
+      const adopted = await adoptCompatibleDaemon(manifest, {
         serverVersion: connection.serverVersion,
         waitsForOtherClients: connection.features.includes(SHUTDOWN_WHEN_IDLE_CLIENTS_FEATURE),
         listRuns: async () => (await connection.control.request('listRuns', {})).runs,
+        cliWaits: () => connection.cliWaits(),
         otherDevices: () => otherDeviceCount(connection.devices()),
         shutdownWhenIdle: () => connection.control.request('shutdownWhenIdle', {}),
         shutdownNow: () => shutDownNow(connection, (line) => log(line)),
+        handsOver: connection.features.includes(HAND_OVER_FEATURE),
+        handOver: (when) => (when === 'now' ? handOverNow(connection, (line) => log(line)) : connection.control.request('handOver', { when })),
+        ...(connection.features.includes(HAND_OVER_IF_IDLE_FEATURE) ? { handOverIfIdle: () => handOverIfIdle(connection, (line) => log(line)) } : {}),
       }, (line) => log(line));
+      const { outcome } = adopted;
+      const pendingBefore = adopted.outcome === 'switchWhenIdle' && this.followCompatible(authority, connection, adopted.runs, required);
+      if (outcome !== 'switchWhenIdle') {
+        this.settleSwitch(authority);
+        const state = this.requireRemoteState();
+        if (state.pendingSince(authority) !== undefined) void state.setPendingSince(authority, undefined).catch(this.report('Forgetting when the host\'s switch started waiting'));
+      }
+      if (outcome === 'useAsIs' && supersedes(manifest.version, connection.serverVersion)) this.olderInUse.add(connection);
+      // a replaced daemon's connection is not the one the host settles on
+      if (outcome !== 'replaceNow') {
+        this.switchReminders.settled(authority, outcome === 'current');
+        this.switchReminders.connected(authority, pendingBefore);
+      } else {
+        this.switchReminders.following(authority, connection.serverVersion);
+      }
       return outcome === 'replaceNow' ? 'replaced' : 'kept';
     } catch (err) {
+      this.settleSwitch(authority);
       this.report('Switching the host to this version')(err);
       return 'kept';
     }
   }
 
-  // A daemon of another protocol answered: it is stopped when it runs nothing, else its chats show read-only from the mirror
-  // and the banner offers the switch; once it is gone this version connects.
+  // When the daemon of serverVersion must have switched (A11), or undefined when the manifest requires nothing of it: the first
+  // detection is kept with its deadline, which a shorter grace only brings closer, and forgotten once nothing is required. A
+  // deadline found passed gives the daemon the countdown's length once per run, which is never stored.
+  private async requiredDeadlineOf(authority: string, manifest: ServerManifest, serverVersion: string): Promise<{ readonly deadline: number } | undefined> {
+    const requirement = requiredOf(manifest, serverVersion);
+    const state = this.requireRemoteState();
+    const stored = state.requiredSince(authority);
+    if (requirement === undefined) {
+      this.missedDeadlines.delete(authority);
+      if (stored !== undefined) await state.setRequiredSince(authority, undefined).catch(this.report('Forgetting the required update\'s deadline'));
+      return undefined;
+    }
+    const { record, deadline } = requiredDeadline(stored, serverVersion, requirement.graceHours, Date.now());
+    if (stored?.serverVersion !== record.serverVersion || stored.deadline !== record.deadline) {
+      log(`[update] ${authority}: the daemon of ${serverVersion} must switch to ${requirement.minimumServerVersion} or later by ${new Date(record.deadline).toISOString()}`);
+      await state.setRequiredSince(authority, record).catch(this.report('Keeping the required update\'s deadline'));
+    }
+    if (deadline === record.deadline) return { deadline };
+    const missed = this.missedDeadlines.get(authority);
+    if (missed?.serverVersion === serverVersion) return { deadline: missed.deadline };
+    log(`[update] ${authority}: the deadline of the daemon of ${serverVersion} passed while this app was away; it switches at ${new Date(deadline).toISOString()}`);
+    this.missedDeadlines.set(authority, { serverVersion, deadline });
+    return { deadline };
+  }
+
+  // When the host's switch from the daemon of serverVersion started waiting, kept across relaunches until a connect finds none
+  // pending; before: an earlier connection, of this run or one before, found it, so this fresh one reminds (P6).
+  private pendingSinceOf(authority: string, serverVersion: string): { readonly since: number; readonly before: boolean } {
+    const state = this.requireRemoteState();
+    const stored = state.pendingSince(authority);
+    if (stored?.serverVersion === serverVersion) return { since: stored.since, before: true };
+    const since = Date.now();
+    void state.setPendingSince(authority, { serverVersion, since }).catch(this.report('Keeping when the host\'s switch started waiting'));
+    return { since, before: false };
+  }
+
+  // A compatible daemon asked to exit once idle: its pending switch shows on every surface until the next connect settles.
+  private followCompatible(authority: string, connection: RemoteConnection, runs: readonly Run[], required: { readonly deadline: number } | undefined): boolean {
+    log(`[update] ${authority}: waiting for the daemon of ${connection.serverVersion} to switch`);
+    this.switchReminders.following(authority, connection.serverVersion);
+    const pending = this.pendingSinceOf(authority, connection.serverVersion);
+    this.pendingSwitches.follow(authority, (ended) => followCompatibleDaemon({
+      connection,
+      targetVersion: this.targetVersion(),
+      runs,
+      changed: () => this.pendingSwitchChanged(authority),
+      ended,
+      confirm: (listing) => this.confirmSwitchNow(authority, connection.serverVersion, listing),
+      pollMs: SWITCH_POLL_MS,
+      waitingSince: pending.since,
+      ...(required !== undefined ? { required } : {}),
+      ...(REMOTE_E2E.drainMs !== undefined ? { drainMs: REMOTE_E2E.drainMs } : {}),
+      switched: (result) => this.switchReminders.switchSent(authority, result, this.targetVersion()),
+      log: (line) => log(line),
+    }));
+    this.pendingSwitchChanged(authority);
+    return pending.before;
+  }
+
+  // A reminder of the host's pending switch: Switch now asks as the strip's does, Show host opens the host card.
+  private remindOfSwitch(authority: string, notice: NoticeText): void {
+    const { t } = this.requireLocalization();
+    const hostId = this.savedHostIdOf(authority);
+    this.notificationCenter.hostUpdate(this.notificationHost(authority), notice.severity, notice.title, notice.message, [t('Switch now'), t('Show host')]).then(async (answer) => {
+      if (hostId === undefined) return;
+      if (answer === 0) await this.switchHostNow(hostId);
+      else if (answer === 1) await this.requireRemoteHosts().openConnect(hostId, { card: 'show' });
+    }).catch(this.shellFailure('Switch now', 'Damocles could not switch the host to this version: {0}'));
+  }
+
+  // The countdown to a required switch: sticky, shown whatever silences popups, with the taskbar button flashing.
+  private countDownToSwitch(authority: string, notice: NoticeText, deadline: number): { withdraw(): void } {
+    const { t } = this.requireLocalization();
+    const hostId = this.savedHostIdOf(authority);
+    const sticky = this.notificationCenter.stickyNotice(notice.severity, notice.message, [t('Switch now')], this.notificationHost(authority), { title: notice.title, countdownTo: deadline, timeSensitive: true });
+    sticky.answer.then(async (answer) => {
+      if (answer !== 0 || hostId === undefined) return;
+      // a cancelled confirmation leaves the countdown running, so its notice comes back
+      await this.switchHostNow(hostId).finally(() => this.switchReminders.countdownAnswered(authority));
+    }).catch(this.shellFailure('Switch now', 'Damocles could not switch the host to this version: {0}'));
+    return { withdraw: () => sticky.withdraw() };
+  }
+
+  private settleSwitch(authority: string): void {
+    if (!this.pendingSwitches.has(authority)) return;
+    this.pendingSwitches.forget(authority);
+    this.pendingSwitchChanged(authority);
+  }
+
+  // Every surface of the host's pending switch follows it: the shell, the chat pages, the host card, Settings and its reminders.
+  private pendingSwitchChanged(authority: string): void {
+    const hostId = this.savedHostIdOf(authority);
+    this.switchReminders.changed(authority, this.pendingSwitches.get(authority)?.update());
+    if (hostId !== undefined) this.remoteHosts?.hostChanged(hostId);
+    this.shellStateChanged();
+    this.publishHostAttention();
+    this.overlaySettings?.authorityChanged(authority);
+  }
+
+  // this app's version, which a switch moves a host to
+  private targetVersion(): string {
+    return appVersionOf(REMOTE_E2E.appVersion ?? this.requirePlatform().appInfo.version);
+  }
+
+  // A daemon of another protocol answered: newer than this app, it keeps running and the host shows that this app must update;
+  // else it is stopped when it runs nothing, else the update offers the switch. Its chats show read-only from the mirror; once
+  // it is gone this version connects.
   private followOtherProtocol(authority: string, daemon: OtherProtocolDaemon): void {
     const hostId = this.savedHostIdOf(authority);
-    const changed = (): void => {
-      this.shellStateChanged();
-      this.publishHostAttention();
-      this.overlaySettings?.authorityChanged(authority);
-    };
     log(`[update] ${authority}: following the daemon of ${daemon.serverVersion} (protocol ${daemon.protocolVersion})`);
-    this.otherProtocolHosts.follow(authority, (ended) => followOtherProtocolDaemon({
+    this.switchReminders.following(authority, daemon.serverVersion);
+    const pending = this.pendingSinceOf(authority, daemon.serverVersion);
+    // its first update, which the flow publishes once it listed the runs, is what the connection found
+    let connectTold = false;
+    this.pendingSwitches.follow(authority, (ended) => followOtherProtocolDaemon({
       daemon,
       // the running chats read live from the mirror: saved chats it now holds open, and changed transcripts replay
       syncMirror: async () => {
@@ -8644,29 +8888,47 @@ class DesktopApp {
         for (const project of this.remoteProjects()) if (project.authorityKey === authority) this.chatsChanged(project.key);
         log(`[update] ${authority}: mirror synced ${projects.length} projects; ${records.length} saved chats, ${opened} transcripts opened, ${reloaded} reloaded`);
       },
-      changed,
-      reconnect: () => {
-        ended();
-        // through the host's attempt, whose ssh its transport needs; started before changed, so the host never reads offline
-        this.connectAuthority(authority);
-        changed();
+      changed: () => {
+        this.pendingSwitchChanged(authority);
+        if (connectTold || this.pendingSwitches.get(authority)?.update() === undefined) return;
+        connectTold = true;
+        this.switchReminders.connected(authority, pending.before);
       },
+      // through the host's attempt, whose ssh its transport needs
+      reconnect: () => this.connectAuthority(authority, false),
+      ended,
       confirm: (listing) => this.confirmSwitchNow(authority, daemon.serverVersion, listing),
-      pollMs: OTHER_PROTOCOL_POLL_MS,
+      targetVersion: this.targetVersion(),
+      pollMs: SWITCH_POLL_MS,
+      waitingSince: pending.since,
+      required: hostId === undefined ? Promise.resolve(undefined) : this.serverInstall().then(({ manifest }) => this.requiredDeadlineOf(authority, manifest, daemon.serverVersion)),
+      switched: (result) => this.switchReminders.switchSent(authority, result, this.targetVersion()),
       log: (line) => log(line),
     }));
     // the reconnect loop stops here: this flow connects once the old daemon is gone
     this.reconnector?.stateChanged(authority);
   }
 
-  // Switch now's confirmation: the agents that stop and the terminals that close.
+  // No server runs on the host and its security floor is above this app, so its bridge started none: the host shows that this
+  // app must update, until a connect settles or the host is forgotten.
+  private belowFloor(authority: string, floor: string): void {
+    const shown = this.pendingSwitches.get(authority)?.update();
+    if (shown?.outdated === 'floor' && shown.serverVersion === floor) return;
+    log(`[update] ${authority}: the host's security floor ${floor} is above this app of ${this.targetVersion()}; it starts no server there`);
+    this.pendingSwitches.follow(authority, () => belowFloorSwitch(floor, this.targetVersion()));
+    this.pendingSwitchChanged(authority);
+    // the reconnect loop stops here: only updating this app changes the outcome
+    this.reconnector?.stateChanged(authority);
+  }
+
+  // Switch now's confirmation (switchNowText).
   private async confirmSwitchNow(authority: string, serverVersion: string, listing: SwitchListing): Promise<boolean> {
     const { t } = this.requireLocalization();
-    const preview = [...listing.agents.map((title) => t('Agent: {0}', title === '' ? t('New conversation') : title)), ...listing.terminals.map((name) => t('Terminal: {0}', name))];
+    const { message, detail, preview } = switchNowText(listing, this.targetVersion(), { t, hostName: this.hostName(authority) });
     const answer = await this.ask({
       severity: 'danger',
-      message: t('Switch {0} to Damocles {1} now?', this.hostName(authority), appVersionOf(REMOTE_E2E.appVersion ?? this.requirePlatform().appInfo.version)),
-      detail: t('These agents stop and these terminals close.'),
+      message,
+      detail,
       actions: [t('Switch now')],
       cancelLabel: t('Cancel'),
       ...(preview.length > 0 ? { preview: preview.map((line) => visibleLines(line)) } : {}),
@@ -8676,15 +8938,33 @@ class DesktopApp {
   }
 
   private switchHostWhenIdle(hostId: string): Promise<void> {
-    const followed = this.otherProtocolHosts.get(this.authorityOfHost(hostId));
-    if (!followed) throw new Error('The host runs this version');
-    return followed.switchWhenIdle();
+    const pending = this.pendingSwitches.get(this.authorityOfHost(hostId));
+    if (!pending) throw new Error('No switch is pending on the host');
+    return pending.switchWhenIdle();
   }
 
   private switchHostNow(hostId: string): Promise<boolean> {
-    const followed = this.otherProtocolHosts.get(this.authorityOfHost(hostId));
-    if (!followed) throw new Error('The host runs this version');
-    return followed.switchNow();
+    const pending = this.pendingSwitches.get(this.authorityOfHost(hostId));
+    if (!pending) throw new Error('No switch is pending on the host');
+    return pending.switchNow();
+  }
+
+  // The update strip's and the host card's actions on a host; Check for updates is the app's own updater.
+  private async hostUpdateAction(hostId: string, action: HostUpdateAction): Promise<void> {
+    if (action === 'checkForUpdates') await runUpdateAction('check', this.aboutDeps());
+    else if (action === 'switchWhenIdle') await this.switchHostWhenIdle(hostId);
+    else await this.switchHostNow(hostId);
+  }
+
+  // the app's updater runs: off in the unpackaged app
+  private canCheckForUpdates(): boolean {
+    return this.updates !== undefined && this.updates.snapshot().state.kind !== 'disabled';
+  }
+
+  // The host card's notice while this connection's older daemon is used as it is for other computers, and no switch is pending.
+  private serverInUse(authority: string): HostNotice | undefined {
+    const connection = this.authorities?.connection(authority);
+    return connection !== undefined && this.olderInUse.has(connection) && !this.pendingSwitches.has(authority) ? serverInUseNotice(connection) : undefined;
   }
 
   // The host's sub-call ledger and projects' session mirrors catch up, the most recently used project first: at each connect,
@@ -8731,7 +9011,7 @@ class DesktopApp {
   private mirrorChannel(authority: string): MirrorChannel {
     const connection = this.authorities?.connection(authority);
     if (connection) return connectionMirrorChannel(connection);
-    const daemon = this.otherProtocolHosts.get(authority)?.daemon;
+    const daemon = this.pendingSwitches.get(authority)?.following();
     if (!daemon) throw this.notConnected(authority);
     return frozenMirrorChannel(daemon);
   }
@@ -8756,16 +9036,23 @@ class DesktopApp {
   // The label a remote chat page shows for its host, from this computer's host store; its banner says what the shell's would.
   private panelHostLabel(authority: string): PanelHostLabel {
     const color = this.hostColor(authority);
-    const attention = this.hostAttentionOf(authority);
-    const update = this.otherProtocolHosts.get(authority)?.update();
+    const host = this.shellHostOf(authority);
+    const attention = host === undefined ? undefined : hostAttention(host);
+    const update = this.pendingSwitches.get(authority)?.update();
     const canAllowYolo = this.savedHostRecord(authority) !== undefined;
-    return { hostId: this.hostIdOf(authority), name: this.hostName(authority), ...(color !== undefined ? { color } : {}), computer: os.hostname(), ...(attention !== undefined ? { attention } : {}), ...(update !== undefined ? { update } : {}), ...(canAllowYolo ? { canAllowYolo } : {}) };
+    const canCheckForUpdates = this.canCheckForUpdates();
+    const removed = host?.removed;
+    return { hostId: this.hostIdOf(authority), name: this.hostName(authority), ...(color !== undefined ? { color } : {}), computer: os.hostname(), ...(attention !== undefined ? { attention } : {}), ...(removed !== undefined ? { removed } : {}), ...(update !== undefined ? { update } : {}), ...(canCheckForUpdates ? { canCheckForUpdates } : {}), ...(canAllowYolo ? { canAllowYolo } : {}) };
+  }
+
+  private shellHostOf(authority: string): SavedShellHost | undefined {
+    const hostId = this.savedHostIdOf(authority);
+    return hostId === undefined ? undefined : this.remoteHosts?.shellHosts().find((candidate) => candidate.hostId === hostId);
   }
 
   // What the authority's saved host waits for the user to do, as the shell's and the chat pages' banners say it.
   private hostAttentionOf(authority: string): HostAttention | undefined {
-    const hostId = this.savedHostIdOf(authority);
-    const host = hostId === undefined ? undefined : this.remoteHosts?.shellHosts().find((candidate) => candidate.hostId === hostId);
+    const host = this.shellHostOf(authority);
     return host === undefined ? undefined : hostAttention(host);
   }
 
@@ -8790,7 +9077,7 @@ class DesktopApp {
     const views = this.views;
     if (!views || !this.remoteHosts) return;
     for (const host of this.remoteHosts.shellHosts()) {
-      const attention = JSON.stringify([hostAttention(host) ?? null, this.otherProtocolHosts.get(host.authorityKey)?.update() ?? null]);
+      const attention = JSON.stringify([hostAttention(host) ?? null, host.removed ?? null, this.pendingSwitches.get(host.authorityKey)?.update() ?? null]);
       if (this.sentHostAttention.get(host.hostId) === attention) continue;
       this.sentHostAttention.set(host.hostId, attention);
       views.broadcastHost(host.authorityKey, this.panelHostLabel(host.authorityKey));
@@ -8822,6 +9109,10 @@ class DesktopApp {
     }
     if (action === 'switchNow') {
       this.switchHostNow(hostId).catch(this.shellFailure('Switch now', 'Damocles could not switch the host to this version: {0}'));
+      return;
+    }
+    if (action === 'checkForUpdates') {
+      this.hostUpdateAction(hostId, action).catch(this.shellFailure('Check for updates', 'Damocles could not check for updates: {0}'));
       return;
     }
     void reportFailure(async () => this.reconnectHost(hostId), this.shellFailure('Reconnect', 'Damocles could not reconnect to the host: {0}'))();
@@ -9006,11 +9297,14 @@ class DesktopApp {
     const connection = this.authorities?.connection(authorityKey);
     const hostId = this.savedHostIdOf(authorityKey);
     if (hostId !== undefined) this.remoteHosts?.hostChanged(hostId);
+    this.pendingSwitches.stateChanged(authorityKey, this.authorities?.state(authorityKey) ?? 'offline');
     if (this.authorities?.state(authorityKey) === 'connected' && connection) {
       for (const key of [...this.catalogRows.keys()]) if (authorityKeyOfProject(key) === authorityKey) this.catalogRows.delete(key);
       const reselect = this.transcripts.hostConnected(authorityKey);
       if (reselect !== undefined) this.reselectRemote.set(authorityKey, reselect);
       this.detectHostTerminals(authorityKey);
+      // before the reattach's list, so no state change falls between the list and the events
+      this.followResponding(authorityKey, connection);
       this.reattachRemoteTerminals(authorityKey);
       this.watchLimitsOf(authorityKey, connection);
       this.sharedHomes.ask(authorityKey, connection);
@@ -9178,7 +9472,8 @@ class DesktopApp {
         const project = this.workspaceProjects().find((candidate) => candidate.key === key);
         if (project) await this.requestProjectTrust(project);
       },
-      select: (key) => this.selectProject(key),
+      // opening a folder as a project is the user's
+      select: (key) => this.selectProject(key, true),
       notFolder: (authorityKey, folder) => new Error(authorityKey === 'local' ? t('The folder {0} does not exist.', folder) : t('The folder {0} does not exist on {1}.', folder, this.hostName(authorityKey))),
     };
   }
@@ -9219,6 +9514,18 @@ class DesktopApp {
     if (this.authorities?.connectedWorkspace(authorityKey) !== workspace) throw new Error(`${this.hostName(authorityKey)} is not connected`);
     await this.requireTerminals().open(workspace.terminals, authorityKey, id);
     this.showTerminalPane();
+  }
+
+  // A connection's terminals.responding events, heard once per connection: its terminals' tabs and the open host card follow.
+  private followResponding(authorityKey: string, connection: RemoteConnection): void {
+    const workspace = this.authorities?.connectedWorkspace(authorityKey);
+    if (!workspace || this.respondingWatched.has(connection)) return;
+    this.respondingWatched.add(connection);
+    connection.workspace.onEvent('terminals.responding', (event) => {
+      this.terminals?.responding(workspace.terminals, event);
+      const hostId = this.savedHostIdOf(authorityKey);
+      if (hostId !== undefined) this.remoteHosts?.hostChanged(hostId);
+    });
   }
 
   // A connection's watch limit reports, heard once per connection.
@@ -9278,7 +9585,7 @@ class DesktopApp {
       },
       connect: async (hostId) => {
         const connections = this.requireRemoteConnections();
-        const outcome = connections.outcome(connections.connect(hostId, false));
+        const outcome = connections.outcome(connections.connect(hostId, false, { user: true }));
         if (!outcome) throw new Error(`The attempt to reach ${hostId} was replaced`);
         await outcome;
       },
@@ -9330,6 +9637,16 @@ class DesktopApp {
   }
 
   // The saved host record an authority key names; undefined for a key no saved host holds (loopback included).
+  // an SSH, WSL or container host's authority that no saved host holds: Forget host dropped it
+  private forgottenHostAuthority(authorityKey: string): boolean {
+    return /^(?:ssh|wsl|container)\+/.test(authorityKey) && this.savedHostRecord(authorityKey) === undefined;
+  }
+
+  private hostBeingForgotten(authorityKey: string): boolean {
+    const hostId = this.savedHostIdOf(authorityKey);
+    return hostId !== undefined && this.remoteConnections?.isForgotten(hostId) === true;
+  }
+
   private savedHostRecord(authorityKey: string): HostRecord | undefined {
     const hostId = this.savedHostIdOf(authorityKey);
     return hostId === undefined ? undefined : this.hostStore?.host(hostId);
@@ -10054,7 +10371,7 @@ class DesktopApp {
       : authority === 'local' ? folderKey(projectPath) : this.remoteProjects().find((project) => project.authorityKey === authority && project.fsPath === projectPath)?.key;
     if (removed && projectKey !== undefined) this.windowLayout.forgetRoot(rootKey({ projectKey, worktreeId }));
     this.worktreesChanged();
-    if (this.views && !this.views.selected() && projectKey !== undefined) this.selectProject(projectKey).catch(this.report('Selecting a chat after a worktree delete'));
+    if (this.views && !this.views.selected() && projectKey !== undefined) this.selectProject(projectKey, false).catch(this.report('Selecting a chat after a worktree delete'));
   }
 
   // Native, as every file picker is (D41); the editor confines the answer to an open project.
@@ -11453,7 +11770,8 @@ class DesktopApp {
           waitMs: REMOTE_DETACH_WAIT_MS,
           log: (line) => log(line),
         });
-        this.otherProtocolHosts.dispose();
+        this.pendingSwitches.dispose();
+        this.switchReminders.dispose();
         this.remoteConnections?.dispose();
         this.authorities?.dispose();
         await this.sshAskpass?.dispose();

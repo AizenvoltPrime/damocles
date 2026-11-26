@@ -1,3 +1,4 @@
+import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -13,7 +14,7 @@ import { createHarness, folderEntry, type Harness } from '../../../core/chat-pan
 import type { FakePanelHost } from '../../../__mocks__/fake-platform';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { MAX_SETTINGS_MESSAGE_CHARS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayPrefs, type OverlayPrefWrite, type OverlayRequest, type OverlaySettingsAway, type OverlaySettingsAwayState, type PopupAnswer } from '../../preload/overlay-channels';
-import { DESKTOP_CONFIGURATION, LANGUAGE_SETTING, TERMINAL_PROFILES_SETTING } from '../../local-services/desktop-configuration';
+import { DESKTOP_CONFIGURATION, LANGUAGE_SETTING, REMOTE_SSH_PATH_SETTING, TERMINAL_PROFILES_SETTING } from '../../local-services/desktop-configuration';
 import { hostAwayOf, hostCoreFacts, lookupOnUpCore, OverlaySettings, parseThemeAction, settingsPageChat, type HostCoreFacts, type HostCoreSources, type SettingsScopes, type SettingsViewHost } from '../overlay-settings';
 import type { RemoteConnection } from '../remote/connection';
 import { CoreHost } from '../core-host';
@@ -592,6 +593,33 @@ describe('OverlaySettings', () => {
     // every declared desktop setting but the terminal profiles, which reach no renderer
     expect(Object.keys(DESKTOP_CONFIGURATION)).toContain(TERMINAL_PROFILES_SETTING);
     expect(Object.keys(prefs.values).sort()).toEqual(Object.keys(DESKTOP_CONFIGURATION).filter((key) => key !== TERMINAL_PROFILES_SETTING).sort());
+  });
+
+  it('writes the SSH client path only as an absolute path to a file, or empty, and names why it refused one', async () => {
+    const { fake, settings, settingsPlatform } = await setup();
+    void settings.show({});
+    await tick();
+    const set = async (value: unknown): Promise<OverlayPrefWrite> => {
+      const answer = (await fake.invoke(OVERLAY_CHANNELS.prefsSet, { key: REMOTE_SSH_PATH_SETTING, value })) as PopupAnswer<OverlayPrefWrite>;
+      if (!answer.ok) throw new Error('prefsSet answered closed');
+      return answer.value;
+    };
+    const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'dam-ssh-path-'));
+    try {
+      const ssh = path.join(folder, process.platform === 'win32' ? 'ssh.exe' : 'ssh');
+      fs.writeFileSync(ssh, '');
+      expect(await set('ssh')).toMatchObject({ ok: false, refusal: 'sshPathNotAbsolute' });
+      expect(await set('~/bin/ssh')).toMatchObject({ ok: false, refusal: 'sshPathNotAbsolute' });
+      expect(await set(path.join(folder, 'missing'))).toMatchObject({ ok: false, refusal: 'sshPathNotFile' });
+      expect(await set(folder)).toMatchObject({ ok: false, refusal: 'sshPathNotFile' });
+      expect(await set(7)).toMatchObject({ ok: false });
+      expect(settingsPlatform.settings.inspect(REMOTE_SSH_PATH_SETTING)?.userValue).toBeUndefined();
+      expect(await set(ssh)).toEqual({ ok: true, file: USER_FILE });
+      expect(settingsPlatform.settings.inspect(REMOTE_SSH_PATH_SETTING)?.userValue).toBe(ssh);
+      expect(await set('')).toEqual({ ok: true, file: USER_FILE });
+    } finally {
+      fs.rmSync(folder, { recursive: true, force: true });
+    }
   });
 
   it('restarts, restores the default layout and writes desktop settings only while the modal is open, answering closed as a value otherwise', async () => {
@@ -1238,7 +1266,7 @@ describe('settingsPageChat', () => {
 
 describe('hostAwayOf', () => {
   const facts = (given: Partial<HostCoreFacts>): HostCoreFacts => ({ connected: false, reconnect: undefined, state: 'offline', handedOff: false, update: undefined, halted: false, restarting: false, coreUp: false, reopened: false, ...given });
-  const offer = { serverVersion: '3.7.0', runningAgents: 2, phase: 'offer' } as const;
+  const offer = { source: 'otherProtocol', phase: 'offer', serverVersion: '3.7.0', targetVersion: '3.9.0', runningAgents: 2, runningTerminals: 0, terminalsSurvive: false, waitingSince: 1 } as const;
   it.each([
     ['a host disconnected, removed or never connected', facts({}), 'offline'],
     ['an attempt under way', facts({ state: 'connecting' }), 'reconnecting'],
@@ -1250,6 +1278,8 @@ describe('hostAwayOf', () => {
     ['a daemon of another protocol the update flow stops as it runs nothing', facts({ state: 'failed', handedOff: true }), 'reconnecting'],
     ['a daemon of another protocol whose agents the flow waits for after Switch when they finish', facts({ state: 'failed', handedOff: true, update: { ...offer, phase: 'waiting' } }), 'reconnecting'],
     ['a daemon of another protocol whose update banner offers the switch', facts({ state: 'failed', handedOff: true, update: offer }), 'switchOffered'],
+    ['a daemon of another protocol newer than this app', facts({ state: 'failed', handedOff: true, update: { ...offer, phase: 'appOutdated', outdated: 'runs' } }), 'reconnecting'],
+    ['a compatible daemon offering a switch, which only an offer of another protocol holds away', facts({ state: 'failed', handedOff: true, update: { ...offer, source: 'compatible' } }), 'reconnecting'],
     ['a connection whose core is attaching, its chats not reopened on it yet', facts({ connected: true, state: 'connected' }), 'reconnecting'],
     ['a connection whose engine restarted, its chats reopened on it before', facts({ connected: true, state: 'connected', reopened: true }), 'restarting'],
     ['a connection whose engine restarts', facts({ connected: true, state: 'connected', restarting: true }), 'restarting'],
@@ -1295,7 +1325,7 @@ describe('hostCoreFacts', () => {
   it("reads whether the current connection's chats reopened on it, and the update flow's banner", () => {
     expect(hostCoreFacts(sources({ core: core({ reopenedOn: first }) })).reopened).toBe(true);
     expect(hostCoreFacts(sources({ connection: second, core: core({ reopenedOn: first }) })).reopened).toBe(false);
-    const update = { serverVersion: '3.7.0', runningAgents: 1, phase: 'offer' } as const;
+    const update = { source: 'otherProtocol', phase: 'offer', serverVersion: '3.7.0', targetVersion: '3.9.0', runningAgents: 1, runningTerminals: 0, terminalsSurvive: false, waitingSince: 1 } as const;
     expect(hostCoreFacts(sources({ connection: undefined, followed: { update: () => update } }))).toMatchObject({ handedOff: true, update });
     expect(hostCoreFacts(sources({ connection: undefined, followed: { update: () => undefined } }))).toMatchObject({ handedOff: true, update: undefined });
   });

@@ -70,6 +70,15 @@ describe('host card devices', () => {
     expect(wrapper.get('[data-testid="host-account-advice"]').text()).toBe('People who share a server account share its chats, files and tokens. Give each person their own account on prod-1.');
   });
 
+  it('says the server was removed while the host is not connected, by whom when another device did it, beside the Connect button', () => {
+    const removedBy = mountCard({ ...PROD, connection: 'offline', removed: { by: 'Laptop B' } });
+    expect(removedBy.get('[data-testid="host-card-removed"]').text()).toBe('The Damocles server on prod-1 was removed from Laptop B. Connect to install it again.');
+    expect(removedBy.get('[data-testid="host-card-connect"]').text()).toBe('Connect');
+    const found = mountCard({ ...PROD, connection: 'offline', removed: {} });
+    expect(found.get('[data-testid="host-card-removed"]').text()).toBe('The Damocles server was removed from prod-1. Connect to install it again.');
+    expect(mountCard({ ...PROD, connection: 'offline' }).find('[data-testid="host-card-removed"]').exists()).toBe(false);
+  });
+
   it('says nothing about other devices while this is the only one', () => {
     const wrapper = mountCard({ ...PROD, devices: [{ deviceName: 'ALEXIOS-PC', self: true }] });
     expect(wrapper.find('[data-testid="host-other-devices"]').exists()).toBe(false);

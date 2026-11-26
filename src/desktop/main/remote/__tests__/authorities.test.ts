@@ -293,6 +293,24 @@ describe('Authorities', () => {
     expect(changes.at(-1)).toBe('loopback:connected');
   });
 
+  it('reports a refused resume before it attaches fresh, so a listener sees the held connection gone and treats the next one as new', async () => {
+    const dropped = resumable(async () => 'refused');
+    const fresh = connection().value;
+    const { subject, changes } = authorities();
+    let beforeFresh: string[] = [];
+    connect.mockResolvedValueOnce(dropped.held).mockImplementationOnce(async () => {
+      beforeFresh = [...changes];
+      return fresh;
+    });
+    await subject.connect('loopback');
+    dropped.drop();
+    expect(subject.heldConnection('loopback')).toBe(dropped.held);
+    await subject.connect('loopback');
+    // the last one came with nothing held: the daemon dropped what the connection carried, its terminals' views included
+    expect(beforeFresh).toEqual(['loopback:connecting', 'loopback:connected', 'loopback:failed', 'loopback:connecting', 'loopback:connecting']);
+    expect(subject.connection('loopback')).toBe(fresh);
+  });
+
   it('gives up the transport of a suspect connection when asked to connect, and resumes over a new one', async () => {
     let suspect: number | undefined;
     let lost = false;

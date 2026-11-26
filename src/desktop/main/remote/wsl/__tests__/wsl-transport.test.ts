@@ -70,6 +70,7 @@ function options(packagePath: () => Promise<string>, overrides: Partial<WslTrans
     distro: 'damocles-e2e-alpine',
     listed: async () => 'listed',
     signal: new AbortController().signal,
+    userStarted: () => false,
     hooks: { step: () => undefined, progress: () => undefined, notice: () => undefined },
     installFolderSettled: async () => undefined,
     manifest,

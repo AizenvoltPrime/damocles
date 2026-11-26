@@ -1,17 +1,21 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import * as esbuild from 'esbuild';
-import { clampsLoadAlign, launchers, modeOf, nodeEntries, npmPackageEntries, packageBuild, packageEntries, packageInfo, serverClosure, serverFlavor, serverManifest, serverRoots, serverVersionOf, selfTestExternals } from '../build-server.ts';
+import { clampsLoadAlign, launchers, modeOf, nodeEntries, npmPackageEntries, packageBuild, packageEntries, packageInfo, serverClosure, serverFlavor, serverManifest, serverPackageEntry, serverRoots, serverVersionOf, selfTestExternals } from '../build-server.ts';
 import { FIXED_MTIME, gzipHeader, readTarGz, readZip, tarGz, zip, type ArchiveEntry } from '../server-archive.ts';
 import { SERVER_TARGETS, serverArtifact, type ServerTarget, type ServerTargetName } from '../server-targets.ts';
 import { DESKTOP_ONLY_PACKAGES } from '../sync-vscodeignore.ts';
 import { EXTENSION_EXTERNALS } from '../extension-externals.ts';
 import { isVersionText } from '../../src/remote/handshake';
+import { MAX_GRACE_HOURS } from '../../src/desktop/main/remote/server-manifest-format.ts';
 import { aligns, elf, NODE_LINUX_X64 } from './elf-fixture';
+
+// a release commit sets SERVER_REQUIREMENT, so every test here passes its own requirement and none may read this one
+vi.mock('../../src/desktop/main/remote/server-requirement.ts', () => ({ SERVER_REQUIREMENT: { minimumServerVersion: '99.0.0', graceHours: 72 } }));
 
 type Spec = Pick<ServerTarget, 'platform' | 'arch' | 'libc' | 'natives' | 'ptyPrebuild'>;
 
@@ -93,7 +97,7 @@ describe('the package file list', () => {
       'node_modules/zod/index.js', 'node_modules/zod/package.json', 'package.json', 'package.nls.el.json', 'package.nls.json',
       'resources/grammars/tree-sitter-go.wasm', 'resources/shell-integration/shellIntegration-bash.sh',
     ]);
-    expect(packageInfo({ spec: FAKE_LINUX, target: 'linux-x64', version: '1.0.0', nodeVersion: '24.22.0', portable: ['node-pty', 'zod'] })).toEqual({
+    expect(packageInfo({ spec: FAKE_LINUX, target: 'linux-x64', version: '1.0.0', nodeVersion: '24.22.0', portable: ['node-pty', 'zod'], requirement: null })).toEqual({
       name: 'damocles-server', version: '1.0.0', target: 'linux-x64', node: '24.22.0', externals: selfTestExternals(FAKE_LINUX),
       packages: ['@parcel/watcher-linux-x64-glibc', '@vscode/ripgrep-linux-x64', 'node-pty', 'zod'],
     });
@@ -231,23 +235,49 @@ describe('the manifest', () => {
 
   it('names each archive\'s server version from its server-package.json, published only when asked, as --write-manifest does', () => {
     const dir = packages(() => ({}));
-    const manifest = serverManifest(dir, VERSION, ['linux-x64', 'win32-x64'], { published: false });
+    const manifest = serverManifest(dir, VERSION, ['linux-x64', 'win32-x64'], { published: false, requirement: null });
     expect(manifest.published).toBe(false);
     expect(manifest.packages['linux-x64']).toMatchObject({ file: serverArtifact('linux-x64', VERSION), serverVersion: serverVersion('linux-x64') });
     expect(manifest.packages['win32-x64']).toMatchObject({ file: serverArtifact('win32-x64', VERSION), serverVersion: serverVersion('win32-x64') });
-    expect(serverManifest(dir, VERSION, ['linux-x64'], { published: true }).published).toBe(true);
+    expect(serverManifest(dir, VERSION, ['linux-x64'], { published: true, requirement: null }).published).toBe(true);
     const source = readFileSync(join(__dirname, '..', 'build-server.ts'), 'utf8');
     expect(source.match(/writeManifest\([^)]*\);/g)).toEqual(['writeManifest(manifestDir, version, targets, true);', 'writeManifest(OUT_DIR, version, built, false);']);
   });
 
   it('refuses an archive of another version or target, or without a server version', () => {
-    expect(() => serverManifest(packages((target) => ({ target: target === 'linux-x64' ? 'linux-arm64' : target })), VERSION, ['linux-x64'], { published: true })).toThrow('for linux-arm64');
-    expect(() => serverManifest(packages(() => ({ version: '0.9.0' })), VERSION, ['linux-x64'], { published: true })).toThrow('package of 0.9.0');
-    expect(() => serverManifest(packages(() => ({ serverVersion: undefined })), VERSION, ['linux-x64'], { published: true })).toThrow('build it again with npm run build:server -- --target linux-x64, or delete it');
+    expect(() => serverManifest(packages((target) => ({ target: target === 'linux-x64' ? 'linux-arm64' : target })), VERSION, ['linux-x64'], { published: true, requirement: null })).toThrow('for linux-arm64');
+    expect(() => serverManifest(packages(() => ({ version: '0.9.0' })), VERSION, ['linux-x64'], { published: true, requirement: null })).toThrow('package of 0.9.0');
+    expect(() => serverManifest(packages(() => ({ serverVersion: undefined })), VERSION, ['linux-x64'], { published: true, requirement: null })).toThrow('build it again with npm run build:server -- --target linux-x64, or delete it');
+  });
+
+  it('writes the requirement, which every package carries as its minimum server version, and none without one', () => {
+    const requirement = { minimumServerVersion: '0.9.0', graceHours: 72 };
+    const dir = packages(() => ({ minimumServerVersion: '0.9.0' }));
+    expect(serverManifest(dir, VERSION, ['linux-x64', 'win32-x64'], { published: true, requirement }).requirement).toEqual(requirement);
+    expect(serverManifest(packages(() => ({})), VERSION, ['linux-x64'], { published: true, requirement: null })).not.toHaveProperty('requirement');
+    expect(() => serverManifest(packages(() => ({})), VERSION, ['linux-x64'], { published: true, requirement })).toThrow('carries the minimum server version undefined, the requirement names 0.9.0');
+    expect(() => serverManifest(dir, VERSION, ['linux-x64'], { published: true, requirement: null })).toThrow('carries the minimum server version 0.9.0, the requirement names undefined');
+  });
+
+  it('refuses a minimum above the version, and a grace out of bounds', () => {
+    const dir = packages(() => ({ minimumServerVersion: '1.0.1' }));
+    expect(() => serverManifest(dir, VERSION, ['linux-x64'], { published: true, requirement: { minimumServerVersion: '1.0.1', graceHours: 72 } })).toThrow('is not a minimum server version up to 1.0.0');
+    expect(() => serverManifest(dir, VERSION, ['linux-x64'], { published: true, requirement: { minimumServerVersion: '1.0.0', graceHours: 0 } })).toThrow(`up to ${MAX_GRACE_HOURS} hours`);
+    expect(() => packageInfo({ spec: FAKE_LINUX, target: 'linux-x64', version: '1.0.0', nodeVersion: '24.22.0', portable: [], requirement: { minimumServerVersion: '1.0.1', graceHours: 72 } })).toThrow('SERVER_REQUIREMENT');
+  });
+
+  it('puts the minimum server version last in server-package.json, so it changes the build, and leaves it out with no requirement', () => {
+    const base = { spec: FAKE_LINUX, target: 'linux-x64', version: '1.0.0', nodeVersion: '24.22.0', portable: ['zod'] };
+    const required = packageInfo({ ...base, requirement: { minimumServerVersion: '0.9.0', graceHours: 72 } });
+    expect(Object.keys(required).at(-1)).toBe('minimumServerVersion');
+    expect(required.minimumServerVersion).toBe('0.9.0');
+    expect(packageInfo({ ...base, requirement: null })).not.toHaveProperty('minimumServerVersion');
+    expect(packageBuild([], required)).not.toBe(packageBuild([], packageInfo({ ...base, requirement: null })));
+    expect(JSON.parse(serverPackageEntry(required, '1.0.0+0123456789ab').data.toString('utf8'))).toMatchObject({ serverVersion: '1.0.0+0123456789ab', minimumServerVersion: '0.9.0' });
   });
 
   it('names the musl node-pty option in an Alpine target\'s rebuild hint', () => {
-    expect(() => serverManifest(packages(() => ({ serverVersion: undefined }), ['alpine-x64']), VERSION, ['alpine-x64'], { published: true })).toThrow('--target alpine-x64 --node-pty-binary <pty.node compiled against musl>, or delete it');
+    expect(() => serverManifest(packages(() => ({ serverVersion: undefined }), ['alpine-x64']), VERSION, ['alpine-x64'], { published: true, requirement: null })).toThrow('--target alpine-x64 --node-pty-binary <pty.node compiled against musl>, or delete it');
   });
 });
 

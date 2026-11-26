@@ -47,6 +47,8 @@ const ROOMY_REM = 35;
 // A live worktree chip takes up to 11rem beside the project name, so the toolbar folds this much earlier while it shows.
 const CHIP_FOLD_REM = 8;
 const rootRef = ref<HTMLElement | null>(null);
+const titleRef = ref<HTMLElement | null>(null);
+defineExpose({ title: titleRef });
 const widthRem = ref(Number.POSITIVE_INFINITY);
 const foldAt = (rem: number): number => rem + (worktreeChip.value && !worktreeChip.value.gone ? CHIP_FOLD_REM : 0);
 const wide = computed(() => widthRem.value >= foldAt(WIDE_REM));
@@ -117,6 +119,8 @@ const terminalTitle = computed(() => (toggleTerminalShortcut.value ? t('chatHead
     <div class="flex min-w-0 flex-1 flex-col">
       <div class="flex min-w-0 items-center gap-2">
         <h1
+          ref="titleRef"
+          tabindex="-1"
           class="truncate text-13.5/5 font-semibold tracking-[-.005em]"
           data-testid="chat-header-title"
         >

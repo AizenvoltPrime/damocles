@@ -264,6 +264,26 @@ function savedRootKey(persisted: PersistedTab | undefined, backup: BackupRecord 
   return persisted.kind === 'searchEditor' ? persisted.projectKey : undefined;
 }
 
+/**
+ * The saved layout without the tabs and recent files of the authorities `gone` names, which no host serves any more; a tab's
+ * backup is not touched, so its text still comes back. The layout itself when it names none of them.
+ */
+export function withoutHosts(saved: PersistedEditor, gone: (authority: string) => boolean): PersistedEditor {
+  const authorityOf = (tab: PersistedTab): string | undefined => {
+    if ('file' in tab) return authorityKeyOfProject(tab.file.projectKey);
+    if ('authority' in tab) return tab.authority;
+    return tab.kind === 'searchEditor' && tab.projectKey !== undefined ? authorityKeyOfProject(tab.projectKey) : undefined;
+  };
+  const kept = saved.tabs.flatMap((tab, index) => {
+    const authority = authorityOf(tab);
+    return authority !== undefined && gone(authority) ? [] : [{ tab, index }];
+  });
+  const recent = saved.recent.filter((file) => !gone(authorityKeyOfProject(file.projectKey)));
+  if (kept.length === saved.tabs.length && recent.length === saved.recent.length) return saved;
+  const active = kept.findIndex(({ index }) => index === saved.active);
+  return { tabs: kept.map(({ tab }) => tab), active: active < 0 ? null : active, recent };
+}
+
 // Where a tab or entry saved after `after` goes in `order`: behind the last of them still there, else first.
 function slotAfter(after: readonly string[], order: ReadonlyArray<{ readonly id: string }>): number {
   for (let index = after.length - 1; index >= 0; index--) {
@@ -442,6 +462,23 @@ function fileRefOf(document: Document): FileRef | undefined {
 // A Search Editor's project is its search's; any other document's is its file's.
 function projectKeyOfDocument(document: Document | undefined): string | undefined {
   return document?.kind === 'text' && document.searchEditor ? document.searchEditor.projectKey : document?.location?.projectKey;
+}
+
+// Where a document or tab is, as a close of a root or a host matches it: its project key, else the host holding its file.
+interface ClosePlace {
+  readonly projectKey?: string | undefined;
+  readonly host?: string | undefined;
+}
+
+function inRoot(rootKey: string): (place: ClosePlace) => boolean {
+  return (place) => place.projectKey === rootKey;
+}
+
+function onHosts(authorities: readonly string[]): (place: ClosePlace) => boolean {
+  return (place) => {
+    const authority = place.projectKey !== undefined ? authorityKeyOfProject(place.projectKey) : place.host;
+    return authority !== undefined && authorities.includes(authority);
+  };
 }
 
 
@@ -1137,16 +1174,8 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
    * text it was given for and drops nothing yet. A document answered earlier whose text is unchanged is not asked again.
    * undefined: the user cancelled, or a save failed and its tab says why.
    */
-  async confirmCloseRoot(rootKey: string, answered: RootCloseAnswers = new Map()): Promise<RootCloseAnswers | undefined> {
-    await this.flush();
-    const discarded = new Map(answered);
-    for (const document of this.rootDocuments(rootKey)) {
-      if (document.kind !== 'text' || !isDocumentDirty(document) || discarded.get(document.id) === document.text) continue;
-      const choice = await this.askToSave(document, true);
-      if (choice === 'cancel') return undefined;
-      if (choice === 'discard') discarded.set(document.id, document.text);
-    }
-    return discarded.size === answered.size && [...discarded].every(([id, text]) => answered.get(id) === text) ? answered : discarded;
+  confirmCloseRoot(rootKey: string, answered: RootCloseAnswers = new Map()): Promise<RootCloseAnswers | undefined> {
+    return this.confirmCloseWhere(inRoot(rootKey), answered);
   }
 
   /**
@@ -1154,10 +1183,57 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
    * document of it holds unsaved text no answer covers.
    */
   closeRoot(rootKey: string, answers: RootCloseAnswers): boolean {
-    const documents = this.rootDocuments(rootKey);
+    return this.closeWhere(inRoot(rootKey), (tab) => tab.htmlPreview?.projectKey === rootKey, answers);
+  }
+
+  /**
+   * Forget host's tab questions, asked as confirmCloseRoot asks them, for the documents of the authorities' files; a document
+   * whose host is not connected offers no Save, since its offline save would wait for a host the forget drops.
+   */
+  confirmCloseHosts(authorities: readonly string[]): Promise<RootCloseAnswers | undefined> {
+    return this.confirmCloseWhere(onHosts(authorities), new Map(), true);
+  }
+
+  /**
+   * Closes every tab of the forgotten authorities as closeRoot closes a root's, and each tab that names a place of theirs
+   * without showing a document of it: an HTML preview, a diff by its file, a host's markdown text; their recent files go too.
+   */
+  closeHosts(authorities: readonly string[], answers: RootCloseAnswers): boolean {
+    const onHost = onHosts(authorities);
+    const placed = (tab: Tab): ClosePlace | undefined => tab.htmlPreview ?? (tab.diff && 'place' in tab.diff.subject ? tab.diff.subject.place : undefined);
+    const closed = this.closeWhere(onHost, (tab) => {
+      const place = placed(tab);
+      return (place !== undefined && onHost(place)) || (tab.textAuthority !== undefined && authorities.includes(tab.textAuthority));
+    }, answers);
+    if (!closed) return false;
+    const recent = this.recent.filter((file) => !onHost(file));
+    if (recent.length !== this.recent.length) {
+      this.recent = recent;
+      this.stateChanged();
+    }
+    return true;
+  }
+
+  private async confirmCloseWhere(inside: (place: ClosePlace) => boolean, answered: RootCloseAnswers, offlineUnsaveable = false): Promise<RootCloseAnswers | undefined> {
+    await this.flush();
+    const discarded = new Map(answered);
+    for (const document of this.documentsWhere(inside)) {
+      if (document.kind !== 'text' || !isDocumentDirty(document) || discarded.get(document.id) === document.text) continue;
+      const choice = offlineUnsaveable && document.location && !this.deps.documents.connected(document.location)
+        ? await this.askToDiscard(document, document.location)
+        : await this.askToSave(document, true);
+      if (choice === 'cancel') return undefined;
+      if (choice === 'discard') discarded.set(document.id, document.text);
+    }
+    return discarded.size === answered.size && [...discarded].every(([id, text]) => answered.get(id) === text) ? answered : discarded;
+  }
+
+  // Closes each tab showing a document inside or that names accepts; false, closing nothing, while such a document holds text no answer covers.
+  private closeWhere(inside: (place: ClosePlace) => boolean, names: (tab: Tab) => boolean, answers: RootCloseAnswers): boolean {
+    const documents = this.documentsWhere(inside);
     if (documents.some((document) => document.kind === 'text' && isDocumentDirty(document) && answers.get(document.id) !== document.text)) return false;
     const ids = new Set(documents.map((document) => document.id));
-    const targets = this.tabs.filter((tab) => tab.htmlPreview?.projectKey === rootKey || [tab.documentId, tab.diff?.modifiedId, tab.diff?.originalId].some((id) => id !== undefined && ids.has(id)));
+    const targets = this.tabs.filter((tab) => names(tab) || [tab.documentId, tab.diff?.modifiedId, tab.diff?.originalId].some((id) => id !== undefined && ids.has(id)));
     if (targets.length === 0) return true;
     this.tabs = this.tabs.filter((tab) => !targets.includes(tab));
     this.tabsRemoved();
@@ -1185,14 +1261,14 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     this.stateChanged();
   }
 
-  // The documents the root's tabs show: each one's file, or a Search Editor's search, lies in the root.
-  private rootDocuments(rootKey: string): Document[] {
+  // The documents the tabs show whose file, or a Search Editor's search, lies inside.
+  private documentsWhere(inside: (place: ClosePlace) => boolean): Document[] {
     const documents = new Map<string, Document>();
     for (const tab of this.tabs) {
       for (const id of [tab.documentId, tab.diff?.originalId, tab.diff?.modifiedId]) {
         const document = id !== undefined ? this.deps.documents.get(id) : undefined;
-        const projectKey = document?.kind === 'text' && document.searchEditor ? document.searchEditor.projectKey : document?.location?.projectKey;
-        if (document && projectKey === rootKey) documents.set(document.id, document);
+        const place = document?.kind === 'text' && document.searchEditor ? { projectKey: document.searchEditor.projectKey } : document?.location;
+        if (document && place && inside(place)) documents.set(document.id, document);
       }
     }
     return [...documents.values()];
@@ -2101,6 +2177,20 @@ export class EditorPane implements Disposable, BrowserTabsEditor {
     await this.flush(this.formatsOnSave([document]));
     const result = await this.deps.documents.save(document.id, document.version, document.text);
     return result.ok ? 'saved' : 'cancel';
+  }
+
+  // A document whose host is not connected: Don't Save or Cancel.
+  private async askToDiscard(document: TextDocument, location: Location): Promise<'discard' | 'cancel'> {
+    const authority = location.projectKey !== undefined ? authorityKeyOfProject(location.projectKey) : location.host!;
+    const choice = await this.deps.ask({
+      severity: 'warning',
+      message: this.deps.t('{0} is not connected, so your changes to {1} cannot be saved.', visibleText(this.deps.hostName(authority)), visibleText(document.name)),
+      detail: this.deps.t('Connect it first to save them. Otherwise your changes will be lost.'),
+      actions: [this.deps.t('Don\'t Save')],
+      cancelLabel: this.deps.t('Cancel'),
+      defaultAction: 0,
+    });
+    return choice === 0 ? 'discard' : 'cancel';
   }
 
   // Every removal of a tab from this.tabs calls this, so a showDiff caller learns its tab is gone however it went.

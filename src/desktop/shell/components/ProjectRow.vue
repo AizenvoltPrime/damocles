@@ -7,7 +7,8 @@ import HostBadge from '@/components/HostBadge.vue';
 import { visibleText } from '@shared/visible-text';
 import { characterState } from '@shared/themes/characters';
 import type { ShellHost, ShellProject } from '../../preload/shell-channels';
-import { hostStateLabel } from '../host-label';
+import { hostStateLabel, hostStateTitle } from '../host-label';
+import { useUpdateClock } from '@/components/host-update-clock';
 import ProjectAvatar from './ProjectAvatar.vue';
 import HostStatusDot from './HostStatusDot.vue';
 
@@ -44,7 +45,10 @@ const badge = computed(() => {
 });
 
 // The host and its state as one phrase ("Local daemon, Connecting", "prod-1 · 38 ms"), for the dot's name and the badge's tooltip.
-const hostState = computed(() => hostStateLabel({ name: props.project.authority.name, connection: props.project.connection, reconnect: props.host?.reconnect, latency: props.host?.latency }, t));
+const labelled = computed(() => ({ name: props.project.authority.name, connection: props.project.connection, reconnect: props.host?.reconnect, latency: props.host?.latency, update: props.host?.update, removed: props.host?.removed }));
+const clock = useUpdateClock();
+const hostState = computed(() => hostStateLabel(labelled.value, t, clock));
+const hostTitle = computed(() => hostStateTitle(labelled.value, t, clock));
 
 // A host with no saved record (loopback) has no card, so its badge leaves the click to the row.
 const opensCard = computed(() => props.project.authority.hostId !== undefined);
@@ -162,7 +166,7 @@ function openDetails(event: MouseEvent): void {
       data-testid="host-badge"
       :name="project.authority.name"
       :color="project.authority.color"
-      :title="hostState"
+      :title="hostTitle"
       :class="opensCard ? 'cursor-pointer hover:bg-(--tone)/25' : ''"
       @click="openDetails"
     >
@@ -171,6 +175,7 @@ function openDetails(event: MouseEvent): void {
           :connection="project.connection"
           :reconnect="host?.reconnect"
           :slow="host?.latency?.slow"
+          :update="host?.update"
           :label="hostState"
         />
       </template>

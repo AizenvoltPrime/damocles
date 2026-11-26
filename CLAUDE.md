@@ -26,7 +26,7 @@ Generated files are committed; rerun the generator after changing its input: `ge
 ## Architecture
 
 - `src/core` is host-neutral and never imports `vscode` or `electron`. `src/platform` holds the host interfaces, `src/vscode` the extension, `src/desktop` the Electron app (the only place `electron` may be imported, never in its renderers), `src/webview` the Vue UI, `src/shared` the contracts, `src/remote` the wire (Node built-ins only). Lint enforces the boundaries.
-- On desktop the engine runs in the "Damocles Core" utility process (`src/desktop/core-host`). Main reaches it only through `CoreClient` (`main/core-client.ts`); main's value imports from `src/core` and `src/desktop/workspace` are limited to `MAIN_CORE_IMPORTS` and `MAIN_WORKSPACE_IMPORTS` in `eslint.config.mjs`. The remote daemon (`src/desktop/daemon`) and the `damocles` CLI (`src/desktop/cli`) are electron-free.
+- On desktop the engine runs in the "Damocles Core" utility process (`src/desktop/core-host`). Main reaches it only through `CoreClient` (`main/core-client.ts`); main's value imports from `src/core` and `src/desktop/workspace` are limited to `MAIN_CORE_IMPORTS` and `MAIN_WORKSPACE_IMPORTS` in `eslint.config.mjs`. The remote daemon (`src/desktop/daemon`), its terminal host (`src/desktop/terminal-host`) and the `damocles` CLI (`src/desktop/cli`) are electron-free.
 - `PiSession` (`src/core/chat-session.ts`) is the only producer of session messages (`ExtensionToWebviewMessage`, `src/shared/types/messages.ts`). Map pi events onto existing shapes in `pi-stream-adapter.ts`; add a message type only for a capability no shape can carry.
 - The repo is ESM; every esbuild bundle is CommonJS. `scripts/` run as type-stripped TypeScript: erasable syntax only, relative imports name the `.ts` file, no path aliases, also in any `src` module they import.
 - Desktop menus, shortcuts and palette entries all come from `src/desktop/main/commands.ts`.
@@ -71,6 +71,7 @@ Processes, remote and files:
 - ssh starts only through `main/remote/ssh/ssh-args.ts`; every URL from a target goes through `main/remote/open-url.ts`.
 - A remote core never writes this computer's files or credentials except through the designed user-scope relays ("Data scopes", "Remote daemon and wire").
 - A wire change is additive under a new `FEATURES` name, or bumps `PROTOCOL_VERSION`; run `protocol-compat.ts`.
+- Only `control.shutdownNow` (Rebuild Container, Convert to WSL 2) and `control.shutdownForRemoval` end a daemon's terminals; its other exits, a crash and a hand-over leave them running, and every later daemon adopts them through the frozen terminal-host contract ("Remote daemon and wire").
 - Forge tokens live only in Damocles Core and `SecretsStore`, never in env, argv, URLs, logs, settings or a renderer message ("GitHub and GitLab accounts").
 - Main builds every page through `showPage`; a core never sends HTML.
 - A session file is written only by its machine's engine; Files actions and transfers that touch session folders are refused by `reachesSessions`. A UNC or device path outside every project is never opened.

@@ -48,6 +48,9 @@ export interface PanelHost {
   // only on the device whose work this is, which may first open a view of it, and settles once it shows there: false when
   // it could not be shown on that device.
   reveal(column?: number): void | Promise<boolean>;
+  // A host whose panel several devices show (a daemon's core): every view of this panel shows `holder` instead, which replays to
+  // each of them, and this panel is disposed; false, with nothing moved, when it cannot.
+  mergeInto?(holder: PanelHost): Promise<boolean>;
   close(): void;
 }
 

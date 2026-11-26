@@ -8,10 +8,11 @@ vi.mock('electron', () => ({}));
 import { HostStore } from '../host-store';
 import { failureOf, RemoteConnections, type SshStartRequest } from '../connections';
 import { permanentFailureOf } from '../reconnect';
-import { MAX_HELD_MEMORY_QUEUES, OVERLAY_CHANNELS, type ConnectFailure, type HostOperations, type OverlayRequest } from '../../../preload/overlay-channels';
+import { MAX_DEVICE_NAME_LENGTH, MAX_HELD_MEMORY_QUEUES, OVERLAY_CHANNELS, type ConnectFailure, type HostOperations, type OverlayRequest } from '../../../preload/overlay-channels';
+import { parseConnectHosts } from '../../overlay';
 import type { InstallKeyResult } from '../../../daemon/control-messages';
 import { macPrivacyFolder, RemoteHosts, sshDestination, type HeldMemoryHost, type RemoteHostsDeps } from '../remote-hosts';
-import { parseSshCommand } from '../ssh';
+import { parseSshCommand, SshConnectError } from '../ssh';
 import type { RemoteConnection } from '../connection';
 import type { ProjectWorkspace } from '../../../workspace/project-workspace';
 import { forgetHostData } from '../forget-host-data';
@@ -53,7 +54,7 @@ async function setup(overrides: Partial<RemoteHostsDeps> = {}, connect: (hostId:
     state: () => 'offline',
     connection: () => undefined,
     workspace: () => undefined,
-    terminals: { canOpen: () => false, open: async () => undefined },
+    terminals: { canOpen: () => false, open: async () => undefined, notResponding: () => [] },
     projects: () => [],
     pickRoots: () => [],
     hostName: () => 'prod-1',
@@ -69,11 +70,16 @@ async function setup(overrides: Partial<RemoteHostsDeps> = {}, connect: (hostId:
     latency: () => undefined,
     watchLimit: () => undefined,
     sharedHome: () => undefined,
+    serverInUse: () => undefined,
+    canCheckForUpdates: () => false,
+    updateAction: async () => undefined,
+    confirmEndTerminalHost: async () => false,
     log: () => undefined,
     policyChanged: vi.fn(),
     reconnectFresh: vi.fn(async () => undefined),
     deleteRememberedSecrets: vi.fn(async () => undefined),
     forgetLocalData: vi.fn(async () => undefined),
+    confirmCloseTabs: async () => () => undefined,
     disconnect: vi.fn(),
     openSettings: vi.fn(),
     keySetup: { folder: path.join(userData, 'ssh'), clientName: 'laptop', resolveKeygen: async () => undefined, resolveSsh: async () => undefined, run: vi.fn(), sshQuery: vi.fn(), askpass: vi.fn(), sshVersion: vi.fn(), env: {}, log: () => undefined },
@@ -625,7 +631,7 @@ describe('RemoteHosts', () => {
   });
 
   it('records linger once Allow background work turned it on, so the removal offers to undo it', async () => {
-    const connection = { features: ['linger'], control: { request: vi.fn(async () => ({ result: 'enabled' })) } } as unknown as RemoteConnection;
+    const connection = { features: ['linger'], devices: () => [], control: { request: vi.fn(async () => ({ result: 'enabled' })) } } as unknown as RemoteConnection;
     const { hosts, store } = await setup({ connection: () => connection });
     const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
     if (!added.ok) throw new Error('setup');
@@ -634,7 +640,36 @@ describe('RemoteHosts', () => {
     await hosts.allowBackground(added.host.id);
     expect(store.sshHost(added.host.id)?.lingerEnabledByDamocles).toBe(true);
     (connection.control.request as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ runs: [{ kind: 'chat', id: 'c1', projectKey: '', title: 'Fix it', state: 'running', providers: [] }] });
-    expect(await hosts.removalInfo(added.host.id)).toEqual({ runs: [{ kind: 'chat', id: 'c1', title: 'Fix it', state: 'running' }], offerRemoveKey: false, offerDisableLinger: true });
+    expect(await hosts.removalInfo(added.host.id)).toEqual({ runs: [{ kind: 'chat', id: 'c1', title: 'Fix it', state: 'running' }], offerRemoveKey: false, offerDisableLinger: true, otherDevices: [] });
+  });
+
+  it('names the other devices connected to the host in the removal\'s facts, by device name and never this one', async () => {
+    const connection = { features: [], devices: () => [{ deviceName: 'DESKTOP-A', self: true }, { deviceName: 'Laptop B', self: false }, { deviceName: 'Desk C', self: false }], control: { request: vi.fn(async () => ({ runs: [] })) } } as unknown as RemoteConnection;
+    const { hosts, store } = await setup({ connection: () => connection });
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    expect((await hosts.removalInfo(added.host.id)).otherDevices).toEqual(['Laptop B', 'Desk C']);
+  });
+
+  it('shows the host removed on its card and in the shell while it is not connected, by the device that removed it or as an automatic connect found it', async () => {
+    const { hosts, store, connections } = await setup({}, async (hostId, held) => {
+      await held.transport(hostId);
+    }, async () => {
+      throw new SshConnectError('serverRemoved', {}, '');
+    });
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    expect(hosts.cards()[0]?.removed).toBeUndefined();
+    connections.markRemoved(added.host.id, 'DESKTOP-A');
+    expect(hosts.cards()[0]?.removed).toEqual({ by: 'DESKTOP-A' });
+    expect(hosts.shellHosts()[0]?.removed).toEqual({ by: 'DESKTOP-A' });
+    // the card reaches the overlay only through main's check, with the device name as long as the card's other device names
+    expect(parseConnectHosts(hosts.cards())?.[0]?.removed).toEqual({ by: 'DESKTOP-A' });
+    connections.markRemoved(added.host.id, 'x'.repeat(MAX_DEVICE_NAME_LENGTH + 10));
+    expect(parseConnectHosts(hosts.cards())?.[0]?.removed).toEqual({ by: 'x'.repeat(MAX_DEVICE_NAME_LENGTH) });
+    await connections.outcome(connections.connect(added.host.id, false))?.catch(() => undefined);
+    expect(hosts.cards()[0]?.removed).toEqual({});
+    expect(hosts.shellHosts()[0]?.removed).toEqual({});
   });
 
   it('records no linger the daemon found already enabled, so the removal never offers to undo an admin\'s', async () => {
@@ -688,9 +723,9 @@ describe('RemoteHosts', () => {
     expect(store.sshHost(id)?.identityFile).toBeUndefined();
   });
 
-  it('runs the same removal stage again on Try again after daemonRunning, with no connection, and forgets the key once it removed it', async () => {
+  it('runs the same removal stage again on Try again after terminalHostRunning or daemonRunning, with no connection, and forgets the key once it removed it', async () => {
     const stages: string[] = [];
-    const answers = [['{"kind":"fail","code":"daemonRunning","params":{}}'], ['{"kind":"fail","code":"daemonRunning","params":{}}'], ['{"kind":"removed"}']];
+    const answers = [['{"kind":"fail","code":"daemonRunning","params":{}}'], ['{"kind":"fail","code":"terminalHostRunning","params":{"pids":"4242 977"}}'], ['{"kind":"removed"}']];
     const runRemovalStage = vi.fn(async (_hostId: string, script: string) => {
       stages.push(script);
       const lines = answers.shift()!;
@@ -719,7 +754,7 @@ describe('RemoteHosts', () => {
     await store.recordInstalledKey(id, { fingerprint: `SHA256:${'a'.repeat(43)}`, entry: `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${'A'.repeat(43)}`, file: '/home/dev/.ssh/authorized_keys' });
     expect(await hosts.removeServer(id, { removeKey: true, disableLinger: false })).toEqual({ ok: false, code: 'daemonRunning', params: {} });
     expect(connected).toBe(false);
-    expect(await hosts.retryRemoval(id)).toEqual({ ok: false, code: 'daemonRunning', params: {} });
+    expect(await hosts.retryRemoval(id)).toEqual({ ok: false, code: 'terminalHostRunning', params: { pids: '4242 977', os: 'posix' } });
     expect(store.sshHost(id)?.installedKeyFingerprint).toBeDefined();
     expect(await hosts.retryRemoval(id)).toEqual({ ok: true, notices: [] });
     // one shutdown; each try ran the same script with the run key the daemon answered
@@ -730,6 +765,35 @@ describe('RemoteHosts', () => {
     // every try ends Damocles' master, a refused one too
     expect(exitControlMaster).toHaveBeenCalledTimes(3);
     await expect(hosts.retryRemoval(id)).rejects.toThrow('No removal of this host waits to be tried again');
+  });
+
+  it('names a Windows host\'s OS with terminalHostRunning, on Try again too, so the failure gives a command that host runs', async () => {
+    const stages: string[] = [];
+    const runRemovalStage = vi.fn(async (_hostId: string, script: string) => {
+      stages.push(script);
+      return { code: 1, lines: ['{"kind":"fail","code":"terminalHostRunning","params":{"pids":"4242"}}'] };
+    });
+    let ended: () => void = () => undefined;
+    const request = vi.fn(async () => {
+      setTimeout(() => ended(), 0);
+      return { runKey: '0123456789abcdef' };
+    });
+    const connection = {
+      features: ['control.shutdownForRemoval'],
+      control: { request },
+      onClose: (listener: () => void) => { ended = listener; return { dispose: () => undefined }; },
+      onLost: () => ({ dispose: () => undefined }),
+    } as unknown as RemoteConnection;
+    const { hosts, store } = await setup({ connection: () => connection, runRemovalStage });
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'win-1' }, name: 'win-1' });
+    if (!added.ok) throw new Error('setup');
+    const id = added.host.id;
+    await store.savePlatform(id, { os: 'win32' });
+    const refused = { ok: false, code: 'terminalHostRunning', params: { pids: '4242', os: 'win32' } };
+    expect(await hosts.removeServer(id, { removeKey: false, disableLinger: false })).toEqual(refused);
+    expect(await hosts.retryRemoval(id)).toEqual(refused);
+    expect(stages[0]).toContain("$D_RUN_KEY = '0123456789abcdef'");
+    expect(new Set(stages).size).toBe(1);
   });
 
   it('publishes a passwordless setup whole at each step, answers it mid-run, and joins a second start to it', async () => {
@@ -942,6 +1006,45 @@ describe('RemoteHosts', () => {
     expect(store.hosts()).toEqual([]);
   });
 
+  it('asks about the host\'s unsaved editor text before anything goes, and closes its tabs once its record is gone', async () => {
+    const order: string[] = [];
+    const { hosts, store } = await setup({
+      confirmCloseTabs: async (hostIds) => {
+        order.push(`confirm ${hostIds.join(' ')}`);
+        return () => void order.push(`close, ${store.hosts().length} hosts left`);
+      },
+      disconnect: async () => void order.push('disconnect'),
+      forgetLocalData: async () => { order.push('local'); },
+    });
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    await hosts.forget(added.host.id);
+    expect(order).toEqual([`confirm ${added.host.id}`, 'disconnect', 'local', 'close, 0 hosts left']);
+  });
+
+  it('stops before anything goes when the user cancels a question about unsaved editor text, and settles without an error', async () => {
+    const disconnect = vi.fn();
+    const deleteRememberedSecrets = vi.fn(async () => undefined);
+    const forgetLocalData = vi.fn(async () => undefined);
+    const { hosts, store } = await setup({ confirmCloseTabs: async () => undefined, disconnect, deleteRememberedSecrets, forgetLocalData });
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    await expect(hosts.forget(added.host.id)).resolves.toBeUndefined();
+    expect(disconnect).not.toHaveBeenCalled();
+    expect(deleteRememberedSecrets).not.toHaveBeenCalled();
+    expect(forgetLocalData).not.toHaveBeenCalled();
+    expect(store.hosts().map((host) => host.id)).toEqual([added.host.id]);
+  });
+
+  it('keeps the host\'s tabs open when a step failed, since the host still shows', async () => {
+    const close = vi.fn();
+    const { hosts, store } = await setup({ confirmCloseTabs: async () => close, deleteRememberedSecrets: async () => { throw new Error('keyring locked'); } });
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    await expect(hosts.forget(added.host.id)).rejects.toThrow('keyring locked');
+    expect(close).not.toHaveBeenCalled();
+  });
+
   // Forget host needs no engine: a halted one refuses every request, holds no browser context, and the profile still goes.
   it('forgets every local datum and the record of a host while the engine is halted', async () => {
     const state = await RemoteState.open(userData, () => undefined);
@@ -1061,6 +1164,51 @@ describe('RemoteHosts', () => {
     expect(hosts.cards()[0]!.notices).toEqual([notice]);
   });
 
+  it('shows the server in use notice on the card of the host whose older daemon other computers keep on this connection', async () => {
+    const notice = { code: 'serverInUse', params: { version: '3.6.9', devices: 2 } };
+    const { hosts, store } = await setup({ serverInUse: (key) => (key.startsWith('ssh+') ? notice : undefined) });
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    expect(hosts.cards()[0]!.notices).toEqual([notice]);
+  });
+
+  it('shows the host\'s pending switch on its card and in the shell, offers Check for updates on both only while the updater runs, and runs the Update section\'s actions on that host', async () => {
+    const update = { source: 'compatible', phase: 'waiting', serverVersion: '3.6.9', targetVersion: '3.7.0', runningAgents: 1, runningTerminals: 2, terminalsSurvive: false, otherDevices: 1, waitingSince: 1 } as const;
+    let updater = true;
+    const updateAction = vi.fn(async () => undefined);
+    const { hosts, store } = await setup({ update: (key) => (key.startsWith('ssh+') ? update : undefined), canCheckForUpdates: () => updater, updateAction });
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    expect(hosts.cards()[0]).toMatchObject({ update, canCheckForUpdates: true });
+    expect(hosts.shellHosts()[0]).toMatchObject({ update, canCheckForUpdates: true });
+    updater = false;
+    expect(hosts.cards()[0]!.canCheckForUpdates).toBeUndefined();
+    expect(hosts.shellHosts()[0]!.canCheckForUpdates).toBeUndefined();
+    await hosts.updateAction(added.host.id, 'switchNow');
+    expect(updateAction).toHaveBeenCalledWith(added.host.id, 'switchNow');
+    await expect(hosts.updateAction('no-such-host', 'switchNow')).rejects.toThrow('No saved host');
+  });
+
+  it('publishes a host whose daemon is of another protocol as not connected, with no failure or reconnect phase, on every surface', async () => {
+    const update = { source: 'otherProtocol', phase: 'appOutdated', outdated: 'runs', serverVersion: '3.9.0', targetVersion: '3.7.0', runningAgents: 0, runningTerminals: 0, terminalsSurvive: true, waitingSince: 1 } as const;
+    let source: 'otherProtocol' | 'compatible' = 'otherProtocol';
+    const reconnect = { phase: 'failed', since: 1, code: 'install' } as const;
+    const { hosts, store, connections } = await setup({ state: () => 'failed', update: () => ({ ...update, source }), reconnect: () => reconnect });
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    vi.spyOn(connections, 'failure').mockReturnValue({ code: 'handshakeFailed', params: {} });
+    expect(hosts.connectionOf(added.host.id)).toBe('offline');
+    expect(hosts.shellHosts()[0]).toMatchObject({ connection: 'offline' });
+    expect(hosts.shellHosts()[0]!.reconnect).toBeUndefined();
+    expect(hosts.cards()[0]).toMatchObject({ connection: 'offline' });
+    expect(hosts.cards()[0]!.failure).toBeUndefined();
+    expect(hosts.cards()[0]!.reconnect).toBeUndefined();
+    expect(hosts.entries()[0]!.connection).toBe('offline');
+    source = 'compatible';
+    expect(hosts.shellHosts()[0]).toMatchObject({ connection: 'failed', reconnect });
+    expect(hosts.cards()[0]).toMatchObject({ connection: 'failed', failure: { code: 'handshakeFailed' }, reconnect });
+  });
+
   it('lists a host\'s terminals with whether this window can open each, and opens one through this window\'s terminals', async () => {
     const live = [{ id: 'term-1', pid: 1, cols: 80, rows: 24 }, { id: 'term-2', pid: 2, cols: 80, rows: 24 }];
     const connection = {
@@ -1079,6 +1227,7 @@ describe('RemoteHosts', () => {
       terminals: {
         canOpen: (authorityKey, terminal) => authorityKey.startsWith('ssh+') && terminal.id === 'term-2',
         open: async (authorityKey, id) => { opened.push([authorityKey, id]); },
+        notResponding: () => [],
       },
     });
     const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
@@ -1091,5 +1240,104 @@ describe('RemoteHosts', () => {
     ]);
     await hosts.openRun(added.host.id, 'term-2');
     expect(opened).toEqual([[`ssh+${added.host.id}`, 'term-2']]);
+  });
+
+  it('a killed run is gone from the host\'s list by the time the kill returns', async () => {
+    const run = { kind: 'terminal', id: 'term-1', projectKey: '', title: 'bash', state: 'running', providers: [] };
+    // the terminal host ends the terminal after the kill was posted, so the first lists still name it
+    const lists = [[run], [run], []];
+    const emit = vi.fn();
+    const connection = {
+      control: { request: vi.fn(async () => ({ runs: lists.shift() ?? [] })) },
+      workspace: { emit },
+    } as unknown as RemoteConnection;
+    const { hosts, store } = await setup({ connection: () => connection });
+    const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+    if (!added.ok) throw new Error('setup');
+    await hosts.killRun(added.host.id, 'term-1');
+    expect(emit).toHaveBeenCalledWith('terminals.post', { request: { type: 'kill', id: 'term-1' } });
+    expect(lists).toEqual([]);
+  });
+
+  describe('a terminal host that does not answer', () => {
+    const runs = ['bash', 'zsh', 'sh'].map((title, index) => ({ kind: 'terminal', id: `term-${index + 1}`, projectKey: '', title, state: 'running', providers: [] }));
+    const live = [
+      { id: 'term-1', pid: 1, cols: 80, rows: 24, notRespondingHost: 41 },
+      { id: 'term-2', pid: 2, cols: 80, rows: 24, notRespondingHost: 41 },
+      { id: 'term-3', pid: 3, cols: 80, rows: 24 },
+    ];
+    const daemon = (features: readonly string[], ended: boolean) => {
+      const workspace = vi.fn(async (method: string) => (method === 'terminals.list' ? live : { ended }));
+      return { connection: { features, control: { request: vi.fn(async () => ({ runs })) }, workspace: { request: workspace } } as unknown as RemoteConnection, workspace };
+    };
+    const ends = (workspace: ReturnType<typeof daemon>['workspace']) => workspace.mock.calls.filter(([method]) => method === 'terminals.endHost');
+
+    // its pid stays in main, which End terminal host reads from the daemon again
+    it('marks the Running rows of its terminals as not responding, without its pid', async () => {
+      const { connection } = daemon(['terminals.notResponding'], true);
+      const { hosts, store } = await setup({ connection: () => connection });
+      const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+      if (!added.ok) throw new Error('setup');
+      const rows = await hosts.runs(added.host.id);
+      expect(rows.map((run) => [run.id, run.notResponding])).toEqual([['term-1', true], ['term-2', true], ['term-3', undefined]]);
+      expect(rows.flatMap((run) => Object.values(run))).not.toContain(41);
+    });
+
+    it('names this window\'s not-responding terminals on the host\'s card', async () => {
+      const { hosts, store } = await setup({ terminals: { canOpen: () => false, open: async () => undefined, notResponding: (authorityKey) => (authorityKey.startsWith('ssh+') ? ['term-1'] : []) } });
+      const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+      if (!added.ok) throw new Error('setup');
+      expect(hosts.cards().map((card) => card.notRespondingTerminals)).toEqual([['term-1']]);
+    });
+
+    it('ends it after the user confirms the titles of the terminals it ends, once per host', async () => {
+      const { connection, workspace } = daemon(['terminals.notResponding'], true);
+      const confirmEndTerminalHost = vi.fn(async () => true);
+      const { hosts, store } = await setup({ connection: () => connection, confirmEndTerminalHost });
+      const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+      if (!added.ok) throw new Error('setup');
+      expect(await hosts.endTerminalHost(added.host.id)).toBe(true);
+      expect(confirmEndTerminalHost).toHaveBeenCalledWith(added.host.id, ['bash', 'zsh']);
+      expect(ends(workspace)).toEqual([['terminals.endHost', { hostPid: 41 }]]);
+    });
+
+    it('ends a host this window has no tab of, listed only by the daemon, beside another, after one confirmation naming every terminal they hold', async () => {
+      const withUnseen = [...live, { id: 'term-4', pid: 4, cols: 80, rows: 24, notRespondingHost: 77 }];
+      const unseenRuns = [...runs, { kind: 'terminal', id: 'term-4', projectKey: '', title: 'fish', state: 'running', providers: [] }];
+      const workspace = vi.fn(async (method: string) => (method === 'terminals.list' ? withUnseen : { ended: true }));
+      const connection = { features: ['terminals.notResponding'], control: { request: vi.fn(async () => ({ runs: unseenRuns })) }, workspace: { request: workspace } } as unknown as RemoteConnection;
+      const confirmEndTerminalHost = vi.fn(async () => true);
+      const { hosts, store } = await setup({ connection: () => connection, confirmEndTerminalHost });
+      const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+      if (!added.ok) throw new Error('setup');
+      expect((await hosts.runs(added.host.id)).map((run) => [run.id, run.notResponding])).toEqual([['term-1', true], ['term-2', true], ['term-3', undefined], ['term-4', true]]);
+      expect(await hosts.endTerminalHost(added.host.id)).toBe(true);
+      expect(confirmEndTerminalHost).toHaveBeenCalledTimes(1);
+      expect(confirmEndTerminalHost).toHaveBeenCalledWith(added.host.id, ['bash', 'zsh', 'fish']);
+      expect(ends(workspace)).toEqual([['terminals.endHost', { hostPid: 41 }], ['terminals.endHost', { hostPid: 77 }]]);
+    });
+
+    it('sends nothing when the user cancels, and answers false when the daemon no longer counts the host as not responding', async () => {
+      const { connection, workspace } = daemon(['terminals.notResponding'], false);
+      const answers = [false, true];
+      const { hosts, store } = await setup({ connection: () => connection, confirmEndTerminalHost: async () => answers.shift()! });
+      const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+      if (!added.ok) throw new Error('setup');
+      expect(await hosts.endTerminalHost(added.host.id)).toBe(false);
+      expect(ends(workspace)).toEqual([]);
+      expect(await hosts.endTerminalHost(added.host.id)).toBe(false);
+      expect(ends(workspace)).toHaveLength(1);
+    });
+
+    it('refuses a daemon that does not list terminals.notResponding, asking nothing', async () => {
+      const { connection, workspace } = daemon([], true);
+      const confirmEndTerminalHost = vi.fn(async () => true);
+      const { hosts, store } = await setup({ connection: () => connection, confirmEndTerminalHost });
+      const added = await store.addHost({ destination: { kind: 'alias', alias: 'prod-1' }, name: 'prod-1' });
+      if (!added.ok) throw new Error('setup');
+      await expect(hosts.endTerminalHost(added.host.id)).rejects.toThrow('cannot end a terminal host');
+      expect(confirmEndTerminalHost).not.toHaveBeenCalled();
+      expect(workspace).not.toHaveBeenCalled();
+    });
   });
 });

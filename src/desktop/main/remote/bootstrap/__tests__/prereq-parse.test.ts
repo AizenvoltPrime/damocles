@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { belowFloorLine, FloorUnreadableError, floorUnreadableLine } from '../../../../daemon/attach';
 import { createStageOutput, MAX_STAGE_LINE_BYTES, parseStageLine, StageProtocolError } from '../probe-parse';
 import { powerShell, runPowerShell, runSh, scratchDir, shellPath, stageMessages, withPosixDefinitions, withWindowsDefinitions } from './shells';
 
@@ -11,6 +12,28 @@ describe('parseStageLine', () => {
     expect(parseStageLine('@@DAMOCLES {"kind":"notice","code":"lowInotify","params":{"limit":8192,"suggested":524288}}')).toEqual({ kind: 'notice', notice: { code: 'lowInotify', params: { limit: 8192, suggested: 524288 } } });
     expect(parseStageLine('@@DAMOCLES {"progress":0.5}')).toEqual({ kind: 'progress', fraction: 0.5 });
     expect(parseStageLine('@@DAMOCLES {"kind":"probe","target":"alpine-x64","install":"/home/dev/.damocles/server"}')).toEqual({ kind: 'probe', target: 'alpine-x64', install: '/home/dev/.damocles/server' });
+  });
+
+  it('reads the line a bridge below the host\'s security floor writes, as belowFloor with the floor', () => {
+    expect(parseStageLine(belowFloorLine('3.9.0').trimEnd())).toEqual({ kind: 'fail', code: 'belowFloor', params: { floor: '3.9.0' } });
+    expect(() => parseStageLine('@@DAMOCLES {"kind":"fail","code":"belowFloor","params":{}}')).toThrow(StageProtocolError);
+  });
+
+  it('reads the line a bridge that cannot read the host\'s security floor writes, as floorUnreadable with its reason', () => {
+    const line = floorUnreadableLine(new FloorUnreadableError(Object.assign(new Error('denied'), { code: 'EACCES' })));
+    expect(parseStageLine(line.trimEnd())).toEqual({ kind: 'fail', code: 'floorUnreadable', params: { reason: 'EACCES' } });
+    expect(parseStageLine('@@DAMOCLES {"kind":"fail","code":"floorUnreadable","params":{"reason":"unreadable"}}')).toEqual({ kind: 'fail', code: 'floorUnreadable', params: { reason: 'unreadable' } });
+    // the reason shows on the host card, so it is an errno code or `unreadable`, never a target's text
+    for (const reason of [undefined, '', 'Permission denied', 'EACCES; see http://x', 'E', 3]) {
+      expect(() => parseStageLine(`@@DAMOCLES ${JSON.stringify({ kind: 'fail', code: 'floorUnreadable', params: reason === undefined ? {} : { reason } })}`), String(reason)).toThrow(StageProtocolError);
+    }
+  });
+
+  // the floor becomes a permanent failure and the version the host card shows, which refuses one past its label length
+  it('refuses a belowFloor line whose floor is no app version', () => {
+    for (const floor of ['3.9', '3.9.0+0123456789ab', 'nightly', '9'.repeat(300), 3]) {
+      expect(() => parseStageLine(`@@DAMOCLES ${JSON.stringify({ kind: 'fail', code: 'belowFloor', params: { floor } })}`), String(floor)).toThrow(StageProtocolError);
+    }
   });
 
   it('finds the marker after a login script\'s output on the same line, and ignores unmarked lines', () => {

@@ -1,6 +1,6 @@
 // A process on a relaying client's proxy socket waits, paused, until that client's main connects it over a stream main opens,
 // or refuses it; the daemon only asks (docs/invariants.md "Remote connections and credentials").
-import type { Socket } from 'node:net';
+import type { Duplex } from 'node:stream';
 import type { StreamChannel } from '../../remote/mux';
 import { pipeStream, type TunnelPipe } from '../../remote/tunnel-pipe';
 
@@ -15,7 +15,7 @@ export interface AgentRelayDeps {
 
 export interface AgentRelay {
   /** A process connected to the client's proxy socket: held until connect or refuse names its request. */
-  request(incoming: Socket): void;
+  request(incoming: Duplex): void;
   /** Pipes the request's connection to stream; false, with the stream ended, when that connection is gone. */
   connect(request: number, stream: StreamChannel): boolean;
   refuse(request: number): void;
@@ -26,9 +26,9 @@ export interface AgentRelay {
 export function createAgentRelay(deps: AgentRelayDeps): AgentRelay {
   let next = 0;
   let closed = false;
-  const waiting = new Map<number, Socket>();
+  const waiting = new Map<number, Duplex>();
   const pipes = new Set<TunnelPipe>();
-  const take = (request: number): Socket | undefined => {
+  const take = (request: number): Duplex | undefined => {
     const incoming = waiting.get(request);
     waiting.delete(request);
     return incoming;

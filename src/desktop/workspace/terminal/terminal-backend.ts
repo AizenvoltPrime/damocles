@@ -25,6 +25,8 @@ export interface LiveTerminal {
   readonly rows: number;
   // a daemon's terminal: what its spawning client sent, so another client can show it
   readonly view?: TerminalView;
+  // a daemon's terminal: the pid of its terminal host while that host is not responding (feature terminals.notResponding)
+  readonly notRespondingHost?: number;
 }
 
 // Groups, names, OSC 633 parsing and its nonce check stay in main.
@@ -76,7 +78,19 @@ export interface HostTerminalBackend extends TerminalBackend {
   under(rule: LinkRule): Pick<TerminalBackend, 'linkKind'>;
 }
 
+// a backend whose terminals run in terminal hosts, so it starts no pty host and lists nothing of its own
+export type DaemonTerminalBackend = Omit<HostTerminalBackend, 'startHost' | 'list'>;
+
 export function createTerminalBackend(deps: TerminalBackendDeps): HostTerminalBackend {
+  return {
+    ...createDaemonTerminalBackend(deps),
+    startHost: () => deps.starters.startPtyHost(),
+    // a local pty host ends with the app, so nothing outlives it to list
+    list: async () => [],
+  };
+}
+
+export function createDaemonTerminalBackend(deps: Omit<TerminalBackendDeps, 'starters'>): DaemonTerminalBackend {
   const under = (rule: LinkRule): Pick<TerminalBackend, 'linkKind'> => ({
     async linkKind(project, relativePath) {
       const confined = await confineExisting(project, relativePath, rule);
@@ -99,7 +113,6 @@ export function createTerminalBackend(deps: TerminalBackendDeps): HostTerminalBa
   return {
     ...under('throughLinks'),
     under,
-    startHost: () => deps.starters.startPtyHost(),
     detectProfiles: () => detectProfiles(systemProfileProbe(deps.env, deps.log)),
     environment: async (locale) => terminalEnvironment(deps.currentEnvironment?.(deps.env) ?? deps.env, { locale, zshDotDir: deps.zshDotDir }),
     async injection(request) {
@@ -113,8 +126,6 @@ export function createTerminalBackend(deps: TerminalBackendDeps): HostTerminalBa
       }
       return { args: injection.args, env: injection.env };
     },
-    // a local pty host ends with the app, so nothing outlives it to list
-    list: async () => [],
     windowsBuild: async () => (deps.platform === 'win32' ? windowsBuildNumber(os.release(), deps.platform) : null),
   };
 }

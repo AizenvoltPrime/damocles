@@ -15,6 +15,7 @@ import {
   type HeldMemoryQueue,
   type HeldMemoryResult,
   type HostCardInfo,
+  type HostUpdateAction,
   type HostDevice,
   type HostNotice,
   type HostOperations,
@@ -48,13 +49,14 @@ import {
   type RunningContainer,
 } from '../../preload/overlay-channels';
 import type { InstallKeyResult } from '../../daemon/control-messages';
-import { removeServer, runRemovalStage } from './remove-server';
-import type { HostUpdate, ProjectConnection, ReopenInContainerResult, ShellHost } from '../../preload/shell-channels';
-import type { HostLatency, HostReconnect } from '../../../shared/host-connection';
+import { removeServer, runRemovalStage, type RemoveServerDeps } from './remove-server';
+import type { ProjectConnection, ReopenInContainerResult, ShellHost } from '../../preload/shell-channels';
+import type { HostUpdate } from '../../../shared/host-update';
+import type { HostLatency, HostReconnect, HostRemoved } from '../../../shared/host-connection';
 import type { Project } from '../../local-services/confine';
 import type { ProjectWorkspace } from '../../workspace/project-workspace';
 import type { LiveTerminal } from '../../workspace/terminal/terminal-backend';
-import type { RemoteConnection } from './connection';
+import { NOT_RESPONDING_FEATURE, type RemoteConnection } from './connection';
 import type { ConnectActions } from './connect-channels';
 import { hostConnection, type RemoteConnections } from './connections';
 import { parseConnectDistros, parseConnectHosts, parseConnectRequest, parseConnectStep, parseHostEntries } from '../overlay';
@@ -93,10 +95,12 @@ export interface RemoteHostsDeps {
   readonly sharedHome: (authorityKey: string) => HostNotice | undefined;
   readonly connection: (authorityKey: string) => RemoteConnection | undefined;
   readonly workspace: (authorityKey: string) => ProjectWorkspace | undefined;
-  // this window's terminals: whether open can give a host's terminal a tab, and opening it
+  // this window's terminals: whether open can give a host's terminal a tab, opening it, and the ids of those whose terminal
+  // host does not answer
   readonly terminals: {
     canOpen(authorityKey: string, terminal: LiveTerminal): boolean;
     open(authorityKey: string, id: string): Promise<void>;
+    notResponding(authorityKey: string): readonly string[];
   };
   // the projects main lists on the host: key, native folder and folder key
   readonly projects: (hostId: string) => ReadonlyArray<{ readonly key: string; readonly fsPath: string; readonly folderKey: string }>;
@@ -104,8 +108,16 @@ export interface RemoteHostsDeps {
   readonly pickRoots: (authorityKey: string) => readonly Project[];
   // an authority's name as this computer's host store names it
   readonly hostName: (authorityKey: string) => string;
-  // the banner of a busy daemon of another protocol on the authority
+  // the authority's pending server switch, or this app being too old for it
   readonly update: (authorityKey: string) => HostUpdate | undefined;
+  // the card's notice while an older daemon this app uses as it is serves other computers on this connection
+  readonly serverInUse: (authorityKey: string) => HostNotice | undefined;
+  // the app's updater runs, so the card's Update section and the shell's update strip offer Check for updates
+  readonly canCheckForUpdates: () => boolean;
+  // the card's Update section: a switch rejects while none is pending, Check for updates while the updater is off
+  readonly updateAction: (hostId: string, action: HostUpdateAction) => Promise<void>;
+  // End terminal host's question, naming the terminals it ends; true: the user confirmed
+  readonly confirmEndTerminalHost: (hostId: string, titles: readonly string[]) => Promise<boolean>;
   // the ssh parser's verdict on "+ New host" input
   readonly parse: (input: string) => SshParseResult;
   // Host aliases of the user's ssh config, wildcards skipped
@@ -130,6 +142,9 @@ export interface RemoteHostsDeps {
   // everything else this computer keeps of a forgotten host: its update flow, Damocles' master connection, its session mirror
   // once its sync settled, browser profile, remote-state.json entries
   readonly forgetLocalData: (hostId: string) => Promise<void>;
+  // Forget host's Save, Don't Save or Cancel for the hosts' unsaved editor text, asked while they are still connected; what
+  // closes their tabs once they are forgotten, or undefined when the user cancelled
+  readonly confirmCloseTabs: (hostIds: readonly string[]) => Promise<(() => void) | undefined>;
   // the host connects no more until asked: its reconnect loop stops, its attempt in flight ends and its connection closes;
   // settles once the attempt it ended settled, never rejecting
   readonly disconnect: (hostId: string) => Promise<void>;
@@ -169,6 +184,10 @@ const LINGER_FEATURE = 'linger';
 const INSTALL_KEY_FEATURE = 'ssh.installAuthorizedKey';
 // a daemon that lists held memory queues (the heldMemory mirror) and takes memory.deliverHeld and memory.discardHeld
 export const HELD_MEMORY_FEATURE = 'user.memory.heldQueues';
+
+// Kill refreshes the card once the daemon unlists the run, or after this many checks at most
+const KILL_RUN_CHECKS = 30;
+const KILL_RUN_CHECK_MS = 100;
 
 // macOS privacy-protected folders under the home, whose EPERM names the folder (the sshd needs Full Disk Access).
 const MAC_PRIVACY_FOLDERS = ['Desktop', 'Documents', 'Downloads', 'Library/Mobile Documents'];
@@ -270,8 +289,8 @@ export class RemoteHosts implements ConnectActions {
   private dialog: OpenDialog | undefined;
   // per attempt, the opening of its container's folder in flight, which a second start of that attempt joins
   private readonly folderOpenings = new Map<string, Promise<string | undefined>>();
-  // per host, the removal stage that refused with daemonRunning, which Try again runs again with its run key
-  private readonly pendingRemovals = new Map<string, { readonly script: string; readonly key: boolean; readonly disableLinger: boolean }>();
+  // per host, the removal stage that refused with daemonRunning or terminalHostRunning, which Try again runs again with its run key
+  private readonly pendingRemovals = new Map<string, { readonly script: string; readonly os: RemoveServerDeps['os']; readonly key: boolean; readonly disableLinger: boolean }>();
   // per host, its latest passwordless setup and server removal, kept once ended until no Connect dialog or Settings shows
   private readonly setups = new Map<string, OperationRun<PasswordlessRun, PasswordlessResult>>();
   private readonly removals = new Map<string, OperationRun<Omit<ServerRemovalRun, 'prompt'>, RemoveServerResult>>();
@@ -303,9 +322,11 @@ export class RemoteHosts implements ConnectActions {
         ...(os !== undefined ? { os } : {}),
         connection: this.connectionOf(record.id),
         signInNeeded: this.deps.connections.signInNeeded(record.id),
+        ...this.removed(record.id),
         ...(skew !== undefined ? { clockSkewMs: skew } : {}),
         ...this.quality(record.id),
         ...this.update(record.id),
+        ...(this.deps.canCheckForUpdates() ? { canCheckForUpdates: true as const } : {}),
       };
     });
   }
@@ -365,7 +386,14 @@ export class RemoteHosts implements ConnectActions {
   }
 
   connectionOf(hostId: string): ProjectConnection {
-    return hostConnection(this.deps.state(this.authorityOf(hostId)), this.deps.connections.failure(hostId));
+    const authority = this.authorityOf(hostId);
+    if (this.unattached(authority)) return 'offline';
+    return hostConnection(this.deps.state(authority), this.deps.connections.failure(hostId));
+  }
+
+  // a daemon of another protocol serves this app no workspace, which is no failure of the connection
+  private unattached(authorityKey: string): boolean {
+    return this.deps.update(authorityKey)?.source === 'otherProtocol';
   }
 
   /**
@@ -391,7 +419,7 @@ export class RemoteHosts implements ConnectActions {
     this.pickingAnywhere = undefined;
     const known = new Set(this.deps.store.hosts().flatMap((saved) => (saved.kind === 'ssh' && saved.destination.kind === 'alias' ? [saved.destination.alias] : [])));
     const aliases = (await this.configAliases()).filter((alias) => !known.has(alias));
-    const joined = openFolder && hostId !== undefined && this.connectionOf(hostId) === 'connected' ? this.deps.connections.connect(hostId, true) : undefined;
+    const joined = openFolder && hostId !== undefined && this.connectionOf(hostId) === 'connected' ? this.deps.connections.connect(hostId, true, { user: true }) : undefined;
     const attempt = hostId === undefined ? undefined : this.deps.connections.attempt(hostId);
     // the timeline's Escape cancels its attempt, which stops a reconnect loop; a card, anchored or not, never shows it, nor its question
     const running = card === undefined && attempt && attempt.step !== 'connected' && attempt.step !== 'failed' ? attempt : undefined;
@@ -656,13 +684,19 @@ export class RemoteHosts implements ConnectActions {
     return outcome.result;
   }
 
-  /** What Remove Damocles server lists and offers: the host's running chats and terminals, and the two undo checkboxes. */
+  /**
+   * What Remove Damocles server lists and offers: the host's running chats and terminals, the other devices it disconnects,
+   * and the two undo checkboxes.
+   */
   async removalInfo(hostId: string): Promise<RemovalInfo> {
     const record = this.record(hostId);
+    const runs = await this.runningWork(hostId);
+    const attached = this.deps.connection(this.authorityOf(hostId))?.devices() ?? [];
     return {
-      runs: await this.runningWork(hostId),
+      runs,
       offerRemoveKey: record.kind === 'ssh' && record.installedKeyFingerprint !== undefined,
       offerDisableLinger: record.kind === 'ssh' && record.lingerEnabledByDamocles === true && hostOs(record) !== 'win32',
+      otherDevices: attached.filter((device) => !device.self).slice(0, MAX_HOST_DEVICES).map((device) => [...device.deviceName].slice(0, MAX_DEVICE_NAME_LENGTH).join('')),
     };
   }
 
@@ -684,6 +718,7 @@ export class RemoteHosts implements ConnectActions {
     const disableLinger = options.disableLinger && record.lingerEnabledByDamocles === true;
     this.pendingRemovals.delete(hostId);
     let script: string | undefined;
+    const os = hostOs(record) === 'win32' ? 'win32' : 'posix';
     const result = await removeServer({
       connected: () => connection && {
         features: connection.features,
@@ -708,7 +743,7 @@ export class RemoteHosts implements ConnectActions {
           }
         },
       },
-      os: hostOs(record) === 'win32' ? 'win32' : 'posix',
+      os,
       ...(record.settings.installFolder !== undefined ? { installFolder: record.settings.installFolder } : {}),
       ...(typeof record.previousInstallFolder === 'string' ? { previousInstallFolder: record.previousInstallFolder } : {}),
       ...(key ? { key } : {}),
@@ -718,7 +753,7 @@ export class RemoteHosts implements ConnectActions {
       },
       log: this.deps.log,
     }, { disableLinger });
-    return this.removalEnded(hostId, { script, key: key !== undefined, disableLinger }, result);
+    return this.removalEnded(hostId, { script, os, key: key !== undefined, disableLinger }, result);
   }
 
   // the host's running chats and terminals from its daemon's listRuns, as a confirmation lists them
@@ -761,7 +796,7 @@ export class RemoteHosts implements ConnectActions {
       },
       setVersion: this.deps.setWslVersion,
       reconnect: async () => {
-        const outcome = this.deps.connections.outcome(this.deps.connections.connect(hostId, false));
+        const outcome = this.deps.connections.outcome(this.deps.connections.connect(hostId, false, { user: true }));
         if (!outcome) throw new Error(`The attempt to reach ${hostId} was replaced`);
         await outcome;
       },
@@ -800,7 +835,7 @@ export class RemoteHosts implements ConnectActions {
         return state !== 'missing';
       },
       reconnect: async () => {
-        const outcome = this.deps.connections.outcome(this.deps.connections.connect(hostId, false));
+        const outcome = this.deps.connections.outcome(this.deps.connections.connect(hostId, false, { user: true }));
         if (!outcome) throw new Error(`The attempt to reach ${hostId} was replaced`);
         await outcome;
       },
@@ -1017,8 +1052,9 @@ export class RemoteHosts implements ConnectActions {
   }
 
   /**
-   * Try again after daemonRunning: the same removal stage over a fresh ssh, which reaches the target without attaching or
-   * starting a daemon; the stage decides by the daemon's lock again. A call while the host's removal runs joins it.
+   * Try again after daemonRunning or terminalHostRunning: the same removal stage over a fresh ssh, which reaches the target
+   * without attaching or starting a daemon; the stage checks the daemon's lock and the terminal hosts again. A call while the
+   * host's removal runs joins it.
    */
   async retryRemoval(hostId: string): Promise<RemoveServerResult> {
     this.record(hostId);
@@ -1028,7 +1064,7 @@ export class RemoteHosts implements ConnectActions {
     if (!pending) throw new Error('No removal of this host waits to be tried again');
     this.pendingRemovals.delete(hostId);
     return this.operate(this.removals, hostId, {}, async () => {
-      const result = await runRemovalStage({ runStage: (stage) => this.deps.runRemovalStage(hostId, stage), log: this.deps.log }, pending.script);
+      const result = await runRemovalStage({ runStage: (stage) => this.deps.runRemovalStage(hostId, stage), log: this.deps.log, os: pending.os }, pending.script);
       return this.removalEnded(hostId, pending, result);
     }, (_state, result) => ({ result }));
   }
@@ -1109,10 +1145,11 @@ export class RemoteHosts implements ConnectActions {
   }
 
   // Damocles' master connection ends whatever the outcome, so no session stays signed in with a key the removal took away.
-  // The host store forgets what the stage undid; a stage that refused with daemonRunning stays ready to be tried again.
-  private async removalEnded(hostId: string, removal: { readonly script: string | undefined; readonly key: boolean; readonly disableLinger: boolean }, result: RemoveServerResult): Promise<RemoveServerResult> {
+  // The host store forgets what the stage undid; a stage that refused with daemonRunning or terminalHostRunning stays ready to
+  // be tried again.
+  private async removalEnded(hostId: string, removal: { readonly script: string | undefined; readonly os: RemoveServerDeps['os']; readonly key: boolean; readonly disableLinger: boolean }, result: RemoveServerResult): Promise<RemoveServerResult> {
     await this.deps.exitControlMaster(hostId);
-    if (!result.ok && result.code === 'daemonRunning' && removal.script !== undefined) this.pendingRemovals.set(hostId, { ...removal, script: removal.script });
+    if (!result.ok && (result.code === 'daemonRunning' || result.code === 'terminalHostRunning') && removal.script !== undefined) this.pendingRemovals.set(hostId, { ...removal, script: removal.script });
     if (result.ok) {
       if (removal.key) await this.deps.store.clearInstalledKey(hostId);
       if (removal.disableLinger && !result.notices.some((notice) => notice.code === 'lingerFailed')) await this.deps.store.clearLingerEnabled(hostId);
@@ -1124,15 +1161,23 @@ export class RemoteHosts implements ConnectActions {
    * Forget host: this computer keeps nothing of it: its record, projects and trust, its remembered answers, session mirror,
    * browser profile and remote-state.json entries. A connected or connecting host is disconnected first; its daemon keeps
    * running. An SSH host's containers go first, the same way, since none connects without it. Every step runs after a failed
-   * one; a failure keeps the records, so the host still shows and Forget host run again removes what is left.
+   * one; a failure keeps the records, so the host still shows and Forget host run again removes what is left. Their editor
+   * tabs close once the records are gone, after the unsaved text questions, whose Cancel leaves everything as it was.
    */
   async forget(hostId: string): Promise<void> {
     this.record(hostId);
+    const ids = [...this.deps.store.containersVia(hostId).map((container) => container.id), hostId];
+    const closeTabs = await this.deps.confirmCloseTabs(ids);
+    if (!closeTabs) {
+      this.deps.log(`[remote] Forget host of ${hostId} cancelled at an unsaved editor`);
+      return;
+    }
     const failures: unknown[] = [];
-    for (const id of [...this.deps.store.containersVia(hostId).map((container) => container.id), hostId]) failures.push(...(await this.forgetLocally(id)));
+    for (const id of ids) failures.push(...(await this.forgetLocally(id)));
     if (failures.length > 0) throw failures[0];
     // one write drops the host's record and its containers'
     await this.deps.store.forgetHost(hostId);
+    closeTabs();
     this.deps.log(`[remote] forgot the host ${hostId}`);
   }
 
@@ -1388,6 +1433,11 @@ export class RemoteHosts implements ConnectActions {
   }
 
   async runs(hostId: string): Promise<readonly HostRun[]> {
+    return (await this.listRuns(hostId)).map(({ row }) => row);
+  }
+
+  // hostPid: the terminal host that does not answer; the renderer never gets it
+  private async listRuns(hostId: string): Promise<ReadonlyArray<{ readonly row: HostRun; readonly hostPid?: number }>> {
     this.record(hostId);
     const authorityKey = this.authorityOf(hostId);
     const connection = this.deps.connection(authorityKey);
@@ -1398,14 +1448,34 @@ export class RemoteHosts implements ConnectActions {
     return runs.filter((run) => run.kind === 'terminal').map((run) => {
       const projectKey = run.projectKey === '' ? undefined : projects.get(run.projectKey);
       const listed = live.find((terminal) => terminal.id === run.id);
-      return {
+      const hostPid = listed?.notRespondingHost;
+      const row: HostRun = {
         id: run.id,
         title: run.title,
         state: run.state,
         ...(projectKey !== undefined ? { projectKey } : {}),
         canOpen: listed !== undefined && terminals.canOpen(authorityKey, listed),
+        ...(hostPid !== undefined ? { notResponding: true } : {}),
       };
+      return hostPid !== undefined ? { row, hostPid } : { row };
     });
+  }
+
+  /**
+   * End terminal host: after the user confirms the titles of the Running rows it ends, the daemon ends each terminal host
+   * those rows name; it refuses a host that answers it. Resolves whether it ended any.
+   */
+  async endTerminalHost(hostId: string): Promise<boolean> {
+    const record = this.record(hostId);
+    const connection = this.deps.connection(this.authorityOf(hostId));
+    if (!connection) throw new Error(`${record.name} is not connected`);
+    if (!connection.features.includes(NOT_RESPONDING_FEATURE)) throw new Error(`The Damocles server on ${record.name} cannot end a terminal host`);
+    const ending = (await this.listRuns(hostId)).filter((listed) => listed.hostPid !== undefined);
+    if (ending.length === 0 || !(await this.deps.confirmEndTerminalHost(hostId, ending.map(({ row }) => row.title)))) return false;
+    const pids = [...new Set(ending.flatMap((listed) => listed.hostPid ?? []))];
+    const answers = await Promise.all(pids.map((hostPid) => connection.workspace.request('terminals.endHost', { hostPid })));
+    for (const [index, { ended }] of answers.entries()) this.deps.log(`[remote] ${hostId}: End terminal host ${pids[index]}: ${ended ? 'ended' : 'refused, the host answers again or is gone'}`);
+    return answers.some(({ ended }) => ended);
   }
 
   async openRun(hostId: string, runId: string): Promise<void> {
@@ -1419,12 +1489,23 @@ export class RemoteHosts implements ConnectActions {
     if (!connection) throw new Error(`${record.name} is not connected`);
     // the daemon's terminal hub ends it and tells every viewer, this window's tab included
     connection.workspace.emit('terminals.post', { request: { type: 'kill', id: runId } });
+    // the terminal's host ends it and the daemon unlists it after, so a list read right after the post would still name it
+    for (let attempt = 0; attempt < KILL_RUN_CHECKS; attempt += 1) {
+      const { runs } = await connection.control.request('listRuns', {});
+      if (!runs.some((run) => run.id === runId)) break;
+      await new Promise((resolve) => setTimeout(resolve, KILL_RUN_CHECK_MS));
+    }
     this.hostChanged(hostId);
   }
 
   showLog(hostId: string): Promise<void> {
     this.record(hostId);
     return this.deps.showLogs(hostId);
+  }
+
+  async updateAction(hostId: string, action: HostUpdateAction): Promise<void> {
+    this.record(hostId);
+    await this.deps.updateAction(hostId, action);
   }
 
   /** Allow background work: the daemon enables linger for its own user, and the card's notice goes once it did. */
@@ -1535,7 +1616,7 @@ export class RemoteHosts implements ConnectActions {
   }
 
   private connectWatched(hostId: string): string {
-    const attemptId = this.deps.connections.connect(hostId, this.watching !== undefined);
+    const attemptId = this.deps.connections.connect(hostId, this.watching !== undefined, { user: true });
     this.watching?.add(hostId);
     const dialog = this.dialog;
     if (!dialog) return attemptId;
@@ -1564,9 +1645,11 @@ export class RemoteHosts implements ConnectActions {
     const skew = this.skew(record.id);
     const connection = this.connectionOf(record.id);
     const failure = connection === 'failed' ? this.deps.connections.failure(record.id) : undefined;
-    const connectionNotices = [this.deps.watchLimit(this.authorityOf(record.id)), this.deps.sharedHome(this.authorityOf(record.id))].filter((notice) => notice !== undefined);
+    const authority = this.authorityOf(record.id);
+    const connectionNotices = [this.deps.watchLimit(authority), this.deps.sharedHome(authority), this.deps.serverInUse(authority)].filter((notice) => notice !== undefined);
     const ssh = record.kind === 'ssh' ? record : undefined;
     const listed = record.kind === 'wsl' ? this.distros.find((distro) => distro.distro === record.distro) : undefined;
+    const notRespondingTerminals = this.deps.terminals.notResponding(authority).slice(0, MAX_OVERLAY_ITEMS);
     return {
       hostId: record.id,
       kind: record.kind,
@@ -1583,10 +1666,14 @@ export class RemoteHosts implements ConnectActions {
       projectFolders: this.deps.projects(record.id).map((project) => project.fsPath),
       notices: [...this.deps.connections.notices(record.id), ...connectionNotices],
       ...(failure ? { failure } : {}),
+      ...this.removed(record.id),
       ...(skew !== undefined ? { clockSkewMs: skew } : {}),
       ...(record.settings.installFolder !== undefined ? { installFolder: record.settings.installFolder } : {}),
       ...this.quality(record.id),
+      ...this.update(record.id),
+      ...(this.deps.canCheckForUpdates() ? { canCheckForUpdates: true as const } : {}),
       ...this.devices(record.id),
+      ...(notRespondingTerminals.length > 0 ? { notRespondingTerminals } : {}),
       ...(record.settings.defaultPermissionMode !== undefined ? { defaultPermissionMode: record.settings.defaultPermissionMode } : {}),
       allowBypass: record.settings.allowBypass === true,
       ...(canForwardAgent(record) ? { agentForwarding: forwardsAgent(record) } : {}),
@@ -1604,6 +1691,13 @@ export class RemoteHosts implements ConnectActions {
     return { devices: ordered.slice(0, MAX_HOST_DEVICES).map((device) => ({ deviceName: [...device.deviceName].slice(0, MAX_DEVICE_NAME_LENGTH).join(''), self: device.self })) };
   }
 
+  // Remove Damocles server ran on the host while it is not connected; the device name is as long as the card's device names
+  private removed(hostId: string): { removed?: HostRemoved } {
+    const removed = this.connectionOf(hostId) === 'connected' ? undefined : this.deps.connections.removed(hostId);
+    if (removed === undefined) return {};
+    return { removed: removed.by === undefined ? {} : { by: [...removed.by].slice(0, MAX_DEVICE_NAME_LENGTH).join('') } };
+  }
+
   private update(hostId: string): { update?: HostUpdate } {
     const update = this.deps.update(this.authorityOf(hostId));
     return update !== undefined ? { update } : {};
@@ -1612,7 +1706,7 @@ export class RemoteHosts implements ConnectActions {
   // the reconnect phase and latency a host's dot, banner and card show
   private quality(hostId: string): { reconnect?: HostReconnect; latency?: HostLatency } {
     const authority = this.authorityOf(hostId);
-    const reconnect = this.deps.reconnect(authority);
+    const reconnect = this.unattached(authority) ? undefined : this.deps.reconnect(authority);
     const latency = this.deps.latency(authority);
     return { ...(reconnect ? { reconnect } : {}), ...(latency ? { latency } : {}) };
   }

@@ -4,12 +4,14 @@ import * as path from 'node:path';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import { MAX_FEATURES } from '../../src/remote/handshake';
-import { type CheckResult, type Contract, type Snapshot, checkSnapshots, run, snapshot } from '../protocol-compat.ts';
+import { type CheckResult, type Contract, type Snapshot, checkSnapshots, CONTRACTS as REAL_CONTRACTS, run, snapshot } from '../protocol-compat.ts';
 
 interface Version {
   readonly version?: number;
   readonly features?: readonly string[];
   readonly preRelease?: boolean;
+  // FROZEN_FEATURES; a version file without the list when absent
+  readonly frozen?: readonly string[];
 }
 
 const CONTRACTS: readonly Contract[] = [
@@ -59,8 +61,10 @@ afterAll(() => {
   for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
 });
 
-function versionSource({ version = 1, features = [], preRelease = true }: Version): string {
-  return `export const PROTOCOL_VERSION = ${version};\n\nexport const PROTOCOL_PRE_RELEASE: boolean = ${preRelease};\n\nexport const FEATURES: readonly string[] = [${features.map((feature) => `'${feature}'`).join(', ')}];\n`;
+function versionSource({ version = 1, features = [], preRelease = true, frozen }: Version): string {
+  const list = (names: readonly string[]): string => names.map((feature) => `'${feature}'`).join(', ');
+  const frozenLine = frozen === undefined ? '' : `\nexport const FROZEN_FEATURES: readonly string[] = [${list(frozen)}];\n`;
+  return `export const PROTOCOL_VERSION = ${version};\n\nexport const PROTOCOL_PRE_RELEASE: boolean = ${preRelease};\n\nexport const FEATURES: readonly string[] = [${list(features)}];\n${frozenLine}`;
 }
 
 // A contract fixture in its own folder: the contract files, the version file and a tsconfig.
@@ -230,6 +234,26 @@ describe('protocol-compat', () => {
     expect(Object.keys(committed.contracts['CoreEvents']!['object'] as object)).toContain('design.changed');
   });
 
+  it('records the frozen feature names of the real contracts, each one a FEATURES name', () => {
+    const committed = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'remote', 'protocol-snapshot.json'), 'utf8')) as Snapshot;
+    expect(committed.frozenFeatures).toEqual(['control.handOver']);
+    expect(committed.features).toContain('control.handOver');
+  });
+
+  it('freezes the terminal host contract: its three tables are frozen and the committed contracts hold exactly their members', () => {
+    const committed = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'remote', 'protocol-snapshot.json'), 'utf8')) as Snapshot & { contracts: Record<string, { object: Record<string, unknown> }> };
+    const members = { FrozenTerminalHostRequests: ['attach', 'idleDays', 'kill', 'list', 'shutdown'], FrozenTerminalHostDaemonEvents: ['ack', 'clear', 'input', 'resize', 'scrollback', 'serialize', 'viewed'], FrozenTerminalHostEvents: ['data', 'error', 'exit', 'process', 'ready', 'screen'] };
+    for (const [type, names] of Object.entries(members)) {
+      expect(REAL_CONTRACTS.find((contract) => contract.type === type)).toEqual({ file: 'src/desktop/terminal-host/host-messages.ts', type, table: true, frozen: true });
+      expect(Object.keys(committed.contracts[type]!.object)).toEqual(names);
+    }
+    // the same-version spawn stays out of the frozen set
+    expect(JSON.stringify(committed.contracts['FrozenTerminalHostRequests'])).not.toContain('spawn');
+    const grown = structuredClone(committed) as Snapshot & { contracts: Record<string, { object: Record<string, unknown> }> };
+    grown.contracts['FrozenTerminalHostRequests']!.object['spawn'] = { optional: false, type: 'string' };
+    expect(checkSnapshots(committed, { ...grown, features: [...grown.features, 'terminalHost.spawn'] }).errors).toContain('FrozenTerminalHostRequests is frozen across every protocol version and changed');
+  });
+
   it('names the markup request in the features and the committed contracts', () => {
     const committed = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'remote', 'protocol-snapshot.json'), 'utf8')) as { features: string[]; contracts: Record<string, Record<string, unknown>> };
     expect(committed.features).toContain('design.markup');
@@ -240,6 +264,55 @@ describe('protocol-compat', () => {
     const committed = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'remote', 'protocol-snapshot.json'), 'utf8')) as { features: string[]; contracts: Record<string, Record<string, unknown>> };
     expect(committed.features).toEqual(expect.arrayContaining(['design.capture', 'design.probe']));
     expect(Object.keys(committed.contracts['CoreRequests']!['object'] as object)).toEqual(expect.arrayContaining(['design.capture', 'design.probe']));
+  });
+});
+
+describe('a contract whose link has a feature list of its own', () => {
+  const OWN: readonly Contract[] = [...CONTRACTS, { file: 'contract.ts', type: 'HostEvents', table: true, features: { file: 'contract.ts', name: 'HOST_FEATURES' } }];
+  const source = (names: readonly string[], events: string): string => `${BASE}\nexport const HOST_FEATURES: readonly string[] = [${names.map((name) => `'${name}'`).join(', ')}];\nexport interface HostEvents {\n${events}}\n`;
+  const DATA = '  data: { readonly id: string };\n';
+  const GROWN = `${DATA}  connection: { readonly stream: number };\n`;
+  const own = (names: readonly string[], events: string, features: readonly string[] = []): Snapshot => {
+    const { root, versionFile } = project(source(names, events), { features });
+    return snapshot(root, OWN, versionFile);
+  };
+
+  it('records the list beside FEATURES', () => {
+    expect(own(['host.endpoints'], DATA).featureLists).toEqual({ HOST_FEATURES: ['host.endpoints'] });
+    // a snapshot with no such contract keeps its shape
+    expect(fixture(BASE)).not.toHaveProperty('featureLists');
+  });
+
+  it('gates an addition to that table by a new name in its own list, never by a FEATURES name or a protocolVersion bump', () => {
+    const before = own([], DATA);
+    const error = 'an older peer cannot take this addition and no new HOST_FEATURES name gates it: HostEvents.connection was added';
+    expect(checkSnapshots(before, own([], GROWN), OWN).errors).toEqual([error]);
+    expect(checkSnapshots(before, own([], GROWN, ['host.connection']), OWN).errors).toEqual([error]);
+    const { root, versionFile } = project(source([], GROWN), { version: 2 });
+    expect(checkSnapshots(before, snapshot(root, OWN, versionFile), OWN).errors).toEqual([error]);
+    expect(checkSnapshots(before, own(['host.connection'], GROWN), OWN)).toMatchObject({ ok: true, errors: [] });
+    // a contract added with its list's first name, as the host's own table was
+    const { root: newRoot, versionFile: newVersion } = project(BASE, {});
+    expect(checkSnapshots(snapshot(newRoot, CONTRACTS, newVersion), own(['host.endpoints'], DATA), OWN)).toMatchObject({ ok: true, errors: [] });
+  });
+
+  it('refuses a name its list lost, and in every mode a list that names a name twice', () => {
+    expect(checkSnapshots(own(['host.a', 'host.b'], DATA), own(['host.a'], DATA), OWN).errors).toEqual(['HOST_FEATURES lost host.b, which its link\'s peers check']);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { root, versionFile } = project(source(['host.a', 'host.a'], DATA), {});
+    const snapshotPath = path.join(root, 'protocol-snapshot.json');
+    fs.writeFileSync(snapshotPath, JSON.stringify(own(['host.a'], DATA)));
+    expect(run(['--allow-breaking'], { root, contracts: OWN, versionFile, snapshotPath })).toBe(1);
+    expect(console.error).toHaveBeenCalledWith('HOST_FEATURES names host.a more than once');
+    vi.restoreAllMocks();
+  });
+
+  it('gates the real terminal host events table by TERMINAL_HOST_FEATURES, which the committed snapshot keeps apart from FEATURES', () => {
+    expect(REAL_CONTRACTS.find((contract) => contract.type === 'TerminalHostEvents')).toEqual({ file: 'src/desktop/terminal-host/host-messages.ts', type: 'TerminalHostEvents', table: true, features: { file: 'src/desktop/terminal-host/host-messages.ts', name: 'TERMINAL_HOST_FEATURES' } });
+    const committed = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'remote', 'protocol-snapshot.json'), 'utf8')) as Snapshot & { contracts: Record<string, { object: Record<string, unknown> }> };
+    expect(committed.featureLists).toEqual({ TERMINAL_HOST_FEATURES: ['terminalHost.endpoints'] });
+    expect(committed.features).not.toContain('terminalHost.endpoints');
+    expect(Object.keys(committed.contracts['TerminalHostEvents']!.object)).toEqual(['connection', 'relayNonce']);
   });
 });
 
@@ -322,6 +395,44 @@ describe('the command line', () => {
     const before = released.written();
     expect(released.argv('--allow-breaking')).toBe(1);
     expect(released.written()).toBe(before);
+  });
+
+  it('refuses a FROZEN_FEATURES name that FEATURES does not list, in every mode', () => {
+    const repo = repository(BASE, { features: ['control.handOver'], frozen: ['control.handOver'] }, { features: [], frozen: ['control.handOver'] });
+    const before = repo.written();
+    expect(repo.argv('--allow-breaking')).toBe(1);
+    expect(repo.written()).toBe(before);
+    expect(repo.argv('--check')).toBe(1);
+    expect(console.error).toHaveBeenCalledWith('FROZEN_FEATURES names control.handOver, which FEATURES does not');
+  });
+
+  it('refuses a FROZEN_FEATURES list that names a name twice, in every mode', () => {
+    const version = { features: ['control.handOver'] };
+    const repo = repository(BASE, { ...version, frozen: ['control.handOver'] }, { ...version, frozen: ['control.handOver', 'control.handOver'] });
+    const before = repo.written();
+    expect(repo.argv('--allow-breaking')).toBe(1);
+    expect(repo.written()).toBe(before);
+    expect(repo.argv('--check')).toBe(1);
+    expect(console.error).toHaveBeenCalledWith('FROZEN_FEATURES names control.handOver more than once');
+  });
+
+  it('records FROZEN_FEATURES, takes a change to it while pre-release, and none once released', () => {
+    const version = { features: ['control.handOver', 'control.other'] };
+    const early = repository(BASE, { ...version, frozen: ['control.handOver'] }, { ...version, frozen: ['control.handOver', 'control.other'] });
+    expect((JSON.parse(early.written()) as Snapshot).frozenFeatures).toEqual(['control.handOver']);
+    expect(early.argv('--check')).toBe(1);
+    expect(early.argv()).toBe(0);
+    expect((JSON.parse(early.written()) as Snapshot).frozenFeatures).toEqual(['control.handOver', 'control.other']);
+    expect(early.argv('--check')).toBe(0);
+    for (const frozen of [[], ['control.handOver', 'control.other']]) {
+      const released = repository(BASE, { ...version, preRelease: false, frozen: ['control.handOver'] }, { ...version, preRelease: false, frozen });
+      const before = released.written();
+      expect(released.argv('--allow-breaking')).toBe(1);
+      expect(released.written()).toBe(before);
+      expect(released.argv('--check')).toBe(1);
+      expect(released.argv('--against', released.snapshotPath)).toBe(1);
+      expect(console.error).toHaveBeenCalledWith('FROZEN_FEATURES is frozen once the protocol is released and changed');
+    }
   });
 
   it('never accepts a return to pre-release', () => {

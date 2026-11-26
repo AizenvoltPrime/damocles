@@ -6,9 +6,20 @@ export const OFFLINE_GRACE_MS = 2000;
 export const RECONNECTED_MS = 1500;
 
 // destination: the saved address holds something Damocles now refuses, which only forgetting and adding the host changes;
-// containerBuild: the devcontainer must be built, which only an attempt a user watches does
-export const PERMANENT_FAILURE_CODES = ['hostKeyChanged', 'hostRemoved', 'prerequisites', 'install', 'authFailed', 'destination', 'containerBuild'] as const;
+// containerBuild: the devcontainer must be built, which only an attempt a user watches does; belowFloor: the host's security
+// floor is above this app, which only updating this app changes; serverRemoved: Remove Damocles server ran on the host, and only
+// a connect the user starts installs again
+export const PERMANENT_FAILURE_CODES = ['hostKeyChanged', 'hostRemoved', 'prerequisites', 'install', 'authFailed', 'destination', 'containerBuild', 'belowFloor', 'serverRemoved'] as const;
 export type PermanentFailureCode = (typeof PERMANENT_FAILURE_CODES)[number];
+
+// floorUnreadable's reason, which the host card shows: an errno code, or `unreadable` for a failure that carries none
+export const FLOOR_UNREADABLE_REASON: RegExp = /^(?:E[A-Z0-9]{2,15}|unreadable)$/;
+
+// Remove Damocles server ran on a host that is not connected: by another device, named by its hello device name, or as an
+// automatic connect found it. Only a connect the user starts installs the server again.
+export interface HostRemoved {
+  readonly by?: string;
+}
 
 // The reconnect loop's phase for a host that is not connected. since and retryAt are this computer's epoch ms; since is when
 // the host stopped being healthy (the missed deadline of a suspect connection, the drop of a lost one).

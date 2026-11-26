@@ -7,16 +7,17 @@ import { Duplex } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { processLauncher, type LaunchedProcess, type Launcher, type ProcessExit } from '../../../../core/process-launcher';
 import type { AskpassRegistration, AskpassServer } from '../../../../core/scm/askpass/askpass-server';
-import { resolveSshExecutable } from '../../../../core/system-tools';
+import { resolveSshExecutable, type SshClientChoice } from '../../../../core/system-tools';
 import type { CachedPlatform, ConnectStep, HostNotice, SshFailureCode, SshPrompt, SshPromptAnswer } from '../../../preload/overlay-channels';
 import type { ShellPlatform } from '../../../preload/shell-channels';
 import { UnpublishedPackageMissingError, type ArtifactCache } from '../artifact-cache';
 import type { ServerManifest, ServerTarget } from '../server-manifest-format';
 import { resolvePlatform } from '../bootstrap/platform-detect';
-import { createStageOutput, StageProtocolError, type StageMessage } from '../bootstrap/probe-parse';
+import { createStageOutput, MAX_STAGE_LINE_BYTES, parseStageLine, STAGE_MARKER, StageProtocolError, type StageMessage } from '../bootstrap/probe-parse';
 import { buildPosixStage1, buildWindowsStage1, validateInstallFolder } from '../bootstrap/stage1';
 import { POSIX_STAGE0, stage1Frame, windowsStage0 } from '../bootstrap/stage0';
 import { runSsh, type ControlMasterPlan, type SshRun } from './control-master';
+import { systemAgentAnswers } from './ssh-agent-check';
 import { buildSshArgs, buildSshVersionArgs, SshArgumentError, type SshArgsInput } from './ssh-args';
 import { attemptPrompt, rememberedAttempt, type AttemptPromptState, type RememberedAttempt } from './ssh-askpass';
 import { passwdAccount, resolveSshHops, type SshAccount } from './ssh-config';
@@ -104,6 +105,8 @@ export interface SshTransportOptions {
   readonly remembered?: RememberedOption;
   // aborting before the connect resolves kills ssh and rejects with cancelled
   readonly signal: AbortSignal;
+  // the user started or joined the attempt (stage1.ts StageParameters.userStarted), read as stage 1 is built
+  readonly userStarted: () => boolean;
   readonly hooks: SshAttemptHooks;
   // a detection ran on the host and found this platform
   savePlatform(platform: CachedPlatform): Promise<void>;
@@ -129,9 +132,24 @@ export interface SshTransportDeps {
   readonly env: Readonly<Record<string, string | undefined>>;
   // the passwd entry ssh expands `~` with
   readonly userInfo: () => SshAccount;
+  // whether ssh's own agent answers with ssh's environment (systemAgentAnswers); undefined when that cannot be told
+  readonly agentAnswers: (ssh: string, env: Readonly<Record<string, string | undefined>>, log: (line: string) => void) => Promise<boolean | undefined>;
 }
 
-const defaultDeps: SshTransportDeps = { resolveSsh: () => resolveSshExecutable(), launcher: processLauncher, run: runSsh, env: process.env, userInfo: () => os.userInfo() };
+/** The transport on this process's launcher, with the client the SSH client path setting chooses, read at each attempt. */
+export function systemSshTransportDeps(choice: () => SshClientChoice): SshTransportDeps {
+  return {
+    resolveSsh: () => resolveSshExecutable(process.env, process.platform, choice()),
+    launcher: processLauncher,
+    run: runSsh,
+    env: process.env,
+    userInfo: () => os.userInfo(),
+    agentAnswers: systemAgentAnswers,
+  };
+}
+
+// The host's notice while its Forward SSH agent switch is on and this computer's client reaches no agent.
+const AGENT_NOT_RUNNING_NOTICE: HostNotice = { code: 'agentNotRunning', params: {} };
 
 export type Failure = (code: SshFailureCode, params?: Readonly<Record<string, string | number>>) => SshConnectError;
 
@@ -311,7 +329,7 @@ function attemptMemory(input: AttemptMemoryInput): RememberedAttempt {
 }
 
 /** Connects, detects the platform when needed, runs the probe and the install, and resolves once the bridge authenticated. */
-export async function startSshTransport(options: SshTransportOptions, deps: SshTransportDeps = defaultDeps): Promise<SshTransportResult> {
+export async function startSshTransport(options: SshTransportOptions, deps: SshTransportDeps = systemSshTransportDeps(() => ({}))): Promise<SshTransportResult> {
   const { hooks, log, signal } = options;
   const stderr = createTail(MAX_STDERR_TAIL_CHARS);
   const failure: Failure = (code, params = {}) => new SshConnectError(code, params, stderr.text());
@@ -347,6 +365,15 @@ export async function startSshTransport(options: SshTransportOptions, deps: SshT
     remembered = attemptMemory({ ssh, version, destination: options.destination, ...(options.sshConfigFile !== undefined ? { sshConfigFile: options.sshConfigFile } : {}), ...(options.remembered ? { remembered: options.remembered } : {}), signal, run: deps.run, userInfo: deps.userInfo, log });
     registration = await registerOrFail(options.askpass, `ssh ${options.hostLabel}`, attemptPrompt(ask, state, log, remembered), log, failure);
     const env = sshCallEnv(deps.env, registration.env, version);
+    // once per attempt, and only once its ssh signed in, so an attempt that never reaches the host checks nothing
+    let agentCheck: Promise<void> | undefined;
+    const signedIn = (): void => {
+      proven();
+      if (!options.forwardAgent) return;
+      agentCheck ??= deps.agentAnswers(ssh, env, log).then((answers) => {
+        if (answers === false) hooks.notice(AGENT_NOT_RUNNING_NOTICE);
+      }, (err: unknown) => log(`checking for an SSH agent failed: ${messageOf(err)}`));
+    };
     const spawn = (command: string): LaunchedSsh => {
       // an abort during an await before this reached no listener, so it stops the attempt here
       if (signal.aborted) throw failure('cancelled');
@@ -381,7 +408,7 @@ export async function startSshTransport(options: SshTransportOptions, deps: SshT
       const exit = await whileAttempting(child, exitOf(child, log, failure));
       // killed by a signal, ssh proved nothing, as when it failed itself
       if (exit.code === SSH_ERROR_EXIT || exit.code === null) throw endedFailure(exit.code, sshStderr(), signal.aborted, state, failure);
-      proven();
+      signedIn();
       return stdout.toString('utf8');
     };
     const resolved = await resolvePlatform(options.osOverride, options.cachedPlatform, { run: runDetection });
@@ -392,6 +419,7 @@ export async function startSshTransport(options: SshTransportOptions, deps: SshT
 
     const stageParams = {
       manifest: options.manifest,
+      userStarted: options.userStarted(),
       ...(options.releasesUrl !== undefined ? { releasesUrl: options.releasesUrl } : {}),
       ...(options.installFolder !== undefined ? { installFolder: options.installFolder } : {}),
       ...(options.previousInstallFolder !== undefined ? { previousInstallFolder: options.previousInstallFolder } : {}),
@@ -399,7 +427,9 @@ export async function startSshTransport(options: SshTransportOptions, deps: SshT
     const stage1 = platform.os === 'win32' ? buildWindowsStage1(stageParams) : buildPosixStage1(stageParams);
     const { child, sshStderr } = spawn(platform.os === 'win32' ? windowsStage0(platform.windowsShell ?? 'cmd') : POSIX_STAGE0);
     const ended = (code: number | null): SshConnectError => endedFailure(code, sshStderr(), signal.aborted, state, failure);
-    const result = await whileAttempting(child, runStage(child, stage1, { ...options, cache: 'none' }, failure, ended, proven, log));
+    const result = await whileAttempting(child, runStage(child, stage1, { ...options, cache: 'none' }, failure, ended, signedIn, log));
+    // the host's notices stop changing once the attempt connected
+    await agentCheck;
     bridged = true;
     registration.dispose();
     return {
@@ -433,6 +463,8 @@ export type StageRunOptions = Pick<SshTransportOptions, 'manifest' | 'artifacts'
 
 // The parts of a started stage 0 runStage drives: a local process, or an exec stream through an SSH host's daemon.
 export type StageProcess = Pick<LaunchedProcess, 'onData' | 'write' | 'end' | 'kill' | 'exited' | 'closed'>;
+
+const BRIDGE_MARKER = Buffer.from(STAGE_MARKER);
 
 /** A started bridge's stdout and stdin as one Duplex; ending it ends the bridge and leaves the daemon running. */
 function bridgeDuplex(child: StageProcess): { readonly stream: Duplex; readonly ended: () => void } {
@@ -571,9 +603,37 @@ export function runStage(
       }
     };
 
+    // The bridge's first bytes while they may still be its fail line, written where the handshake would start: a bridge the
+    // host's security floor refuses starts no daemon. Bytes that are not that line are the protocol's.
+    let opening: Buffer | undefined = Buffer.alloc(0);
+    const fromBridge = (stream: Duplex, chunk: Uint8Array): void => {
+      if (opening === undefined) {
+        stream.push(chunk);
+        return;
+      }
+      opening = Buffer.concat([opening, chunk]);
+      const end = opening.indexOf(0x0a);
+      const marked = BRIDGE_MARKER.subarray(0, opening.length).equals(opening.subarray(0, BRIDGE_MARKER.length));
+      if (marked && end < 0 && opening.length <= MAX_STAGE_LINE_BYTES) return;
+      const bytes = opening;
+      opening = undefined;
+      let refusal: StageMessage | undefined;
+      try {
+        refusal = marked && end >= 0 ? parseStageLine(bytes.subarray(0, end).toString('utf8').replace(/\r$/, '')) : undefined;
+      } catch (err) {
+        if (!(err instanceof StageProtocolError)) throw err;
+      }
+      if (refusal?.kind === 'fail') {
+        log(`the bridge started no server: ${refusal.code}`);
+        stream.destroy(failure(refusal.code, refusal.params));
+        return;
+      }
+      stream.push(bytes);
+    };
+
     child.onData('stdout', (chunk) => {
       if (bridge) {
-        bridge.stream.push(chunk);
+        fromBridge(bridge.stream, chunk);
         return;
       }
       if (settled) return;
@@ -592,7 +652,7 @@ export function runStage(
         if (rest === undefined) return;
         if (!target || installDir === undefined) throw new StageProtocolError('the bridge started before the probe reported');
         bridge = bridgeDuplex(child);
-        if (rest.length > 0) bridge.stream.push(rest);
+        if (rest.length > 0) fromBridge(bridge.stream, rest);
         settled = true;
         resolve({ stream: bridge.stream, probe: { target, installDir, notices } });
       } catch (err) {
@@ -650,7 +710,7 @@ export interface SshStageOptions {
  * its stdin. Resolves the remote exit code and every `@@DAMOCLES` line the script printed; rejects with SshConnectError when
  * ssh itself failed.
  */
-export async function runSshStage(options: SshStageOptions, script: string, deps: SshTransportDeps = defaultDeps): Promise<{ readonly code: number | null; readonly lines: readonly string[] }> {
+export async function runSshStage(options: SshStageOptions, script: string, deps: SshTransportDeps = systemSshTransportDeps(() => ({}))): Promise<{ readonly code: number | null; readonly lines: readonly string[] }> {
   const { log, signal } = options;
   const stderr = createTail(MAX_STDERR_TAIL_CHARS);
   const state: AttemptPromptState = { hostKeyRefused: false, cancelled: false };

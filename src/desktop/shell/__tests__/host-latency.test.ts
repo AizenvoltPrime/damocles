@@ -5,10 +5,11 @@ import { nextTick } from 'vue';
 import { OFFLINE_GRACE_MS, RECONNECTED_MS } from '@shared/host-connection';
 import HostStatusDot from '../components/HostStatusDot.vue';
 import LatencySparkline from '../overlay/components/LatencySparkline.vue';
-import { hostStateLabel, hostStatus } from '../host-label';
+import { hostStateLabel as labelAt, hostStatus } from '../host-label';
 import { shellI18n } from '../i18n';
 
 const t = (key: string, params?: Record<string, unknown>): string => shellI18n.global.t(key, params ?? {});
+const hostStateLabel = (host: Parameters<typeof labelAt>[0], translate: typeof t): string => labelAt(host, translate, { now: Date.now, time: String, deadline: (at) => ({ time: String(at) }) });
 const mounted: VueWrapper[] = [];
 beforeEach(() => {
   vi.useFakeTimers();

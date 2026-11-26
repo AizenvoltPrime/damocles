@@ -1,8 +1,10 @@
 # shellcheck shell=sh
 # The removal stage on a POSIX target, run as stage 0 runs stage 1 once the daemon exited: this machine's run folder and the
-# socket folders its daemons made, the installed versions no other machine's live daemon names, Damocles' own entries in an
-# install folder (never the folder), and, only when asked, the key line Damocles installed and linger. Stdout carries only
-# say()'s status lines. Everything above "BEGIN MAIN" only defines; the tests source that part and call the functions.
+# socket folders its daemons and terminal hosts made, the installed versions no other machine's live daemon or terminal host
+# record names and Damocles' own entries in an install folder but its security floor (never the folder), leaving a removed
+# marker in each install folder that held a server and in the one stage 1 uses, and, only when asked, the key line Damocles
+# installed and linger. Stdout carries only say()'s status lines. Everything above "BEGIN MAIN" only defines; the tests
+# source that part and call the functions.
 # BEGIN PARAMETERS
 D_RUN_KEY=''
 D_INSTALL_FOLDER=''
@@ -21,8 +23,12 @@ DAEMON_TAKEOVER_STALE_S=10
 LOCK_STALE_OTHER_HOST_MIN=30
 STAGING_STALE_MIN=1440
 EXEC_TEST_STALE_MIN=1
+# proper-lockfile's default stale time, which security-floor.ts raiseFloor's lock keeps
+FLOOR_LOCK_STALE_S=10
 # where linger.ts looks for loginctl
 LOGINCTL_FOLDERS='/bin /usr/bin'
+# remove-server.ts MAX_PARAM_CHARS (500) holds 40 pids of up to 10 digits and their spaces
+MAX_NAMED_HOSTS=40
 tilde='~'
 
 say() {
@@ -80,11 +86,35 @@ version_of_dir() {
   done
 }
 
-# "<version> <hostname>" for each other machine's recently touched pid file; $1 is this machine's run folder.
-other_live_daemons() {
-  for pid_file in "$HOME"/.damocles/server/run-*/daemon.pid; do
-    [ -e "$pid_file" ] || continue
-    if [ "$(dirname "$pid_file")" = "$1" ]; then continue; fi
+# Whether $1 exists and is a daemon's pid file or a terminal host's record <pid>.json, the only names token.ts reads.
+# stage1-posix.sh has the same function.
+is_pid_file() {
+  [ -e "$1" ] || return 1
+  record_name=$(basename "$1")
+  [ "$record_name" = daemon.pid ] && return 0
+  case "${record_name%.json}" in [1-9]*) ;; *) return 1 ;; esac
+  case "${record_name%.json}" in *[!0-9]*) return 1 ;; esac
+}
+
+# Whether the live process $1 of this user (kill -0) runs the Node of an installed server package, as every terminal host
+# does. On Linux by its exe link, which a process of this user hides only when it is not dumpable (ssh-agent) or a zombie,
+# and a terminal host is neither; elsewhere by ps, where a program it cannot read counts as one.
+runs_from_install() {
+  if [ -d /proc/self ]; then
+    exe=$(readlink "/proc/$1/exe" 2>/dev/null) || return 1
+  else
+    exe=$(ps -o comm= -p "$1" 2>/dev/null)
+    case "$exe" in /*) ;; *) return 0 ;; esac
+  fi
+  [ -n "$(version_of_dir "$(dirname "$(dirname "$exe")")")" ]
+}
+
+# "<version> <hostname>" for each other machine's recently touched pid file, a daemon's or a terminal host's; $1 is this
+# machine's run folder.
+other_live_records() {
+  for pid_file in "$HOME"/.damocles/server/run-*/daemon.pid "$HOME"/.damocles/server/run-*/terminal-hosts/*.json; do
+    is_pid_file "$pid_file" || continue
+    case "$pid_file" in "$1"/*) continue ;; esac
     if [ -n "$(find "$pid_file" -maxdepth 0 -mmin -"$LIVE_PID_FILE_MIN" 2>/dev/null)" ]; then
       version=$(sed -n 's/.*"version":"\([0-9A-Za-z.+-]*\)".*/\1/p' "$pid_file")
       host=$(sed -n 's/.*"hostname":"\([^"]*\)".*/\1/p' "$pid_file")
@@ -93,10 +123,28 @@ other_live_daemons() {
   done
 }
 
-# Whether this machine's daemon still runs: its pid file names a live process.
+# Whether this machine's daemon still runs: the run folder $1's pid file names a live process.
 own_daemon_runs() {
   pid=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$1/daemon.pid" 2>/dev/null)
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+# The pids, space-separated, of this machine's terminal hosts that still run, at most MAX_NAMED_HOSTS: a record in the run
+# folder $1 names a live process that runs from an install, so a pid another program took since never holds a removal. Nothing
+# here kills one: the daemon ends them, proving each process first.
+live_terminal_hosts() {
+  live=''
+  named=0
+  for pid_file in "$1"/terminal-hosts/*.json; do
+    is_pid_file "$pid_file" || continue
+    pid=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$pid_file" 2>/dev/null)
+    case "$pid" in [1-9]*) ;; *) continue ;; esac
+    if [ "${#pid}" -gt 10 ] || ! kill -0 "$pid" 2>/dev/null || ! runs_from_install "$pid"; then continue; fi
+    live="${live:+$live }$pid"
+    named=$((named + 1))
+    if [ "$named" -ge "$MAX_NAMED_HOSTS" ]; then break; fi
+  done
+  printf '%s' "$live"
 }
 
 # Seconds since $1 last changed; empty when it cannot be read. GNU and busybox stat take -c, BSD's -f.
@@ -155,24 +203,31 @@ refresh_daemon_lock() {
   touch -c "$1"
 }
 
-# A socket folder a daemon made: a damocles-* folder of this user's, emptied of the names a daemon makes in one, then removed.
+# A socket folder a daemon or a terminal host made: a damocles-* folder of this user's, emptied of the names they make in
+# one (token.ts SOCKET_FOLDER_ENTRY), then removed.
 remove_socket_folder() {
   case "$(basename "$1")" in damocles-*) ;; *) return 0 ;; esac
   if [ -L "$1" ] || [ ! -d "$1" ] || [ -z "$(find "$1" -maxdepth 0 -user "$(id -u)" 2>/dev/null)" ]; then return 0; fi
-  rm -f "$1/daemon.sock" "$1/token" "$1/askpass.sock" "$1"/agent-*.sock "$1"/cli-*.sock
+  rm -f "$1/daemon.sock" "$1/host.sock" "$1/token" "$1/askpass.sock" "$1"/askpass-*.sock "$1"/agent-*.sock "$1"/cli-*.sock
   if ! rmdir "$1" 2>/dev/null; then
     notice deleteFailed "\"entry\":\"$(json_str "$1")\""
   fi
 }
 
-# Every socket folder the run folder $1 records: the pid file's endpoint folder and the daemon's socket-folders list, which
-# names a crashed daemon's agent, relay and CLI folders too. The lock is touched after each.
+# Every socket folder the run folder $1 records: the endpoint folder of the daemon's pid file and of each ended terminal
+# host's, and the daemon's socket-folders list, which names a crashed daemon's agent and relay folders too. The lock is
+# touched after each.
 remove_socket_folders() {
-  endpoint_folder=$(sed -n 's/.*"socketFolder":"\([^"]*\)".*/\1/p' "$1/daemon.pid" 2>/dev/null)
-  if [ -n "$endpoint_folder" ]; then
-    remove_socket_folder "$endpoint_folder"
-    refresh_daemon_lock "$1/daemon.lock"
-  fi
+  for pid_file in "$1/daemon.pid" "$1"/terminal-hosts/*.json; do
+    is_pid_file "$pid_file" || continue
+    endpoint_folder=$(sed -n 's/.*"socketFolder":"\([^"]*\)".*/\1/p' "$pid_file" 2>/dev/null)
+    case "$endpoint_folder" in
+      /*)
+        remove_socket_folder "$endpoint_folder"
+        refresh_daemon_lock "$1/daemon.lock"
+        ;;
+    esac
+  done
   if [ -f "$1/socket-folders" ]; then
     while IFS= read -r socket_folder; do
       case "$socket_folder" in /*) remove_socket_folder "$socket_folder" ;; esac
@@ -236,11 +291,56 @@ try_lock() {
   printf '%s %s\n' "$(uname -n)" "$$" > "$lock/owner"
 }
 
-# Under folder $1's install lock, removes the version folders no other live daemon names, then the staging folders, the exec
-# tests and the lock; $2 lists "<version> <hostname>" lines of the other live daemons. A stage installing there keeps the
-# folder as it is, and only staging folders and exec tests too old to be in use go.
+# What a dead raise of folder $1's security floor left (security-floor.ts raiseFloor): its temporary files, deleted under its
+# proper-lockfile lock taken as proper-lockfile takes it (a stale one taken over), then the lock. The floor itself stays
+# (docs/invariants.md, Remove Damocles server); nothing goes while a live raise holds the lock.
+remove_floor_leftovers() {
+  floor_lock="$1/security-floor.lock"
+  if ! mkdir "$floor_lock" 2>/dev/null; then
+    age=$(seconds_since_change "$floor_lock")
+    if [ -z "$age" ] || [ "$age" -le "$FLOOR_LOCK_STALE_S" ]; then return 0; fi
+    rm -rf "$floor_lock"
+    mkdir "$floor_lock" 2>/dev/null || return 0
+  fi
+  for temp in "$1"/security-floor.*.tmp; do
+    if [ -f "$temp" ]; then delete_entry "$temp"; fi
+  done
+  rmdir "$floor_lock"
+}
+
+# 0 when folder $1 holds an entry other than its security floor and its removed marker, whose own notice says why they stay
+holds_besides_markers() {
+  for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+    if { [ -e "$entry" ] || [ -L "$entry" ]; } && [ "$entry" != "$1/security-floor" ] && [ "$entry" != "$1/removed" ]; then return 0; fi
+  done
+  return 1
+}
+
+# The marker that keeps an automatic connect from installing in folder $1 again (stage1-posix.sh install_version): owner-only,
+# written to a temporary file and renamed, holding the removal's UTC time. Kept, as the floor is.
+mark_removed() {
+  marker_tmp=$(mktemp "$1/.removed-XXXXXXXX") && chmod 600 "$marker_tmp" && date -u '+%Y-%m-%dT%H:%M:%SZ' > "$marker_tmp" && mv -f "$marker_tmp" "$1/removed" && return 0
+  if [ -n "$marker_tmp" ]; then rm -f "$marker_tmp"; fi
+  notice markerFailed "\"folder\":\"$(json_str "$1")\""
+}
+
+# 0 when folder $1 holds a version folder
+holds_versions() {
+  for dir in "$1"/*-*; do
+    if [ -n "$(version_of_dir "$dir")" ]; then return 0; fi
+  done
+  return 1
+}
+
+# Removes the version folders of folder $1 that no other live daemon or terminal host record names, then the staging folders,
+# the exec tests, a dead marker write's and a dead floor raise's leftovers and the lock, under its install lock; $2 lists
+# "<version> <hostname>" lines of the other live records. First the removed marker goes in when $3 is `mark` (the install
+# folder stage 1 uses) or the folder holds a version folder, before the lock, so a stage that takes the lock next finds it.
+# Says which of its security floor and marker the folder keeps. A stage installing there keeps the folder as it is, and only
+# staging folders and exec tests too old to be in use go.
 remove_entries() {
   [ -d "$1" ] || return 0
+  if [ "${3:-}" = mark ] || holds_versions "$1"; then mark_removed "$1"; fi
   lock="$1/install.lock"
   takeover="$1/install.lock.takeover"
   if ! try_lock; then
@@ -262,7 +362,17 @@ remove_entries() {
   for entry in "$1"/.staging-*; do
     if [ -e "$entry" ]; then delete_entry "$entry"; fi
   done
-  find "$1" -maxdepth 1 -name '.exec-test-*' -mmin +"$EXEC_TEST_STALE_MIN" -exec rm -f {} \; 2>/dev/null
+  find "$1" -maxdepth 1 \( -name '.exec-test-*' -o -name '.removed-*' \) -mmin +"$EXEC_TEST_STALE_MIN" -exec rm -f {} \; 2>/dev/null
+  remove_floor_leftovers "$1"
+  kept_files=''
+  if [ -f "$1/security-floor" ] && [ -f "$1/removed" ]; then
+    kept_files=both
+  elif [ -f "$1/security-floor" ]; then
+    kept_files=floor
+  elif [ -f "$1/removed" ]; then
+    kept_files=marker
+  fi
+  if [ -n "$kept_files" ]; then notice floorKept "\"folder\":\"$(json_str "$1")\",\"files\":\"$kept_files\""; fi
   rm -rf "$lock"
   if [ -n "$(find "$takeover" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then rmdir "$takeover" 2>/dev/null; fi
 }
@@ -322,23 +432,33 @@ if [ -d "$run_dir" ]; then
     release_daemon_lock "$run_dir/daemon.lock"
     fail daemonRunning
   fi
+  hosts=$(live_terminal_hosts "$run_dir")
+  if [ -n "$hosts" ]; then
+    release_daemon_lock "$run_dir/daemon.lock"
+    fail terminalHostRunning "\"pids\":\"$hosts\""
+  fi
 fi
-others=$(other_live_daemons "$run_dir")
+others=$(other_live_records "$run_dir")
 
 if [ -d "$run_dir" ]; then
   remove_socket_folders "$run_dir"
   remove_run_dir "$run_dir"
 fi
-remove_entries "$server" "$others"
+# the install folder stage 1 uses, the configured one else the default, gets the removed marker whether or not it held a server
+server_mark=mark
+if [ -n "$D_INSTALL_FOLDER" ]; then server_mark=''; fi
+remove_entries "$server" "$others" "$server_mark"
 for folder in "$D_INSTALL_FOLDER" "$D_PREVIOUS_FOLDER"; do
   if [ -n "$folder" ]; then
     install=$(install_dir "$folder" "$user")
-    remove_entries "$install" "$others"
+    folder_mark=''
+    if [ "$folder" = "$D_INSTALL_FOLDER" ]; then folder_mark=mark; fi
+    remove_entries "$install" "$others" "$folder_mark"
     # <folder>/<user> goes once empty; <folder> itself always stays
     rmdir "$install" 2>/dev/null || true
   fi
 done
-if ! rmdir "$server" 2>/dev/null && [ -d "$server" ]; then
+if ! rmdir "$server" 2>/dev/null && [ -d "$server" ] && holds_besides_markers "$server"; then
   notice serverFolderKept
 fi
 

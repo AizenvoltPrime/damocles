@@ -3,8 +3,6 @@ import { INVALID } from '../../core-protocol/schema';
 import { CLIENT_TO_CONTROL, FROZEN_CLIENT_TO_CONTROL, MAX_RUN_TITLE_CHARS } from '../control-messages';
 import { createRunRegistry } from '../run-registry';
 
-const DAY = 24 * 60 * 60 * 1000;
-
 beforeEach(() => {
   vi.useFakeTimers();
 });
@@ -32,46 +30,6 @@ describe('run registry, terminals', () => {
     registry.removeTerminal('term-1');
     expect(registry.isEmpty()).toBe(true);
   });
-
-  it('ends a terminal nobody attached for the latest client\'s terminalIdleDays', () => {
-    const registry = createRunRegistry();
-    const ended: string[] = [];
-    registry.onIdle((id) => ended.push(id));
-    registry.setIdleDays(3);
-    registry.addTerminal({ id: 'term-1', projectKey: '', title: 'sh' });
-    registry.setAttached('term-1', 1);
-    vi.advanceTimersByTime(10 * DAY);
-    expect(ended).toEqual([]);
-    registry.setAttached('term-1', 0);
-    // a later client's value applies, even while the app is closed
-    registry.setIdleDays(1);
-    vi.advanceTimersByTime(DAY - 1);
-    expect(ended).toEqual([]);
-    vi.advanceTimersByTime(1);
-    expect(ended).toEqual(['term-1']);
-  });
-
-  it('never ends a terminal with terminalIdleDays 0, and restarts the clock on attach', () => {
-    const registry = createRunRegistry();
-    const ended: string[] = [];
-    registry.onIdle((id) => ended.push(id));
-    registry.addTerminal({ id: 'term-1', projectKey: '', title: 'sh' });
-    registry.setAttached('term-1', 0);
-    registry.setIdleDays(0);
-    vi.advanceTimersByTime(400 * DAY);
-    expect(ended).toEqual([]);
-    registry.setAttached('term-1', 1);
-    registry.setAttached('term-1', 0);
-    registry.setIdleDays(30);
-    // past setTimeout's 24.8-day limit: the timer re-arms
-    vi.advanceTimersByTime(29 * DAY);
-    registry.setAttached('term-1', 1);
-    registry.setAttached('term-1', 0);
-    vi.advanceTimersByTime(29 * DAY);
-    expect(ended).toEqual([]);
-    vi.advanceTimersByTime(DAY);
-    expect(ended).toEqual(['term-1']);
-  });
 });
 
 describe('run registry, panels', () => {
@@ -79,6 +37,33 @@ describe('run registry, panels', () => {
   const running = { ...idle, state: 'running' } as const;
   const waiting = { state: 'requires_action', pendingKinds: ['approval'], pendingPrompts: [{ id: 'p1', kind: 'approval', owner: { kind: 'main' } }], background: false } as const;
   const panel = { panelId: 'panel-1', projectKey: '/srv/app', title: 'S1' };
+
+  it('reports a chat run, which a terminal is not', () => {
+    const registry = createRunRegistry();
+    registry.addTerminal({ id: 'term-1', projectKey: '', title: 'sh' });
+    expect(registry.hasChatRun()).toBe(false);
+    registry.panelActivity(panel, running);
+    expect(registry.hasChatRun()).toBe(true);
+    registry.panelActivity(panel, idle);
+    expect(registry.hasChatRun()).toBe(false);
+  });
+
+  it('lists a pending CLI wait until it ends, apart from the frozen listRuns, and tells its start and end', () => {
+    const registry = createRunRegistry();
+    const changes = vi.fn();
+    registry.onChange(changes);
+    const wait = registry.cliWait('x'.repeat(5000));
+    const other = registry.cliWait('COMMIT_EDITMSG');
+    expect(registry.cliWaits()).toEqual(['x'.repeat(MAX_RUN_TITLE_CHARS), 'COMMIT_EDITMSG']);
+    expect(registry.runs()).toEqual([]);
+    expect(registry.hasChatRun()).toBe(false);
+    wait.dispose();
+    wait.dispose();
+    expect(registry.cliWaits()).toEqual(['COMMIT_EDITMSG']);
+    other.dispose();
+    expect(registry.cliWaits()).toEqual([]);
+    expect(changes).toHaveBeenCalledTimes(4);
+  });
 
   it('holds a panel with a running turn, a pending prompt or background agents, and lists it for listRuns', () => {
     const registry = createRunRegistry();

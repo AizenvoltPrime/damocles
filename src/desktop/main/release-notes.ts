@@ -32,7 +32,7 @@ export function parseChangelog(text: string): readonly Section[] {
     if (!SECTION_HEADING.test(line)) return;
     close(i);
     const match = VERSION_HEADING.exec(line);
-    if (match) open = { version: match[1]!, date: match[2]!, start: i + 1 };
+    if (match && isVersion(match[1])) open = { version: match[1], date: match[2]!, start: i + 1 };
   });
   close(lines.length);
   return sections.sort((a, b) => compareVersions(b.version, a.version));

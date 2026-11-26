@@ -101,6 +101,7 @@ import {
   GIT_SMART_COMMIT_CHANGES_SETTING,
   GIT_SUGGEST_SMART_COMMIT_SETTING,
   GIT_UNTRACKED_CHANGES_SETTING,
+  REMOTE_SSH_PATH_SETTING,
   REMOTE_TERMINAL_IDLE_DAYS_SETTING,
   SIDEBAR_ALWAYS_SHOW_HEADER_ACTIONS_SETTING,
   SEARCH_ACTIONS_POSITION_SETTING,
@@ -263,7 +264,7 @@ const FORGE_SETTINGS = [
   [FORGE_SHOW_AVATARS_SETTING, 'forgeShowAvatars'],
 ] as const;
 
-// Remote hosts' rows after the idle-terminal limit, in the order RemoteHostsSection renders them: [row id, settingsHost.rows name].
+// Remote hosts' rows after the idle-terminal limit and the SSH client, in the order RemoteHostsSection renders them: [row id, settingsHost.rows name].
 const REMOTE_HOST_ROWS = [
   ['remote-hosts', 'remoteHosts'],
   ['remote-host-held-memory', 'remoteHostHeldMemory'],
@@ -290,6 +291,7 @@ const REMOTE_HOSTS_SECTION: HostSettingsSection = {
   component: RemoteHostsSection,
   rows: [
     { id: REMOTE_TERMINAL_IDLE_DAYS_SETTING, section: 'remoteHosts', label: 'settingsHost.rows.remoteTerminalIdleDays.label', description: 'settingsHost.rows.remoteTerminalIdleDays.description', keys: [REMOTE_TERMINAL_IDLE_DAYS_SETTING] },
+    { id: REMOTE_SSH_PATH_SETTING, section: 'remoteHosts', label: 'settingsHost.rows.remoteSshPath.label', description: 'settingsHost.rows.remoteSshPath.description', keys: [REMOTE_SSH_PATH_SETTING] },
     ...REMOTE_HOST_ROWS.map(([id, name]) => ({ id, section: 'remoteHosts' as const, label: `settingsHost.rows.${name}.label`, description: `settingsHost.rows.${name}.description` })),
   ],
 };
@@ -454,7 +456,7 @@ const awayText = computed(() => {
     case 'signIn': return t('remote.banner.signIn', { name });
     case 'failed': return t('remote.banner.announce.failed', { name });
     case 'offline': return t('remote.editor.offline', { name });
-    case 'switchOffered': return t('hostUpdate.running', current.update.runningAgents, { named: { host: name, count: current.update.runningAgents, version: current.update.serverVersion } });
+    case 'switchOffered': return t('hostUpdate.settingsRunning', current.update.runningAgents, { named: { host: name, count: current.update.runningAgents, version: current.update.serverVersion } });
     case 'restarting': return t('engine.hostRestarting', { host: name });
     case 'halted': return t('engine.hostStopped', { host: name });
     default: return '';

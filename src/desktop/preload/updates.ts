@@ -61,8 +61,9 @@ export function canCheck(state: UpdateState): boolean {
   return state.kind === 'idle' || state.kind === 'upToDate' || state.kind === 'error';
 }
 
-// What the title-bar pill asks main to do; main refuses an action the current state does not offer.
-export const UPDATE_ACTIONS = ['restart', 'releaseNotes', 'showLog', 'releasePage'] as const;
+// What the title-bar pill and the shell's host update strip ask main to do; main refuses an action the current state does not
+// offer, and check is a no-op unless canCheck.
+export const UPDATE_ACTIONS = ['restart', 'releaseNotes', 'showLog', 'releasePage', 'check'] as const;
 export type UpdateAction = (typeof UPDATE_ACTIONS)[number];
 
 export function isUpdateAction(value: unknown): value is UpdateAction {

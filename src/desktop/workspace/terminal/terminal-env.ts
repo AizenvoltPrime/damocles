@@ -45,8 +45,8 @@ const isUtf8Lang = (lang: string | undefined): boolean => !!lang && (/\.UTF-8$/.
 export function terminalEnvironment(env: NodeJS.ProcessEnv, options: TerminalEnvironmentOptions): Record<string, string> {
   const result = hostEnvironment(env);
   for (const key of SCRIPT_STATE_ENV) delete result[key];
-  // only the terminal's own CLI socket may be named, which cliTerminalEnvironment adds for a target's user terminal; Windows
-  // names variables in any case
+  // only the terminal's own CLI socket may be named, which its terminal host adds for a target's user terminal; Windows names
+  // variables in any case
   for (const key of Object.keys(result)) if (key.toUpperCase() === CLI_HOOK_ENV) delete result[key];
   if (result['ZDOTDIR'] === options.zshDotDir) delete result['ZDOTDIR'];
   if (!isUtf8Lang(result['LANG'])) result['LANG'] = langFromLocale(options.locale);
@@ -97,8 +97,6 @@ export function registryEnvironment(env: Readonly<Record<string, string | undefi
 }
 
 export interface CliTerminalOptions {
-  // the terminal's CLI socket (a socket path, or a named pipe on Windows)
-  readonly hook: string;
   // the server package's bin/remote-cli folder, put first on PATH
   readonly remoteCliDir: string;
   // the server package's bin/helpers/browser.sh, or browser.exe on Windows
@@ -107,9 +105,9 @@ export interface CliTerminalOptions {
 }
 
 /**
- * A target's user terminal's environment with the damocles command: its socket in DAMOCLES_CLI_HOOK, bin/remote-cli first on
- * PATH, and BROWSER sending URLs to this computer, as VS Code's server sets PATH and BROWSER. Windows names a variable in any
- * case, so there each replaces the one it finds whatever its case.
+ * A target's user terminal's environment with the damocles command: bin/remote-cli first on PATH, and BROWSER sending URLs to
+ * this computer, as VS Code's server sets PATH and BROWSER; its terminal host names the socket in DAMOCLES_CLI_HOOK. Windows
+ * names a variable in any case, so there each replaces the one it finds whatever its case.
  */
 export function cliTerminalEnvironment(env: Readonly<Record<string, string>>, options: CliTerminalOptions): Record<string, string> {
   const result = { ...env };
@@ -118,7 +116,6 @@ export function cliTerminalEnvironment(env: Readonly<Record<string, string>>, op
   const delimiter = options.platform === 'win32' ? ';' : ':';
   const current = result[pathKey];
   result[pathKey] = current ? `${options.remoteCliDir}${delimiter}${current}` : options.remoteCliDir;
-  result[keyOf(CLI_HOOK_ENV, CLI_HOOK_ENV)] = options.hook;
   result[keyOf('BROWSER', 'BROWSER')] = options.browser;
   return result;
 }

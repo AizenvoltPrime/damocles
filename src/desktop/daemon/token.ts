@@ -5,8 +5,8 @@ import { randomBytes } from 'node:crypto';
 import { constants, promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { renameWithRetry } from '../../core/config/rename-retry';
 import { networkFileSystem } from '../../core/network-fs';
-import { agentSocketName } from '../core-protocol/agent-sockets';
 import { restrictToUser } from '../../core/owner-only-acl';
 import { MAX_SHARED_HOME_HOSTS, OTHER_HOSTNAME } from './control-messages';
 import { machineRunKey } from './machine-id';
@@ -19,6 +19,7 @@ export const SHARED_HOME_WINDOW_MS: number = 25 * 60 * 60 * 1000;
 const PID_FILE = 'daemon.pid';
 const SOCKET_NAME = 'daemon.sock';
 const TOKEN_NAME = 'token';
+const HOST_SOCKET_NAME = 'host.sock';
 
 export interface RunPaths {
   readonly serverDir: string;
@@ -30,6 +31,8 @@ export interface RunPaths {
   readonly lockTakeover: string;
   readonly pidFile: string;
   readonly logsDir: string;
+  // each live terminal host's record <pid>.json, its terminals <pid>.terminals and, on Windows, its token <pid>.token
+  readonly terminalHostsDir: string;
   // zsh's ZDOTDIR for the daemon's integrated shells
   readonly zshDotDir: string;
 }
@@ -47,8 +50,12 @@ export interface PidRecord {
 }
 
 export function runPaths(home: string, runKey: string): RunPaths {
-  const serverDir = path.join(home, '.damocles', 'server');
-  const runDir = path.join(serverDir, `run-${runKey}`);
+  return runPathsIn(path.join(home, '.damocles', 'server', `run-${runKey}`));
+}
+
+/** The paths of a run folder a daemon made, for a terminal host it started with that folder. */
+export function runPathsIn(runDir: string): RunPaths {
+  const serverDir = path.dirname(runDir);
   return {
     serverDir,
     runDir,
@@ -57,6 +64,7 @@ export function runPaths(home: string, runKey: string): RunPaths {
     lockTakeover: path.join(runDir, 'daemon.lock.takeover'),
     pidFile: path.join(runDir, PID_FILE),
     logsDir: path.join(runDir, 'logs'),
+    terminalHostsDir: path.join(runDir, 'terminal-hosts'),
     zshDotDir: path.join(runDir, 'shell-integration', 'zsh'),
   };
 }
@@ -92,13 +100,131 @@ export function isOwnEndpoint(record: Pick<PidRecord, 'endpoint' | 'socketFolder
   return record.socketFolder !== null && path.basename(record.socketFolder).startsWith(SOCKET_FOLDER_PREFIX) && record.endpoint === socketPath(record.socketFolder);
 }
 
-/** Removes a socket folder by its two names, so a folder holding anything else is never emptied; one already gone is done. */
-export async function removeSocketFolder(folder: string): Promise<void> {
-  await fs.rm(path.join(folder, SOCKET_NAME), { force: true });
+// Frozen layout: docs/invariants.md "Remote terminals outlive their clients and their daemon".
+const HOST_PIPE_NAME = /^\\\\\.\\pipe\\damocles-terminals-[0-9a-f]{32}$/;
+
+export function hostSocketPath(socketFolder: string): string {
+  return path.join(socketFolder, HOST_SOCKET_NAME);
+}
+
+export function hostPipeName(): string {
+  return `\\\\.\\pipe\\damocles-terminals-${randomBytes(16).toString('hex')}`;
+}
+
+/** Whether a terminal host record's endpoint is one a terminal host would have made: its folder's socket, or a pipe of the host's pattern. */
+export function isHostEndpoint(record: Pick<PidRecord, 'endpoint' | 'socketFolder'>, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform === 'win32') return record.socketFolder === null && HOST_PIPE_NAME.test(record.endpoint);
+  return record.socketFolder !== null && path.basename(record.socketFolder).startsWith(SOCKET_FOLDER_PREFIX) && record.endpoint === hostSocketPath(record.socketFolder);
+}
+
+export function hostRecordFile(paths: RunPaths, pid: number): string {
+  return path.join(paths.terminalHostsDir, `${pid}.json`);
+}
+
+// no .json suffix, so nothing that reads the records takes it for one
+export function hostTerminalsFile(paths: RunPaths, pid: number): string {
+  return path.join(paths.terminalHostsDir, `${pid}.terminals`);
+}
+
+// what the host writes before its rename; only the host itself writes its terminals file
+export function hostTerminalsTemp(file: string): string {
+  return `${file}.tmp`;
+}
+
+// POSIX: beside the host's socket; Windows: beside its record.
+export function hostTokenPath(paths: RunPaths, record: Pick<PidRecord, 'pid' | 'socketFolder'>): string {
+  return record.socketFolder === null ? path.join(paths.terminalHostsDir, `${record.pid}.token`) : path.join(record.socketFolder, TOKEN_NAME);
+}
+
+async function removeFolderByNames(folder: string, socketName: string): Promise<void> {
+  await fs.rm(path.join(folder, socketName), { force: true });
   await fs.rm(path.join(folder, TOKEN_NAME), { force: true });
   await fs.rmdir(folder).catch((err: unknown) => {
     if (errnoCode(err) !== 'ENOENT') throw err;
   });
+}
+
+/** Removes a socket folder by its two names, so a folder holding anything else is never emptied; one already gone is done. */
+export function removeSocketFolder(folder: string): Promise<void> {
+  return removeFolderByNames(folder, SOCKET_NAME);
+}
+
+// the names a terminal host makes in its socket folder: its endpoint and token, and its terminals' endpoints (host.ts)
+const HOST_FOLDER_ENTRY = /^(?:host\.sock|token|(?:askpass|agent|cli)-[0-9a-f]{24}\.sock)$/;
+
+/** Removes a terminal host's socket folder by the names a host makes, so a folder holding anything else is never emptied. */
+export async function removeHostSocketFolder(folder: string): Promise<void> {
+  let names: string[];
+  try {
+    names = await fs.readdir(folder);
+  } catch (err) {
+    if (errnoCode(err) === 'ENOENT') return;
+    throw err;
+  }
+  for (const name of names) if (HOST_FOLDER_ENTRY.test(name)) await fs.rm(path.join(folder, name), { force: true });
+  await fs.rmdir(folder).catch((err: unknown) => {
+    if (errnoCode(err) !== 'ENOENT') throw err;
+  });
+}
+
+const HOST_RECORD_NAME = /^([1-9][0-9]{0,14})\.json$/;
+// a terminal host's log and its rotated files (log-sink.ts), by the host's pid
+export const TERMINAL_HOST_LOG_FILE: RegExp = /^terminal-host-([1-9][0-9]{0,14})(?:\.[1-9])?\.log$/;
+
+export function terminalHostLogName(pid: number): string {
+  return `terminal-host-${pid}`;
+}
+
+export interface HostRecordEntry {
+  // the pid the file's name carries
+  readonly pid: number;
+  // undefined: the file does not parse, names another pid, or names an endpoint no terminal host makes
+  readonly record: PidRecord | undefined;
+}
+
+/** Every terminal host record in the run folder, by the pid its file name carries; one that cannot be read has no record. */
+export async function readHostRecords(paths: RunPaths, log: (line: string) => void = () => undefined): Promise<HostRecordEntry[]> {
+  let names: string[];
+  try {
+    names = await fs.readdir(paths.terminalHostsDir);
+  } catch (err) {
+    if (errnoCode(err) === 'ENOENT') return [];
+    throw err;
+  }
+  const entries: HostRecordEntry[] = [];
+  for (const name of names) {
+    const pid = Number(HOST_RECORD_NAME.exec(name)?.[1]);
+    if (!Number.isSafeInteger(pid)) continue;
+    const record = await readPidFile(path.join(paths.terminalHostsDir, name)).catch((err: unknown) => {
+      log(`[terminal] the terminal host record ${name} cannot be read: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    });
+    entries.push({ pid, record: record && record.pid === pid && isHostEndpoint(record) ? record : undefined });
+  }
+  return entries;
+}
+
+/**
+ * Removes what an ended terminal host left: its record, its terminals file, its Windows token and, when the record names a
+ * host's folder that is still this user's own, that folder by the names a host makes. Only under the daemon lock, or by the
+ * host itself.
+ */
+export async function removeHostFiles(paths: RunPaths, entry: HostRecordEntry): Promise<void> {
+  await fs.rm(hostRecordFile(paths, entry.pid), { force: true });
+  // a host killed inside a write leaves its temporary files; writePidFile names its own by the writer's pid, the host's
+  await fs.rm(`${hostRecordFile(paths, entry.pid)}.${entry.pid}.tmp`, { force: true });
+  await fs.rm(hostTerminalsFile(paths, entry.pid), { force: true });
+  await fs.rm(hostTerminalsTemp(hostTerminalsFile(paths, entry.pid)), { force: true });
+  await fs.rm(hostTokenPath(paths, { pid: entry.pid, socketFolder: null }), { force: true });
+  const folder = entry.record?.socketFolder;
+  if (!folder) return;
+  try {
+    await checkSocketFolder(folder);
+  } catch (err) {
+    if (errnoCode(err) === 'ENOENT') return;
+    throw err;
+  }
+  await removeHostSocketFolder(folder);
 }
 
 // POSIX: beside the socket; Windows: in the run folder.
@@ -134,8 +260,9 @@ async function lingers(): Promise<boolean> {
 
 // sun_path's size less its NUL: 104 bytes on macOS, 108 on Linux
 const MAX_SOCKET_PATH_BYTES = { darwin: 103, other: 107 } as const;
-// agent-<24 hex>.sock, the longest name SOCKET_FOLDER_ENTRY lets a daemon bind in a socket folder
-const LONGEST_SOCKET_NAME_BYTES = Buffer.byteLength(agentSocketName(''));
+// askpass-<24 hex>.sock, a terminal host's relay, the longest name SOCKET_FOLDER_ENTRY lets a daemon or a host bind in a socket
+// folder
+const LONGEST_SOCKET_NAME_BYTES = Buffer.byteLength(`askpass-${'0'.repeat(24)}.sock`);
 
 /** TMPDIR on macOS, XDG_RUNTIME_DIR on a lingering Linux account, else /tmp; /tmp too when the first would pass sun_path. */
 export async function socketFolderBase(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, lingering: () => Promise<boolean> = lingers): Promise<string> {
@@ -215,11 +342,12 @@ export async function readPidFile(file: string): Promise<PidRecord | undefined> 
 }
 
 // The run folder's list of the socket folders its daemon has, one absolute path per line: the next start and a removal read
-// it, so a crashed daemon's agent, relay and CLI folders, which its pid file does not name, are found too.
+// it, so a crashed daemon's agent and relay folders, which its pid file does not name, are found too.
 const SOCKET_FOLDERS_FILE = 'socket-folders';
-// the names a daemon makes in a socket folder: the endpoint's socket and token, the relay's socket (serve.ts), an agent
-// socket (agentSocketName), a terminal's CLI socket (cli-server.ts); remove-posix.sh removes the same names
-const SOCKET_FOLDER_ENTRY = /^(?:daemon\.sock|token|askpass\.sock|agent-[0-9a-f]{24}\.sock|cli-[0-9a-f]{24}\.sock)$/;
+// the names a daemon or a terminal host makes in a socket folder: the endpoint's socket and token, a terminal host's socket,
+// the daemon's relay socket (serve.ts), a terminal host's relay socket (host.ts), an agent socket (agentSocketName and host.ts),
+// a terminal's CLI socket (host.ts); remove-posix.sh removes the same names
+const SOCKET_FOLDER_ENTRY = /^(?:daemon\.sock|host\.sock|token|askpass\.sock|(?:askpass|agent|cli)-[0-9a-f]{24}\.sock)$/;
 
 export function socketFoldersFile(paths: RunPaths): string {
   return path.join(paths.runDir, SOCKET_FOLDERS_FILE);
@@ -261,7 +389,7 @@ export async function removeRecordedSocketFolders(paths: RunPaths, log: (line: s
 export async function writePidFile(file: string, record: PidRecord): Promise<void> {
   const temp = `${file}.${process.pid}.tmp`;
   await fs.writeFile(temp, `${JSON.stringify(record)}\n`, { mode: 0o600 });
-  await fs.rename(temp, file);
+  await renameWithRetry(temp, file);
 }
 
 // Touches each path; false when one was removed.

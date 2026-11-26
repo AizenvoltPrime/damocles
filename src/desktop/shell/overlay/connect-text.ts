@@ -58,6 +58,7 @@ function noticeView(notice: HostNotice, name: string, t: Translate, locale: stri
     const others = String(notice.params.hosts ?? '').split(SHARED_HOME_SEPARATOR);
     return { key: notice.code, text: t('remote.notice.sharedHome', { others: new Intl.ListFormat(locale, { type: 'conjunction' }).format(others), name }, others.length) };
   }
+  if (notice.code === 'serverInUse') return { key: notice.code, text: t('remote.notice.serverInUse', { ...notice.params, name }, Number(notice.params.devices)) };
   const text = t(`remote.notice.${notice.code}`, { ...notice.params, name });
   const suggested = notice.params.suggested;
   return notice.code === 'watchLimit' && suggested !== undefined

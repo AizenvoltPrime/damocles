@@ -288,6 +288,33 @@ describe('a remote terminal whose host dropped', () => {
   });
 });
 
+describe('a remote terminal whose terminal host does not answer', () => {
+  it('takes no input, dims and says so until the host answers again, its list row and tab reading the same, in English and Greek', async () => {
+    const { api, xterm } = await mountView({ status: 'notResponding' });
+    expect(xterm!.options.disableStdin).toBe(true);
+    // its menu offers no Paste the view would drop
+    wrapper!.get('.terminal-host').element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await flushPromises();
+    const menu = vi.mocked(api.requestOverlay).mock.calls.at(-1)![0];
+    expect(menu.kind === 'menu' ? menu.items.find((item) => item.kind === 'item' && item.id === 'paste') : undefined).toMatchObject({ disabled: true });
+    expect(wrapper!.get('[data-testid="terminal-view"]').attributes('data-status')).toBe('notResponding');
+    expect(wrapper!.get('[data-testid="terminal-not-responding"]').text()).toBe('The terminal host is not responding');
+    expect(wrapper!.find('[data-testid="terminal-reconnecting"]').exists()).toBe(false);
+    expect(wrapper!.get('.terminal-host').classes()).toContain('opacity-(--d-opacity-disabled)');
+    expect(terminalStatusLabel({ status: 'notResponding', exitCode: null }, (key) => shellI18n.global.t(key))).toBe('Not responding');
+    shellI18n.global.locale.value = 'el';
+    await flushPromises();
+    expect(wrapper!.get('[data-testid="terminal-not-responding"]').text()).toBe('Η υπηρεσία τερματικών δεν αποκρίνεται');
+    expect(terminalStatusLabel({ status: 'notResponding', exitCode: null }, (key) => shellI18n.global.t(key))).toBe('Δεν αποκρίνεται');
+    shellI18n.global.locale.value = 'en';
+    await wrapper!.setProps({ terminal: { ...(wrapper!.props() as { terminal: TerminalInfo }).terminal, status: 'running' } });
+    await flushPromises();
+    expect(xterm!.options.disableStdin).toBe(false);
+    expect(wrapper!.find('[data-testid="terminal-not-responding"]').exists()).toBe(false);
+    expect(wrapper!.get('.terminal-host').classes()).not.toContain('opacity-(--d-opacity-disabled)');
+  });
+});
+
 describe('OSC 8 hyperlinks', () => {
   it('open only on Ctrl+click, through main with the terminal named as web links do, and never ask with window.confirm', async () => {
     const opened = vi.fn();

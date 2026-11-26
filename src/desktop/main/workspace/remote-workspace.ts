@@ -475,7 +475,7 @@ export function createRemoteWorkspace(deps: RemoteWorkspaceDeps): ProjectWorkspa
   };
 }
 
-// The daemon's pty host as one client sees it: posts become terminals.post, killAll, shutdown and kill detach this client,
+// The daemon's terminals as one client's pty host: posts become terminals.post, killAll, shutdown and kill detach this client,
 // and its terminals outlive the connection.
 function remotePtyHost(deps: RemoteWorkspaceDeps): PtyHostProcess {
   const { endpoint } = deps;

@@ -235,6 +235,37 @@ describe('handshake', () => {
     expect(outcome).toEqual({ kind: 'refused', refused: { reason: 'protocol', serverVersion: '9.0.0', protocolVersion: 9 } });
   });
 
+  it('carries a refusal\'s frozenFeatures, and reads a refusal without them as it always did', async () => {
+    const { bridge, daemon } = pair();
+    daemonSide(daemon, () => ({ kind: 'refused', refused: { reason: 'protocol', serverVersion: '9.0.0', protocolVersion: 9, frozenFeatures: ['control.handOver'] } }));
+    await authenticateBridge(bridge, TOKEN);
+    const outcome = await sayHello(bridge, { appVersion: '1', protocolVersion: 1, clientId: 'c', deviceName: 'd' });
+    expect(outcome).toEqual({ kind: 'refused', refused: { reason: 'protocol', serverVersion: '9.0.0', protocolVersion: 9, frozenFeatures: ['control.handOver'] } });
+  });
+
+  it.each([
+    ['more than MAX_FEATURES names', Array.from({ length: MAX_FEATURES + 1 }, (_value, index) => `f${index}`)],
+    ['a name that could forge a log line', ['control.handOver\n[daemon] forged']],
+    ['a name that is not text', [7]],
+    ['a list that is not a list', 'control.handOver'],
+  ])('refuses a refusal whose frozenFeatures hold %s', async (_name, frozenFeatures) => {
+    const socket = fakeSocket();
+    const app = createPersistentProtocol({ socket, maxBodyBytes: HANDSHAKE_MAX_BYTES, log });
+    const outcome = sayHello(app, { appVersion: '1', protocolVersion: 1, clientId: 'c', deviceName: 'd' });
+    socket.receive(message(2, 0, 0, encode({ type: 'refused', reason: 'protocol', serverVersion: '9.0.0', protocolVersion: 9, frozenFeatures })));
+    await expect(outcome).rejects.toThrow(/outside the contract/);
+    expect(socket.destroyed()).toBe(true);
+  });
+
+  it('accepts a refusal with MAX_FEATURES frozenFeatures at the handshake\'s bound', async () => {
+    const socket = fakeSocket();
+    const app = createPersistentProtocol({ socket, maxBodyBytes: HANDSHAKE_MAX_BYTES, log });
+    const frozenFeatures = Array.from({ length: MAX_FEATURES }, (_value, index) => `${'f'.repeat(120)}${index}`);
+    const outcome = sayHello(app, { appVersion: '1', protocolVersion: 1, clientId: 'c', deviceName: 'd' });
+    socket.receive(message(2, 0, 0, encode({ type: 'refused', reason: 'protocol', serverVersion: '9.0.0', protocolVersion: 9, frozenFeatures })));
+    expect(await outcome).toEqual({ kind: 'refused', refused: { reason: 'protocol', serverVersion: '9.0.0', protocolVersion: 9, frozenFeatures } });
+  });
+
   it('detaches on a resumed welcome in the same turn, so a replay pipelined behind it is handed over unread', async () => {
     const socket = fakeSocket();
     const app = createPersistentProtocol({ socket, maxBodyBytes: HANDSHAKE_MAX_BYTES, log });

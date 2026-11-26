@@ -10,27 +10,30 @@ import { installLogSink, log as coreLog } from '../../core/logger';
 import { DAMOCLES_HOME_DIR, SUBCALL_USAGE_LEDGER_PATH, WORKTREES_ROOT_DIR } from '../../core/paths';
 import { PI_AGENT_DIR } from '../../core/pi-session/agent-dir';
 import { createLauncherPool, installProcessLauncher, lockThreadSpawns, processLauncher } from '../../core/process-launcher';
-import { spawnCredentialVariables, type CredentialRelay, type RelayIdentity } from '../../core/scm/askpass/credential-relay';
+import { CREDENTIAL_NONCE_VARIABLE, spawnCredentialVariables, type CredentialRelay, type RelayIdentity } from '../../core/scm/askpass/credential-relay';
 import { asConfigParams, managedEntries } from '../../core/scm/askpass/credential-config';
 import type { HostFacts } from '../../remote/handshake';
+import { abandonStream, pipeStream, streamDuplex } from '../../remote/tunnel-pipe';
 import { DesktopFileWatcherFactory } from '../local-services/file-watcher-factory';
 import { createDesktopLogSinkFactory } from '../local-services/log-sink';
 import { logUncaughtErrors } from '../local-services/process-errors';
 import { mergeLoginShellEnv, probeGit, type GitProbe } from '../local-services/shell-env';
 import { createWalkHost, startWalkChild, type WalkChild } from '../../core/search-walk';
 import { createWorkerTreeHost } from '../local-services/watch-worker-host';
-import { NODE_PTY_ARG_PREFIX, SELF_ACKNOWLEDGE_ARG } from '../pty-host/protocol';
+import { ENDPOINT_HOLD_MS } from '../terminal-host/host-messages';
+import { terminalHostArgs } from '../terminal-host/records';
 import { createFileSystem } from '../workspace/file-system';
 import { createFormatter } from '../workspace/format/formatter';
-import type { FormatterHostProcess, HostStarters, PtyHostProcess } from '../workspace/host-starters';
+import type { FormatterHostProcess, HostStarters } from '../workspace/host-starters';
 import { createQuickOpenListing } from '../workspace/quick-open-listing';
 import { createSearchRunner } from '../workspace/search/search-runner';
-import { createTerminalBackend } from '../workspace/terminal/terminal-backend';
+import { createDaemonTerminalBackend } from '../workspace/terminal/terminal-backend';
 import { CLI_HOOK_ENV } from '../workspace/terminal/terminal-env';
 import { createTreeListing } from '../workspace/tree-listing';
-import { createAgentProxy, type AgentProxy } from './agent-proxy';
-import { createCliServer, type CliServer } from './cli-server';
-import { daemonAnswers } from './attach';
+import { activeLinkPath, pointActiveLink, throughActiveLink } from './active-link';
+import { agentKeyOfSocket, createAgentProxy, type AgentProxy } from './agent-proxy';
+import { createCliServer } from './cli-server';
+import { connectSocket, daemonAnswers } from './attach';
 import { installAuthorizedKey, systemAuthorizedKeysDeps } from './authorized-keys';
 import { daemonChildEnv } from './child-env';
 import { createConnections, type Connections } from './connections';
@@ -41,12 +44,16 @@ import { createLifetime } from './lifetime';
 import { enableLinger } from './linger';
 import { DAEMON_LOG, listLogs, readLog } from './logs';
 import { createMirrorWatches, syncMirror, syncProject, syncSubcalls } from './mirror-server';
-import { forkChild, type ForkedChild } from './process-starts';
+import type { StartIdentity } from './process-identity';
+import { forkChild, startDetached, type ForkedChild } from './process-starts';
 import { createRemoteCoreHost } from './remote-core-host';
 import { createRunRegistry } from './run-registry';
 import { daemonE2eHooks, e2eConnectionLimits, terminalBinFolder } from './server-package';
-import { readServerVersion } from './server-version';
+import { markHandedOver } from './hand-over-mark';
+import { installDirOf, raiseFloor } from './security-floor';
+import { readMinimumServerVersion, readServerVersion } from './server-version';
 import { acquireDaemonLock } from './singleton';
+import { createTerminalHosts } from './terminal-hosts';
 import { createTerminalHub } from './terminal-hub';
 import { createPortDetector, scannerFor } from './ports/port-detector';
 import { openPortProbe, withoutProbe } from './port-probe';
@@ -64,14 +71,23 @@ export const EXIT_SHUTDOWN_FAILED = 5;
 export const EXIT_LOCK_LOST = 6;
 // the git credential relay's socket in its private folder
 const RELAY_SOCKET_NAME = 'askpass.sock';
+// how often a terminal's credential request tries core's relay again while core starts listening there
+const RELAY_RETRY_MS = 100;
 
 export interface DaemonDeps {
   readonly root: string;
+  // the package as terminals' environments and arguments name it: the run folder's active link once listen pointed it at
+  // root, else root itself
+  readonly terminalRoot: string;
   // readServerVersion: the welcome, the pid file and the CLI status carry it
   readonly version: string;
   readonly facts: HostFacts;
   readonly paths: RunPaths;
-  readonly starters: HostStarters;
+  readonly starters: DaemonStarters;
+  // starts a terminal host of this version and answers its pid; default: dist/terminal-host.js, detached
+  readonly startTerminalHost?: () => Promise<number>;
+  // the OS's start identity of a process, which proves a terminal host or a shell before a kill; default startIdentity
+  readonly startIdentity?: StartIdentity;
   // the daemon's own probe, which its core's source control runs
   readonly git: GitProbe;
   readonly e2eHooks: boolean;
@@ -103,32 +119,34 @@ export interface DaemonDeps {
   readonly log: (line: string) => void;
 }
 
+// in the order a later shutdown's fate wins over an earlier one's
+const TERMINALS_FATES = ['release', 'end', 'remove'] as const;
+export type TerminalsFate = (typeof TERMINALS_FATES)[number];
+
 export interface Daemon {
   readonly connections: Connections;
   // its folder is made before the endpoint listens (POSIX)
   readonly agentProxy: AgentProxy;
-  // the terminals' damocles command sockets; their folder is made before the endpoint listens (POSIX)
-  readonly cli: CliServer;
   // the agent folder and the relay's, kept fresh with the endpoint's; a rebind publishes the new paths to core
   socketFolders(): KeptFolder[];
-  shutdown(reason: string): Promise<void>;
-  // another daemon may hold the lock: kills the children and exits, writing nothing in the run folder
+  // under the daemon lock, before the endpoint listens: a daemon that answers lists every terminal it adopted
+  adoptTerminalHosts(): Promise<void>;
+  // the endpoint listens: the clients of the server this one replaced have ENDPOINT_HOLD_MS from now to reattach
+  accepting(): void;
+  // terminals: release leaves every terminal with its host for the next daemon; end ends them and their attached hosts; remove
+  // ends those and every other host of this machine whose start identity is proved (TerminalHosts.endForRemoval)
+  shutdown(reason: string, terminals: TerminalsFate): Promise<void>;
+  // another daemon may hold the lock: kills the children, closes the links to the terminal hosts, which the lock's new owner
+  // adopts, and exits, writing nothing in the run folder
   lockLost(reason: string): Promise<void>;
 }
 
-/** The daemon's forked hosts: the pty host in self-acknowledging mode and a formatter host per root. */
-export function daemonStarters(root: string): HostStarters {
+// a daemon's terminals run in its terminal hosts, never in a forked pty host
+export type DaemonStarters = Pick<HostStarters, 'startFormatterHost'>;
+
+/** The daemon's forked hosts: a formatter host per root. */
+export function daemonStarters(root: string): DaemonStarters {
   return {
-    startPtyHost: (): PtyHostProcess => {
-      const child = forkChild(path.join(root, 'dist', 'pty-host.js'), [`${NODE_PTY_ARG_PREFIX}${path.join(root, 'node_modules', 'node-pty')}`, SELF_ACKNOWLEDGE_ARG], daemonChildEnv('node'));
-      return {
-        postMessage: (message) => child.postMessage(message),
-        onMessage: (listener) => child.onMessage(listener),
-        // a forked child has no utility-process reason
-        onExit: (listener) => child.onExit(({ code, error }) => listener({ code, reason: null, error })),
-        kill: () => child.kill(),
-      };
-    },
     startFormatterHost: (formatRoot): FormatterHostProcess => {
       const child = forkChild(path.join(root, 'dist', 'formatter-host.js'), [], daemonChildEnv('node'), formatRoot);
       return {
@@ -146,11 +164,18 @@ const INOTIFY_WATCHES_FILE = '/proc/sys/fs/inotify/max_user_watches';
 
 export function buildDaemon(deps: DaemonDeps): Daemon {
   const { log, root, paths } = deps;
+  const active = deps.terminalRoot;
   const registry = createRunRegistry();
   const relay = deps.credentialRelay;
+  // the clients of the server this one replaced reattach within ENDPOINT_HOLD_MS of the endpoint's first listen; past it, a
+  // client no connection names is gone
+  let acceptingSince: number | undefined;
+  const reattachUntil = (): number | undefined => (acceptingSince === undefined ? undefined : acceptingSince + ENDPOINT_HOLD_MS);
   const agentProxy = createAgentProxy({
     forwarding: (clientId) => core.clientPolicy(clientId)?.agentForwarding === true,
+    policyKnown: (clientId) => core.clientPolicy(clientId) !== undefined,
     uid: process.getuid?.(),
+    reattachUntil,
     log,
     ...(deps.socketBase ? { base: deps.socketBase } : {}),
   });
@@ -168,17 +193,80 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
   const cli = createCliServer({
     platform: process.platform,
     version: deps.version,
-    bin: terminalBinFolder(root),
+    bin: terminalBinFolder(active),
     language: (clientId) => core.clientLanguage(clientId),
+    reattachUntil,
+    cliWait: (title) => registry.cliWait(title),
     log,
-    ...(deps.socketBase ? { base: deps.socketBase } : {}),
   });
-  const hub = createTerminalHub({ start: deps.starters.startPtyHost, registry, output: { data: detector.terminalOutput, ended: detector.terminalEnded }, cli, log });
+  const hosts = createTerminalHosts({
+    paths,
+    version: deps.version,
+    start: deps.startTerminalHost ?? (() => startDetached(process.execPath, terminalHostArgs(root, paths.runDir), daemonChildEnv('node'), root, log)),
+    ...(deps.startIdentity ? { identity: deps.startIdentity } : {}),
+    log,
+  });
+  const hub = createTerminalHub({
+    hosts,
+    registry,
+    output: { data: detector.terminalOutput, ended: detector.terminalEnded },
+    cli,
+    // the daemon's own relay and a daemon's agent socket, which the terminal host replaces with its own; any other SSH_AUTH_SOCK
+    // is the shell's
+    credentialEndpoints: (env) => {
+      const agent = env['SSH_AUTH_SOCK'];
+      const key = agent === undefined ? undefined : agentKeyOfSocket(agent);
+      return { relay: relay !== undefined && env[CREDENTIAL_NONCE_VARIABLE] === relay.identity().nonce, ...(key !== undefined ? { agentKey: key } : {}) };
+    },
+    forward: (connection) => {
+      if (connection.kind === 'agent') {
+        agentProxy.forwarded(connection.key, streamDuplex(connection.stream));
+        return;
+      }
+      if (!relay) {
+        abandonStream(connection.stream);
+        return;
+      }
+      // core's askpass server listens at the handle and checks the nonce; a request forwarded before core runs, as in a switch
+      // before a client attached, waits for it as long as the host would have
+      const { stream } = connection;
+      const deadline = Date.now() + ENDPOINT_HOLD_MS;
+      // the helper went away while it waited: nothing reaches core for it
+      let ended = false;
+      stream.onEnd(() => {
+        ended = true;
+      });
+      void (async () => {
+        if (!(await coreRunning(ENDPOINT_HOLD_MS))) throw new Error(`Damocles Core did not run within ${ENDPOINT_HOLD_MS} ms`);
+        // core's askpass server listens at the handle moments after core runs
+        for (;;) {
+          if (ended) return undefined;
+          try {
+            return await connectSocket(relay.identity().handle);
+          } catch (err) {
+            const code = (err as NodeJS.ErrnoException).code;
+            if ((code !== 'ENOENT' && code !== 'ECONNREFUSED') || Date.now() >= deadline) throw err;
+            await new Promise((resolve) => setTimeout(resolve, RELAY_RETRY_MS));
+          }
+        }
+      })().then((socket) => {
+        if (!socket) {
+          abandonStream(stream);
+          return;
+        }
+        socket.on('error', (err) => log(`[relay] a terminal's credential request failed: ${err.message}`));
+        pipeStream(socket, stream, () => undefined, (closed) => closed.destroy());
+      }, (err: unknown) => {
+        log(`[relay] closed a terminal's credential request: ${err instanceof Error ? err.message : String(err)}`);
+        abandonStream(stream);
+      });
+    },
+    log,
+  });
   const format = createFormatter({ starters: deps.starters, watchers, log });
-  const terminals = createTerminalBackend({
-    starters: deps.starters,
+  const terminals = createDaemonTerminalBackend({
     platform: process.platform,
-    scriptsDir: path.join(root, 'resources', 'shell-integration'),
+    scriptsDir: path.join(active, 'resources', 'shell-integration'),
     zshDotDir: paths.zshDotDir,
     homedir: os.homedir(),
     env: process.env,
@@ -203,7 +291,7 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
     // read per terminal: the daemon's credential relay, the asking client's agent socket while that client forwards its agent,
     // and that client's takeover of its managed git servers, whose helper is the relay's (its nonce answers as a terminal)
     terminalCredentials: (base, clientId) => {
-      const credentialRelay = relay && daemonCredentialRelay(relay.identity(), root);
+      const credentialRelay = relay && daemonCredentialRelay(relay.identity(), root, active);
       const variables = spawnCredentialVariables(base, credentialRelay, { socket: agentProxy.socketFor(clientId) });
       const managed = (core.clientForges(clientId)?.servers ?? []).filter((server) => server.hasAccount);
       const params = credentialRelay && managed.length > 0 ? asConfigParams(managedEntries(managed, credentialRelay.helper), base['GIT_CONFIG_PARAMETERS']) : undefined;
@@ -224,10 +312,6 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
     },
   }, log);
   watchers.onDidReachWatchLimit((root) => log(`[watcher] ${root} ran out of inotify watches; some of its folders are not watched`));
-  registry.onIdle((id) => {
-    log(`[terminal] ending ${id}: no client attached it within the idle limit`);
-    hub.kill(id);
-  });
   const state = createDaemonState(paths.runDir, log);
   const core = createRemoteCoreHost({
     root,
@@ -240,9 +324,31 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
     fork: deps.forkCore ?? ((entry, args) => forkChild(entry, args, daemonChildEnv('node'))),
     agentFolder: () => agentProxy.folder(),
     ...(relay ? { credentialRelay: () => relay.identity() } : {}),
+    relayNonces: () => hosts.links().flatMap((link) => link.relayNonce ?? []),
     agentShellUrl: (hit) => detector.agentShellUrl(hit),
     clientPolicyChanged: () => agentProxy.policyChanged(),
     log,
+  });
+  const coreRunning = (waitMs: number): Promise<boolean> => new Promise((resolve) => {
+    if (core.state().phase === 'running') {
+      resolve(true);
+      return;
+    }
+    const timer = setTimeout(() => {
+      subscription.dispose();
+      resolve(false);
+    }, waitMs);
+    const subscription = core.onState((state) => {
+      if (state.phase !== 'running') return;
+      clearTimeout(timer);
+      subscription.dispose();
+      resolve(true);
+    });
+  });
+  // a running core accepts the relay nonce of every attached host, whose terminals' helpers send it
+  hosts.onLink((link) => {
+    core.socketsMoved();
+    link.onClose(() => core.socketsMoved());
   });
   const publishing = (kept: KeptFolder | undefined): KeptFolder[] => (kept ? [{
     ...kept,
@@ -268,11 +374,13 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
   // the connections that asked for a removal, ended only once the lock is released, so each close means the daemon is done;
   // one may join a shutdown already running, up to the step that ends the connections
   const removalConnections = new Set<string>();
-  const shutdown = (reason: string): Promise<void> => {
+  // a shutdown that ends the terminals wins over one already running that releases them, and a removal over both, up to that step
+  let fate: TerminalsFate = 'release';
+  const shutdown = (reason: string, terminals: TerminalsFate): Promise<void> => {
+    if (TERMINALS_FATES.indexOf(terminals) > TERMINALS_FATES.indexOf(fate)) fate = terminals;
     stopping ??= (async () => {
       log(`[daemon] shutting down: ${reason}`);
       lifetime.dispose();
-      registry.dispose();
       detector.dispose();
       let failed = false;
       const step = async (name: string, run: () => Promise<void> | void): Promise<void> => {
@@ -283,14 +391,15 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
       // first, in the same turn: no rebind starts once the shutdown began, and a start probing the endpoint waits for the lock
       await step('closing the endpoint', () => deps.closeEndpoint());
       await step('closing the agent proxy', () => agentProxy.close());
-      await step('closing the CLI sockets', () => cli.close());
+      await step('closing the damocles command connections', () => cli.close());
       if (relay) await step('removing the git credential relay', () => relay.close());
       if (probe) await step('closing the port probe', () => probe.close());
       // clients leave before core stops, so a request in flight ends with its connection, never with a stopping core's error
       await step('ending the connections', () => connections.endAll(removalConnections));
       await step('stopping Damocles Core', () => core.shutdown());
       await step('writing core\'s state', () => state.flush());
-      await step('ending the terminals', () => hub.shutdown());
+      if (fate === 'release') await step('releasing the terminal hosts', () => hub.release('the daemon is shutting down'));
+      else await step('ending the terminals', () => hub.endTerminals(fate === 'remove' ? 'removal' : 'attached'));
       await step('stopping the formatter hosts', () => format.dispose());
       await step('closing the file watchers', () => watchers.close());
       await step('stopping the walk processes', () => walks.close());
@@ -304,16 +413,16 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
     lost ??= (async () => {
       log(`[daemon] stopping at once: ${reason}`);
       lifetime.dispose();
-      registry.dispose();
       detector.dispose();
       await attempt('closing the endpoint', () => deps.abandonEndpoint());
       // its folders under the socket base are this daemon's alone, unlike the run folder
       await attempt('closing the agent proxy', () => agentProxy.close());
-      await attempt('closing the CLI sockets', () => cli.close());
+      await attempt('closing the damocles command connections', () => cli.close());
       if (relay) await attempt('removing the git credential relay', () => relay.close());
+      // no host is killed: the lock's new owner adopts every one
+      await attempt('releasing the terminal hosts', () => hub.release(reason));
       await Promise.all([
         attempt('killing Damocles Core', () => core.kill()),
-        attempt('killing the pty host', () => hub.killHost()),
         attempt('killing the formatter hosts', () => format.dispose()),
       ]);
       await attempt('closing the file watchers', () => watchers.close());
@@ -323,7 +432,14 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
     })();
     return lost;
   };
-  const lifetime = createLifetime(registry, (reason) => void shutdown(reason));
+  // the idle exit and a switch leave every terminal with its host
+  const lifetime = createLifetime(registry, (reason, handedOver, asker) => {
+    // a switch: before the shutdown starts, so each mux sends it ahead of endAll
+    if (asker !== undefined) connections.announce('handingOver', asker);
+    // before the connections end, so every bridge the apps start next reads the mark
+    const marked = handedOver ? markHandedOver(paths, deps.version).catch((err: unknown) => log(`[daemon] marking the hand-over failed: ${err instanceof Error ? err.message : String(err)}`)) : Promise.resolve();
+    void marked.then(() => shutdown(reason, 'release'));
+  }, log);
 
   const connections: Connections = createConnections({
     serverVersion: deps.version,
@@ -342,15 +458,24 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
     ...(deps.now !== undefined ? { now: deps.now } : {}),
     log,
     mirrorWatches: createMirrorWatches({ agentDir: PI_AGENT_DIR, ledgerPath: SUBCALL_USAGE_LEDGER_PATH, worktreesRoot: WORKTREES_ROOT_DIR, watchers }),
+    runs: registry,
     control: {
-      attach: ({ terminalIdleDays }) => registry.setIdleDays(terminalIdleDays),
+      attach: ({ terminalIdleDays }) => hosts.setIdleDays(terminalIdleDays),
       listRuns: () => ({ runs: registry.runs() }),
       listOwnRuns: (_params, { clientId }) => ({ runs: registry.ownRuns(clientId) }),
       shutdownWhenIdle: (_params, { id }) => lifetime.shutdownWhenIdle(id),
       // after the answer is on its way
-      shutdownNow: (_params, { mux }) => {
-        setImmediate(() => void mux.drained().then(() => shutdown('control.shutdownNow')));
+      shutdownNow: (_params, { id, mux }) => {
+        connections.announce('handingOver', id);
+        setImmediate(() => void mux.drained().then(() => shutdown('control.shutdownNow', 'end')));
       },
+      // now: after the answer is on its way
+      handOver: ({ when }, { id, mux }) => {
+        if (when === 'idle') lifetime.handOver(id, when);
+        else setImmediate(() => void mux.drained().then(() => lifetime.handOver(id, when)));
+      },
+      // decided before the answer drains, so a damocles --wait or run that registers meanwhile cannot contradict the answer
+      handOverIfIdle: (_params, { id, mux }) => ({ when: lifetime.handOverIfIdle(id, () => new Promise((resolve) => setImmediate(() => void mux.drained().then(resolve)))) }),
       'mirror.sync': (params, { mux }) => syncMirror({ agentDir: PI_AGENT_DIR, reserveStream: () => mux.reserveStream(), openStream: (id) => mux.openStream(id), drained: () => mux.drained(), log }, params),
       'mirror.syncProject': (params, { mux }, folders) => syncProject({ agentDir: PI_AGENT_DIR, worktreesRoot: WORKTREES_ROOT_DIR, reserveStream: () => mux.reserveStream(), openStream: (id) => mux.openStream(id), drained: () => mux.drained(), log }, params, folders),
       'mirror.syncSubcalls': (params, { mux }) => syncSubcalls({ ledgerPath: SUBCALL_USAGE_LEDGER_PATH, reserveStream: () => mux.reserveStream(), openStream: (id) => mux.openStream(id), drained: () => mux.drained(), log }, params),
@@ -358,7 +483,9 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
       'logs.read': ({ name, offset, length }) => readLog(paths.logsDir, name, offset, length),
       attachCore: (params, connection) => {
         if (!connection.core) throw new Error('This connection has no core channel');
-        return connection.core.attach(params);
+        const attached = connection.core.attach(params);
+        workspace.attached(connection.id);
+        return attached;
       },
       coreState: () => core.state(),
       restartCore: () => core.restart(),
@@ -369,7 +496,8 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
       shutdownForRemoval: (_params, { id, mux }) => {
         // kept at once, so a shutdown already running does not end it before the answer goes out
         removalConnections.add(id);
-        setImmediate(() => void mux.drained().then(() => shutdown('control.shutdownForRemoval')));
+        connections.announce('removing', id);
+        setImmediate(() => void mux.drained().then(() => shutdown('control.shutdownForRemoval', 'remove')));
         return { runKey: runFolderKey(paths) };
       },
       sharedHome: async () => ({ hosts: await otherHostsInHome(paths) }),
@@ -385,7 +513,12 @@ export function buildDaemon(deps: DaemonDeps): Daemon {
       ...createContainersService({ root, cacheFolder: path.join(paths.runDir, 'package-cache'), log }),
     },
   });
-  return { connections, agentProxy, cli, socketFolders: () => [...publishing(agentProxy.kept()), ...publishing(relay?.kept()), ...[cli.kept()].flatMap((kept) => (kept ? [kept] : []))], shutdown, lockLost };
+  return { connections, agentProxy, socketFolders: () => [...publishing(agentProxy.kept()), ...publishing(relay?.kept())], adoptTerminalHosts: () => hosts.adoptAll(), accepting: () => {
+    if (acceptingSince !== undefined) return;
+    acceptingSince = Date.now();
+    agentProxy.accepting();
+    cli.accepting();
+  }, shutdown, lockLost };
 }
 
 // this machine's run folder key, the part of run-<key> the removal stage deletes
@@ -416,21 +549,38 @@ function plain(message: string, ...args: string[]): string {
 
 export interface ListenOptions {
   readonly paths: RunPaths;
+  // the daemon's package root, which the run folder's active link points at
+  readonly root: string;
   readonly version: string;
   readonly touchIntervalMs: number;
   readonly log: (line: string) => void;
-  // the daemon, around the endpoint this function owns
-  readonly build: (endpoint: Pick<DaemonDeps, 'closeEndpoint' | 'abandonEndpoint'>) => Daemon;
+  // a daemon from a version folder whose package carries a minimum server version: the host's security floor rises to it
+  readonly floor?: { readonly installDir: string; readonly minimum: string };
+  // the daemon, around the endpoint this function owns and the active link it pointed
+  readonly build: (endpoint: Pick<DaemonDeps, 'closeEndpoint' | 'abandonEndpoint' | 'terminalRoot'>) => Daemon;
 }
 
 /**
- * Under the daemon lock: removes an earlier daemon's socket folders, builds the daemon, listens and writes the pid file and the
- * socket folder record, and binds again whenever a touch finds the socket folder, the socket or the token removed.
+ * Under the daemon lock: removes an earlier daemon's socket folders, points the active link at its root, builds the daemon,
+ * adopts the terminal hosts, listens and writes the pid file, raises the host's security floor, writes the socket folder
+ * record, and binds again whenever a touch finds the socket folder, the socket or the token removed.
  */
 export async function listen(options: ListenOptions): Promise<Daemon> {
   const { paths, version, log } = options;
   await removeStaleSocket(paths, log);
   await removeRecordedSocketFolders(paths, log);
+  // a link that cannot be pointed leaves this daemon's terminals naming root itself, as a shell that outlives it then does
+  const active = activeLinkPath(paths.runDir);
+  const terminalRoot = await pointActiveLink(paths.runDir, options.root, log).then(
+    () => {
+      log(`[daemon] ${active} points at ${options.root}`);
+      return active;
+    },
+    (err: unknown) => {
+      log(`[daemon] pointing ${active} at ${options.root} failed, so terminals name ${options.root}: ${err instanceof Error ? err.message : String(err)}`);
+      return options.root;
+    },
+  );
   let endpoint: ListeningEndpoint | undefined;
   // undefined until the endpoint is bound; a shutdown before that has no touch to stop
   let toucher: NodeJS.Timeout | undefined = undefined;
@@ -453,6 +603,7 @@ export async function listen(options: ListenOptions): Promise<Daemon> {
     });
   };
   const daemon = options.build({
+    terminalRoot,
     closeEndpoint: async () => {
       const closed = await close();
       // a pid file another daemon wrote stays
@@ -487,28 +638,41 @@ export async function listen(options: ListenOptions): Promise<Daemon> {
     await writeSocketFolders(paths, kept().flatMap((folder) => (folder.folder === undefined ? [] : [folder.folder])))
       .catch((err: unknown) => log(`[daemon] recording the socket folders failed: ${err instanceof Error ? err.message : String(err)}`));
   };
+  // before the endpoint binds, so the first connection's terminals.list already holds every adopted terminal; a run folder
+  // whose host records cannot be read costs those terminals, never the daemon
+  await daemon.adoptTerminalHosts().catch((err: unknown) => log(`[daemon] adopting the terminal hosts failed, so their terminals are not listed: ${err instanceof Error ? err.message : String(err)}`));
   try {
-    // before the first connection, so a core forked for it is given the agent folder and a terminal its CLI socket
+    // before the first connection, so a core forked for it is given the agent folder
     await daemon.agentProxy.start();
-    await daemon.cli.start();
     endpoint = await bind();
+    daemon.accepting();
   } catch (err) {
     await daemon.agentProxy.close().catch((closeErr: unknown) => log(`[agent] closing the agent proxy failed: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`));
-    await daemon.cli.close().catch((closeErr: unknown) => log(`[cli] closing the CLI sockets failed: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`));
     throw err;
   }
+  // once the pid file names this daemon, so a bridge below the new floor that started a daemon before then joins this one; a
+  // floor that cannot be raised costs the host's protection from an outdated app, never the daemon
+  if (options.floor) await raiseFloor(options.floor.installDir, options.floor.minimum, log).catch((err: unknown) => log(`[floor] raising the host's security floor failed: ${err instanceof Error ? err.message : String(err)}`));
   await recordSocketFolders();
   toucher = keepSocketFoldersFresh({
     intervalMs: options.touchIntervalMs,
     folders: () => kept().map((folder) => ({ ...folder, rebind: () => folder.rebind().then(recordSocketFolders) })),
-    failed: (err) => void daemon.shutdown(`the touch of the daemon's socket folders failed: ${err instanceof Error ? err.message : String(err)}`),
+    failed: (err) => void daemon.shutdown(`the touch of the daemon's socket folders failed: ${err instanceof Error ? err.message : String(err)}`, 'release'),
   });
   return daemon;
 }
 
-/** What the daemon's terminals get of its relay from its start, before any core listens: the helper runs the package's own Node. */
-export function daemonCredentialRelay(identity: RelayIdentity, root: string): CredentialRelay {
-  return { ...identity, node: process.execPath, main: path.join(root, 'dist', 'askpass-main.js') };
+/**
+ * What the daemon's terminals get of its relay from its start, before any core listens: the helper runs the package's own
+ * Node, each path through the active link, so a shell that outlives this daemon runs the next one's helper.
+ */
+export function daemonCredentialRelay(identity: RelayIdentity, root: string, active: string): CredentialRelay {
+  return {
+    ...identity,
+    helper: throughActiveLink(root, active, identity.helper),
+    node: throughActiveLink(root, active, process.execPath),
+    main: path.join(active, 'dist', 'askpass-main.js'),
+  };
 }
 
 export interface DaemonRelay {
@@ -628,11 +792,18 @@ export async function serve(root: string): Promise<void> {
     const git = await probeGit(log, plain);
     const credentialRelay = await createCredentialRelay(root);
     log(`[daemon] the git credential relay's handle is ${credentialRelay.identity().handle}`);
+    const installDir = installDirOf(root, version);
+    const minimum = installDir === undefined ? undefined : await readMinimumServerVersion(root).catch((err: unknown) => {
+      log(`[floor] ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    });
     const daemon = await listen({
       paths,
+      root,
       version,
       touchIntervalMs: TOUCH_INTERVAL_MS,
       log,
+      ...(installDir !== undefined && minimum !== undefined ? { floor: { installDir, minimum } } : {}),
       build: (endpoint) => buildDaemon({
         root,
         version,
@@ -654,7 +825,7 @@ export async function serve(root: string): Promise<void> {
       throw err;
     });
     compromised = () => void daemon.lockLost('the daemon lock was compromised');
-    shutdownOnSignals(process, (reason) => void daemon.shutdown(reason));
+    shutdownOnSignals(process, (reason) => void daemon.shutdown(reason, 'release'));
   };
   // the daemon log records why a start failed: a detached start's stderr goes nowhere
   await start().catch((err: unknown) => exit(EXIT_START_FAILED, `could not start: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`));

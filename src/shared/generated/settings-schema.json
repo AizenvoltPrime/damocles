@@ -1204,6 +1204,11 @@
         "default": "docker",
         "description": "The container engine a new dev container or attached container uses, on this computer or on the SSH host it runs on. A saved container keeps the engine it was made with."
       },
+      "damocles.desktop.remote.sshPath": {
+        "type": "string",
+        "default": "",
+        "description": "The SSH client Damocles runs to reach SSH hosts, as an absolute path to its ssh program; ssh-keygen and ssh-add come from the same folder. Empty: on Windows the first OpenSSH for Windows client on PATH or in System32\\OpenSSH, since an MSYS or Cygwin ssh such as Git Bash's cannot use the Windows ssh-agent; elsewhere the first ssh on PATH."
+      },
       "damocles.desktop.remote.closeWithRunningAgents": {
         "type": "string",
         "enum": [
@@ -2871,6 +2876,12 @@
         "errorMessage": "damocles.desktop.remote.containerEngine applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
         "description": "damocles.desktop.remote.containerEngine applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nThe container engine a new dev container or attached container uses, on this computer or on the SSH host it runs on. A saved container keeps the engine it was made with."
+      },
+      "damocles.desktop.remote.sshPath": {
+        "not": {},
+        "errorMessage": "damocles.desktop.remote.sshPath applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.remote.sshPath applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nThe SSH client Damocles runs to reach SSH hosts, as an absolute path to its ssh program; ssh-keygen and ssh-add come from the same folder. Empty: on Windows the first OpenSSH for Windows client on PATH or in System32\\OpenSSH, since an MSYS or Cygwin ssh such as Git Bash's cannot use the Windows ssh-agent; elsewhere the first ssh on PATH."
       },
       "damocles.desktop.remote.closeWithRunningAgents": {
         "not": {},

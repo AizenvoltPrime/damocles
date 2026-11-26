@@ -24,7 +24,8 @@ export async function waitForRemoteFolderConnection(
   deadlineMs: number,
 ): Promise<void> {
   if (Number.isNaN(deadlineMs) || deadlineMs <= 0) throw new Error(`the connect deadline must be a positive number of ms, not ${deadlineMs}`);
-  const attemptId = connections.connect(hostId, false);
+  // it stands in for the user opening the folder
+  const attemptId = connections.connect(hostId, false, { user: true });
   const deadline = Date.now() + deadlineMs;
   let lastStep = 'connecting';
   for (;;) {

@@ -95,6 +95,8 @@ export interface AskpassServer {
   // the relay's old handle is gone: stops listening there, and the next relay() or register() listens at handle; helpers
   // already connected finish where they are
   moveRelay(handle: string): Promise<void>;
+  // the terminal hosts' nonces the relay accepts from now on beside its own, for credential requests only
+  acceptRelayNonces(nonces: readonly string[]): void;
   dispose(): Promise<void>;
 }
 
@@ -313,6 +315,8 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
   let prompts: Promise<unknown> = Promise.resolve();
   let relayIdentity = deps.credential ? deps.paths.credentialRelay : undefined;
   const relayNonce = relayIdentity && Buffer.from(relayIdentity.nonce, 'hex');
+  // the terminal hosts' nonces, which answer as the relay's own does
+  let hostNonces: readonly Buffer[] = (relayIdentity?.relayNonces ?? []).map((nonce) => Buffer.from(nonce, 'hex'));
   // aborts every relay request in flight once the server is disposed
   const relayEnded = new AbortController();
 
@@ -424,7 +428,14 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
     }
   };
 
-  const isRelayNonce = (nonce: string): boolean => relayNonce !== undefined && sameNonce(relayNonce, Buffer.from(nonce, 'hex'));
+  // every nonce is compared, so the time taken says nothing about which one matched
+  const isRelayNonce = (nonce: string): boolean => {
+    if (relayNonce === undefined) return false;
+    const wanted = Buffer.from(nonce, 'hex');
+    let found = sameNonce(relayNonce, wanted);
+    for (const host of hostNonces) if (sameNonce(host, wanted)) found = true;
+    return found;
+  };
 
   const onConnection = (socket: net.Socket): void => {
     if (disposed) {
@@ -595,7 +606,7 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
       if (disposed) throw new Error('The askpass server was disposed');
       if (!relayIdentity) return undefined;
       const { handle } = await listen();
-      return { ...relayIdentity, handle, node: deps.paths.node, main: deps.paths.main };
+      return { helper: relayIdentity.helper, handle, nonce: relayIdentity.nonce, node: deps.paths.node, main: deps.paths.main };
     },
     async moveRelay(handle) {
       if (disposed) throw new Error('The askpass server was disposed');
@@ -606,6 +617,10 @@ export function createAskpassServer(deps: AskpassServerDeps): AskpassServer {
       listening = undefined;
       // stops accepting at once; its close callback would wait for the connections still answering
       (await previous?.catch(() => undefined))?.server.close();
+    },
+    acceptRelayNonces(nonces) {
+      if (!relayIdentity) throw new Error('This askpass server relays no credentials');
+      hostNonces = nonces.map((nonce) => Buffer.from(nonce, 'hex'));
     },
     async register(mode, label, prompt) {
       // a helper's connection keeps the async context the server listened in; its prompt runs in the registering call's (its actor)

@@ -125,6 +125,22 @@ describe('Settings, Remote hosts', () => {
     expect(block().dataset.hostId).toBe('h1');
   });
 
+  it('sends the SSH client path to main trimmed, and shows why main refused one', async () => {
+    await openRemoteHosts();
+    const row = (): HTMLElement => $('[data-testid="settings-row-damocles.desktop.remote.sshPath"]')!;
+    expect(row().textContent).toContain('SSH client');
+    const field = row().querySelector<HTMLInputElement>('input')!;
+    expect(field.value).toBe('');
+    vi.mocked(api.setPref).mockResolvedValueOnce(opened({ ok: false as const, error: 'The setting value was refused: sshPathNotFile', refusal: 'sshPathNotFile' as const }));
+    field.value = '  C:\\tools\\ssh.exe ';
+    field.dispatchEvent(new Event('input'));
+    field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await flushPromises();
+    expect(api.setPref).toHaveBeenLastCalledWith('damocles.desktop.remote.sshPath', 'C:\\tools\\ssh.exe');
+    expect(row().querySelector('[role="alert"]')!.textContent).toContain('No file exists at that path.');
+    expect(field.value).toBe('');
+  });
+
   it('opens on the host a settings request names', async () => {
     await openRemoteHosts('h2');
     expect(block().dataset.hostId).toBe('h2');
@@ -489,7 +505,7 @@ describe('Settings, Remote hosts', () => {
   });
 
   it('removes the server after listing what runs, with a box only for each change Damocles made', async () => {
-    vi.mocked(api.removalInfo).mockResolvedValueOnce(opened({ runs: [{ kind: 'chat', id: 'c1', title: 'Fix login', state: 'running' }, { kind: 'terminal', id: 't1', title: 'npm run dev', state: 'background' }], offerRemoveKey: true, offerDisableLinger: false }));
+    vi.mocked(api.removalInfo).mockResolvedValueOnce(opened({ runs: [{ kind: 'chat', id: 'c1', title: 'Fix login', state: 'running' }, { kind: 'terminal', id: 't1', title: 'npm run dev', state: 'background' }], offerRemoveKey: true, offerDisableLinger: false, otherDevices: [] }));
     vi.mocked(api.removeServer).mockImplementationOnce(async () => removalEnds({ ok: true, notices: [{ code: 'versionKept', params: { version: '3.7.0', machine: 'LAPTOP' } }] }));
     await openRemoteHosts();
     buttonNamed('Remove Damocles server...')!.click();
@@ -506,8 +522,36 @@ describe('Settings, Remote hosts', () => {
     expect($('[data-testid="remove-server-result"]')!.textContent).toContain('Version 3.7.0 stays, because LAPTOP still uses it.');
   });
 
+  it('names the files a folder keeps after the removal: the marker, the security floor or both', async () => {
+    vi.mocked(api.removeServer).mockImplementationOnce(async () => removalEnds({ ok: true, notices: [
+      { code: 'floorKept', params: { folder: '/home/dev/.damocles/server', files: 'both' } },
+      { code: 'floorKept', params: { folder: '/opt/dmc/dev', files: 'marker' } },
+    ] }));
+    await openRemoteHosts();
+    buttonNamed('Remove Damocles server...')!.click();
+    await flushPromises();
+    buttonNamed('Remove server', $('[data-testid="remove-server-dialog"]')!)!.click();
+    await flushPromises();
+    const result = $('[data-testid="remove-server-result"]')!.textContent;
+    expect(result).toContain('The files “removed” and “security-floor” in /home/dev/.damocles/server stay');
+    expect(result).toContain('The file “removed” in /opt/dmc/dev stays: it keeps a computer that reconnects on its own from installing the server on prod-1 again.');
+  });
+
+  it.each([
+    [[], undefined],
+    [['Laptop B'], 'Laptop B is connected to prod-1. It disconnects and stays disconnected until you connect it again.'],
+    [['Laptop B', 'Desk C'], 'Laptop B and Desk C are connected to prod-1. They disconnect and stay disconnected until you connect them again.'],
+  ])('names the other connected devices %j, which the removal disconnects until the user connects them again, in one sentence', async (otherDevices, sentence) => {
+    vi.mocked(api.removalInfo).mockResolvedValueOnce(opened({ runs: [], offerRemoveKey: false, offerDisableLinger: false, otherDevices }));
+    await openRemoteHosts();
+    buttonNamed('Remove Damocles server...')!.click();
+    await flushPromises();
+    const dialog = $('[data-testid="remove-server-dialog"]')!;
+    expect(dialog.querySelector('[data-testid="remove-server-devices"]')?.textContent?.trim()).toBe(sentence);
+  });
+
   it('shows Disable linger, unchecked, only when Damocles turned linger on', async () => {
-    vi.mocked(api.removalInfo).mockResolvedValueOnce(opened({ runs: [], offerRemoveKey: false, offerDisableLinger: true }));
+    vi.mocked(api.removalInfo).mockResolvedValueOnce(opened({ runs: [], offerRemoveKey: false, offerDisableLinger: true, otherDevices: [] }));
     await openRemoteHosts();
     buttonNamed('Remove Damocles server...')!.click();
     await flushPromises();
@@ -568,6 +612,78 @@ describe('Settings, Remote hosts', () => {
     expect(api.retryRemoval).toHaveBeenCalledWith('h1');
     expect($('[data-testid="remove-server-result"]')!.textContent).toContain('Removed the Damocles server from prod-1.');
     expect($('[data-testid="remove-server-retry"]')).toBeNull();
+  });
+
+  it('names the terminal hosts that still run after terminalHostRunning and what to do, and offers Try again', async () => {
+    vi.mocked(api.removeServer).mockImplementationOnce(async () => removalEnds({ ok: false, code: 'terminalHostRunning', params: { pids: '4242 977', os: 'posix' } }));
+    vi.mocked(api.retryRemoval).mockClear();
+    vi.mocked(api.retryRemoval).mockImplementationOnce(async () => removalEnds({ ok: true, notices: [] }));
+    await openRemoteHosts();
+    buttonNamed('Remove Damocles server...')!.click();
+    await flushPromises();
+    buttonNamed('Remove server', $('[data-testid="remove-server-dialog"]')!)!.click();
+    await flushPromises();
+    const result = $('[data-testid="remove-server-result"]')!;
+    expect(result.getAttribute('role')).toBe('alert');
+    expect(result.textContent).toContain('Terminal hosts were still running on prod-1 (process IDs 4242 977), so nothing was removed. End them on prod-1, for example with kill 4242 977, then choose Try again to finish the removal. You can also connect to prod-1 and use End terminal host on its card.');
+    $<HTMLElement>('[data-testid="remove-server-retry"]')!.click();
+    await flushPromises();
+    expect(api.retryRemoval).toHaveBeenCalledWith('h1');
+    expect($('[data-testid="remove-server-result"]')!.textContent).toContain('Removed the Damocles server from prod-1.');
+  });
+
+  it('words terminalHostRunning for one terminal host', async () => {
+    vi.mocked(api.removeServer).mockImplementationOnce(async () => removalEnds({ ok: false, code: 'terminalHostRunning', params: { pids: '4242', os: 'posix' } }));
+    await openRemoteHosts();
+    buttonNamed('Remove Damocles server...')!.click();
+    await flushPromises();
+    buttonNamed('Remove server', $('[data-testid="remove-server-dialog"]')!)!.click();
+    await flushPromises();
+    expect($('[data-testid="remove-server-result"]')!.textContent).toContain('A terminal host was still running on prod-1 (process ID 4242), so nothing was removed. End it on prod-1, for example with kill 4242, then choose Try again to finish the removal. You can also connect to prod-1 and use End terminal host on its card.');
+  });
+
+  // PowerShell's kill takes comma-separated IDs; taskkill runs the same in cmd and PowerShell, and /F ends a windowless process
+  it('gives a Windows host\'s terminalHostRunning as a taskkill that ends every named process, in en and el', async () => {
+    vi.mocked(api.removeServer).mockImplementationOnce(async () => removalEnds({ ok: false, code: 'terminalHostRunning', params: { pids: '4242 977', os: 'win32' } }));
+    await openRemoteHosts();
+    buttonNamed('Remove Damocles server...')!.click();
+    await flushPromises();
+    buttonNamed('Remove server', $('[data-testid="remove-server-dialog"]')!)!.click();
+    await flushPromises();
+    const result = $('[data-testid="remove-server-result"]')!.textContent;
+    expect(result).toContain('Terminal hosts were still running on prod-1 (process IDs 4242 977), so nothing was removed. End them on prod-1, for example with taskkill /F /PID 4242 /PID 977 in Command Prompt or PowerShell, then choose Try again to finish the removal.');
+    expect(result).not.toContain('kill 4242');
+    shellI18n.global.locale.value = 'el';
+    const one = shellI18n.global.t('remote.removeServer.failure.terminalHostRunningWindows', 1, { named: { name: 'prod-1', pids: '4242', command: 'taskkill /F /PID 4242' } });
+    shellI18n.global.locale.value = 'en';
+    expect(one).toBe('Μια υπηρεσία τερματικών έτρεχε ακόμη στο prod-1 (αναγνωριστικό διεργασίας 4242), οπότε δεν αφαιρέθηκε τίποτα. Τερματίστε την στο prod-1, για παράδειγμα με taskkill /F /PID 4242 στη Γραμμή εντολών ή στο PowerShell, και μετά επιλέξτε «Δοκιμάστε ξανά» για να ολοκληρωθεί η αφαίρεση. Μπορείτε επίσης να συνδεθείτε στο prod-1 και να χρησιμοποιήσετε την επιλογή «Τερματισμός υπηρεσίας τερματικών» στην κάρτα του.');
+  });
+
+  it('says in en and el that the removal ends every terminal, not-responding ones included, and why terminalHostRunning refused', () => {
+    const texts = {
+      en: ['every terminal', 'not responding', 'End terminal host', 'process ID 4242)', 'process IDs 4242 977)', 'kill 4242,', 'kill 4242 977,', 'Try again'],
+      el: ['κάθε τερματικό', 'δεν αποκρίνονται', '«Τερματισμός υπηρεσίας τερματικών»', 'αναγνωριστικό διεργασίας 4242)', 'αναγνωριστικά διεργασιών 4242 977)', 'kill 4242,', 'kill 4242 977,', '«Δοκιμάστε ξανά»'],
+    } as const;
+    for (const locale of ['en', 'el'] as const) {
+      shellI18n.global.locale.value = locale;
+      const body = shellI18n.global.t('remote.removeServer.body', { name: 'prod-1' });
+      const one = shellI18n.global.t('remote.removeServer.failure.terminalHostRunning', 1, { named: { name: 'prod-1', pids: '4242', command: 'kill 4242' } });
+      const two = shellI18n.global.t('remote.removeServer.failure.terminalHostRunning', 2, { named: { name: 'prod-1', pids: '4242 977', command: 'kill 4242 977' } });
+      expect(body, locale).toContain(texts[locale][0]);
+      expect(body, locale).toContain(texts[locale][1]);
+      expect(one, locale).toContain(texts[locale][2]);
+      expect(two, locale).toContain(texts[locale][2]);
+      expect(one, locale).toContain(texts[locale][3]);
+      expect(two, locale).toContain(texts[locale][4]);
+      // ending the named processes and Try again is what completes the removal; End terminal host comes after it
+      expect(one, locale).toContain(texts[locale][5]);
+      expect(two, locale).toContain(texts[locale][6]);
+      for (const text of [one, two]) {
+        expect(text.indexOf(texts[locale][7]), locale).toBeGreaterThan(0);
+        expect(text.indexOf(texts[locale][7]), locale).toBeLessThan(text.indexOf(texts[locale][2]));
+      }
+    }
+    shellI18n.global.locale.value = 'en';
   });
 
   it("asks the secret the removal stage's ssh waits on, and answers it through the connect channel", async () => {

@@ -136,9 +136,9 @@ export async function inContainer(id: string, script: string, user = 'root', on:
 }
 
 // The argv of every process a server package starts: <install>/<version>-<target>/node/node <same>/dist/<entry>.js
-const SERVER_PROCESS = /\/node\/node .*\/dist\/(daemon|core-host|pty-host|formatter-host)\.js\b/;
+const SERVER_PROCESS = /\/node\/node .*\/dist\/(daemon|core-host|terminal-host|pty-host|formatter-host)\.js\b/;
 
-/** The server package's processes in the container: the daemon and its bridge, core, the pty and formatter hosts. */
+/** The server package's processes in the container: the daemon and its bridge, core, the terminal (or an older package's pty) and formatter hosts. */
 export async function containerServerProcesses(id: string, on: Engine = DOCKER): Promise<string[]> {
   const listed = await inContainer(id, 'for p in /proc/[0-9]*; do tr "\\0" " " < "$p/cmdline" 2>/dev/null; echo; done', 'root', on);
   return listed.split('\n').filter((line) => SERVER_PROCESS.test(line));
@@ -184,7 +184,7 @@ export async function agentInTerminal(app: ElectronApplication, containerId: str
   return { sock, code: Number(code), output: lines.slice(1, -1).join('\n') };
 }
 
-/** The container's agent proxy sockets (agent-<hex>.sock) for the remote user, as `<mode> <owner> <path>` lines. */
+/** The container's agent sockets (agent-<hex>.sock) for the remote user, the daemon's proxies and each terminal host's, as `<mode> <owner> <path>` lines. */
 export async function agentSockets(containerId: string, on: Engine = DOCKER): Promise<string[]> {
   const found = await inContainer(containerId, "find /tmp -maxdepth 2 -name 'agent-*.sock' -type s -exec stat -c '%a %U %n' {} + 2> /dev/null; true", 'root', on);
   return found.split('\n').filter(Boolean);

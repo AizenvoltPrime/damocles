@@ -2,11 +2,12 @@ import * as fs from 'node:fs';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import type { ShellHost } from '../../src/desktop/preload/shell-channels';
 import { overlayPage, popupPage, popupToasts, recordToasts, shellPage, shellState } from '../desktop/support/shell';
-import { activeTerminal, openTerminal, runInTerminal, terminalText } from '../desktop/support/terminal';
+import { activeTerminal, openTerminal, readFromTerminal, runInTerminal, terminalText, waitForOutputLine } from '../desktop/support/terminal';
 import { writeUserSettings } from '../desktop/support/hermetic';
 import { openSettingsModal } from '../desktop/support/settings';
 import { changedKey, connectDialog, connectDialogClosed, failureAlert, firstConnection } from './support/connect-ui';
 import { daemonPids, shutdownHostDaemon } from './support/daemon-teardown';
+import { terminalHosts } from './support/older-server';
 import { expect, holdFor, pageNow, reconnectPhase, sightings, test, watchConnectionUi, type ProxiedHost } from './support/flaky';
 import { mainLog } from '../desktop/support/app';
 import type { HermeticHome } from '../desktop/support/hermetic';
@@ -14,7 +15,7 @@ import { newRemoteChat, startTargetStub } from './support/target-agent';
 import { sendPrompt } from '../desktop/support/loopback-agent';
 import { awaitTurnEnd } from '../desktop/support/ui';
 import { addHost, exitControlMaster, lastConnectStep, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG } from './support/remote';
-import { knownHostsName } from './support/sshd';
+import { knownHostsName, TARGET_HOME } from './support/sshd';
 
 const APP = '/srv/app';
 // a blackhole shows its amber dot and banner within this, well before the 20 s timeout that decides a drop
@@ -188,6 +189,71 @@ test('a killed daemon is followed by a reconnect that shows "prod-1\'s Damocles 
   await expect(popupToasts(popup).filter({ hasText: 'prod-1\'s Damocles server restarted' })).toBeVisible({ timeout: 120_000 });
   await expect(dot(shell)).toHaveAttribute('data-shape', 'connected');
   expect(await daemonPids(target.fixture)).not.toContain(pid);
+  await shutdownHostDaemon(app, hostId, target.fixture);
+});
+
+test('a terminal outlives a killed daemon: the reconnect\'s daemon adopts it, and its tab shows its screen and the same shell, which takes input', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, proxied }) => {
+  test.setTimeout(600_000);
+  writeUserSettings(home, { 'damocles.desktop.terminal.defaultProfile': 'bash', 'damocles.desktop.terminal.confirmOnKill': 'never' });
+  const target = await proxied('prod-1');
+  const { app } = await launch({ env: remoteEnv(ssh, mirror) });
+  const { hostId, shell } = await connect(app, home);
+  await openTerminal(app);
+  const view = activeTerminal(shell);
+  const id = (await view.getAttribute('data-terminal-id'))!;
+  await runInTerminal(shell, "echo shell''-pid-$$");
+  const shellPid = await readFromTerminal(shell, /^shell-pid-(\d+)$/m);
+  const [host] = await terminalHosts(target.fixture);
+  expect(host).toBeDefined();
+  const [pid] = await daemonPids(target.fixture);
+  await target.fixture.sh(`kill -KILL ${pid}`);
+  // the reconnect starts a daemon, which adopts the host before it answers
+  await expect.poll(() => mainLog(home).split(`[remote] attached to the core on ssh+${hostId} (`).length - 1, { timeout: 120_000 }).toBe(2);
+  await expect(dot(shell)).toHaveAttribute('data-shape', 'connected');
+  expect(await daemonPids(target.fixture)).not.toContain(pid);
+  expect((await terminalHosts(target.fixture)).map((found) => found.pid)).toEqual([host!.pid]);
+  await expect(view).toHaveAttribute('data-terminal-id', id);
+  await expect(view).toHaveAttribute('data-status', 'running', { timeout: 60_000 });
+  await expect.poll(async () => (await terminalText(shell)).split('\n').filter((row) => row === `shell-pid-${shellPid}`), { timeout: 30_000 }).toHaveLength(1);
+  await runInTerminal(shell, "echo again''-$$");
+  await waitForOutputLine(shell, `again-${shellPid}`);
+  await shutdownHostDaemon(app, hostId, target.fixture);
+});
+
+test('a terminal host that stalls past the keepalive loses its link, not its terminal: the tab never shows exited, and once the host runs again the same shell takes input', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, proxied }) => {
+  test.setTimeout(600_000);
+  writeUserSettings(home, { 'damocles.desktop.terminal.defaultProfile': 'bash', 'damocles.desktop.terminal.confirmOnKill': 'never' });
+  const target = await proxied('prod-1');
+  const { app } = await launch({ env: remoteEnv(ssh, mirror) });
+  const { hostId, shell } = await connect(app, home);
+  await openTerminal(app);
+  const view = activeTerminal(shell);
+  const id = (await view.getAttribute('data-terminal-id'))!;
+  await runInTerminal(shell, "echo shell''-pid-$$");
+  const shellPid = await readFromTerminal(shell, /^shell-pid-(\d+)$/m);
+  const [host] = await terminalHosts(target.fixture);
+  expect(host).toBeDefined();
+  const daemonLog = (): Promise<string> => target.fixture.sh(`cat ${TARGET_HOME}/.damocles/server/run-*/logs/*.log`, 'dev');
+  const attaches = async (): Promise<number> => (await daemonLog()).split(`[terminal] attached to the terminal host ${host!.pid} `).length - 1;
+  expect(await attaches()).toBe(1);
+  // every status the tab takes from here on
+  await view.evaluate((element) => {
+    const seen = [element.getAttribute('data-status')];
+    (window as unknown as { __e2eTerminalStatuses: Array<string | null> }).__e2eTerminalStatuses = seen;
+    new MutationObserver(() => seen.push(element.getAttribute('data-status'))).observe(element, { attributes: true, attributeFilter: ['data-status'] });
+  });
+
+  // the daemon closes a link that was silent for 20 s
+  await target.fixture.sh(`kill -STOP ${host!.pid}`);
+  await expect.poll(daemonLog, { timeout: 60_000 }).toContain(`[terminal] the link to the terminal host ${host!.pid} `);
+  await target.fixture.sh(`kill -CONT ${host!.pid}`);
+  // typed while the link is away, held by the daemon, and answered by the same shell once it attached again
+  await runInTerminal(shell, "echo again''-$$");
+  await expect.poll(attaches, { timeout: 120_000 }).toBe(2);
+  await expect.poll(async () => (await terminalText(shell)).split('\n').filter((row) => row === `again-${shellPid}`), { timeout: 60_000 }).toHaveLength(1);
+  expect((await terminalHosts(target.fixture)).map((found) => found.pid)).toEqual([host!.pid]);
+  await expect(view).toHaveAttribute('data-terminal-id', id);
+  expect(await shell.evaluate(() => (window as unknown as { __e2eTerminalStatuses: Array<string | null> }).__e2eTerminalStatuses)).not.toContain('exited');
   await shutdownHostDaemon(app, hostId, target.fixture);
 });
 

@@ -50,6 +50,18 @@ describe('the CLI socket protocol', () => {
     expect(await raw(hook, [`${JSON.stringify({ kind: 'status' })}\n`])).toBe('{"ok":true}\n');
   });
 
+  it('reads a connection closed with no answer as not connected, as a terminal host closes one no daemon took', async () => {
+    const hook = hookPath();
+    const server = net.createServer((socket) => socket.destroy());
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(hook, resolve));
+    await expect(sendCliRequest(() => net.connect(hook), OPEN)).resolves.toEqual({ ok: false, code: 'notConnected', language: 'en' });
+  });
+
+  it('fails a request whose socket nobody listens on, which the command reports as unreachable', async () => {
+    await expect(sendCliRequest(() => net.connect(hookPath()), OPEN)).rejects.toThrow();
+  });
+
   it('hands nobody a request whose connection ended before its newline', async () => {
     const { hook, handled } = await serve();
     await raw(hook, [JSON.stringify(OPEN)], true);

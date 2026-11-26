@@ -1,5 +1,6 @@
 import { MAX_MESSAGE_PREVIEW_LINES, MAX_OVERLAY_LABEL_LENGTH } from '../../preload/overlay-channels';
 import type { TerminalStatus } from '../../preload/terminal-channels';
+import { boundedLines } from '../../../shared/visible-text';
 import type { TerminalConfirmOnKill } from '../../local-services/desktop-configuration';
 import type { MessageQuestion } from '../message-dialog';
 import type { KillListEntry } from './terminal-service';
@@ -39,5 +40,22 @@ export function killQuestion(entries: readonly KillListEntry[], t: (message: str
     actions: [t('Terminate')],
     cancelLabel: t('Cancel'),
     defaultAction: 0,
+  };
+}
+
+/**
+ * End terminal host's question (the host card's action on a terminal host that does not answer): the terminals it ends, each
+ * by its daemon's title shown with its hidden characters, the overflow folded into a last "and N more" line.
+ */
+export function endTerminalHostQuestion(host: string, titles: readonly string[], t: (message: string, ...args: string[]) => string): MessageQuestion {
+  const fits = titles.length <= MAX_MESSAGE_PREVIEW_LINES;
+  const shown = fits ? titles : titles.slice(0, MAX_MESSAGE_PREVIEW_LINES - 1);
+  return {
+    severity: 'danger',
+    message: t('End the terminal host on {0}?', host),
+    detail: titles.length === 1 ? t('The terminal host is not responding. This terminal ends, and what runs in it stops.') : t('The terminal host is not responding. These {0} terminals end, and what runs in them stops.', String(titles.length)),
+    preview: [...shown.map((title) => boundedLines(t('Terminal: {0}', title), MAX_OVERLAY_LABEL_LENGTH)), ...(fits ? [] : [t('and {0} more', String(titles.length - shown.length))])],
+    actions: [t('End terminal host')],
+    cancelLabel: t('Cancel'),
   };
 }

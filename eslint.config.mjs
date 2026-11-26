@@ -161,8 +161,8 @@ export const HOST_DIFF_ALLOWED = [
   'src/core/diff/jobs.ts',
   'src/desktop/main/cli-requests.ts',
 ];
-// UI-thread, extension-host and daemon code, where a synchronous call freezes the window, every chat or every remote client
-// (docs/perf.md).
+// UI-thread, extension-host, daemon and terminal host code, where a synchronous call freezes the window, every chat, every
+// remote client or every remote terminal (docs/perf.md).
 export const NO_SYNC_FILES = [
   'src/core/**/*.ts',
   'src/desktop/main/**/*.ts',
@@ -171,6 +171,7 @@ export const NO_SYNC_FILES = [
   'src/desktop/local-services/**/*.ts',
   'src/desktop/workspace/**/*.ts',
   'src/desktop/daemon/**/*.ts',
+  'src/desktop/terminal-host/**/*.ts',
   'src/remote/**/*.ts',
   'src/platform/**/*.ts',
   'src/shared/**/*.ts',
@@ -186,7 +187,7 @@ const NO_MAIN_IN_CORE = 'Damocles Core never imports desktop main; it reaches ma
 const NO_CORE_HOST_IN_MAIN = 'Desktop main reaches Damocles Core only through the core protocol (core-client.ts); import a type.';
 const NO_HOST_IN_REMOTE = 'The wire (src/remote) runs in the app and on every target: it imports only Node built-ins, never vscode, electron, src/core or src/desktop.';
 const NO_ELECTRON_CLI = 'The damocles command runs as Node outside the app (dist/cli.js, dist/cli-remote.js), so it never imports electron or desktop main.';
-const NO_ELECTRON_NODE_HOST = 'The pty and formatter hosts also run as plain Node children of the daemon on a target, so they never import electron.';
+const NO_ELECTRON_NODE_HOST = 'The formatter host also runs as a plain Node child of the daemon on a target, and the terminal host there runs the pty host\'s modules, so they never import electron.';
 const NO_ELECTRON_VALIDATOR_LAUNCHER = 'dist/theme-validate.js runs as Node and starts its Electron host (theme-validate/host.ts); requiring electron there downloads a missing binary onto the verdict\'s stdout.';
 
 // no-restricted-imports misses dynamic import(), typeof import() and vi.mock, so these selectors close the same boundary.
@@ -280,7 +281,8 @@ export const PROCESS_STARTERS_CORE = [
   // runs on the Compass worker thread
   'src/core/compass/git.ts',
 ];
-// the pty and formatter hosts: main's Electron utility processes, and the daemon's plain Node children on a target
+// the pty and formatter hosts: main's Electron utility processes; on a target the formatter host is the daemon's plain Node
+// child and the terminal host runs the pty host's modules
 export const PROCESS_STARTERS_DESKTOP = ['src/desktop/formatter-host/**/*.ts', 'src/desktop/pty-host/**/*.ts'];
 const NODE_HOST_ROOTS = PROCESS_STARTERS_DESKTOP.map((glob) => glob.replace(/\/\*\*\/\*\.ts$/, ''));
 // the daemon's forks, whose IPC channel belongs to its main thread, and the bridge's detached daemon start (docs/perf.md)
@@ -293,9 +295,9 @@ export const PROCESS_STARTERS_MAIN = ['src/desktop/main/design/design-renderer-s
 export const PROCESS_STARTERS_THEME_VALIDATOR = ['src/desktop/theme-validate/cli.ts', 'src/desktop/theme-validate/launcher.ts'];
 const testsUnder = (root) => [`${root}/**/__tests__/**`, `${root}/**/*.test.ts`, `${root}/**/*.bench.ts`];
 const WORKER_ROOTS = ['src/desktop/quick-open-worker', 'src/desktop/watch-worker', 'src/desktop/askpass'];
-// Damocles Core, its protocol, the per-process services both main and Core load, the host-neutral workspace modules and the
-// daemon that hosts them on a target
-const CORE_HOST_ROOTS = ['src/desktop/core-host', 'src/desktop/core-protocol', 'src/desktop/local-services', 'src/desktop/workspace', 'src/desktop/daemon'];
+// Damocles Core, its protocol, the per-process services both main and Core load, the host-neutral workspace modules, the
+// daemon that hosts them on a target and the terminal host it starts there
+const CORE_HOST_ROOTS = ['src/desktop/core-host', 'src/desktop/core-protocol', 'src/desktop/local-services', 'src/desktop/workspace', 'src/desktop/daemon', 'src/desktop/terminal-host'];
 const WORKER_TREES = WORKER_ROOTS.map((root) => `${root}/**/*.ts`);
 const CORE_HOST_TREES = CORE_HOST_ROOTS.map((root) => `${root}/**/*.ts`);
 

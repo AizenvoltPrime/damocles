@@ -44,18 +44,18 @@ describe("the socket base on Linux with XDG_RUNTIME_DIR, which logind removes at
 });
 
 describe('the socket base where its longest socket would pass sun_path', () => {
-  // <base>/damocles-XXXXXX/agent-<24 hex>.sock: the base, 16 bytes of folder and 36 of name
+  // <base>/damocles-XXXXXX/askpass-<24 hex>.sock, a terminal host's relay: the base, 16 bytes of folder and 38 of name
   const ofLength = (bytes: number): string => `/${'a'.repeat(bytes - 1)}`;
 
-  it('keeps a macOS TMPDIR of up to 51 bytes, the per-user /var/folders one included, and else takes /tmp', async () => {
+  it('keeps a macOS TMPDIR of up to 49 bytes, the per-user /var/folders one included, and else takes /tmp', async () => {
     expect(await socketFolderBase({ TMPDIR: '/var/folders/n6/hn37q6pj7sj_9dmqqc2113800000gn/T/' }, 'darwin')).toBe('/var/folders/n6/hn37q6pj7sj_9dmqqc2113800000gn/T/');
-    expect(await socketFolderBase({ TMPDIR: ofLength(51) }, 'darwin')).toBe(ofLength(51));
-    expect(await socketFolderBase({ TMPDIR: ofLength(52) }, 'darwin')).toBe('/tmp');
+    expect(await socketFolderBase({ TMPDIR: ofLength(49) }, 'darwin')).toBe(ofLength(49));
+    expect(await socketFolderBase({ TMPDIR: ofLength(50) }, 'darwin')).toBe('/tmp');
   });
 
-  it('keeps a lingering Linux XDG_RUNTIME_DIR of up to 55 bytes, and else takes /tmp', async () => {
-    expect(await socketFolderBase({ XDG_RUNTIME_DIR: ofLength(55) }, 'linux', async () => true)).toBe(ofLength(55));
-    expect(await socketFolderBase({ XDG_RUNTIME_DIR: ofLength(56) }, 'linux', async () => true)).toBe('/tmp');
+  it('keeps a lingering Linux XDG_RUNTIME_DIR of up to 53 bytes, and else takes /tmp', async () => {
+    expect(await socketFolderBase({ XDG_RUNTIME_DIR: ofLength(53) }, 'linux', async () => true)).toBe(ofLength(53));
+    expect(await socketFolderBase({ XDG_RUNTIME_DIR: ofLength(54) }, 'linux', async () => true)).toBe('/tmp');
   });
 });
 
@@ -154,7 +154,7 @@ describe.skipIf(process.platform === 'win32')('the socket folder', () => {
       await vi.waitFor(() => {
         expect(daemon.daemon.agentProxy.folder()).not.toBe(agentFolder);
         expect(daemon.relay!.identity().handle).not.toBe(relayHandle);
-        expect(posted).toContainEqual({ kind: 'mirror', topic: 'hostSockets', version: expect.any(Number) as number, patch: { agentFolder: daemon.daemon.agentProxy.folder(), relayHandle: daemon.relay!.identity().handle } });
+        expect(posted).toContainEqual({ kind: 'mirror', topic: 'hostSockets', version: expect.any(Number) as number, patch: { agentFolder: daemon.daemon.agentProxy.folder(), relayHandle: daemon.relay!.identity().handle, relayNonces: [] } });
       }, { timeout: 5000 });
       await daemon.daemon.agentProxy.settled();
       const moved = daemon.daemon.agentProxy.folder()!;

@@ -3,9 +3,10 @@ import { promises as fs } from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { duplexPair, type Duplex } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { agentSocketFile } from '../../core-protocol/agent-sockets';
-import { createAgentProxy, isAgentSock, type AgentProxy, type AgentUpstream } from '../agent-proxy';
+import { agentSocketFile, agentSocketName } from '../../core-protocol/agent-sockets';
+import { agentKeyOf, agentKeyOfSocket, createAgentProxy, isAgentSock, type AgentProxy, type AgentUpstream } from '../agent-proxy';
 import type { AgentRelay } from '../agent-relay';
 
 const sock = (path: string): AgentUpstream => ({ kind: 'socket', path });
@@ -71,7 +72,7 @@ describe.runIf(process.platform !== 'win32')('the agent proxy (POSIX)', () => {
     const base = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-proxy-'));
     cleanups.push(() => fs.rm(base, { recursive: true, force: true }));
     const log = vi.fn();
-    const proxy: AgentProxy = createAgentProxy({ forwarding: (clientId) => policy.get(clientId) === true, uid, log, base: async () => base });
+    const proxy: AgentProxy = createAgentProxy({ forwarding: (clientId) => policy.get(clientId) === true, policyKnown: (clientId) => policy.has(clientId), uid, log, base: async () => base, reattachUntil: () => 0 });
     cleanups.push(() => proxy.close());
     await proxy.start();
     const agents = path.join(base, 'agents');
@@ -147,6 +148,22 @@ describe.runIf(process.platform !== 'win32')('the agent proxy (POSIX)', () => {
     expect(proxy.socketFor('laptop')).toBeUndefined();
     expect(fsSync.existsSync(agentSocketFile(folder, 'laptop'))).toBe(false);
     expect(laptop.accepted()).toBe(0);
+  });
+
+  it('pipes a connection a terminal host forwarded under a client\'s key to that client\'s agent, and names the key of its own socket', async () => {
+    const { agents, proxy } = await setup(new Map([['laptop', true], ['desktop', true]]));
+    const laptop = await fakeAgent(agents, 'laptop');
+    const desktop = await fakeAgent(agents, 'desktop');
+    cleanups.push(laptop.close, desktop.close);
+    proxy.setClient('laptop', sock(laptop.path));
+    proxy.setClient('desktop', sock(desktop.path));
+    await proxy.settled();
+    expect(agentKeyOfSocket(proxy.socketFor('laptop')!)).toBe(agentKeyOf('laptop'));
+    expect(agentKeyOfSocket(laptop.path)).toBeUndefined();
+    const [mine, theirs] = duplexPair();
+    proxy.forwarded(agentKeyOf('laptop'), theirs);
+    expect(await new Promise<string>((resolve) => mine.once('data', (chunk: Buffer) => resolve(chunk.toString('utf8'))))).toBe('laptop');
+    expect(desktop.accepted()).toBe(0);
   });
 
   it('hands each connection on a relaying client\'s socket to that client\'s relay only, never another client\'s', async () => {
@@ -289,5 +306,174 @@ describe.runIf(process.platform !== 'win32')('the agent proxy (POSIX)', () => {
     // a stale entry's rebind changes nothing
     await kept.rebind();
     expect(proxy.folder()).toBe(moved);
+  });
+
+  it('names a client\'s key by its socket\'s form, so a terminal environment made before a rebind or a forwarding toggle still gets the host\'s socket', async () => {
+    const policy = new Map([['laptop', true]]);
+    const { agents, folder, proxy } = await setup(policy);
+    const laptop = await fakeAgent(agents, 'laptop');
+    cleanups.push(laptop.close);
+    proxy.setClient('laptop', sock(laptop.path));
+    await proxy.settled();
+    const before = proxy.socketFor('laptop')!;
+    await fs.rm(folder, { recursive: true });
+    await proxy.kept()!.rebind();
+    expect(proxy.socketFor('laptop')).not.toBe(before);
+    expect(agentKeyOfSocket(before)).toBe(agentKeyOf('laptop'));
+    policy.set('laptop', false);
+    proxy.policyChanged();
+    await proxy.settled();
+    expect(proxy.socketFor('laptop')).toBeUndefined();
+    expect(agentKeyOfSocket(before)).toBe(agentKeyOf('laptop'));
+  });
+});
+
+describe('the key of a daemon\'s agent socket', () => {
+  it('is the hex of agent-<24 hex>.sock in a damocles- socket folder, and undefined for a socket of any other form, which a shell keeps', () => {
+    const key = agentKeyOf('laptop');
+    expect(agentKeyOfSocket(`/tmp/damocles-AbC123/agent-${key}.sock`)).toBe(key);
+    expect(agentKeyOfSocket(`/run/user/1000/damocles-xyz789/agent-${key}.sock`)).toBe(key);
+    for (const own of ['/tmp/ssh-XXXXabcd/agent.1234', `/tmp/other-AbC123/agent-${key}.sock`, `/tmp/damocles-AbC123/agent-${key.slice(1)}.sock`, `/tmp/damocles-AbC123/agent-${key.toUpperCase()}.sock`, `damocles-AbC123/agent-${key}.sock`, `/tmp/damocles-AbC123/sub/agent-${key}.sock`, '\\\\.\\pipe\\openssh-ssh-agent']) {
+      expect(agentKeyOfSocket(own)).toBeUndefined();
+    }
+  });
+});
+
+describe('a connection a terminal host forwarded from its agent socket', () => {
+  const proxies: AgentProxy[] = [];
+  // the reattach window of a server that started listening now, ending ms from now
+  const until = (ms: number): (() => number) => {
+    const end = Date.now() + ms;
+    return () => end;
+  };
+  afterEach(async () => {
+    for (const proxy of proxies.splice(0)) await proxy.close();
+  });
+
+  // relaying clients, each recording the connections it was handed
+  function setup(policy: Map<string, boolean>): { proxy: AgentProxy; handed: Map<string, Duplex[]>; lines: string[] } {
+    const lines: string[] = [];
+    const proxy = createAgentProxy({ forwarding: (clientId) => policy.get(clientId) === true, policyKnown: (clientId) => policy.has(clientId), uid: process.getuid?.(), log: (line) => lines.push(line), reattachUntil: until(200) });
+    proxies.push(proxy);
+    const handed = new Map<string, Duplex[]>();
+    for (const clientId of policy.keys()) {
+      handed.set(clientId, []);
+      proxy.setClient(clientId, { kind: 'relay', relay: { request: (incoming) => handed.get(clientId)!.push(incoming), connect: () => false, refuse: () => undefined, close: () => undefined } });
+    }
+    return { proxy, handed, lines };
+  }
+
+  it('reaches the client whose key the host names through agentSocketName, and no other client', async () => {
+    const { proxy, handed } = setup(new Map([['laptop', true], ['desktop', true]]));
+    expect(agentKeyOf('laptop')).toMatch(/^[0-9a-f]{24}$/);
+    expect(`agent-${agentKeyOf('laptop')}.sock`).toBe(agentSocketName('laptop'));
+    const [, theirs] = duplexPair();
+    proxy.forwarded(agentKeyOf('laptop'), theirs);
+    expect(handed.get('laptop')).toEqual([theirs]);
+    expect(handed.get('desktop')).toEqual([]);
+  });
+
+  it('refuses a key no client has, once the wait for one is over', async () => {
+    const { proxy, handed, lines } = setup(new Map([['laptop', true]]));
+    const [, theirs] = duplexPair();
+    proxy.forwarded(agentKeyOf('stranger'), theirs);
+    expect(theirs.destroyed).toBe(false);
+    await vi.waitFor(() => expect(theirs.destroyed).toBe(true));
+    expect(handed.get('laptop')).toEqual([]);
+    expect(lines).toContain('[agent] refused a forwarded connection: no client of its key forwards its SSH agent');
+  });
+
+  it('refuses a key no client has at once once the clients of a switch had their time to reattach, as a gone computer\'s key', () => {
+    const lines: string[] = [];
+    const proxy = createAgentProxy({ forwarding: () => true, policyKnown: () => true, uid: process.getuid?.(), log: (line) => lines.push(line), reattachUntil: until(-1) });
+    proxies.push(proxy);
+    const [, theirs] = duplexPair();
+    proxy.forwarded(agentKeyOf('stranger'), theirs);
+    expect(theirs.destroyed).toBe(true);
+    expect(lines).toContain('[agent] refused a forwarded connection: no client of its key forwards its SSH agent');
+  });
+
+  it('refuses at once a client whose policy does not forward its agent, and ends its forwarded connections once its policy turns forwarding off', async () => {
+    const policy = new Map([['laptop', false]]);
+    const { proxy, handed, lines } = setup(policy);
+    const [, refused] = duplexPair();
+    proxy.forwarded(agentKeyOf('laptop'), refused);
+    expect(refused.destroyed).toBe(true);
+    expect(handed.get('laptop')).toEqual([]);
+    expect(lines).toContain('[agent] refused a forwarded connection: its client does not forward its SSH agent');
+    policy.set('laptop', true);
+    proxy.policyChanged();
+    await proxy.settled();
+    const [, taken] = duplexPair();
+    proxy.forwarded(agentKeyOf('laptop'), taken);
+    expect(handed.get('laptop')).toEqual([taken]);
+    policy.set('laptop', false);
+    proxy.policyChanged();
+    await proxy.settled();
+    expect(taken.destroyed).toBe(true);
+  });
+
+  it('holds a connection forwarded before its client reattached, as in a switch, and hands it over once that client forwards its agent', async () => {
+    const policy = new Map<string, boolean>();
+    const lines: string[] = [];
+    const proxy = createAgentProxy({ forwarding: (clientId) => policy.get(clientId) === true, policyKnown: (clientId) => policy.has(clientId), uid: process.getuid?.(), log: (line) => lines.push(line), reattachUntil: until(30_000) });
+    proxies.push(proxy);
+    const handed: Duplex[] = [];
+    const [, early] = duplexPair();
+    proxy.forwarded(agentKeyOf('laptop'), early);
+    // the client's connection names its upstream, and its attach brings the policy
+    proxy.setClient('laptop', { kind: 'relay', relay: { request: (incoming) => handed.push(incoming), connect: () => false, refuse: () => undefined, close: () => undefined } });
+    await proxy.settled();
+    expect(handed).toEqual([]);
+    policy.set('laptop', true);
+    proxy.policyChanged();
+    await proxy.settled();
+    expect(handed).toEqual([early]);
+    expect(early.destroyed).toBe(false);
+    expect(lines.filter((line) => line.includes('refused'))).toEqual([]);
+  });
+
+  it('starts the wait of a connection forwarded before the endpoint listens only once it does, so the window runs from then', async () => {
+    // the server's reattach window, unknown until its endpoint listens
+    const reattach: { until?: number } = {};
+    const lines: string[] = [];
+    const proxy = createAgentProxy({ forwarding: () => true, policyKnown: () => true, uid: process.getuid?.(), log: (line) => lines.push(line), reattachUntil: () => reattach.until });
+    proxies.push(proxy);
+    const [, early] = duplexPair();
+    proxy.forwarded(agentKeyOf('laptop'), early);
+    // a window that would be over had the wait started before the endpoint listened
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(early.destroyed).toBe(false);
+    reattach.until = Date.now();
+    proxy.accepting();
+    await vi.waitFor(() => expect(early.destroyed).toBe(true));
+    expect(lines).toContain('[agent] refused a forwarded connection: no client of its key forwards its SSH agent');
+  });
+
+  it('refuses a held connection once its client\'s policy arrives and does not forward its agent', async () => {
+    const policy = new Map<string, boolean>();
+    const lines: string[] = [];
+    const proxy = createAgentProxy({ forwarding: (clientId) => policy.get(clientId) === true, policyKnown: (clientId) => policy.has(clientId), uid: process.getuid?.(), log: (line) => lines.push(line), reattachUntil: until(30_000) });
+    proxies.push(proxy);
+    const handed: Duplex[] = [];
+    const [, early] = duplexPair();
+    proxy.forwarded(agentKeyOf('laptop'), early);
+    proxy.setClient('laptop', { kind: 'relay', relay: { request: (incoming) => handed.push(incoming), connect: () => false, refuse: () => undefined, close: () => undefined } });
+    await proxy.settled();
+    expect(early.destroyed).toBe(false);
+    policy.set('laptop', false);
+    proxy.policyChanged();
+    await proxy.settled();
+    expect(early.destroyed).toBe(true);
+    expect(handed).toEqual([]);
+    expect(lines).toContain('[agent] refused a forwarded connection: its client does not forward its SSH agent');
+  });
+
+  it('drops a held connection when it closes', async () => {
+    const proxy = createAgentProxy({ forwarding: () => true, policyKnown: () => true, uid: process.getuid?.(), log: () => undefined, reattachUntil: until(30_000) });
+    const [, early] = duplexPair();
+    proxy.forwarded(agentKeyOf('laptop'), early);
+    await proxy.close();
+    expect(early.destroyed).toBe(true);
   });
 });

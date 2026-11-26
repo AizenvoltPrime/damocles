@@ -6,8 +6,9 @@ import type { SettingsSectionId } from '../../shared/settings-sections';
 import type { UpdateAction, UpdateSnapshot } from './updates';
 import type { SettingsFileScope } from '../../shared/types/messages';
 import type { AuthorityKind } from '../../shared/project-location';
-import type { HostLatency, HostReconnect } from '../../shared/host-connection';
+import type { HostLatency, HostReconnect, HostRemoved } from '../../shared/host-connection';
 import type { HostColor } from '../../shared/host-colors';
+import type { HostUpdate } from '../../shared/host-update';
 import type { JourneyStep, JourneyStepResult, TweaksDeclaration } from '../../shared/types/design';
 import type { MarkupJsonInput } from '../../shared/design-markup';
 import type { SearchFileKey, SearchFileResult, SearchQuery, SearchRange, SearchSortOrder } from '../../shared/text-search';
@@ -1830,23 +1831,18 @@ export interface ShellHost {
   readonly connection: ProjectConnection;
   // an attempt made without the user waits on a prompt ("Sign in to <name>")
   readonly signInNeeded: boolean;
+  // Remove Damocles server ran on the host, by another device or as an automatic connect found it, until the next connect
+  readonly removed?: HostRemoved;
   // the handshake's measured clock skew, present only past CLOCK_SKEW_WARN_MS
   readonly clockSkewMs?: number;
   // the reconnect loop's phase while the host is away; absent while connected, before its first connection and after Disconnect
   readonly reconnect?: HostReconnect;
   // the latest round trip and the last ten; absent before the first measurement
   readonly latency?: HostLatency;
-  // a daemon of another protocol that still runs agents, whose chats show read-only from the session mirror
+  // a pending server switch on the host, or this app being too old for it
   readonly update?: HostUpdate;
-}
-
-export interface HostUpdate {
-  // the running daemon's app version, e.g. "3.7.0"
-  readonly serverVersion: string;
-  // the chat runs its listRuns reports
-  readonly runningAgents: number;
-  // waiting: "Switch when they finish" was chosen, and the switch follows the old daemon's exit
-  readonly phase: 'offer' | 'waiting';
+  // the app's updater runs, so the update strip offers Check for updates; absent in the unpackaged app
+  readonly canCheckForUpdates?: true;
 }
 
 export type HostAttention = 'offline' | 'signIn';

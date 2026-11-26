@@ -150,7 +150,7 @@ test('a folder opened through the local daemon has its host badge, and its files
     const terminal = state.terminals.find((candidate) => candidate.id === state.activeId)!;
     expect(terminal.projectKey).toBe(key);
     expect(terminal.id).toMatch(/^term-[1-9]\d{14}$/);
-    // the daemon's Windows build, which its pty host's screen gives xterm too
+    // the daemon's Windows build, which its terminal host's screen gives xterm too
     expect(terminal.windowsBuild === null).toBe(!windows);
     await expect.poll(async () => (await terminalShell.evaluate(() => window.damoclesShell!.terminal.getState())).terminals.find((candidate) => candidate.id === terminal.id)?.integrated, { timeout: 30_000 }).toBe(true);
     await runInTerminal(terminalShell, windows ? 'Write-Output loopback-ok-1f' : 'echo loopback-ok-1f');
@@ -176,7 +176,7 @@ test('a folder opened through the local daemon has its host badge, and its files
     expect(fs.existsSync(path.join(home.damoclesDir, 'server'))).toBe(false);
     expect(await pidIn(os.homedir())).not.toBe(await daemonPid(home));
 
-    // Teardown: no daemon, pty host or formatter process is left; a shutdown this client asked for disconnects the host as
+    // Teardown: no daemon, terminal host or formatter process is left; a shutdown this client asked for disconnects the host as
     // Disconnect Host does, so its dot is offline and nothing reconnects.
     await shutdownDaemon(app, home);
     await expect(badge.getByTestId('host-status-dot')).toHaveAttribute('data-connection', 'offline');

@@ -5,25 +5,31 @@ import { Button } from '@/components/ui/button';
 import { useHostConnection } from '@/composables/useHostConnection';
 import { hostAttention, type ShellHost } from '../../preload/shell-channels';
 import HostStatusDot from './HostStatusDot.vue';
-import { hostStateLabel } from '../host-label';
+import { hostStateLabel, removedText } from '../host-label';
 import HostUpdateBanner from '@/components/HostUpdateBanner.vue';
-import { BANNER_TONE } from '@/components/banner-tone';
+import { BANNER_TONE, hostUpdateTone } from '@/components/banner-tone';
+import { useUpdateClock } from '@/components/host-update-clock';
 
 // The attempt main started at launch never opens a dialog itself; Sign in opens it on the waiting prompt.
 // edge: the strip alone, continuing a chat page's banner (webview ConnectionBanner.vue) across the gutter; keep the one-line min-h-8 equal (both take their colors from BANNER_TONE).
 const props = defineProps<{ host: ShellHost | undefined; edge?: boolean }>();
-const emit = defineEmits<{ reconnect: [hostId: string]; signIn: [hostId: string]; showLog: [hostId: string]; editHost: [hostId: string]; switchWhenIdle: [hostId: string]; switchNow: [hostId: string] }>();
+const emit = defineEmits<{ reconnect: [hostId: string]; signIn: [hostId: string]; showLog: [hostId: string]; editHost: [hostId: string]; switchWhenIdle: [hostId: string]; switchNow: [hostId: string]; checkForUpdates: [] }>();
 const { t } = useI18n();
+const clock = useUpdateClock();
 
 const view = useHostConnection(() => (props.host ? { hostId: props.host.hostId, connected: props.host.connection === 'connected', reconnect: props.host.reconnect, attention: hostAttention(props.host) } : undefined));
 const kind = view.kind;
 const tone = computed(() => BANNER_TONE[kind.value === 'failed' ? 'danger' : kind.value === 'reconnected' ? 'success' : 'warning']);
 const STRIP = 'flex min-h-8 shrink-0 items-center gap-2 border-b transition-colors duration-200 ease-out';
 
+// Remove Damocles server ran on a host that is not connected: only its Connect installs the server again.
+const removed = computed(() => (props.host && (kind.value === 'offline' || kind.value === 'failed') ? removedText(props.host, t) : undefined));
+
 // The live region says what changed and never counts down, so a screen reader hears each state once.
 const announcement = computed(() => {
   const name = props.host?.name ?? '';
   if (props.host?.update) return '';
+  if (removed.value !== undefined) return removed.value;
   switch (kind.value) {
     case 'reconnecting': return t('remote.banner.announce.reconnecting', { name });
     case 'failed': return t('remote.banner.announce.failed', { name });
@@ -43,14 +49,16 @@ const announcement = computed(() => {
       aria-hidden="true"
       data-testid="connection-banner-edge"
       data-state="update"
-      :class="[STRIP, BANNER_TONE.info]"
+      :class="[STRIP, BANNER_TONE[hostUpdateTone(host.update)]]"
     />
     <HostUpdateBanner
       v-else-if="host?.update"
       :host-name="host.name"
       :update="host.update"
+      :can-check-for-updates="host.canCheckForUpdates"
       @switch-when-idle="emit('switchWhenIdle', host.hostId)"
       @switch-now="emit('switchNow', host.hostId)"
+      @check-for-updates="emit('checkForUpdates')"
     />
     <Transition
       v-else
@@ -75,7 +83,7 @@ const announcement = computed(() => {
           :connection="host.connection"
           :reconnect="host.reconnect"
           :slow="host.latency?.slow"
-          :label="hostStateLabel(host, t)"
+          :label="hostStateLabel(host, t, clock)"
         />
         <!-- The actions wrap below the whole sentence before either is cut; under 24rem it always stacks, so a ticking countdown never flips the layout. -->
         <div
@@ -98,6 +106,7 @@ const announcement = computed(() => {
               >{{ view.seconds.value }}</span></template>
             </i18n-t>
             <template v-else-if="kind === 'reconnecting'">{{ t('remote.banner.reconnecting', { name: host.name }) }}</template>
+            <template v-else-if="removed">{{ removed }}</template>
             <template v-else-if="kind === 'failed'">{{ t('remote.banner.failed', { name: host.name }) }}</template>
             <template v-else-if="kind === 'reconnected'">{{ t('remote.banner.reconnected', { name: host.name }) }}</template>
             <template v-else-if="kind === 'signIn'">{{ t('remote.banner.signIn', { name: host.name }) }}</template>
@@ -108,7 +117,7 @@ const announcement = computed(() => {
             class="flex flex-wrap items-center gap-x-2"
             data-testid="connection-banner-actions"
           >
-            <template v-if="kind === 'failed'">
+            <template v-if="kind === 'failed' && !removed">
               <Button
                 v-for="action in (['reconnect', 'showLog', 'editHost'] as const)"
                 :key="action"
@@ -131,7 +140,7 @@ const announcement = computed(() => {
               data-testid="connection-banner-action"
               @click="kind === 'signIn' ? emit('signIn', host.hostId) : emit('reconnect', host.hostId)"
             >
-              {{ kind === 'signIn' ? t('remote.banner.signInAction', { name: host.name }) : kind === 'reconnecting' ? t('remote.banner.reconnectNow') : t('remote.banner.reconnect') }}
+              {{ kind === 'signIn' ? t('remote.banner.signInAction', { name: host.name }) : kind === 'reconnecting' ? t('remote.banner.reconnectNow') : removed ? t('remote.removed.connect') : t('remote.banner.reconnect') }}
             </Button>
           </div>
         </div>

@@ -183,6 +183,57 @@ describe('RemoteState', () => {
   });
 });
 
+describe('a required update\'s first detection', () => {
+  const since = { serverVersion: '3.7.0+0123456789ab', detectedAt: 1_000, deadline: 90_000 };
+
+  it('is kept per authority across a relaunch, replaced by a tightened one, cleared, and dropped by Forget host', async () => {
+    const state = await RemoteState.open(userData, () => undefined);
+    expect(state.requiredSince('ssh+h1')).toBeUndefined();
+    await state.setRequiredSince('ssh+h1', since);
+    await state.setRequiredSince('ssh+h2', { ...since, deadline: 50_000 });
+    expect((await RemoteState.open(userData, () => undefined)).requiredSince('ssh+h1')).toEqual(since);
+    await state.setRequiredSince('ssh+h1', { ...since, deadline: 60_000 });
+    expect((await RemoteState.open(userData, () => undefined)).requiredSince('ssh+h1')).toEqual({ ...since, deadline: 60_000 });
+
+    await state.setRequiredSince('ssh+h1', undefined);
+    const cleared = await RemoteState.open(userData, () => undefined);
+    expect(cleared.requiredSince('ssh+h1')).toBeUndefined();
+    expect(cleared.requiredSince('ssh+h2')).toEqual({ ...since, deadline: 50_000 });
+    // an authority holding nothing else leaves no entry
+    expect(JSON.parse(fs.readFileSync(path.join(userData, REMOTE_STATE_FILE), 'utf8')).authorities).not.toHaveProperty('ssh+h1');
+
+    await state.forgetAuthority('ssh+h2');
+    expect((await RemoteState.open(userData, () => undefined)).requiredSince('ssh+h2')).toBeUndefined();
+  });
+
+  it('is kept apart from when the switch started waiting, which is kept across a relaunch, cleared, and dropped by Forget host', async () => {
+    const state = await RemoteState.open(userData, () => undefined);
+    expect(state.pendingSince('ssh+h1')).toBeUndefined();
+    await state.setPendingSince('ssh+h1', { serverVersion: since.serverVersion, since: 2_000 });
+    await state.setRequiredSince('ssh+h1', since);
+    const reopened = await RemoteState.open(userData, () => undefined);
+    expect(reopened.pendingSince('ssh+h1')).toEqual({ serverVersion: since.serverVersion, since: 2_000 });
+    expect(reopened.requiredSince('ssh+h1')).toEqual(since);
+    await state.setRequiredSince('ssh+h1', undefined);
+    await state.setPendingSince('ssh+h1', undefined);
+    expect(JSON.parse(fs.readFileSync(path.join(userData, REMOTE_STATE_FILE), 'utf8')).authorities).not.toHaveProperty('ssh+h1');
+    await state.setPendingSince('ssh+h1', { serverVersion: since.serverVersion, since: 2_000 });
+    await state.forgetAuthority('ssh+h1');
+    expect((await RemoteState.open(userData, () => undefined)).pendingSince('ssh+h1')).toBeUndefined();
+    for (const pendingSince of [null, { serverVersion: '', since: 1 }, { serverVersion: '3.7.0', since: 'then' }, { since: 1 }]) {
+      fs.writeFileSync(path.join(userData, REMOTE_STATE_FILE), JSON.stringify({ version: 1, authorities: { 'ssh+h1': { terminals: [], pendingSince } } }));
+      expect((await RemoteState.open(userData, () => undefined)).pendingSince('ssh+h1'), JSON.stringify(pendingSince)).toBeUndefined();
+    }
+  });
+
+  it('drops a malformed record', async () => {
+    for (const requiredSince of [null, 'soon', { ...since, serverVersion: '' }, { ...since, deadline: 'later' }, { ...since, detectedAt: null }, { serverVersion: since.serverVersion }]) {
+      fs.writeFileSync(path.join(userData, REMOTE_STATE_FILE), JSON.stringify({ version: 1, authorities: { 'ssh+h1': { terminals: [], requiredSince } } }));
+      expect((await RemoteState.open(userData, () => undefined)).requiredSince('ssh+h1'), JSON.stringify(requiredSince)).toBeUndefined();
+    }
+  });
+});
+
 describe('the remote selection', () => {
   it('keeps the last remote project and chat, clears for a local one, and changes nothing while sealed', async () => {
     const state = await RemoteState.open(userData, () => undefined);

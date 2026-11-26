@@ -6,6 +6,9 @@ import { settlePending } from '../../shared/settle-pending';
 import { log } from '../logger';
 import { folderKey } from '../workspace-folders/folder-key';
 import { checkConfigPath, ConfigWriteRefused } from './local-config-path';
+import { renameWithRetry } from './rename-retry';
+
+export { renameWithRetry };
 
 // A lock whose heartbeat stopped this long ago belongs to a dead process and is taken over. The takeover is not
 // exclusive: two waiters can both remove a stale lock, and a holder stalled past this threshold is superseded; the
@@ -15,8 +18,6 @@ export const JSON_CONFIG_LOCK_STALE_MS = 20_000;
 const LOCK_UPDATE_MS = 2_000;
 // Retries span well past the stale threshold, so a crashed holder delays a write rather than failing it.
 const LOCK_RETRIES = { retries: 150, factor: 1.3, minTimeout: 5, maxTimeout: 250, randomize: true };
-const RENAME_RETRY_BUDGET_MS = 10_000;
-const RETRYABLE_RENAME_CODES: ReadonlySet<string> = new Set(['EPERM', 'EBUSY', 'EACCES']);
 // The kernel's own symlink hop limit on Linux.
 const MAX_LINK_HOPS = 40;
 
@@ -250,28 +251,5 @@ async function replaceFile(
       log(`[JsonConfigWrite] Could not remove ${tempPath}: ${rmErr instanceof Error ? rmErr.message : String(rmErr)}`);
     });
     throw new JsonConfigWriteError('write', target, err);
-  }
-}
-
-/**
- * A rename retried for a bounded time while Windows refuses it because another process (an editor, an indexer, antivirus) has the
- * target open. before runs ahead of every attempt, so a precondition that a wait can break is checked again; its throw ends the retries.
- */
-export async function renameWithRetry(from: string, to: string, before?: () => Promise<void>): Promise<void> {
-  const deadline = Date.now() + RENAME_RETRY_BUDGET_MS;
-  let delay = 10;
-  for (;;) {
-    await before?.();
-    try {
-      await fs.rename(from, to);
-      return;
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (process.platform !== 'win32' || code === undefined || !RETRYABLE_RENAME_CODES.has(code) || Date.now() >= deadline) {
-        throw err;
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, delay));
-      delay = Math.min(delay + 10, 100);
-    }
   }
 }

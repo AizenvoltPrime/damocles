@@ -122,6 +122,20 @@ describe('grouped terminal list', () => {
     expect(row(w, 'term-2').attributes('aria-controls')).toBe('terminal-panel-term-2');
   });
 
+  it('marks the row of a terminal whose terminal host does not answer with a warning dot on its glyph, and names the state in English and Greek', async () => {
+    const { wrapper: w } = mountList();
+    await w.setProps({ terminals: terminals.map((terminal) => (terminal.id === 'term-4' ? { ...terminal, status: 'notResponding' as const } : terminal)) });
+    const dot = row(w, 'term-4').get('[data-testid="terminal-row-status"]');
+    expect(dot.classes()).toContain('bg-(--d-warning-fill)');
+    expect(row(w, 'term-4').find('[data-testid="terminal-row-icon"]').exists()).toBe(true);
+    expect(row(w, 'term-4').attributes('aria-label')).toBe('shell, Not responding');
+    expect(row(w, 'term-4').attributes('data-status')).toBe('notResponding');
+    shellI18n.global.locale.value = 'el';
+    await nextTick();
+    expect(row(w, 'term-4').attributes('aria-label')).toBe('shell, Δεν αποκρίνεται');
+    shellI18n.global.locale.value = 'en';
+  });
+
   it('selects the clicked pane and splits from the row\'s Split button', async () => {
     const { wrapper: w } = mountList();
     await row(w, 'term-3').trigger('click');

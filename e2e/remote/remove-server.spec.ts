@@ -9,6 +9,7 @@ import { connectDialog, hostCard, openConnect, openInBrowser } from './support/c
 import { fakeLoginctl, lingering, loginctlCalls, newPassword, userAuthorizedKeys, usePasswords } from './support/credentials';
 import { serverProcesses } from './support/daemon-teardown';
 import { connectAnswering, openRemoteHostSettings, removeServerDialog, storedHost } from './support/host-settings-ui';
+import { terminalHosts } from './support/older-server';
 import { addHost, expect, hostNamed, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test } from './support/remote';
 import { TARGET_HOME, type SshdFixture } from './support/sshd';
 
@@ -23,7 +24,8 @@ function otherKeyLine(): string {
   return `ssh-ed25519 ${Buffer.concat([field(Buffer.from('ssh-ed25519')), field(raw)]).toString('base64')} someone-else`;
 }
 
-const serverFolder = async (fixture: SshdFixture): Promise<boolean> => (await fixture.sh(`if [ -e ${TARGET_HOME}/.damocles/server ]; then echo yes; fi`)).trim() === 'yes';
+// ~/.damocles/server holds something of the server: a removal leaves only its removed marker there
+const serverFolder = async (fixture: SshdFixture): Promise<boolean> => (await fixture.sh(`ls -A ${TARGET_HOME}/.damocles/server 2>/dev/null | grep -vx removed; true`)).trim() !== '';
 
 /** Opens Remove Damocles server from Settings > Remote hosts; resolves with the overlay page and the dialog. */
 async function openRemoval(app: ElectronApplication, hostId: string): Promise<{ overlay: Page; dialog: Locator }> {
@@ -69,7 +71,7 @@ async function remove(overlay: Page, dialog: Locator, fixture: SshdFixture): Pro
   await closeSettingsModal(overlay);
 }
 
-test('Remove Damocles server lists the running terminal, leaves no ~/.damocles/server and no daemon, and removes the key line and linger only when their boxes are checked', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
+test('Remove Damocles server lists the running terminal, leaves only its removed marker in ~/.damocles/server and no daemon, and removes the key line and linger only when their boxes are checked', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
   test.setTimeout(900_000);
   writeUserSettings(home, { 'damocles.desktop.terminal.defaultProfile': 'bash', 'damocles.desktop.terminal.confirmOnKill': 'never' });
   const fixture = await sshd('prod-1', { config: ['PreferredAuthentications publickey,password'] });
@@ -122,6 +124,17 @@ test('Remove Damocles server lists the running terminal, leaves no ~/.damocles/s
   await openTerminal(app);
   await runInTerminal(await shellPage(app), 'sleep 600');
   await expect.poll(async () => (await fixture.userProcesses()).some((line) => / sleep 600$/.test(line))).toBe(true);
+  // the terminal's host: a detached process with its record in the run folder and its socket folder outside it
+  const hosts = await terminalHosts(fixture);
+  expect(hosts).toHaveLength(1);
+  const hostFolder = hosts[0]!.socketFolder;
+  // its endpoint and token, and the terminal's own damocles command socket and credential relay
+  expect((await fixture.sh(`ls '${hostFolder}'`, 'dev')).split('\n').filter(Boolean).sort()).toEqual([
+    expect.stringMatching(/^askpass-[0-9a-f]{24}\.sock$/),
+    expect.stringMatching(/^cli-[0-9a-f]{24}\.sock$/),
+    'host.sock',
+    'token',
+  ]);
 
   // Both boxes offered, the key's checked by default; with neither checked the server goes and the key and linger stay. This
   // removal runs from the Connect dialog's card, which stays open on the card while it runs and after.
@@ -141,6 +154,9 @@ test('Remove Damocles server lists the running terminal, leaves no ~/.damocles/s
   await expect(removing.overlay.getByTestId('connect-dialog')).toHaveCount(0);
   expect(await serverFolder(fixture)).toBe(false);
   expect(await serverProcesses(fixture)).toEqual([]);
+  // the host went with its terminal: no process (above), no record with the server folder, and no socket folder
+  expect(await terminalHosts(fixture)).toEqual([]);
+  expect((await fixture.sh(`if [ -e '${hostFolder}' ]; then echo yes; fi`)).trim()).toBe('');
   expect(await userAuthorizedKeys(fixture)).toEqual([other, damoclesKey]);
   expect(await lingering(fixture)).toBe(true);
   expect((await loginctlCalls(fixture)).filter((line) => line.includes('disable-linger'))).toEqual([]);

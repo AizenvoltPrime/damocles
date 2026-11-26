@@ -4,7 +4,7 @@
 export type ChildKind = 'node' | 'user';
 
 /**
- * node: a forked Node child (the pty host, a formatter host, Damocles Core), with ELECTRON_RUN_AS_NODE=1 only
+ * node: a Node child (a terminal host, a formatter host, Damocles Core), with ELECTRON_RUN_AS_NODE=1 only
  * when the daemon itself runs under Electron, so the same binary runs the child as Node. user: a terminal, agent shell, hook,
  * MCP server or git, which never sees an ELECTRON_* variable.
  */

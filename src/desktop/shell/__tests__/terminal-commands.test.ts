@@ -229,9 +229,17 @@ describe('command keys and menus', () => {
   it('offers the mark menu\'s four actions, each disabled without what it needs', () => {
     const t = (id: string): string => id;
     const ids = (items: ReturnType<typeof commandMenuItems>) => items.map((item) => (item.kind === 'item' ? `${item.id}${item.disabled ? ':off' : ''}` : '-'));
-    expect(ids(commandMenuItems({ hasCommandLine: true, hasOutput: true }, t))).toEqual(['rerunCommand', '-', 'copyCommand', 'copyOutput', '-', 'addOutputToChat']);
-    expect(ids(commandMenuItems({ hasCommandLine: false, hasOutput: false }, t))).toEqual(['rerunCommand:off', '-', 'copyCommand:off', 'copyOutput:off', '-', 'addOutputToChat:off']);
+    expect(ids(commandMenuItems({ hasCommandLine: true, hasOutput: true }, false, t))).toEqual(['rerunCommand', '-', 'copyCommand', 'copyOutput', '-', 'addOutputToChat']);
+    expect(ids(commandMenuItems({ hasCommandLine: false, hasOutput: false }, false, t))).toEqual(['rerunCommand:off', '-', 'copyCommand:off', 'copyOutput:off', '-', 'addOutputToChat:off']);
     expect(terminalMenuAction('addOutputToChat')).toBe('addOutputToChat');
+  });
+
+  it('turns Paste and Rerun Command off while the terminal takes no input, keeping the copies', () => {
+    const t = (id: string): string => id;
+    const ids = (items: ReturnType<typeof terminalMenuItems>) => items.map((item) => (item.kind === 'item' ? `${item.id}${item.disabled ? ':off' : ''}` : '-'));
+    expect(ids(commandMenuItems({ hasCommandLine: true, hasOutput: true }, true, t))).toEqual(['rerunCommand:off', '-', 'copyCommand', 'copyOutput', '-', 'addOutputToChat']);
+    const menu = terminalMenuItems({ target: 'terminal', hasSelection: true, platform: 'win32', group: { panes: 1, shortcut: 'Ctrl+Shift+5' }, navigated: { hasCommandLine: true, hasOutput: true }, inputOff: true }, t);
+    expect(ids(menu).slice(0, 11)).toEqual(['rerunCommand:off', '-', 'copyCommand', 'copyOutput', '-', 'addOutputToChat', '-', 'copy', 'paste:off', 'selectAll', 'clear']);
   });
 
   it('adds the last command\'s copies and Add to Chat to the terminal menu, and leads with a navigated command', () => {

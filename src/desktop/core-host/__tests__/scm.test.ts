@@ -197,6 +197,27 @@ describe.runIf(HAS_GIT)("a daemon's core's git credential relay", { timeout: 60_
     return requests;
   };
 
+  it('answers a terminal host\'s nonce from its init and from each published list, as a terminal\'s, without moving the relay', async () => {
+    const repo = makeRepo(folder('relay-host-nonces'));
+    const [first, second] = ['d'.repeat(64), 'e'.repeat(64)];
+    const identity: RelayIdentity = { ...relayIdentity(), relayNonces: [first] };
+    const { mainEndpoint } = start(repo, true, identity);
+    const requests = servedRequests(mainEndpoint);
+    await waitFor(() => installedCredentialRelay() !== undefined || undefined, 'the relay installed');
+    const installed = installedCredentialRelay();
+    const fields = { protocol: 'https', host: 'github.com', path: 'o/r.git' };
+    const asHost = (nonce: string): Promise<string> => relayRequest({ ...identity, nonce }, { op: 'get', cwd: repo, fields });
+    await expect(asHost(first)).resolves.toContain('relayed-7f3a');
+    await expect(asHost(second)).resolves.toBe('');
+    mainEndpoint.publish('hostSockets', { relayHandle: identity.handle, relayNonces: [second] });
+    await expect.poll(() => asHost(second)).toContain('relayed-7f3a');
+    await expect(asHost(first)).resolves.toBe('');
+    // the same handle: the relay listens on as it was
+    expect(installedCredentialRelay()).toBe(installed);
+    expect(requests).toHaveLength(2);
+    await running!.close();
+  });
+
   it('sends a managed server\'s request with its origin, runs the target\'s own helpers on delegate, then today\'s relay; others as today', async () => {
     const repo = makeRepo(folder('relay-forge'));
     const identity = relayIdentity();

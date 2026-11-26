@@ -109,7 +109,7 @@ export function filesHolding(root: string, needles: readonly string[]): string[]
   return hits;
 }
 
-/** Attaches the daemon's logs (daemon, core, pty host) from its home, which the launch fixture's diagnostics do not reach. */
+/** Attaches the daemon's logs (daemon, core, terminal hosts) from its home, which the launch fixture's diagnostics do not reach. */
 export async function attachDaemonLogs(testInfo: TestInfo, home: HermeticHome): Promise<void> {
   const root = serverDir(home);
   for (const relative of filesUnder(root).filter((file) => file.endsWith('.log'))) {

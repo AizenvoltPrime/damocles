@@ -3,6 +3,7 @@
 // in src/remote, which imports only Node built-ins.
 import type * as net from 'node:net';
 import * as path from 'node:path';
+import type { Duplex } from 'node:stream';
 import { arr, bool, int, INVALID, nonEmpty, obj, oneOf, opt, str, type ParsedShape, type Parser } from '../core-protocol/schema';
 
 export const MAX_CLI_REQUEST_BYTES: number = 64 * 1024;
@@ -30,8 +31,8 @@ export type CliRequest =
 
 export type CliLanguage = 'en' | 'el';
 
-// tooLarge, malformed, oneRequest: the socket refused the request; notConnected: no client has the terminal's view attached;
-// refused: main refused it, saying why in its client's language
+// tooLarge, malformed, oneRequest: the socket refused the request; notConnected: no connected client answered (none attached,
+// or the terminal, the connection or the daemon ended first); refused: main refused it, saying why in its client's language
 export type CliAnswer =
   | { readonly ok: true }
   | { readonly ok: true; readonly version: string; readonly connected: boolean; readonly language: CliLanguage }
@@ -144,7 +145,7 @@ const answerLine = (answer: CliAnswer): string => `${JSON.stringify(answer)}\n`;
  * connection ends; a refusal after the request went to handle drops handle's answer. A connection that ends before its request
  * line is malformed, and one whose request line is not complete deadlineMs after it connected is destroyed.
  */
-export function serveCliConnection(socket: net.Socket, handle: (request: CliRequest) => Promise<CliAnswer>, log: (line: string) => void, deadlineMs: number = CLI_REQUEST_DEADLINE_MS): void {
+export function serveCliConnection(socket: Duplex, handle: (request: CliRequest) => Promise<CliAnswer>, log: (line: string) => void, deadlineMs: number = CLI_REQUEST_DEADLINE_MS): void {
   const chunks: Buffer[] = [];
   let size = 0;
   // reading: no request yet; handling: the request went to handle; done: an answer or a refusal went out
@@ -212,15 +213,34 @@ export function serveCliConnection(socket: net.Socket, handle: (request: CliRequ
   });
 }
 
-/** Sends one request on a fresh connection to hook and reads its one answer line. */
+/**
+ * Sends one request on a fresh connection to hook and reads its one answer line. A connection closed with no answer at all is
+ * not connected: a terminal host closes one no daemon took in time, and one whose daemon went away.
+ */
 export function sendCliRequest(connect: () => net.Socket, request: CliRequest): Promise<CliAnswer> {
   return new Promise((resolve, reject) => {
     const socket = connect();
     const chunks: Buffer[] = [];
-    socket.on('connect', () => socket.write(`${JSON.stringify(request)}\n`));
+    let connected = false;
+    let failure: Error | undefined;
+    socket.on('connect', () => {
+      connected = true;
+      socket.write(`${JSON.stringify(request)}\n`);
+    });
     socket.on('data', (chunk: Buffer) => chunks.push(chunk));
-    socket.on('error', reject);
+    // a reset after the connect, as a closed unread connection may give, ends it as a close does
+    socket.on('error', (err) => {
+      failure = err;
+    });
     socket.on('close', () => {
+      if (!connected) {
+        reject(failure ?? new Error('the connection closed before it connected'));
+        return;
+      }
+      if (chunks.length === 0) {
+        resolve({ ok: false, code: 'notConnected', language: 'en' });
+        return;
+      }
       const text = Buffer.concat(chunks).toString('utf8');
       const newline = text.indexOf('\n');
       let raw: unknown;

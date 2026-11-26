@@ -2,7 +2,7 @@
 // native crash or a blocked read cannot take down its parent. The parent validated every request and resolved every path.
 import * as os from 'node:os';
 import { parentChannel } from '../local-services/parent-channel';
-import { NODE_PTY_ARG_PREFIX, parseHostRequest, SELF_ACKNOWLEDGE_ARG } from './protocol';
+import { NODE_PTY_ARG_PREFIX, parseHostRequest } from './protocol';
 import { createPtyScreen } from './screen';
 import { createPtySessions } from './sessions';
 
@@ -21,7 +21,6 @@ const sessions = createPtySessions({
   post: (message) => channel.postMessage(message),
   throttleConpty: process.platform === 'win32',
   readProcessName: process.platform !== 'win32',
-  selfAcknowledge: process.argv.includes(SELF_ACKNOWLEDGE_ARG),
   log: (line) => process.stderr.write(`${line}\n`),
   // the shell's xterm sets the same windowsPty from main's os.release()
   screen: (options) => createPtyScreen(process.platform === 'win32' ? { ...options, windowsPty: { backend: 'conpty', buildNumber: Number(/^\d+\.\d+\.(\d+)/.exec(os.release())?.[1] ?? 0) } } : options),

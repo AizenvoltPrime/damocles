@@ -706,6 +706,7 @@ export const DESKTOP_EXCLUDE_RULES = [
   'dist/desktop-shell/**',
   'dist/core-host.js',
   'dist/daemon.js',
+  'dist/terminal-host.js',
   'dist/subscription-plugin/**',
   'dist/server-packages/**',
   'dist/formatter-host.js',

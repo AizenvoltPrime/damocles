@@ -60,6 +60,23 @@ describe('connection banner', () => {
     }
   });
 
+  it('says a host whose server was removed was removed, by whom when another device did it, and connects on Connect', async () => {
+    for (const [removed, text] of [
+      [{ by: 'DESKTOP-A' }, 'The Damocles server on prod-1 was removed from DESKTOP-A. Connect to install it again.'],
+      [{}, 'The Damocles server was removed from prod-1. Connect to install it again.'],
+    ] as const) {
+      const wrapper = mountBanner({ ...HOST, connection: 'offline', removed });
+      const shown = wrapper.get('[data-testid="connection-banner"]');
+      expect(shown.attributes('data-state')).toBe('offline');
+      expect(shown.get('[data-testid="connection-banner-text"]').text()).toBe(text);
+      expect(announced(wrapper)).toBe(text);
+      const connect = shown.get('[data-testid="connection-banner-action"]');
+      expect(connect.text()).toBe('Connect');
+      await connect.trigger('click');
+      expect(wrapper.emitted('reconnect')).toEqual([['h1']]);
+    }
+  });
+
   it('asks for a sign-in an attempt waits on, ahead of the offline state, and opens it on Sign in', async () => {
     const wrapper = mountBanner({ ...HOST, connection: 'connecting', signInNeeded: true });
     const shown = wrapper.get('[data-testid="connection-banner"]');

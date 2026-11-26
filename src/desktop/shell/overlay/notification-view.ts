@@ -73,6 +73,8 @@ export interface NotificationView {
   readonly hostColor: HostColor | undefined;
   // empty for a notice without one, whose message is the whole text
   readonly title: string;
+  // epoch ms a notice counts down to: its title ends with the time left, which the toast and the row tick themselves
+  readonly countdownTo?: number | undefined;
   readonly lead: string;
   readonly message: string;
   // the primary action of a kind; a notice's actions are its own labels; a link request's Open and Copy are the toast's own
@@ -125,7 +127,8 @@ export function notificationView(body: NotificationBody, t: Translate, locale: s
       urgent: true,
     };
   }
-  if (body.kind === 'notice') {
+  // a host update's notice reads as a notice; only main's popup policy tells them apart
+  if (body.kind === 'notice' || body.kind === 'hostUpdate') {
     const { icon, tone } = NOTICES[body.severity];
     return {
       kind: 'notice',
@@ -136,6 +139,7 @@ export function notificationView(body: NotificationBody, t: Translate, locale: s
       host: body.host,
       hostColor: body.hostColor,
       title: body.title ?? '',
+      countdownTo: body.kind === 'notice' ? body.countdownTo : undefined,
       lead: '',
       message: body.message,
       action: undefined,

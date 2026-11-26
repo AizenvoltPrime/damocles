@@ -49,7 +49,7 @@ export async function resumeStoredSession(deps: HandlerDependencies, panelId: st
   try {
     await deps.switchPanelFolder(panelId, binding.folder, "resume", async (instance) => {
       // Another panel or process can claim the session while this one switches; the claim then refuses.
-      const refusal = claimStoredSession(platform.notifications, deps.getPanels(), { panelId, session: instance.session }, sessionId, { revealsHolder: true });
+      const refusal = claimStoredSession(platform.notifications, deps.getPanels(), { panelId, session: instance.session }, sessionId, { showsHolder: true });
       if (refusal) {
         heldBy = refusal.holder;
         return;

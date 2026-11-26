@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';
@@ -22,7 +23,9 @@ import {
   type AskpassServerDeps,
   type CredentialPrompt,
   type PromptCredential,
+  type RelayCredential,
 } from '../askpass/askpass-server';
+import type { RelayIdentity } from '../askpass/credential-relay';
 
 const PATHS = { askpass: '/app/dist/askpass/askpass.sh', sshAskpass: '/app/dist/askpass/ssh-askpass.sh', node: '/app/damocles', main: '/app/dist/askpass-main.js' };
 const SECRET = 'sentinel-askpass-secret-4711';
@@ -529,5 +532,72 @@ describe('the sweep of abandoned socket folders', () => {
     await removeAbandonedSocketFolders({ runtimeDir: () => base, tmpdir: () => base, now, log: () => undefined });
     expect(fs.existsSync(liveDir)).toBe(true);
     expect(fs.existsSync(gone)).toBe(false);
+  });
+});
+
+describe('the credential relay\'s terminal host nonces', () => {
+  const folders: string[] = [];
+  afterEach(() => {
+    for (const folder of folders.splice(0)) fs.rmSync(folder, { recursive: true, force: true });
+  });
+
+  const nonce = (): string => randomBytes(32).toString('hex');
+  const FIELDS = { protocol: 'https', host: 'github.com' };
+  const ANSWER = { kind: 'credential', username: 'ada', password: 'tok' } as const;
+
+  // a daemon's relay as its core gets it: a private handle, the daemon's own nonce and the attached hosts' ones
+  function relayOf(relayNonces?: readonly string[]): RelayIdentity {
+    let handle = `\\\\.\\pipe\\damocles-relay-${randomBytes(16).toString('hex')}`;
+    if (process.platform !== 'win32') {
+      const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'dam-relay-'));
+      folders.push(folder);
+      handle = path.join(folder, 'askpass.sock');
+    }
+    return { helper: '/srv/damocles/dist/git-credential/git-credential-relay.sh', handle, nonce: nonce(), ...(relayNonces ? { relayNonces } : {}) };
+  }
+
+  const ask = (handle: string, body: unknown): Promise<string> => exchange(handle, line(body)).then(({ reply }) => reply);
+
+  it('answers a credential request carrying an attached host\'s nonce as a terminal\'s, from the init or a later list, and refuses one a host left', async () => {
+    const credential = vi.fn<RelayCredential>(async () => ANSWER);
+    const [first, second] = [nonce(), nonce()];
+    const identity = relayOf([first]);
+    const { server, log } = start(undefined, { paths: { ...PATHS, credentialRelay: identity }, credential });
+    const relay = (await server.relay())!;
+    const get = (held: string): Promise<string> => ask(relay.handle, { nonce: held, kind: 'credential', op: 'get', cwd: '/w', fields: FIELDS });
+    await expect(get(identity.nonce)).resolves.toBe(line(ANSWER));
+    await expect(get(first)).resolves.toBe(line(ANSWER));
+    expect(credential).toHaveBeenLastCalledWith({ op: 'get', cwd: '/w', fields: FIELDS }, { kind: 'terminal' }, expect.any(AbortSignal));
+    await expect(get(second)).resolves.toBe('');
+    server.acceptRelayNonces([second]);
+    await expect(get(second)).resolves.toBe(line(ANSWER));
+    // the first host's link closed: its nonce answers nothing, the daemon's own still does
+    await expect(get(first)).resolves.toBe('');
+    await expect(get(identity.nonce)).resolves.toBe(line(ANSWER));
+    expect(credential).toHaveBeenCalledTimes(4);
+    expect(log.filter((entry) => entry === '[askpass] dropped a helper connection: a credential request without a credential nonce')).toHaveLength(2);
+  });
+
+  it('refuses a host nonce for a prompt, as the relay\'s own', async () => {
+    const credential = vi.fn<RelayCredential>(async () => ANSWER);
+    const host = nonce();
+    const { server, log, prompts } = start(undefined, { paths: { ...PATHS, credentialRelay: relayOf([host]) }, credential });
+    const relay = (await server.relay())!;
+    await expect(ask(relay.handle, { nonce: host, kind: 'askpass', argv: ['Password: '] })).resolves.toBe('');
+    await expect(ask(relay.handle, { nonce: host, kind: 'ssh', argv: ['Password: '] })).resolves.toBe('');
+    expect(prompts).toEqual([]);
+    expect(credential).not.toHaveBeenCalled();
+    expect(log).toEqual(['[askpass] dropped a helper connection: a prompt with the credential relay nonce', '[askpass] dropped a helper connection: a prompt with the credential relay nonce']);
+  });
+
+  it('gives the relay\'s runner and environments its own fields only, never the hosts\' nonces', async () => {
+    const identity = relayOf([nonce()]);
+    const { server } = start(undefined, { paths: { ...PATHS, credentialRelay: identity }, credential: vi.fn<RelayCredential>(async () => ANSWER) });
+    await expect(server.relay()).resolves.toStrictEqual({ helper: identity.helper, handle: identity.handle, nonce: identity.nonce, node: PATHS.node, main: PATHS.main });
+  });
+
+  it('takes no host nonce on a server that relays no credentials', () => {
+    const { server } = start();
+    expect(() => server.acceptRelayNonces([nonce()])).toThrow('This askpass server relays no credentials');
   });
 });

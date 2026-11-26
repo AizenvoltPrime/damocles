@@ -40,10 +40,17 @@ export function handleAboutChannels(overlay: AboutOverlay, deps: AboutDeps): voi
   });
 }
 
-/** The title-bar pill's action; restart, releasePage and releaseNotes are refused unless the update state offers them. */
+/**
+ * The title-bar pill's and the host update strip's action; restart, releasePage and releaseNotes are refused unless the update
+ * state offers them, and check while the updater is off.
+ */
 export async function runUpdateAction(action: UpdateAction, deps: AboutDeps): Promise<void> {
   const kind = deps.updates.snapshot().state.kind;
   switch (action) {
+    case 'check':
+      if (kind === 'disabled') throw new Error('This app does not update itself');
+      deps.updates.check('help');
+      return;
     case 'restart':
       deps.updates.restart();
       return;

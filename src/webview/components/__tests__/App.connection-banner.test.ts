@@ -96,6 +96,20 @@ async function mountApp(): Promise<VueWrapper> {
 }
 
 describe("a remote chat's connection banner", () => {
+  it('says the host\'s server was removed, by whom when another device removed it, and Connect asks main to connect that host', async () => {
+    label = { ...HOST, attention: 'offline', removed: { by: 'DESKTOP-A' } };
+    await mountApp();
+    await nextTick();
+    const banner = app!.get('[data-testid="chat-connection-banner"]');
+    expect(banner.get('[data-testid="chat-connection-banner-text"]').text()).toBe('The Damocles server on prod-1 was removed from DESKTOP-A. Connect to install it again.');
+    const connect = banner.get('[data-testid="chat-connection-banner-action"]');
+    expect(connect.text()).toBe('Connect');
+    await connect.trigger('click');
+    expect(actions).toEqual(['reconnect']);
+    await pushHost({ ...HOST, attention: 'offline', removed: {} });
+    expect(app!.get('[data-testid="chat-connection-banner-text"]').text()).toBe('The Damocles server was removed from prod-1. Connect to install it again.');
+  });
+
   it('shows under the chat header while the host is offline, and Reconnect asks main for that host', async () => {
     label = { ...HOST, attention: 'offline' };
     await mountApp();
@@ -142,6 +156,19 @@ describe("a remote chat's connection banner", () => {
     vi.advanceTimersByTime(RECONNECTED_MS);
     await nextTick();
     expect(app!.find('[data-testid="chat-connection-banner"]').exists()).toBe(false);
+  });
+
+  it('hands focus to the chat heading once Switch now goes away as the host switches', async () => {
+    const update = { source: 'otherProtocol', phase: 'offer', serverVersion: '3.7.0', targetVersion: '3.9.0', runningAgents: 1, runningTerminals: 0, terminalsSurvive: true, waitingSince: 0 } as const;
+    label = { ...HOST, update };
+    await mountApp();
+    await nextTick();
+    (app!.get('[data-testid="host-update-now"]').element as HTMLElement).focus();
+    await pushHost({ ...HOST, update: { ...update, phase: 'switching' } });
+    await nextTick();
+    const heading = app!.get('[data-testid="chat-header-title"]');
+    expect(heading.attributes('tabindex')).toBe('-1');
+    expect(document.activeElement).toBe(heading.element);
   });
 });
 

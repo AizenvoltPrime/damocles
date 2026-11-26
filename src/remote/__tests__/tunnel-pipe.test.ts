@@ -1,9 +1,10 @@
 import * as net from 'node:net';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { Duplex } from 'node:stream';
+import { afterEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { createMux, FRAGMENT_BYTES, MAX_FRAME_BYTES, STREAM_WINDOW_BYTES, type MessageChannel, type Mux } from '../mux';
 import { createPersistentProtocol } from '../persistent-protocol';
 import type { StreamChannel } from '../mux';
-import { holdStream, MAX_UNCLAIMED_STREAM_BYTES, pipeTunnel, streamBytes, streamClaims, writeBytes } from '../tunnel-pipe';
+import { holdStream, MAX_UNCLAIMED_STREAM_BYTES, pipeTunnel, streamBytes, streamClaims, streamDuplex, writeBytes } from '../tunnel-pipe';
 import { socketPair } from './sockets';
 
 const log = (): void => undefined;
@@ -278,6 +279,84 @@ describe('a socket piped over a stream', () => {
     pipeTunnel(near, stream, () => { pipeClosed = true; });
     await closed;
     await vi.waitFor(() => expect(pipeClosed).toBe(true));
+  });
+});
+
+describe('a stream as a Duplex', () => {
+  // a client stream the daemon side reads through streamDuplex; arrived counts the bytes its mux delivered
+  async function duplexPair(): Promise<{ daemon: Mux; raw: StreamChannel; duplex: Duplex; paused: () => number; arrived: () => number; roundTrip: () => Promise<void> }> {
+    const { client, daemon, roundTrip } = pair();
+    let arrived = 0;
+    let pause!: MockInstance;
+    const opened = new Promise<Duplex>((resolve) => daemon.onStream((stream) => {
+      stream.onData((bytes) => {
+        arrived += bytes.length;
+      });
+      pause = vi.spyOn(stream, 'pause');
+      resolve(streamDuplex(stream));
+    }));
+    const raw = client.openStream();
+    return { daemon, raw, duplex: await opened, paused: () => pause.mock.calls.length, arrived: () => arrived, roundTrip };
+  }
+
+  it('holds a write past the peer\'s window until the peer grants credit', async () => {
+    const { client, daemon, roundTrip } = pair();
+    let received = 0;
+    const opened = new Promise<StreamChannel>((resolve) => daemon.onStream((stream) => {
+      stream.pause();
+      stream.onData((bytes) => {
+        received += bytes.length;
+      });
+      resolve(stream);
+    }));
+    const writer = streamDuplex(client.openStream());
+    let written = false;
+    // the mux drains a writer once at most one window is queued beyond what the peer's credit let out
+    writer.write(new Uint8Array(3 * STREAM_WINDOW_BYTES), () => {
+      written = true;
+    });
+    const peer = await opened;
+    await vi.waitFor(() => expect(received).toBe(STREAM_WINDOW_BYTES));
+    await roundTrip();
+    expect(written).toBe(false);
+    peer.resume();
+    await vi.waitFor(() => expect(written).toBe(true));
+    await vi.waitFor(() => expect(received).toBe(3 * STREAM_WINDOW_BYTES));
+  });
+
+  it('pauses the stream while its reader does not read, and resumes it once the reader reads', async () => {
+    const { raw, duplex, paused, roundTrip } = await duplexPair();
+    raw.write(new Uint8Array(2 * STREAM_WINDOW_BYTES));
+    await vi.waitFor(() => expect(paused()).toBeGreaterThan(0));
+    await roundTrip();
+    let read = 0;
+    duplex.on('data', (chunk: Buffer) => {
+      read += chunk.length;
+    });
+    await vi.waitFor(() => expect(read).toBe(2 * STREAM_WINDOW_BYTES));
+  });
+
+  it('keeps granting the peer credit once destroyed, so the peer\'s writer drains and sees the end', async () => {
+    const { raw, duplex, paused, arrived } = await duplexPair();
+    let drained = false;
+    raw.onDrain(() => {
+      drained = true;
+    });
+    const ended = new Promise<void>((resolve) => raw.onEnd(() => resolve()));
+    expect(raw.write(new Uint8Array(3 * STREAM_WINDOW_BYTES))).toBe(false);
+    await vi.waitFor(() => expect(paused()).toBeGreaterThan(0));
+    duplex.destroy();
+    await ended;
+    await vi.waitFor(() => expect(drained).toBe(true));
+    await vi.waitFor(() => expect(arrived()).toBe(3 * STREAM_WINDOW_BYTES));
+  });
+
+  it('is destroyed when the connection closes', async () => {
+    const { daemon, duplex } = await duplexPair();
+    const closed = new Promise<void>((resolve) => duplex.once('close', () => resolve()));
+    daemon.dispose();
+    await closed;
+    expect(duplex.destroyed).toBe(true);
   });
 });
 

@@ -56,6 +56,6 @@ export const CSS_HOOKS: Readonly<Record<CssHookRegion, readonly CssHook[]>> = {
   terminalChrome: [
     { selector: '[data-terminal-row]', values: [], meaning: 'On each row of the terminal list.' },
     { selector: '[data-active]', values: [], meaning: 'On the active terminal\'s row.' },
-    { selector: '[data-status]', values: ['starting', 'running', 'exited', 'reconnecting'], meaning: 'On a terminal row: the terminal\'s state.' },
+    { selector: '[data-status]', values: ['starting', 'running', 'exited', 'reconnecting', 'notResponding'], meaning: 'On a terminal row: the terminal\'s state.' },
   ],
 };

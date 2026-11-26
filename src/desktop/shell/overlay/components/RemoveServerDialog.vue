@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, useId, watch } from 'vue';
+import { computed, ref, useId, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Bot, SquareTerminal, Trash2 } from 'lucide-vue-next';
+import { Bot, Laptop, SquareTerminal, Trash2 } from 'lucide-vue-next';
 import { AlertDialog, AlertDialogContent } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -14,7 +14,7 @@ import type { RemovalInfo, RemoveServerOptions } from '../../../preload/overlay-
 // Enter alone never removes anything.
 const props = defineProps<{ hostName: string; info: RemovalInfo | undefined }>();
 const emit = defineEmits<{ choose: [options: RemoveServerOptions | null] }>();
-const { t } = useI18n();
+const { t, locale } = useI18n();
 
 // The last facts asked about keep showing while the dialog plays its exit.
 const shown = ref(props.info);
@@ -25,6 +25,12 @@ watch(() => props.info, (next) => {
   shown.value = next;
   removeKey.value = next.offerRemoveKey;
   disableLinger.value = false;
+});
+// the other devices the removal disconnects, which stay disconnected until their user connects them
+const devices = computed(() => {
+  const names = shown.value?.otherDevices ?? [];
+  if (names.length === 0) return undefined;
+  return t('remote.removeServer.devices', { devices: new Intl.ListFormat(locale.value, { type: 'conjunction' }).format(names.map((name) => visibleText(name))), name: props.hostName }, names.length);
 });
 const keyId = useId();
 const lingerId = useId();
@@ -81,6 +87,17 @@ const CHECKBOX = 'size-3.75 shrink-0 rounded-xs border-(--d-border2) data-[state
             <span class="text-11 text-(--d-faint-text)">{{ t(`remote.removeServer.kind.${run.kind}`) }}</span>
           </li>
         </ul>
+        <p
+          v-if="devices"
+          data-testid="remove-server-devices"
+          class="flex gap-2 text-12.5/relaxed text-(--d-text)"
+        >
+          <Laptop
+            aria-hidden="true"
+            class="mt-0.75 size-3.5 shrink-0 text-(--d-muted)"
+          />
+          <span class="min-w-0">{{ devices }}</span>
+        </p>
         <p class="text-12.5/relaxed text-(--d-muted)">
           {{ t('remote.removeServer.stays') }}
         </p>

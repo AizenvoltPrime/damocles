@@ -4,7 +4,9 @@
 //                                                        committed one is compatible; --allow-breaking only while pre-release
 //   node scripts/protocol-compat.ts --check             fails unless the committed snapshot matches the contracts
 //   node scripts/protocol-compat.ts --against <file>    fails on an incompatible change from an older snapshot (CI's base)
-// Every mode fails a FEATURES list that names a name twice or holds more than MAX_FEATURES (handshake.ts) names.
+// Every mode fails a FEATURES list, or a contract's own feature list, that names a name twice or holds more than MAX_FEATURES
+// (handshake.ts) names, and a FROZEN_FEATURES list that names a name twice or one FEATURES lacks. FROZEN_FEATURES is recorded and never changes once the
+// protocol is released.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +27,14 @@ export interface Contract {
   readonly frozen?: boolean;
   // no wire parser reads it, so an added variant or value needs no FEATURES name; a value's renderer needs a te() fallback
   readonly dropsUnknown?: boolean;
+  // the feature list its peers exchange instead of FEATURES, which gates its additions: a link with a handshake of its own
+  readonly features?: FeatureSource;
+}
+
+/** A feature list a contract's own handshake carries: `export const <name>: readonly string[] = [...]` in file. */
+export interface FeatureSource {
+  readonly file: string;
+  readonly name: string;
 }
 
 /** A type as the snapshot records it. */
@@ -52,9 +62,13 @@ export interface ProtocolVersion {
   readonly protocolVersion: number;
   readonly preRelease: boolean;
   readonly features: readonly string[];
+  // FROZEN_FEATURES: the names a refusal carries; absent from a snapshot written before the list existed
+  readonly frozenFeatures?: readonly string[];
 }
 
 export interface Snapshot extends ProtocolVersion {
+  // each contract feature source's names, by the list's name; absent from a snapshot written before a contract had one
+  readonly featureLists?: Readonly<Record<string, readonly string[]>>;
   readonly contracts: Readonly<Record<string, Description>>;
 }
 
@@ -95,6 +109,8 @@ export const CONTRACTS: readonly Contract[] = [
   ...['WorkspaceRequests', 'WorkspaceClientEvents', 'WorkspaceHostEvents', 'WorkspaceToClientRequests'].map((type) => ({ file: 'src/desktop/workspace/messages.ts', type, table: true })),
   ...['ControlRequests', 'ControlEvents'].map((type) => ({ file: 'src/desktop/daemon/control-messages.ts', type, table: true })),
   { file: 'src/desktop/daemon/control-messages.ts', type: 'FrozenControl', table: true, frozen: true },
+  ...['FrozenTerminalHostRequests', 'FrozenTerminalHostDaemonEvents', 'FrozenTerminalHostEvents'].map((type) => ({ file: 'src/desktop/terminal-host/host-messages.ts', type, table: true, frozen: true })),
+  { file: 'src/desktop/terminal-host/host-messages.ts', type: 'TerminalHostEvents', table: true, features: { file: 'src/desktop/terminal-host/host-messages.ts', name: 'TERMINAL_HOST_FEATURES' } },
   ...['PortsRequests', 'PortsEvents'].map((type) => ({ file: 'src/desktop/daemon/ports/ports-messages.ts', type, table: true })),
   ...['Hello', 'Welcome', 'Refused', 'HostFacts'].map((type) => ({ file: 'src/remote/handshake.ts', type, frozen: true })),
   { file: 'src/shared/types/messages.ts', type: 'ExtensionToWebviewMessage', dropsUnknown: true },
@@ -227,17 +243,37 @@ export function describeContracts(root = ROOT, contracts: readonly Contract[] = 
   return out;
 }
 
+// the quoted names of a list's source text
+function quotedNames(list: string): string[] {
+  return [...list.matchAll(/'([^']+)'/g)].flatMap((match) => (match[1] === undefined ? [] : [match[1]]));
+}
+
 export function readProtocolVersion(file = VERSION_FILE): ProtocolVersion {
   const text = readFileSync(file, 'utf8');
   const version = /export const PROTOCOL_VERSION = (\d+);/.exec(text)?.[1];
   const preRelease = /export const PROTOCOL_PRE_RELEASE: boolean = (true|false);/.exec(text)?.[1];
   const features = /export const FEATURES: readonly string\[\] = \[([^\]]*)\];/.exec(text)?.[1];
   if (version === undefined || preRelease === undefined || features === undefined) throw new Error(`${file} does not declare PROTOCOL_VERSION, PROTOCOL_PRE_RELEASE and FEATURES in their usual form`);
-  return { protocolVersion: Number(version), preRelease: preRelease === 'true', features: [...features.matchAll(/'([^']+)'/g)].flatMap((match) => (match[1] === undefined ? [] : [match[1]])) };
+  // a file without the list freezes no feature name
+  const frozen = /export const FROZEN_FEATURES: readonly string\[\] = \[([^\]]*)\];/.exec(text)?.[1] ?? '';
+  return { protocolVersion: Number(version), preRelease: preRelease === 'true', features: quotedNames(features), frozenFeatures: quotedNames(frozen) };
+}
+
+/** The names of each contract's own feature list, read as text, by the list's name. */
+export function readFeatureLists(root = ROOT, contracts: readonly Contract[] = CONTRACTS): Record<string, string[]> {
+  const lists: Record<string, string[]> = {};
+  for (const { features } of contracts) {
+    if (!features || features.name in lists) continue;
+    const list = new RegExp(`export const ${features.name}: readonly string\\[\\] = \\[([^\\]]*)\\];`).exec(readFileSync(join(root, features.file), 'utf8'))?.[1];
+    if (list === undefined) throw new Error(`${features.file} does not declare ${features.name} in its usual form`);
+    lists[features.name] = quotedNames(list);
+  }
+  return lists;
 }
 
 export function snapshot(root = ROOT, contracts: readonly Contract[] = CONTRACTS, versionFile = VERSION_FILE): Snapshot {
-  return { ...readProtocolVersion(versionFile), contracts: describeContracts(root, contracts) };
+  const featureLists = readFeatureLists(root, contracts);
+  return { ...readProtocolVersion(versionFile), ...(Object.keys(featureLists).length > 0 ? { featureLists } : {}), contracts: describeContracts(root, contracts) };
 }
 
 const text = (value: unknown): string => JSON.stringify(value);
@@ -309,12 +345,30 @@ function compare(previous: Description, next: Description, where: string, found:
 export function checkSnapshots(previous: Snapshot, next: Snapshot, contracts: readonly Contract[] = CONTRACTS): CheckResult {
   const kind = new Map(contracts.map((contract) => [contract.type, contract]));
   const found: Changes = { breaking: [], additive: [], optional: [] };
+  // each contract's additions by the feature list that gates them: FEATURES, or the contract's own
+  const gated = new Map<string, string[]>();
+  const gate = (name: string, changes: readonly string[]): void => {
+    const source = kind.get(name)?.features?.name ?? 'FEATURES';
+    gated.set(source, [...(gated.get(source) ?? []), ...changes]);
+  };
   for (const [name, description] of Object.entries(previous.contracts)) {
     const now = next.contracts[name];
-    if (now === undefined) found.breaking.push(`${name} was removed`);
-    else compare(description, now, name, found, kind.get(name)?.table === true, kind.get(name)?.dropsUnknown === true);
+    if (now === undefined) {
+      found.breaking.push(`${name} was removed`);
+      continue;
+    }
+    const own: Changes = { breaking: [], additive: [], optional: [] };
+    compare(description, now, name, own, kind.get(name)?.table === true, kind.get(name)?.dropsUnknown === true);
+    found.breaking.push(...own.breaking);
+    found.additive.push(...own.additive);
+    found.optional.push(...own.optional);
+    gate(name, own.additive);
   }
-  for (const name of Object.keys(next.contracts)) if (!(name in previous.contracts)) found.additive.push(`${name} was added`);
+  for (const name of Object.keys(next.contracts)) {
+    if (name in previous.contracts) continue;
+    found.additive.push(`${name} was added`);
+    gate(name, [`${name} was added`]);
+  }
   const bumped = next.protocolVersion > previous.protocolVersion;
   const newFeatures = next.features.filter((feature) => !previous.features.includes(feature));
   const errors: string[] = [];
@@ -323,8 +377,19 @@ export function checkSnapshots(previous: Snapshot, next: Snapshot, contracts: re
     if (kind.get(name)?.frozen && text(previous.contracts[name]) !== text(next.contracts[name])) errors.push(`${name} is frozen across every protocol version and changed`);
   }
   if (!bumped && found.breaking.length > 0) errors.push(...found.breaking.map((change) => `breaking without a protocolVersion bump: ${change}`));
-  if (!bumped && found.additive.length > 0 && newFeatures.length === 0) errors.push(...found.additive.map((change) => `an older peer cannot take this addition and no new FEATURES name gates it: ${change}`));
+  for (const [source, changes] of gated) {
+    // a contract's own list is its link's handshake, which no protocolVersion bump changes
+    const added = source === 'FEATURES'
+      ? newFeatures.length > 0 || bumped
+      : (next.featureLists?.[source] ?? []).some((feature) => !(previous.featureLists?.[source] ?? []).includes(feature));
+    if (!added) errors.push(...changes.map((change) => `an older peer cannot take this addition and no new ${source} name gates it: ${change}`));
+  }
   if (!bumped && previous.features.some((feature) => !next.features.includes(feature))) errors.push('a welcome feature was removed without a protocolVersion bump');
+  for (const [source, names] of Object.entries(previous.featureLists ?? {})) {
+    for (const feature of names) if (!(next.featureLists?.[source] ?? []).includes(feature)) errors.push(`${source} lost ${feature}, which its link's peers check`);
+  }
+  // an app of another protocol reads the names from a refusal to hand terminals over; without one it ends them
+  if (previous.preRelease !== true && text(previous.frozenFeatures ?? []) !== text(next.frozenFeatures ?? [])) errors.push('FROZEN_FEATURES is frozen once the protocol is released and changed');
   const reentered = previous.preRelease !== true && next.preRelease === true;
   if (reentered) errors.push('PROTOCOL_PRE_RELEASE went back to true after a release');
   const current = text(previous) === text(next);
@@ -338,9 +403,16 @@ function readMaxFeatures(file = HANDSHAKE_FILE): number {
 }
 
 // The welcome's and the core attach's parsers refuse a list past MAX_FEATURES; a name is listed once. Release state waives neither.
-function featureListErrors(features: readonly string[], maxFeatures: number): string[] {
+function featureListErrors({ features, frozenFeatures = [], featureLists = {} }: Snapshot, maxFeatures: number): string[] {
   const errors = [...new Set(features.filter((feature, index) => features.indexOf(feature) !== index))].map((feature) => `FEATURES names ${feature} more than once`);
+  errors.push(...[...new Set(frozenFeatures.filter((feature, index) => frozenFeatures.indexOf(feature) !== index))].map((feature) => `FROZEN_FEATURES names ${feature} more than once`));
+  errors.push(...frozenFeatures.filter((feature) => !features.includes(feature)).map((feature) => `FROZEN_FEATURES names ${feature}, which FEATURES does not`));
   if (features.length > maxFeatures) errors.push(`FEATURES holds ${features.length} names, past MAX_FEATURES (${maxFeatures}), so every welcome and core attach would be refused`);
+  // a contract's own list crosses in the same welcome
+  for (const [source, names] of Object.entries(featureLists)) {
+    errors.push(...[...new Set(names.filter((feature, index) => names.indexOf(feature) !== index))].map((feature) => `${source} names ${feature} more than once`));
+    if (names.length > maxFeatures) errors.push(`${source} holds ${names.length} names, past MAX_FEATURES (${maxFeatures}), so every welcome would be refused`);
+  }
   return errors;
 }
 
@@ -354,7 +426,7 @@ const PRE_RELEASE_HINT = 'while PROTOCOL_PRE_RELEASE is true, rerun with --allow
 /** The command line; returns the exit code. The paths default to this repository's. */
 export function run(argv: readonly string[], { root = ROOT, contracts = CONTRACTS, versionFile = VERSION_FILE, snapshotPath = SNAPSHOT_PATH }: RunOptions = {}): number {
   const next = snapshot(root, contracts, versionFile);
-  const listErrors = featureListErrors(next.features, readMaxFeatures());
+  const listErrors = featureListErrors(next, readMaxFeatures());
   if (listErrors.length > 0) {
     for (const error of listErrors) console.error(error);
     return 1;

@@ -510,7 +510,7 @@ below as the only ones. "Present or absent" marks an attribute with no value of 
 | --- | --- | --- |
 | `[data-terminal-row]` | Present or absent | On each row of the terminal list. |
 | `[data-active]` | Present or absent | On the active terminal's row. |
-| `[data-status]` | `starting`, `running`, `exited`, `reconnecting` | On a terminal row: the terminal's state. |
+| `[data-status]` | `starting`, `running`, `exited`, `reconnecting`, `notResponding` | On a terminal row: the terminal's state. |
 
 ### Limits and rules
 

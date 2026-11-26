@@ -1,5 +1,6 @@
 // The daemon's starts outside the process launcher (docs/perf.md "Starts outside the launcher"): its forked children, whose
-// IPC channel belongs to the thread that forked, and the bridge's detached daemon start. Each runs under the spawn lock.
+// IPC channel belongs to the thread that forked, the bridge's detached daemon start, and the detached terminal-host start of
+// the daemon and of `daemon.js self-test`. Each runs under the spawn lock.
 import { fork, spawn, type ChildProcess } from 'node:child_process';
 import { closeSync, readdirSync, readFileSync } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
@@ -10,7 +11,7 @@ import { windowsPowerShell } from '../../core/system-tools';
 const MAX_STDERR_CHARS = 4000;
 // how long an exited child's stderr may still deliver its tail
 const STDERR_TAIL_MS = 200;
-const WMI_TIMEOUT_MS = 30_000;
+export const WMI_TIMEOUT_MS = 30_000;
 // the fd numbers a detached daemon got from its starter by mistake, comma-separated
 const INHERITED_FDS_ENV = 'DAMOCLES_INHERITED_FDS';
 // O_CLOEXEC in the octal flags of /proc/<pid>/fdinfo
@@ -143,23 +144,45 @@ const WMI_CREATE = [
 
 const base64 = (text: string): string => Buffer.from(text, 'utf8').toString('base64');
 
-/**
- * Starts the daemon outside the caller's session: detached (setsid) on POSIX; through WMI on Windows, whose
- * Win32_Process.Create runs it outside the caller's job object with env in Win32_ProcessStartup.EnvironmentVariables.
- * The daemon gets none of the caller's crash handler. Resolves once the start was handed to the OS.
- */
-export function startDaemonDetached(file: string, args: readonly string[], starterEnv: Readonly<Record<string, string>>, cwd: string): Promise<void> {
-  const env = Object.fromEntries(Object.entries(starterEnv).filter(([key]) => key.toUpperCase() !== CRASHPAD_PIPE_ENV));
-  if (process.platform !== 'win32') {
-    const child = withSpawnLock(() => spawn(file, [...args], { detached: true, stdio: 'ignore', env: { ...env, [INHERITED_FDS_ENV]: inheritableFds().join(',') }, cwd }));
-    return new Promise((resolve, reject) => {
-      child.once('error', reject);
-      child.once('spawn', () => {
-        child.unref();
-        resolve();
-      });
+// A child that outlives the caller: its own session on POSIX; on Windows outside libuv's job object, which takes only
+// non-detached children.
+function spawnDetached(file: string, args: readonly string[], env: Readonly<Record<string, string>>, cwd: string): Promise<number> {
+  const child = withSpawnLock(() => spawn(file, [...args], { detached: true, stdio: 'ignore', env: { ...env }, cwd, windowsHide: true }));
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      if (child.pid === undefined) reject(new Error(`${file} started without a pid`));
+      else resolve(child.pid);
     });
+  });
+}
+
+// WMI did not answer in time; its Win32_Process.Create may still start the process
+class WmiTimeoutError extends Error {
+  override readonly name = 'WmiTimeoutError';
+}
+
+/**
+ * Starts a process (the daemon, a terminal host) outside the caller's session and answers its pid: detached (setsid) on POSIX;
+ * through WMI on Windows, whose Win32_Process.Create runs it outside every job object of the caller with env in
+ * Win32_ProcessStartup.EnvironmentVariables, and detached when WMI refuses, which is logged. A WMI start that does not answer
+ * within WMI_TIMEOUT_MS rejects instead, since it may still start the process. The process gets none of the caller's crash
+ * handler. Resolves once the start was handed to the OS.
+ */
+export async function startDetached(file: string, args: readonly string[], starterEnv: Readonly<Record<string, string>>, cwd: string, log: (line: string) => void): Promise<number> {
+  const env = Object.fromEntries(Object.entries(starterEnv).filter(([key]) => key.toUpperCase() !== CRASHPAD_PIPE_ENV));
+  if (process.platform !== 'win32') return spawnDetached(file, args, { ...env, [INHERITED_FDS_ENV]: inheritableFds().join(',') }, cwd);
+  try {
+    return await startThroughWmi(file, args, env, cwd);
+  } catch (err) {
+    if (err instanceof WmiTimeoutError) throw err;
+    log(`[start] ${err instanceof Error ? err.message : String(err)}; starting ${file} detached instead`);
+    return spawnDetached(file, args, env, cwd);
   }
+}
+
+function startThroughWmi(file: string, args: readonly string[], env: Readonly<Record<string, string>>, cwd: string): Promise<number> {
   const request = [
     [file, ...args].map(windowsArgument).join(' '),
     cwd,
@@ -173,7 +196,7 @@ export function startDaemonDetached(file: string, args: readonly string[], start
     shell.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-MAX_STDERR_CHARS); });
     const timer = setTimeout(() => {
       shell.kill();
-      reject(new Error(`the WMI start did not finish within ${WMI_TIMEOUT_MS} ms`));
+      reject(new WmiTimeoutError(`the WMI start did not finish within ${WMI_TIMEOUT_MS} ms`));
     }, WMI_TIMEOUT_MS);
     shell.once('error', (err) => {
       clearTimeout(timer);
@@ -182,7 +205,7 @@ export function startDaemonDetached(file: string, args: readonly string[], start
     shell.once('close', (code) => {
       clearTimeout(timer);
       const [returnValue, pid] = stdout.trim().split(' ');
-      if (code === 0 && returnValue === '0' && Number(pid) > 0) resolve();
+      if (code === 0 && returnValue === '0' && Number(pid) > 0) resolve(Number(pid));
       else reject(new Error(`Win32_Process.Create failed (exit ${String(code)}, ReturnValue ${returnValue ?? 'none'}): ${stderr.trim()}`));
     });
     shell.stdin.end(request);

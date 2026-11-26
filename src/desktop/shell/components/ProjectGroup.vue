@@ -6,9 +6,11 @@ import { Badge } from '@/components/ui/badge';
 import { hostColorLook } from '@shared/host-colors';
 import type { NameCheck } from '../../preload/overlay-channels';
 import type { ProjectConnection, ShellHost } from '../../preload/shell-channels';
-import { hostStateLabel } from '../host-label';
+import { hostStateLabel, hostStateTitle, withUpdatePhrase } from '../host-label';
 import HostNameField from '../overlay/components/HostNameField.vue';
 import HostStatusDot from './HostStatusDot.vue';
+import HostUpdateTag from './HostUpdateTag.vue';
+import { useUpdateClock } from '@/components/host-update-clock';
 
 // One authority's projects in the grouped Projects view: a role="group" of the one listbox, labelled by its name. Its header
 // is an option row the listbox moves through, never focusable itself, whose disclosure and menu the listbox drives.
@@ -30,6 +32,7 @@ const props = defineProps<{
 // hostDetails: the status dot's element, which the host's card hangs from
 const emit = defineEmits<{ toggle: []; renameSubmit: [name: string]; renameBlur: [name: string]; renameCancel: []; hostDetails: [dot: HTMLElement] }>();
 const { t } = useI18n();
+const clock = useUpdateClock();
 
 const nameId = useId();
 const draft = ref('');
@@ -40,8 +43,14 @@ const field = ref<InstanceType<typeof HostNameField> | null>(null);
 const hostLook = computed(() => (props.host?.color === undefined ? undefined : hostColorLook(props.host.color)));
 const iconLook = computed(() => (hostLook.value?.style ? undefined : hostLook.value));
 const dotLook = computed(() => (hostLook.value?.style ? hostLook.value : undefined));
-const stateText = computed(() => (props.connection ? t(`projects.connection.${props.connection}`) : undefined));
-const dotLabel = computed(() => (props.connection ? hostStateLabel({ name: props.name, connection: props.connection, reconnect: props.host?.reconnect, latency: props.host?.latency }, t) : ''));
+const stateText = computed(() => {
+  if (!props.connection) return undefined;
+  const state = t(`projects.connection.${props.connection}`);
+  return withUpdatePhrase(props.host?.removed ? `${state}, ${t('projects.removed')}` : state, props.host?.update, t, clock);
+});
+const labelled = computed(() => (props.connection ? { name: props.name, connection: props.connection, reconnect: props.host?.reconnect, latency: props.host?.latency, update: props.host?.update, removed: props.host?.removed } : undefined));
+const dotLabel = computed(() => (labelled.value ? hostStateLabel(labelled.value, t, clock) : ''));
+const dotTitle = computed(() => (labelled.value ? hostStateTitle(labelled.value, t, clock) : ''));
 // The header is an option, whose children are presentational, so its name carries the host's state and the disclosure.
 const headerLabel = computed(() => [
   props.name,
@@ -151,19 +160,24 @@ defineExpose({
           <span :key="name">{{ name }}</span>
         </Transition>
       </span>
+      <HostUpdateTag
+        v-if="!renaming"
+        :update="host?.update"
+      />
       <!-- An option holds no buttons, so the dot is a pointer shortcut to the host's card; the header's menu has Details for the keyboard. -->
       <span
         v-if="connection && !renaming"
         data-testid="project-group-host-details"
         class="-my-1 inline-flex size-5 shrink-0 items-center justify-center rounded-5"
         :class="host ? 'cursor-pointer hover:bg-(--d-border2)' : ''"
-        :title="dotLabel"
+        :title="dotTitle"
         @click="openDetails"
       >
         <HostStatusDot
           :connection="connection"
           :reconnect="host?.reconnect"
           :slow="host?.latency?.slow"
+          :update="host?.update"
           :label="dotLabel"
         />
       </span>

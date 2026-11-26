@@ -6,6 +6,7 @@ import type { ShellService } from '../../platform/shell-service';
 import type { ShellPlatform } from '../preload/shell-channels';
 import { canCheck, type UpdateSnapshot, type UpdateState, type VersionInfo } from '../preload/updates';
 import { Emitter } from '../local-services/emitter';
+import { isVersion } from './semver';
 
 // updater.test.ts keeps this equal to package.json repository.url.
 export const RELEASES_URL = 'https://github.com/AizenvoltPrime/damocles/releases';
@@ -15,7 +16,6 @@ export const LAST_CHECKED_KEY = 'damocles.desktop.update.lastCheckedAt';
 // The periodic check, and how old the last check must be for a resume from sleep to check again.
 export const CHECK_INTERVAL_MS: number = 4 * 60 * 60 * 1000;
 
-const RELEASE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const MAX_REASON_LENGTH = 300;
 // Characters of the feed's release notes kept for About and the pill; a GitHub release body is a few KB.
 const MAX_NOTES_LENGTH = 64 * 1024;
@@ -59,7 +59,7 @@ export function loadAutoUpdater(): AppUpdater {
 
 // The macOS notice opens this page and nothing else, so the feed's version must be a plain release version.
 export function releasePageUrl(version: string): string {
-  if (!RELEASE_VERSION.test(version)) throw new Error(`The update feed named an invalid version: ${JSON.stringify(version)}`);
+  if (!isVersion(version)) throw new Error(`The update feed named an invalid version: ${JSON.stringify(version)}`);
   return `${RELEASES_URL}/tag/v${version}`;
 }
 

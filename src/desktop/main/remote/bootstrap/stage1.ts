@@ -1,6 +1,5 @@
 // Stage 1's text for one connect: the script with its parameter block replaced by quoted literals only.
-import { ATTACH_DEADLINE_MS } from '../../../daemon/lock-timing';
-import { AUTH_TIMEOUT_MS, isVersionText } from '../../../../remote/handshake';
+import { isVersionText } from '../../../../remote/handshake';
 import { releaseAssetUrl } from '../artifact-cache';
 import { CONTAINER_DATA_FOLDER } from '../../../daemon/container-commands';
 import type { ServerManifest, ServerTarget } from '../server-manifest-format';
@@ -31,6 +30,8 @@ export function validateInstallFolder(folder: string): InstallFolderCheck {
 
 export interface StageParameters {
   readonly manifest: ServerManifest;
+  // the user started the connect, which installs where Remove Damocles server left its marker; absent: an automatic connect
+  readonly userStarted?: boolean;
   // the release base; an asset is <releasesUrl>/download/v<version>/<file>; absent: the stage never downloads
   readonly releasesUrl?: string;
   // absent: the default ~/.damocles/server
@@ -109,6 +110,7 @@ function withParameters(template: string, block: string): string {
 export function buildPosixStage1(params: StageParameters, template: string = POSIX_STAGE1): string {
   const { install, previousKind, previous } = folders(params);
   const lines = [
+    `D_AUTOMATIC=${shellQuote(params.userStarted === true ? '0' : '1')}`,
     `D_INSTALL_FOLDER=${shellQuote(install)}`,
     `D_PREVIOUS_KIND=${shellQuote(previousKind)}`,
     `D_PREVIOUS_FOLDER=${shellQuote(previous)}`,
@@ -123,13 +125,11 @@ export function buildPosixStage1(params: StageParameters, template: string = POS
 export function buildWindowsStage1(params: StageParameters, template: string = WINDOWS_STAGE1): string {
   const { install, previousKind, previous } = folders(params);
   const lines = [
+    `$D_AUTOMATIC = ${psQuote(params.userStarted === true ? '0' : '1')}`,
     `$D_INSTALL_FOLDER = ${psQuote(install)}`,
     `$D_PREVIOUS_KIND = ${psQuote(previousKind)}`,
     `$D_PREVIOUS_FOLDER = ${psQuote(previous)}`,
     ...WINDOWS_TARGETS.map((target) => `$D_${target.replace('-', '_').toUpperCase()} = ${psQuote(packageField(params, target))}`),
-    // stage 1 is the Windows bridge, so it waits as attach.ts does
-    `$D_ATTACH_DEADLINE_MS = ${ATTACH_DEADLINE_MS}`,
-    `$D_AUTH_TIMEOUT_MS = ${AUTH_TIMEOUT_MS}`,
   ];
   return withParameters(template, lines.join('\n'));
 }

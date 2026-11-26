@@ -344,7 +344,7 @@ describe.skipIf(!HAS_GIT)('remote operations against bare repositories', { timeo
     const version = parseGitVersion(git(['--version'], sandbox))!;
     const base = createGitRunner({ git: { path: GIT_PATH!, version }, log: { appendLine: () => undefined }, isTrusted: () => true });
     const recording = { ...base, run: (call: GitCall) => (calls.push(call), base.run(call)) };
-    const broken: AskpassServer = { register: () => Promise.reject(new Error('listen ENAMETOOLONG')), registerCredential: () => Promise.reject(new Error('listen ENAMETOOLONG')), relay: async () => undefined, moveRelay: async () => undefined, dispose: async () => undefined };
+    const broken: AskpassServer = { register: () => Promise.reject(new Error('listen ENAMETOOLONG')), registerCredential: () => Promise.reject(new Error('listen ENAMETOOLONG')), relay: async () => undefined, moveRelay: async () => undefined, acceptRelayNonces: () => undefined, dispose: async () => undefined };
     const { h, repoId } = await open(work, { runner: recording, askpass: broken });
     await h.service.fetch(repoId, {});
     expect((await freshStatus(h, repoId)).upstream).toMatchObject({ behind: 1 });

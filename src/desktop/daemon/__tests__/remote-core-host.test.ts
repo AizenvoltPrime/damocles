@@ -18,7 +18,7 @@ interface FakeCore {
   readonly killed: boolean;
 }
 
-function setUp(sockets: { agentFolder?: string; relayHandle?: string } = {}, clientPolicyChanged: () => void = () => undefined) {
+function setUp(sockets: { agentFolder?: string; relayHandle?: string; relayNonces?: string[] } = {}, clientPolicyChanged: () => void = () => undefined) {
   const cores: FakeCore[] = [];
   let nextPid = 100;
   const fork = (): ForkedChild => {
@@ -55,6 +55,7 @@ function setUp(sockets: { agentFolder?: string; relayHandle?: string } = {}, cli
     fork,
     agentFolder: () => sockets.agentFolder,
     ...(sockets.relayHandle !== undefined ? { credentialRelay: () => ({ helper: '/opt/damocles/dist/git-credential/git-credential-relay.sh', nonce: 'a'.repeat(64), handle: sockets.relayHandle! }) } : {}),
+    relayNonces: () => sockets.relayNonces ?? [],
     log: () => undefined,
   });
   const states: CoreState[] = [];
@@ -214,23 +215,25 @@ describe('remote core host', () => {
     expect(close).toHaveBeenCalledTimes(2);
   });
 
-  it('gives core the agent folder and relay handle in its init, publishes them when they move, and a later core reads the new ones', () => {
-    const sockets = { agentFolder: '/tmp/damocles-agent1', relayHandle: '/tmp/damocles-relay1/askpass.sock' };
+  it('gives core the agent folder, relay handle and terminal hosts\' relay nonces in its init, publishes them when they change, and a later core reads the new ones', () => {
+    const [first, second] = ['b'.repeat(64), 'c'.repeat(64)];
+    const sockets = { agentFolder: '/tmp/damocles-agent1', relayHandle: '/tmp/damocles-relay1/askpass.sock', relayNonces: [first] };
     const { host, cores } = setUp(sockets);
     // no core yet: nothing to tell
     host.socketsMoved();
     connection(host).core.attach(attach(1));
-    const first = parseCoreInit(cores[0]!.sent[0]) as CoreInit;
-    expect(first.remote?.agentFolder).toBe('/tmp/damocles-agent1');
-    expect(first.paths.askpass.credentialRelay?.handle).toBe('/tmp/damocles-relay1/askpass.sock');
+    const init = parseCoreInit(cores[0]!.sent[0]) as CoreInit;
+    expect(init.remote?.agentFolder).toBe('/tmp/damocles-agent1');
+    expect(init.paths.askpass.credentialRelay).toMatchObject({ handle: '/tmp/damocles-relay1/askpass.sock', relayNonces: [first] });
     sockets.agentFolder = '/tmp/damocles-agent2';
     sockets.relayHandle = '/tmp/damocles-relay2/askpass.sock';
+    sockets.relayNonces = [first, second];
     host.socketsMoved();
-    expect(cores[0]!.sent.filter((message) => (message as { topic?: string }).topic === 'hostSockets')).toEqual([{ kind: 'mirror', topic: 'hostSockets', version: 1, patch: { agentFolder: '/tmp/damocles-agent2', relayHandle: '/tmp/damocles-relay2/askpass.sock' } }]);
+    expect(cores[0]!.sent.filter((message) => (message as { topic?: string }).topic === 'hostSockets')).toEqual([{ kind: 'mirror', topic: 'hostSockets', version: 1, patch: { agentFolder: '/tmp/damocles-agent2', relayHandle: '/tmp/damocles-relay2/askpass.sock', relayNonces: [first, second] } }]);
     cores[0]!.exit(1);
     const next = parseCoreInit(cores[1]!.sent[0]) as CoreInit;
     expect(next.remote?.agentFolder).toBe('/tmp/damocles-agent2');
-    expect(next.paths.askpass.credentialRelay?.handle).toBe('/tmp/damocles-relay2/askpass.sock');
+    expect(next.paths.askpass.credentialRelay).toMatchObject({ handle: '/tmp/damocles-relay2/askpass.sock', relayNonces: [first, second] });
   });
 });
 

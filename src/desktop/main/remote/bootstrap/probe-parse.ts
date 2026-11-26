@@ -1,6 +1,8 @@
 // Stage 1's status lines, `@@DAMOCLES {json}` on its stdout, until the bridge line hands stdout to the protocol. Text a
 // target produces crosses only as a code plus parameters main localizes, so every line is validated before it is used.
 import type { HostNotice, SshFailureCode } from '../../../preload/overlay-channels';
+import { isAppVersion } from '../../../../shared/app-version';
+import { FLOOR_UNREADABLE_REASON } from '../../../../shared/host-connection';
 import { SERVER_TARGETS, type ServerTarget } from '../server-manifest-format';
 
 export const STAGE_MARKER = '@@DAMOCLES ';
@@ -10,7 +12,7 @@ const MAX_PARAM_CHARS = 4096;
 const MAX_PARAMS = 8;
 
 export type ProbeFailureCode = Extract<SshFailureCode,
-  'unsupportedOs' | 'glibcTooOld' | 'glibcxxMissing' | 'kernelTooOld' | 'macosTooOld' | 'windowsBuildTooOld' | 'nixLdMissing' | 'noexec' | 'lowSpace' | 'installFolderUnsafe' | 'hashMismatch' | 'downloadAndUploadFailed' | 'selfTestFailed' | 'bridgeFailed' | 'unknown'>;
+  'unsupportedOs' | 'glibcTooOld' | 'glibcxxMissing' | 'kernelTooOld' | 'macosTooOld' | 'windowsBuildTooOld' | 'nixLdMissing' | 'noexec' | 'lowSpace' | 'installFolderUnsafe' | 'hashMismatch' | 'downloadAndUploadFailed' | 'selfTestFailed' | 'bridgeFailed' | 'belowFloor' | 'floorUnreadable' | 'serverRemoved' | 'unknown'>;
 export type ProbeNoticeCode = 'noLinger' | 'lowInotify' | 'noGitBash' | 'wmiBlocked';
 
 // The failures stage 1 reports, with the parameters each one carries; a reason may always be added.
@@ -29,6 +31,12 @@ export const PROBE_FAILURES: Readonly<Record<ProbeFailureCode, readonly string[]
   downloadAndUploadFailed: [],
   selfTestFailed: [],
   bridgeFailed: ['reason'],
+  // the bridge's own line, where the handshake would start (daemon/attach.ts belowFloorLine)
+  belowFloor: ['floor'],
+  // the bridge's line when the host's security floor or the server's version cannot be read (daemon/attach.ts floorUnreadableLine)
+  floorUnreadable: ['reason'],
+  // an automatic connect found Remove Damocles server's marker and the version it needs not installed
+  serverRemoved: [],
   unknown: ['reason'],
 };
 
@@ -105,6 +113,9 @@ function parseMessage(raw: unknown): StageMessage | undefined {
       const code = raw['code'];
       if (typeof code !== 'string' || !Object.hasOwn(PROBE_FAILURES, code)) return undefined;
       const params = parseParams(raw['params'], PROBE_FAILURES[code as ProbeFailureCode]);
+      // belowFloor's floor is an app version, as security-floor.ts writes it
+      if (code === 'belowFloor' && !isAppVersion(params?.['floor'])) return undefined;
+      if (code === 'floorUnreadable' && !(typeof params?.['reason'] === 'string' && FLOOR_UNREADABLE_REASON.test(params['reason']))) return undefined;
       return params ? { kind: 'fail', code: code as ProbeFailureCode, params } : undefined;
     }
     case 'probe': {

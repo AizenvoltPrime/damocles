@@ -17,10 +17,12 @@ function setup(open = true) {
     pickFolder: vi.fn(async () => ({ projectKey: 'k' })),
     runs: vi.fn(async () => []),
     killRun: vi.fn(async () => undefined),
+    endTerminalHost: vi.fn(async () => true),
     openRun: vi.fn(async () => undefined),
     showLog: vi.fn(async () => undefined),
     setInstallFolder: vi.fn(async () => ({ ok: true })),
     copyHostKeyCommand: vi.fn(async () => undefined),
+    updateAction: vi.fn(async () => undefined),
     allowBackground: vi.fn(async () => ({ result: 'enabled' as const })),
     entries: vi.fn(() => []),
     setSetting: vi.fn(async () => undefined),
@@ -29,7 +31,7 @@ function setup(open = true) {
     deliverHeldMemory: vi.fn(async () => ({ ok: true })),
     discardHeldMemory: vi.fn(async () => ({ ok: false, code: 'gone' })),
     setUpPasswordless: vi.fn(async () => ({ ok: true })),
-    removalInfo: vi.fn(async () => ({ runs: [], offerRemoveKey: false, offerDisableLinger: false })),
+    removalInfo: vi.fn(async () => ({ runs: [], offerRemoveKey: false, offerDisableLinger: false, otherDevices: [] })),
     conversionInfo: vi.fn(async () => ({ runs: [] })),
     convertToWsl2: vi.fn(async () => undefined),
     rebuildInfo: vi.fn(async () => ({ runs: [] })),
@@ -57,7 +59,7 @@ function setup(open = true) {
 describe('the Connect dialog channels', () => {
   it('registers every channel and answers closed while no connect request is open', async () => {
     const { handlers, call, actions } = setup(false);
-    for (const channel of ['hostsCheckName', 'hostsRename', 'hostsParse', 'connectStart', 'connectAnswer', 'connectCancel', 'connectBrowse', 'connectPickFolder', 'hostsRuns', 'hostsKillRun', 'hostsOpenRun', 'hostsShowLog', 'hostsSetInstallFolder', 'hostsCopyHostKeyCommand'] as const) {
+    for (const channel of ['hostsCheckName', 'hostsRename', 'hostsParse', 'connectStart', 'connectAnswer', 'connectCancel', 'connectBrowse', 'connectPickFolder', 'hostsRuns', 'hostsKillRun', 'hostsEndTerminalHost', 'hostsOpenRun', 'hostsShowLog', 'hostsSetInstallFolder', 'hostsCopyHostKeyCommand', 'hostsUpdateAction'] as const) {
       expect(handlers.has(OVERLAY_CHANNELS[channel])).toBe(true);
     }
     expect(await call(OVERLAY_CHANNELS.connectCancel, { attemptId: 'a' })).toEqual({ ok: false, reason: 'closed' });
@@ -87,8 +89,21 @@ describe('the Connect dialog channels', () => {
     await expect(call(OVERLAY_CHANNELS.hostsKillRun, { hostId: 'h', runId: 7 })).rejects.toThrow('Malformed');
     await call(OVERLAY_CHANNELS.hostsOpenRun, { hostId: 'h', runId: 'term-1' });
     expect(actions.openRun).toHaveBeenCalledWith('h', 'term-1');
+    expect(await call(OVERLAY_CHANNELS.hostsEndTerminalHost, { hostId: 'h' })).toEqual({ ok: true, value: true });
+    expect(actions.endTerminalHost).toHaveBeenCalledWith('h');
+    for (const bad of [{ hostId: '' }, { hostId: 'h', hostPid: 41 }, {}]) await expect(call(OVERLAY_CHANNELS.hostsEndTerminalHost, bad)).rejects.toThrow('Malformed');
     await expect(call(OVERLAY_CHANNELS.hostsOpenRun, { hostId: 'h', runId: 'term-1', projectKey: 'x' })).rejects.toThrow('Malformed');
     await expect(call(OVERLAY_CHANNELS.connectStart, { target: { hostId: 'h', input: 'x' } })).rejects.toThrow('Malformed');
+  });
+
+  it('passes a host update action of the closed list through and refuses anything else', async () => {
+    const { call, actions } = setup();
+    for (const action of ['switchWhenIdle', 'switchNow', 'checkForUpdates']) await call(OVERLAY_CHANNELS.hostsUpdateAction, { hostId: 'h', action });
+    expect(actions.updateAction.mock.calls).toEqual([['h', 'switchWhenIdle'], ['h', 'switchNow'], ['h', 'checkForUpdates']]);
+    for (const bad of [{ hostId: 'h', action: 'install' }, { hostId: 'h', action: 'switchNow', force: true }, { hostId: '', action: 'switchNow' }, { hostId: 'h' }, { action: 'switchNow' }]) {
+      await expect(call(OVERLAY_CHANNELS.hostsUpdateAction, bad), JSON.stringify(bad)).rejects.toThrow('Malformed');
+    }
+    expect(actions.updateAction).toHaveBeenCalledTimes(3);
   });
 });
 

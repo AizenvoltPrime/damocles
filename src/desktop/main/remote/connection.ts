@@ -17,6 +17,7 @@ import {
   CONTROL_TO_CLIENT,
   FROZEN_CLIENT_TO_CONTROL,
   type AttachedClient,
+  type Run,
   type ClientToControl,
   type ControlToClient,
   type FrozenClientToControl,
@@ -40,10 +41,12 @@ export interface ConnectOptions {
   readonly log: (line: string) => void;
 }
 
-/** A daemon of another protocol version, reached for the frozen control commands alone (listRuns, the shutdowns, mirror.sync). */
+/** A daemon of another protocol version, reached for the frozen control commands alone (listRuns, the shutdowns, handOver, mirror.sync). */
 export interface OtherProtocolDaemon {
   readonly serverVersion: string;
   readonly protocolVersion: number;
+  // the refusal's FROZEN_FEATURES names; empty from a daemon that predates the field
+  readonly frozenFeatures: readonly string[];
   readonly control: Endpoint<FrozenClientToControl, ControlToClient>;
   receiveStream(id: number, maxBytes: number, onChunk: (bytes: Uint8Array) => Promise<void>): Promise<number>;
   onClose(listener: (reason: string) => void): Disposable;
@@ -61,6 +64,18 @@ export const RESUME_FEATURE = 'protocol.resume';
 export const CLIENTS_FEATURE = 'clients';
 // The daemon reports its listening ports and the URLs its terminals print, and carries tunnel streams (`ports`).
 export const PORTS_FEATURE = 'ports';
+// The daemon pushes its run list to an attach that asks (control.runs).
+export const RUNS_FEATURE = 'control.runs';
+// The daemon marks a terminal whose host stopped answering (terminals.responding) and serves terminals.endHost.
+export const NOT_RESPONDING_FEATURE = 'terminals.notResponding';
+// The daemon serves control.handOver, and its terminals outlive it in their terminal hosts.
+export const HAND_OVER_FEATURE = 'control.handOver';
+// The daemon serves control.handOverIfIdle, which decides a hand-over on its own runs and pending damocles --wait requests.
+export const HAND_OVER_IF_IDLE_FEATURE = 'control.handOverIfIdle';
+// The daemon tells an attach that asks which device removes the server (control.removing).
+export const REMOVING_FEATURE = 'control.removing';
+// The daemon tells an attach that asks which device's switch ends it (control.handingOver).
+export const HANDING_OVER_FEATURE = 'control.handingOver';
 
 /** The daemon could not connect a tunnel's target. */
 export class TunnelConnectError extends Error {
@@ -106,6 +121,17 @@ export interface RemoteConnection {
   // the devices attached to the daemon, this one marked self, by device name; empty from a daemon that does not list clients
   devices(): readonly AttachedClient[];
   onDevices(listener: () => void): Disposable;
+  // the daemon's runs after each change, and at once the latest it sent; only from a daemon that lists RUNS_FEATURE
+  onRuns(listener: (runs: readonly Run[]) => void): Disposable;
+  // the files of each pending damocles --wait as the latest runs event listed them; empty from a daemon that does not list
+  // runs.cliWaits
+  cliWaits(): readonly string[];
+  // another device removes the server, named by its device name; the daemon ends this connection next. Only from a daemon
+  // that lists REMOVING_FEATURE
+  onRemoving(listener: (deviceName: string) => void): Disposable;
+  // another device's switch ends the daemon, named by its device name; the daemon ends this connection next. Only from a daemon
+  // that lists HANDING_OVER_FEATURE
+  onHandingOver(listener: (deviceName: string) => void): Disposable;
   // ends this connection only; the daemon keeps its terminals for the next one
   close(reason: string): void;
 }
@@ -130,6 +156,9 @@ export async function connect(options: ConnectOptions): Promise<RemoteConnection
   const lostListeners = listeners<[string]>(log);
   const suspectListeners = listeners<[number | undefined]>(log);
   const deviceListeners = listeners<[]>(log);
+  const runListeners = listeners<[readonly Run[]]>(log);
+  const removingListeners = listeners<[string]>(log);
+  const handingOverListeners = listeners<[string]>(log);
   // once, with why it ended; a listener added after the close runs at once
   const onClose = (listener: (reason: string) => void): Disposable => {
     if (closedWith === undefined) return closeListeners.add(listener);
@@ -184,6 +213,15 @@ export async function connect(options: ConnectOptions): Promise<RemoteConnection
     devices = clients;
     deviceListeners.fire();
   });
+  let latestRuns: readonly Run[] | undefined;
+  let cliWaits: readonly string[] = [];
+  control.onEvent('runs', (event) => {
+    latestRuns = event.runs;
+    cliWaits = event.cliWaits ?? [];
+    runListeners.fire(event.runs);
+  });
+  control.onEvent('removing', ({ deviceName }) => removingListeners.fire(deviceName));
+  control.onEvent('handingOver', ({ deviceName }) => handingOverListeners.fire(deviceName));
   const protocolVersion = options.protocolVersion ?? PROTOCOL_VERSION;
   const inbox = streamInbox(close);
   mux.onStream((stream) => inbox.opened(stream));
@@ -201,6 +239,7 @@ export async function connect(options: ConnectOptions): Promise<RemoteConnection
       options.onOtherProtocol({
         serverVersion: answer.refused.serverVersion,
         protocolVersion: answer.refused.protocolVersion,
+        frozenFeatures: answer.refused.frozenFeatures ?? [],
         control: frozen,
         receiveStream: (id, maxBytes, onChunk) => inbox.receive(id, maxBytes, onChunk),
         onClose,
@@ -211,7 +250,8 @@ export async function connect(options: ConnectOptions): Promise<RemoteConnection
     protocol.startKeepAlive();
     if (closedWith !== undefined) throw new Error(`The connection closed: ${closedWith}`);
     log(`[remote] welcome from daemon ${answer.welcome.serverVersion} on ${answer.welcome.facts.os}, clock skew ${Math.round(answer.skewMs)} ms`);
-    await control.request('attach', { terminalIdleDays: options.terminalIdleDays, ...(answer.welcome.features.includes(CLIENTS_FEATURE) ? { watchClients: true } : {}) });
+    const { features } = answer.welcome;
+    await control.request('attach', { terminalIdleDays: options.terminalIdleDays, ...(features.includes(CLIENTS_FEATURE) ? { watchClients: true } : {}), ...(features.includes(RUNS_FEATURE) ? { watchRuns: true } : {}), ...(features.includes(REMOVING_FEATURE) ? { watchRemoval: true } : {}), ...(features.includes(HANDING_OVER_FEATURE) ? { watchHandOver: true } : {}) });
     // a drop before the attach landed fails the connect; after it, the daemon holds the connection for a resume
     if (answer.welcome.features.includes(RESUME_FEATURE)) protocol.holdOnDrop();
     return answer;
@@ -289,6 +329,14 @@ export async function connect(options: ConnectOptions): Promise<RemoteConnection
     },
     devices: () => devices,
     onDevices: deviceListeners.add,
+    onRuns: (listener) => {
+      const subscription = runListeners.add(listener);
+      if (latestRuns !== undefined) listener(latestRuns);
+      return subscription;
+    },
+    cliWaits: () => cliWaits,
+    onRemoving: removingListeners.add,
+    onHandingOver: handingOverListeners.add,
     close,
   };
 }

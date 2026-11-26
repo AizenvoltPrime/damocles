@@ -1,11 +1,15 @@
 import type { ElectronApplication } from '@playwright/test';
+import type { DesktopApp } from '../desktop/support/app';
+import { writeUserSettings, type HermeticHome } from '../desktop/support/hermetic';
 import { closeSettingsModal } from '../desktop/support/settings';
-import { answerToast, recordedToasts, recordToasts } from '../desktop/support/shell';
+import { answerToast, recordedToasts, recordToasts, shellPage } from '../desktop/support/shell';
+import { openTerminal, runInTerminal } from '../desktop/support/terminal';
 import { shutdownHostDaemon } from './support/daemon-teardown';
 import { scmPush } from './support/git-credentials';
 import { openRemoteHostSettings, setHostSwitch, storedHost } from './support/host-settings-ui';
-import { addHost, expect, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test } from './support/remote';
-import { startSshAgentStub } from './support/ssh-agent-stub';
+import { CURRENT_PACKAGE, daemonVersions, installOlderServer, OLD, switchToThisVersion } from './support/older-server';
+import { addHost, expect, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test, type RemoteFixtures } from './support/remote';
+import { startSshAgentStub, type SshAgentStub } from './support/ssh-agent-stub';
 import type { SshdFixture } from './support/sshd';
 
 const APP = '/srv/app';
@@ -101,6 +105,91 @@ test('a git push over ssh fails with publickey while forwarding is off and offer
     expect(await bareHead(fixture)).not.toBe(await targetHead(fixture));
     expect(agent.signatures).toBe(signed);
     await shutdownHostDaemon(app, hostId, fixture);
+  } finally {
+    await agent.close();
+  }
+});
+
+const AGENT_COMMENT = 'damocles-e2e-agent';
+
+/**
+ * Runs `script` in the active terminal's shell, so with that terminal's environment: the script lands in /tmp/<marker>.sh and
+ * the terminal is typed only `sh` and its path; resolves its exit code once it wrote it.
+ */
+async function inTerminal(app: ElectronApplication, fixture: SshdFixture, script: string, marker: string): Promise<string> {
+  await fixture.sh(`cat > /tmp/${marker}.sh`, 'dev', `${script}\necho $? > /tmp/${marker}.code\n`);
+  await runInTerminal(await shellPage(app), `sh /tmp/${marker}.sh`);
+  let code = '';
+  await expect.poll(async () => (code = (await fixture.sh(`cat /tmp/${marker}.code 2>/dev/null || true`)).trim()), { timeout: 60_000 }).not.toBe('');
+  return code;
+}
+
+interface ForwardingOnOlder {
+  readonly old: DesktopApp;
+  readonly env: Record<string, string>;
+  readonly hostId: string;
+  readonly fixture: SshdFixture;
+  // the shell's SSH_AUTH_SOCK, which its terminal host owns
+  readonly socket: string;
+}
+
+/** prod-1 forwarding the agent stub under the app before an update (this package installed as OLD), with a bash terminal open. */
+async function forwardingOnOlderServer(home: HermeticHome, launch: (options: { env: Record<string, string> }) => Promise<DesktopApp>, fixtures: Pick<RemoteFixtures, 'mirror' | 'ssh'>, sshd: RemoteFixtures['sshd'], agent: SshAgentStub): Promise<ForwardingOnOlder> {
+  writeUserSettings(home, { 'damocles.desktop.terminal.defaultProfile': 'bash', 'damocles.desktop.terminal.confirmOnKill': 'never' });
+  const fixture = await sshd('prod-1', { config: ['IdentityAgent SSH_AUTH_SOCK'] });
+  await fixture.sh(`mkdir -p ${APP} && chown dev:dev ${APP}`);
+  await installOlderServer(fixture, CURRENT_PACKAGE, { version: OLD });
+  const env = { ...remoteEnv(fixtures.ssh, fixtures.mirror), SSH_AUTH_SOCK: agent.socket };
+  const old = await launch({ env: { ...env, DAMOCLES_E2E_APP_VERSION: OLD } });
+  const hostId = await addHost(old.app, { alias: 'prod-1', name: 'prod-1' });
+  await openRemoteFolder(old.app, hostId, APP);
+  const { overlay, block } = await openRemoteHostSettings(old.app, hostId);
+  await setHostSwitch(block, 'Forward my SSH agent', true);
+  await closeSettingsModal(overlay);
+  await expect.poll(() => forwardedAgents(fixture), { timeout: 60_000 }).not.toBe('');
+  await remoteProjectKey(old.app, { authorityKey: `ssh+${hostId}` }, APP);
+  await openTerminal(old.app);
+  expect(await inTerminal(old.app, fixture, 'ssh-add -l > /tmp/agent-before 2>&1 && printf "%s\\n" "$SSH_AUTH_SOCK" > /tmp/agent-sock', 'before')).toBe('0');
+  expect(await fixture.sh('cat /tmp/agent-before', 'dev')).toContain(AGENT_COMMENT);
+  const socket = (await fixture.sh('cat /tmp/agent-sock', 'dev')).trim();
+  expect(socket).toMatch(/^\/tmp\/damocles-[^/]+\/agent-[0-9a-f]{24}\.sock$/);
+  expect(await daemonVersions(fixture)).toEqual([OLD]);
+  return { old, env, hostId, fixture, socket };
+}
+
+test('in a terminal that survived a server switch, ssh-add lists the forwarded key through the new server, from the socket the shell started with', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
+  test.setTimeout(600_000);
+  const agent = await startSshAgentStub(home.root);
+  try {
+    const older = await forwardingOnOlderServer(home, launch, { mirror, ssh }, sshd, agent);
+    await older.old.close();
+    const app = await switchToThisVersion(launch, older.env, older.hostId, older.fixture);
+    expect(await inTerminal(app, older.fixture, 'ssh-add -l > /tmp/agent-after 2>&1 && printf "%s\\n" "$SSH_AUTH_SOCK" > /tmp/agent-sock-after', 'after')).toBe('0');
+    expect(await older.fixture.sh('cat /tmp/agent-after', 'dev')).toContain(AGENT_COMMENT);
+    expect((await older.fixture.sh('cat /tmp/agent-sock-after', 'dev')).trim()).toBe(older.socket);
+    await shutdownHostDaemon(app, older.hostId, older.fixture);
+  } finally {
+    await agent.close();
+  }
+});
+
+test('an ssh-add run during a server switch waits while no server runs and lists the key once the new server is up', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
+  test.setTimeout(600_000);
+  const agent = await startSshAgentStub(home.root);
+  try {
+    const older = await forwardingOnOlderServer(home, launch, { mirror, ssh }, sshd, agent);
+    const { fixture } = older;
+    await older.old.close();
+    // installed already, so the switch only starts a daemon, well inside the host's hold of the waiting connection
+    await installOlderServer(fixture, CURRENT_PACKAGE);
+    await fixture.sh("pkill -TERM -u dev -f 'dist/daemon.js serve'");
+    await expect.poll(() => daemonVersions(fixture), { timeout: 30_000 }).toEqual([]);
+    await fixture.sh(`nohup sh -c "SSH_AUTH_SOCK='${older.socket}' ssh-add -l > /tmp/agent-during 2>&1; echo status=\\$? >> /tmp/agent-during" > /dev/null 2>&1 &`, 'dev');
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    expect(await fixture.sh('cat /tmp/agent-during 2>/dev/null || true', 'dev')).toBe('');
+    const app = await switchToThisVersion(launch, older.env, older.hostId, fixture);
+    await expect.poll(() => fixture.sh('cat /tmp/agent-during 2>/dev/null || true', 'dev'), { timeout: 60_000 }).toMatch(new RegExp(`${AGENT_COMMENT}[\\s\\S]*status=0\\n$`));
+    await shutdownHostDaemon(app, older.hostId, fixture);
   } finally {
     await agent.close();
   }

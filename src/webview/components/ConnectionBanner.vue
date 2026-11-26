@@ -27,10 +27,18 @@ const view = useHostConnection(() => {
 const kind = view.kind;
 const tone = computed(() => BANNER_TONE[kind.value === 'failed' ? 'danger' : kind.value === 'reconnected' ? 'success' : 'warning']);
 
+// Remove Damocles server ran on a host that is not connected: only its Connect installs the server again.
+const removed = computed(() => {
+  const current = host.value;
+  if (!current?.removed || (kind.value !== 'offline' && kind.value !== 'failed')) return undefined;
+  return current.removed.by !== undefined ? t('remote.removedBy', { host: current.name, device: current.removed.by }) : t('remote.removedFound', { host: current.name });
+});
+
 // The live region says what changed and never counts down, so a screen reader hears each state once.
 const announcement = computed(() => {
   const name = host.value?.name ?? '';
   if (host.value?.update) return '';
+  if (removed.value !== undefined) return removed.value;
   switch (kind.value) {
     case 'reconnecting': return t('remote.announce.reconnecting', { host: name });
     case 'failed': return t('remote.announce.failed', { host: name });
@@ -49,8 +57,10 @@ const announcement = computed(() => {
       v-if="host?.update"
       :host-name="host.name"
       :update="host.update"
+      :can-check-for-updates="host.canCheckForUpdates"
       @switch-when-idle="chatHostAction('switchWhenIdle')"
       @switch-now="chatHostAction('switchNow')"
+      @check-for-updates="chatHostAction('checkForUpdates')"
     />
     <Transition
       v-else
@@ -109,6 +119,7 @@ const announcement = computed(() => {
               >{{ view.seconds.value }}</span></template>
             </i18n-t>
             <template v-else-if="kind === 'reconnecting'">{{ t('remote.reconnecting', { host: host.name }) }}</template>
+            <template v-else-if="removed">{{ removed }}</template>
             <template v-else-if="kind === 'failed'">{{ t('remote.failed', { host: host.name }) }}</template>
             <template v-else-if="kind === 'reconnected'">{{ t('remote.reconnected', { host: host.name }) }}</template>
             <template v-else-if="kind === 'signIn'">{{ t('remote.signIn', { host: host.name }) }}</template>
@@ -119,7 +130,7 @@ const announcement = computed(() => {
             class="flex flex-wrap items-center gap-x-2"
             data-testid="chat-connection-banner-actions"
           >
-            <template v-if="kind === 'failed'">
+            <template v-if="kind === 'failed' && !removed">
               <Button
                 v-for="action in (['reconnect', 'showLog', 'editHost'] as const)"
                 :key="action"
@@ -142,7 +153,7 @@ const announcement = computed(() => {
               data-testid="chat-connection-banner-action"
               @click="chatHostAction(kind === 'signIn' ? 'signIn' : 'reconnect')"
             >
-              {{ kind === 'signIn' ? t('remote.signInAction', { host: host.name }) : kind === 'reconnecting' ? t('remote.reconnectNow') : t('remote.reconnect') }}
+              {{ kind === 'signIn' ? t('remote.signInAction', { host: host.name }) : kind === 'reconnecting' ? t('remote.reconnectNow') : removed ? t('remote.connect') : t('remote.reconnect') }}
             </Button>
           </div>
         </div>

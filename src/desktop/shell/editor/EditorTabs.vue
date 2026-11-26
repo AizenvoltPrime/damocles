@@ -493,16 +493,28 @@ function onContextMenu(event: MouseEvent, tab: ShellEditorTab): void {
               class="d-spinning size-3.25 shrink-0"
               :class="tab.browser ? 'text-(--d-info)' : 'text-(--d-muted)'"
             />
-            <component
-              :is="terminalGlyph(terminalOf(tab)!).icon"
+            <span
               v-else-if="terminalOf(tab)"
-              aria-hidden="true"
-              data-testid="editor-tab-terminal-icon"
-              :data-glyph="terminalOf(tab)!.customIcon ?? terminalOf(tab)!.icon"
-              :data-color="terminalOf(tab)!.color ?? undefined"
-              class="terminal-glyph size-3.25 shrink-0"
-              :style="{ color: terminalGlyph(terminalOf(tab)!).color }"
-            />
+              class="relative flex size-3.25 shrink-0"
+            >
+              <component
+                :is="terminalGlyph(terminalOf(tab)!).icon"
+                aria-hidden="true"
+                data-testid="editor-tab-terminal-icon"
+                :data-glyph="terminalOf(tab)!.customIcon ?? terminalOf(tab)!.icon"
+                :data-color="terminalOf(tab)!.color ?? undefined"
+                class="terminal-glyph size-3.25"
+                :style="{ color: terminalGlyph(terminalOf(tab)!).color }"
+              />
+              <Transition name="t-chip">
+                <span
+                  v-if="terminalOf(tab)!.status === 'notResponding'"
+                  aria-hidden="true"
+                  data-testid="editor-tab-terminal-not-responding"
+                  class="absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full bg-(--d-warning-fill)"
+                />
+              </Transition>
+            </span>
             <img
               v-else-if="tab.browser?.iconDataUrl"
               :src="tab.browser.iconDataUrl"

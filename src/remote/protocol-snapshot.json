@@ -73,8 +73,24 @@
   "editor.isDirty",
   "files.links",
   "files.sessionFileRefusal",
-  "themes"
+  "themes",
+  "control.runs",
+  "control.handOver",
+  "terminals.notResponding",
+  "runs.cliWaits",
+  "control.handOverIfIdle",
+  "control.removing",
+  "control.handingOver",
+  "views.merge"
  ],
+ "frozenFeatures": [
+  "control.handOver"
+ ],
+ "featureLists": {
+  "TERMINAL_HOST_FEATURES": [
+   "terminalHost.endpoints"
+  ]
+ },
  "contracts": {
   "CoreRequests": {
    "object": {
@@ -21230,6 +21246,32 @@
        "result": {
         "optional": false,
         "type": "void"
+       }
+      }
+     }
+    },
+    "views.merge": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "into": {
+           "optional": false,
+           "type": "string"
+          },
+          "viewId": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "boolean"
        }
       }
      }
@@ -63242,6 +63284,12 @@
        "relayHandle": {
         "optional": true,
         "type": "string"
+       },
+       "relayNonces": {
+        "optional": true,
+        "type": {
+         "array": "string"
+        }
        }
       }
      }
@@ -64813,6 +64861,12 @@
              "nonce": {
               "optional": false,
               "type": "string"
+             },
+             "relayNonces": {
+              "optional": true,
+              "type": {
+               "array": "string"
+              }
              }
             }
            }
@@ -68989,6 +69043,35 @@
       }
      }
     },
+    "terminals.endHost": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "hostPid": {
+           "optional": false,
+           "type": "number"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "ended": {
+           "optional": false,
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
     "terminals.environment": {
      "optional": false,
      "type": {
@@ -69169,6 +69252,10 @@
            "id": {
             "optional": false,
             "type": "string"
+           },
+           "notRespondingHost": {
+            "optional": true,
+            "type": "number"
            },
            "pid": {
             "optional": false,
@@ -70077,6 +70164,25 @@
        }
       }
      }
+    },
+    "terminals.responding": {
+     "optional": false,
+     "type": {
+      "object": {
+       "hostPid": {
+        "optional": false,
+        "type": "number"
+       },
+       "id": {
+        "optional": false,
+        "type": "string"
+       },
+       "responding": {
+        "optional": false,
+        "type": "boolean"
+       }
+      }
+     }
     }
    }
   },
@@ -70305,6 +70411,18 @@
            "type": "number"
           },
           "watchClients": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "watchHandOver": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "watchRemoval": {
+           "optional": true,
+           "type": "boolean"
+          },
+          "watchRuns": {
            "optional": true,
            "type": "boolean"
           }
@@ -71356,6 +71474,62 @@
       }
      }
     },
+    "handOver": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "when": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"idle\"",
+             "\"now\""
+            ]
+           }
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
+    "handOverIfIdle": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "ref": "object"
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "when": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"idle\"",
+             "\"now\""
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
     "linger": {
      "optional": false,
      "type": {
@@ -72238,6 +72412,17 @@
       }
      }
     },
+    "handingOver": {
+     "optional": false,
+     "type": {
+      "object": {
+       "deviceName": {
+        "optional": false,
+        "type": "string"
+       }
+      }
+     }
+    },
     "mirror.changed": {
      "optional": false,
      "type": {
@@ -72254,11 +72439,108 @@
      "type": {
       "ref": "object"
      }
+    },
+    "removing": {
+     "optional": false,
+     "type": {
+      "object": {
+       "deviceName": {
+        "optional": false,
+        "type": "string"
+       }
+      }
+     }
+    },
+    "runs": {
+     "optional": false,
+     "type": {
+      "object": {
+       "cliWaits": {
+        "optional": true,
+        "type": {
+         "array": "string"
+        }
+       },
+       "runs": {
+        "optional": false,
+        "type": {
+         "array": {
+          "object": {
+           "id": {
+            "optional": false,
+            "type": "string"
+           },
+           "kind": {
+            "optional": false,
+            "type": {
+             "union": [
+              "\"chat\"",
+              "\"terminal\""
+             ]
+            }
+           },
+           "projectKey": {
+            "optional": false,
+            "type": "string"
+           },
+           "providers": {
+            "optional": false,
+            "type": {
+             "array": "string"
+            }
+           },
+           "state": {
+            "optional": false,
+            "type": {
+             "union": [
+              "\"background\"",
+              "\"running\"",
+              "\"waiting\""
+             ]
+            }
+           },
+           "title": {
+            "optional": false,
+            "type": "string"
+           }
+          }
+         }
+        }
+       }
+      }
+     }
     }
    }
   },
   "FrozenControl": {
    "object": {
+    "handOver": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "when": {
+           "optional": false,
+           "type": {
+            "union": [
+             "\"idle\"",
+             "\"now\""
+            ]
+           }
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
     "listRuns": {
      "optional": false,
      "type": {
@@ -72444,6 +72726,536 @@
        "result": {
         "optional": false,
         "type": "void"
+       }
+      }
+     }
+    }
+   }
+  },
+  "FrozenTerminalHostRequests": {
+   "object": {
+    "attach": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "features": {
+           "optional": false,
+           "type": {
+            "array": "string"
+           }
+          },
+          "idleDays": {
+           "optional": true,
+           "type": "number"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "terminals": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "cols": {
+               "optional": false,
+               "type": "number"
+              },
+              "detachedAt": {
+               "optional": true,
+               "type": "number"
+              },
+              "id": {
+               "optional": false,
+               "type": "string"
+              },
+              "pid": {
+               "optional": false,
+               "type": "number"
+              },
+              "projectKey": {
+               "optional": false,
+               "type": "string"
+              },
+              "rows": {
+               "optional": false,
+               "type": "number"
+              },
+              "scrollback": {
+               "optional": false,
+               "type": "number"
+              },
+              "title": {
+               "optional": false,
+               "type": "string"
+              },
+              "view": {
+               "optional": true,
+               "type": "string"
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "idleDays": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "days": {
+           "optional": false,
+           "type": "number"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
+    "kill": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "object": {
+          "id": {
+           "optional": false,
+           "type": "string"
+          }
+         }
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    },
+    "list": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "ref": "object"
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": {
+         "object": {
+          "terminals": {
+           "optional": false,
+           "type": {
+            "array": {
+             "object": {
+              "cols": {
+               "optional": false,
+               "type": "number"
+              },
+              "detachedAt": {
+               "optional": true,
+               "type": "number"
+              },
+              "id": {
+               "optional": false,
+               "type": "string"
+              },
+              "pid": {
+               "optional": false,
+               "type": "number"
+              },
+              "projectKey": {
+               "optional": false,
+               "type": "string"
+              },
+              "rows": {
+               "optional": false,
+               "type": "number"
+              },
+              "scrollback": {
+               "optional": false,
+               "type": "number"
+              },
+              "title": {
+               "optional": false,
+               "type": "string"
+              },
+              "view": {
+               "optional": true,
+               "type": "string"
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "shutdown": {
+     "optional": false,
+     "type": {
+      "object": {
+       "params": {
+        "optional": false,
+        "type": {
+         "ref": "object"
+        }
+       },
+       "result": {
+        "optional": false,
+        "type": "void"
+       }
+      }
+     }
+    }
+   }
+  },
+  "FrozenTerminalHostDaemonEvents": {
+   "object": {
+    "ack": {
+     "optional": false,
+     "type": {
+      "object": {
+       "chars": {
+        "optional": false,
+        "type": "number"
+       },
+       "id": {
+        "optional": false,
+        "type": "string"
+       }
+      }
+     }
+    },
+    "clear": {
+     "optional": false,
+     "type": {
+      "object": {
+       "id": {
+        "optional": false,
+        "type": "string"
+       }
+      }
+     }
+    },
+    "input": {
+     "optional": false,
+     "type": {
+      "object": {
+       "data": {
+        "optional": false,
+        "type": "string"
+       },
+       "id": {
+        "optional": false,
+        "type": "string"
+       }
+      }
+     }
+    },
+    "resize": {
+     "optional": false,
+     "type": {
+      "object": {
+       "cols": {
+        "optional": false,
+        "type": "number"
+       },
+       "id": {
+        "optional": false,
+        "type": "string"
+       },
+       "rows": {
+        "optional": false,
+        "type": "number"
+       }
+      }
+     }
+    },
+    "scrollback": {
+     "optional": false,
+     "type": {
+      "object": {
+       "id": {
+        "optional": false,
+        "type": "string"
+       },
+       "scrollback": {
+        "optional": false,
+        "type": "number"
+       }
+      }
+     }
+    },
+    "serialize": {
+     "optional": false,
+     "type": {
+      "object": {
+       "id": {
+        "optional": false,
+        "type": "string"
+       }
+      }
+     }
+    },
+    "viewed": {
+     "optional": false,
+     "type": {
+      "object": {
+       "id": {
+        "optional": false,
+        "type": "string"
+       },
+       "viewed": {
+        "optional": false,
+        "type": "boolean"
+       }
+      }
+     }
+    }
+   }
+  },
+  "FrozenTerminalHostEvents": {
+   "object": {
+    "data": {
+     "optional": false,
+     "type": {
+      "object": {
+       "data": {
+        "optional": false,
+        "type": "string"
+       },
+       "id": {
+        "optional": false,
+        "type": "string"
+       }
+      }
+     }
+    },
+    "error": {
+     "optional": false,
+     "type": {
+      "object": {
+       "id": {
+        "optional": false,
+        "type": "string"
+       },
+       "message": {
+        "optional": false,
+        "type": "string"
+       }
+      }
+     }
+    },
+    "exit": {
+     "optional": false,
+     "type": {
+      "object": {
+       "exitCode": {
+        "optional": false,
+        "type": "number"
+       },
+       "id": {
+        "optional": false,
+        "type": "string"
+       }
+      }
+     }
+    },
+    "process": {
+     "optional": false,
+     "type": {
+      "object": {
+       "id": {
+        "optional": false,
+        "type": "string"
+       },
+       "name": {
+        "optional": false,
+        "type": "string"
+       }
+      }
+     }
+    },
+    "ready": {
+     "optional": false,
+     "type": {
+      "object": {
+       "id": {
+        "optional": false,
+        "type": "string"
+       },
+       "pid": {
+        "optional": false,
+        "type": "number"
+       }
+      }
+     }
+    },
+    "screen": {
+     "optional": false,
+     "type": {
+      "object": {
+       "cols": {
+        "optional": false,
+        "type": "number"
+       },
+       "data": {
+        "optional": false,
+        "type": "string"
+       },
+       "id": {
+        "optional": false,
+        "type": "string"
+       },
+       "marks": {
+        "optional": false,
+        "type": {
+         "array": {
+          "object": {
+           "index": {
+            "optional": false,
+            "type": "number"
+           },
+           "line": {
+            "optional": false,
+            "type": "number"
+           }
+          }
+         }
+        }
+       },
+       "now": {
+        "optional": true,
+        "type": "number"
+       },
+       "processName": {
+        "optional": true,
+        "type": "string"
+       },
+       "rows": {
+        "optional": false,
+        "type": "number"
+       },
+       "sequences": {
+        "optional": false,
+        "type": "number"
+       },
+       "shellSequences": {
+        "optional": true,
+        "type": {
+         "array": {
+          "object": {
+           "body": {
+            "optional": false,
+            "type": "string"
+           },
+           "index": {
+            "optional": false,
+            "type": "number"
+           },
+           "time": {
+            "optional": false,
+            "type": "number"
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "TerminalHostEvents": {
+   "object": {
+    "connection": {
+     "optional": false,
+     "type": {
+      "variants": "kind",
+      "of": {
+       "\"agent\"": {
+        "object": {
+         "key": {
+          "optional": false,
+          "type": "string"
+         },
+         "kind": {
+          "optional": false,
+          "type": "\"agent\""
+         },
+         "stream": {
+          "optional": false,
+          "type": "number"
+         }
+        }
+       },
+       "\"cli\"": {
+        "object": {
+         "kind": {
+          "optional": false,
+          "type": "\"cli\""
+         },
+         "stream": {
+          "optional": false,
+          "type": "number"
+         },
+         "terminalId": {
+          "optional": false,
+          "type": "string"
+         }
+        }
+       },
+       "\"relay\"": {
+        "object": {
+         "kind": {
+          "optional": false,
+          "type": "\"relay\""
+         },
+         "stream": {
+          "optional": false,
+          "type": "number"
+         }
+        }
+       }
+      }
+     }
+    },
+    "relayNonce": {
+     "optional": false,
+     "type": {
+      "object": {
+       "nonce": {
+        "optional": false,
+        "type": "string"
        }
       }
      }
@@ -72739,6 +73551,12 @@
   },
   "Refused": {
    "object": {
+    "frozenFeatures": {
+     "optional": true,
+     "type": {
+      "array": "string"
+     }
+    },
     "protocolVersion": {
      "optional": false,
      "type": "number"

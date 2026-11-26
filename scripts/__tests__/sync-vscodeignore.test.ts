@@ -104,7 +104,7 @@ describe('vsixExclusionProblems', () => {
 
   it('names every desktop-only category', () => {
     expect(DESKTOP_EXCLUDE_RULES).toEqual(expect.arrayContaining([
-      'dist/webview/assets/monaco-*', 'dist/desktop/**', 'dist/desktop-shell/**', 'dist/core-host.js', 'dist/daemon.js', 'dist/server-packages/**', 'dist/formatter-host.js', 'dist/pty-host.js', 'dist/quick-open-worker.js', 'dist/watch-worker.js', 'dist-desktop/**', 'dist/e2e*/**',
+      'dist/webview/assets/monaco-*', 'dist/desktop/**', 'dist/desktop-shell/**', 'dist/core-host.js', 'dist/daemon.js', 'dist/terminal-host.js', 'dist/server-packages/**', 'dist/formatter-host.js', 'dist/pty-host.js', 'dist/quick-open-worker.js', 'dist/watch-worker.js', 'dist-desktop/**', 'dist/e2e*/**',
       'e2e/**', 'playwright.*.config.ts', 'electron-builder.yml', 'build/**', '**/*.log', 'resources/themes/**', 'schemas/**',
     ]));
   });
@@ -169,6 +169,7 @@ describe('forbiddenVsixEntries', () => {
       'extension/dist/desktop-shell/index.html',
       'extension/dist/core-host.js',
       'extension/dist/daemon.js',
+      'extension/dist/terminal-host.js',
       'extension/dist/server-packages/damocles-server-1.0.0-linux-x64.tar.gz',
       'extension/dist/formatter-host.js',
       'extension/dist/pty-host.js',

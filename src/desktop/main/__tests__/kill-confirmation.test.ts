@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { MAX_MESSAGE_PREVIEW_LINES, MAX_OVERLAY_LABEL_LENGTH } from '../../preload/overlay-channels';
-import { killQuestion, terminalsToConfirm, type KillCandidate } from '../terminal/kill-confirmation';
+import { endTerminalHostQuestion, killQuestion, terminalsToConfirm, type KillCandidate } from '../terminal/kill-confirmation';
 import { parseMessageRequest } from '../overlay';
 
 vi.mock('electron', () => ({}));
@@ -68,5 +68,31 @@ describe('killQuestion', () => {
   it('never leaves half of a surrogate pair where it cuts a line', () => {
     const [line] = killQuestion([{ name: `${'n'.repeat(MAX_OVERLAY_LABEL_LENGTH - 2)}🚀🚀`, command: null }], t).preview!;
     expect(line).toBe(`${'n'.repeat(MAX_OVERLAY_LABEL_LENGTH - 2)}…`);
+  });
+});
+
+describe('endTerminalHostQuestion', () => {
+  it('names the host and the terminal it ends, End terminal host as a danger action', () => {
+    const question = endTerminalHostQuestion('prod-1', ['bash'], t);
+    expect(question).toEqual({
+      severity: 'danger',
+      message: 'End the terminal host on prod-1?',
+      detail: 'The terminal host is not responding. This terminal ends, and what runs in it stops.',
+      preview: ['Terminal: bash'],
+      actions: ['End terminal host'],
+      cancelLabel: 'Cancel',
+    });
+    expect(parseMessageRequest({ kind: 'message', ...question })).toBeDefined();
+  });
+
+  it('counts several terminals, folds what the preview cannot hold, and shows a title\'s hidden characters within the label bound', () => {
+    const titles = ['top\u202Egol', 't'.repeat(1024), ...Array.from({ length: 10 }, (_, index) => `T${index}`)];
+    const question = endTerminalHostQuestion('prod-1', titles, t);
+    expect(question.detail).toBe('The terminal host is not responding. These 12 terminals end, and what runs in them stops.');
+    expect(question.preview).toHaveLength(MAX_MESSAGE_PREVIEW_LINES);
+    expect(question.preview?.[0]).not.toContain('\u202E');
+    expect(question.preview?.[1]!.length).toBeLessThanOrEqual(MAX_OVERLAY_LABEL_LENGTH);
+    expect(question.preview?.at(-1)).toBe('and 5 more');
+    expect(parseMessageRequest({ kind: 'message', ...question })).toBeDefined();
   });
 });

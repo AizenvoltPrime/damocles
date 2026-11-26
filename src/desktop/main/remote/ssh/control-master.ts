@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { runProcess } from '../../../../core/process-launcher';
-import { resolveSshExecutable } from '../../../../core/system-tools';
+import { resolveSshExecutable, type SshClientChoice } from '../../../../core/system-tools';
 import { buildSshConfigQueryArgs, buildSshControlArgs } from './ssh-args';
 import type { SshDestination } from './ssh-command-parse';
 import { sshPercentLiteral } from './ssh-percent';
@@ -78,12 +78,12 @@ async function makePrivateFolder(folder: string, log: (line: string) => void): P
   }
 }
 
-/** This client's ssh on the process launcher, and the ControlPath folders after Damocles' own. */
-export function systemControlMasterDeps(damoclesFolder: string, log: (line: string) => void): ControlMasterDeps {
+/** This client's ssh, as the SSH client path setting chooses it, on the process launcher, and the ControlPath folders after Damocles' own. */
+export function systemControlMasterDeps(damoclesFolder: string, choice: () => SshClientChoice, log: (line: string) => void): ControlMasterDeps {
   return {
     platform: process.platform,
     folders: process.platform === 'win32' ? [] : controlFolders(damoclesFolder, process.env, os.tmpdir(), process.getuid!()),
-    resolveSsh: () => resolveSshExecutable(),
+    resolveSsh: () => resolveSshExecutable(process.env, process.platform, choice()),
     run: runSsh,
     makePrivateFolder: (folder) => makePrivateFolder(folder, log),
     log,

@@ -4,10 +4,10 @@ import { TARGET_USER, type SshdFixture } from './sshd';
 
 // The argv of every process the server package starts on a POSIX target: <install>/<version>-<target>/node/node <same>/dist/<entry>.js
 // An install folder may hold spaces, so a path matches anything up to the entry.
-const SERVER_PROCESS = /\/node\/node .*\/dist\/(daemon|core-host|pty-host|formatter-host)\.js\b/;
+const SERVER_PROCESS = /\/node\/node .*\/dist\/(daemon|core-host|terminal-host|pty-host|formatter-host)\.js\b/;
 const DAEMON_SERVE = /\/node\/node .*\/dist\/daemon\.js serve\b/;
 
-/** The server package's processes among an account's: the daemon and its bridge, core, the pty and formatter hosts. */
+/** The server package's processes among an account's: the daemon and its bridge, core, the terminal (or an older package's pty) and formatter hosts. */
 export async function serverProcesses(fixture: Pick<SshdFixture, 'userProcesses'>, user: 'dev' | 'deploy' = TARGET_USER): Promise<string[]> {
   return (await fixture.userProcesses(user)).filter((line) => SERVER_PROCESS.test(line));
 }
@@ -21,8 +21,8 @@ export async function daemonPids(fixture: Pick<SshdFixture, 'userProcesses'>, us
 const SSH_CONNECTION = /^\d+ sshd(?:-session)?: \S+@notty$/;
 
 /**
- * Waits until the account runs nothing but ssh connections: no daemon, bridge, core, pty host, formatter host or terminal
- * shell. Then ends Damocles' master connection, which macOS and Linux clients keep for ControlPersist after its sessions
+ * Waits until the account runs nothing but ssh connections: no daemon, bridge, core, terminal host, formatter host or
+ * terminal shell. Then ends Damocles' master connection, which macOS and Linux clients keep for ControlPersist after its sessions
  * ended (docs/invariants.md, the master connection rule), and waits until the account has no process left.
  */
 export async function expectNoAccountProcesses(app: ElectronApplication, hostId: string, fixture: Pick<SshdFixture, 'userProcesses'>, user: 'dev' | 'deploy' = TARGET_USER): Promise<void> {
@@ -31,7 +31,10 @@ export async function expectNoAccountProcesses(app: ElectronApplication, hostId:
   await expect.poll(() => fixture.userProcesses(user), { timeout: 30_000 }).toEqual([]);
 }
 
-/** Ends the host's daemon with control.shutdownNow, then expectNoAccountProcesses. Every spec that starts a daemon ends with this. */
+/**
+ * Ends the host's daemon with control.shutdownNow, which ends every terminal host it is attached to, then
+ * expectNoAccountProcesses. Every spec that starts a daemon ends with this.
+ */
 export async function shutdownHostDaemon(app: ElectronApplication, hostId: string, fixture: Pick<SshdFixture, 'userProcesses'>, user: 'dev' | 'deploy' = TARGET_USER): Promise<void> {
   expect(await daemonPids(fixture, user)).toHaveLength(1);
   await control(app, hostId, 'shutdownNow');

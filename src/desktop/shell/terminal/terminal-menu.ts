@@ -63,6 +63,8 @@ export interface TerminalMenuContext {
   readonly navigated?: CommandMenuContext | null;
   // the tab menu's Join Terminals..., Move Up, Move Down and Move Terminal into Editor Area
   readonly arrangement?: TerminalArrangement;
+  // the terminal takes no input (exited, reconnecting or not responding), so Paste and Rerun Command are off
+  readonly inputOff?: boolean;
 }
 
 const ACTIONS: readonly TerminalMenuAction[] = ['copy', 'paste', 'selectAll', 'clear', 'copyLastCommand', 'copyLastCommandOutput', 'addToChat', 'split', 'unsplit', 'rename', 'changeIcon', 'changeColor', 'kill', 'rerunCommand', 'copyCommand', 'copyOutput', 'addOutputToChat'];
@@ -77,11 +79,14 @@ const CLIPBOARD_KEYS: Readonly<Record<ShellPlatform, { readonly copy: string; re
   darwin: { copy: '⌘C', paste: '⌘V' },
 };
 
-/** A command's mark menu (VS Code's decorationAddon actions): Rerun Command, Copy Command, Copy Output, Add Output to Chat. */
-export function commandMenuItems(command: CommandMenuContext, t: (key: string) => string): OverlayMenuItem[] {
+/**
+ * A command's mark menu (VS Code's decorationAddon actions): Rerun Command, Copy Command, Copy Output, Add Output to Chat.
+ * inputOff: the terminal takes no input, so Rerun Command is off.
+ */
+export function commandMenuItems(command: CommandMenuContext, inputOff: boolean, t: (key: string) => string): OverlayMenuItem[] {
   const item = (id: CommandMenuAction, icon: MenuIcon, disabled: boolean): OverlayMenuItem => ({ kind: 'item', id, label: t(`terminal.menu.${id}`), icon, disabled });
   return [
-    item('rerunCommand', 'rotate-cw', !command.hasCommandLine),
+    item('rerunCommand', 'rotate-cw', inputOff || !command.hasCommandLine),
     { kind: 'separator' },
     item('copyCommand', 'copy', !command.hasCommandLine),
     item('copyOutput', 'scroll-text', !command.hasOutput),
@@ -106,7 +111,7 @@ export function terminalMenuItems(context: TerminalMenuContext, t: (key: string)
   const clipboard: OverlayMenuItem[] = tab ? [] : [
     item('copy', 'copy', { shortcut: keys.copy, disabled: !context.hasSelection }),
     // Its pick allows main one paste into this terminal, which the view then asks for.
-    item('paste', 'clipboard-paste', { shortcut: keys.paste, clipboard: 'terminalPaste' }),
+    item('paste', 'clipboard-paste', { shortcut: keys.paste, clipboard: 'terminalPaste', disabled: context.inputOff === true }),
     item('selectAll', 'text-select'),
     item('clear', 'eraser'),
   ];
@@ -134,7 +139,7 @@ export function terminalMenuItems(context: TerminalMenuContext, t: (key: string)
     ] : []),
     { ...arrangeItem('moveToEditor', !arrangement.toEditor), icon: 'arrow-up-from-line' },
   ] : [];
-  const navigated = !tab && context.navigated ? [...commandMenuItems(context.navigated, t), separator] : [];
+  const navigated = !tab && context.navigated ? [...commandMenuItems(context.navigated, context.inputOff === true, t), separator] : [];
   return tidyMenu([
     ...navigated,
     ...clipboard,
@@ -220,6 +225,7 @@ export function terminalStatusLabel(terminal: Pick<TerminalInfo, 'status' | 'exi
   if (terminal.status === 'starting') return t('terminal.status.starting');
   if (terminal.status === 'running') return t('terminal.status.running');
   if (terminal.status === 'reconnecting') return t('terminal.status.reconnecting');
+  if (terminal.status === 'notResponding') return t('terminal.status.notResponding');
   return terminal.exitCode === null ? t('terminal.hostStopped') : t('terminal.exited', { code: terminal.exitCode });
 }
 

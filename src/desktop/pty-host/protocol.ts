@@ -31,8 +31,6 @@ export const MAX_HOST_MESSAGE_CHARS = 2000;
 export const MAX_HOST_PROCESS_NAME_CHARS = 256;
 // The host's argv entry naming the node-pty package it loads.
 export const NODE_PTY_ARG_PREFIX = '--node-pty=';
-// The daemon's argv entry: each pty's output is acknowledged once its screen consumed it, so no client paces a pty.
-export const SELF_ACKNOWLEDGE_ARG = '--self-acknowledge';
 // The scrollback of a screen the host keeps; the terminal scrollback setting's maximum.
 export const MAX_SCREEN_SCROLLBACK = 100_000;
 

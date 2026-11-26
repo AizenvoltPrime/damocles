@@ -79,7 +79,7 @@ async function setup(overrides: Partial<RemoteHostsDeps> = {}, connectionOverrid
     state: () => 'offline',
     connection: (authority) => (connected.has(authority) ? ({ features: [] } as unknown as RemoteConnection) : undefined),
     workspace: () => undefined,
-    terminals: { canOpen: () => false, open: async () => undefined },
+    terminals: { canOpen: () => false, open: async () => undefined, notResponding: () => [] },
     projects: () => [],
     pickRoots: () => [],
     hostName: () => 'web',
@@ -95,11 +95,16 @@ async function setup(overrides: Partial<RemoteHostsDeps> = {}, connectionOverrid
     latency: () => undefined,
     watchLimit: () => undefined,
     sharedHome: () => undefined,
+    serverInUse: () => undefined,
+    canCheckForUpdates: () => false,
+    updateAction: async () => undefined,
+    confirmEndTerminalHost: async () => false,
     log: () => undefined,
     policyChanged: vi.fn(),
     reconnectFresh: vi.fn(async () => undefined),
     deleteRememberedSecrets: vi.fn(async () => undefined),
     forgetLocalData: vi.fn(async () => undefined),
+    confirmCloseTabs: async () => () => undefined,
     disconnect,
     openSettings: vi.fn(),
     keySetup: { folder: path.join(userData, 'ssh'), clientName: 'laptop', resolveKeygen: async () => undefined, resolveSsh: async () => undefined, run: vi.fn(), sshQuery: vi.fn(), askpass: vi.fn(), sshVersion: vi.fn(), env: {}, log: () => undefined },
@@ -203,7 +208,9 @@ describe('Forget host of an SSH host with containers', () => {
   it('forgets each container reached through it the same way, so no record names a host that is gone', async () => {
     const forgetLocalData = vi.fn(async (_hostId: string) => undefined);
     const deleteRememberedSecrets = vi.fn(async (_hostId: string) => undefined);
-    const { store, hosts, disconnect } = await setup({ forgetLocalData, deleteRememberedSecrets });
+    const closeTabs = vi.fn();
+    const confirmCloseTabs = vi.fn(async (_hostIds: readonly string[]) => closeTabs);
+    const { store, hosts, disconnect } = await setup({ forgetLocalData, deleteRememberedSecrets, confirmCloseTabs });
     const ssh = await store.addHost({ destination: { kind: 'alias', alias: 'prod' }, name: 'prod' });
     if (!ssh.ok) throw new Error('add ssh');
     const via = await store.addContainerHost({ key: 'c'.repeat(32), via: ssh.host.id, engine: 'docker', origin: 'attach', containerName: 'web', user: 'configured' }, 'web');
@@ -214,6 +221,9 @@ describe('Forget host of an SSH host with containers', () => {
     await store.grantTrust(authority, '/srv/web');
     await store.setContainerTrustHash(via.host.id, 'ab'.repeat(32));
     await hosts.forget(ssh.host.id);
+    // the containers' tabs are asked about and closed with the SSH host's
+    expect(confirmCloseTabs.mock.calls).toEqual([[[via.host.id, ssh.host.id]]]);
+    expect(closeTabs).toHaveBeenCalledOnce();
     expect(forgetLocalData.mock.calls.map(([id]) => id)).toEqual([via.host.id, ssh.host.id]);
     expect(deleteRememberedSecrets.mock.calls.map(([id]) => id)).toEqual([via.host.id, ssh.host.id]);
     expect(disconnect.mock.calls.map(([id]) => id)).toEqual([via.host.id, ssh.host.id]);

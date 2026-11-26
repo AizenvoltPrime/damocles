@@ -25,7 +25,9 @@ import {
   type RemoveServerOptions,
   type RemoveServerResult,
   type HostSettingChange,
+  type HostUpdateAction,
   HOST_SWITCH_KEYS,
+  HOST_UPDATE_ACTIONS,
 } from '../../preload/overlay-channels';
 import { isHostColor } from '../../../shared/host-colors';
 import { PERMISSION_MODES, type PermissionMode } from '../../../shared/types/settings';
@@ -47,10 +49,12 @@ export interface ConnectActions {
   pickFolder(hostId: string, path: string): Promise<{ readonly projectKey: string }>;
   runs(hostId: string): Promise<readonly HostRun[]>;
   killRun(hostId: string, runId: string): Promise<void>;
+  endTerminalHost(hostId: string): Promise<boolean>;
   openRun(hostId: string, runId: string): Promise<void>;
   showLog(hostId: string): Promise<void>;
   setInstallFolder(hostId: string, folder: string | null): Promise<InstallFolderResult>;
   copyHostKeyCommand(hostId: string): Promise<void>;
+  updateAction(hostId: string, action: HostUpdateAction): Promise<void>;
   allowBackground(hostId: string): Promise<LingerResult>;
   entries(): readonly RemoteHostEntry[];
   setSetting(hostId: string, change: HostSettingChange): Promise<void>;
@@ -273,6 +277,11 @@ export function registerConnectChannels(overlay: ConnectOverlay, actions: Connec
     if (!call || !isToken(call['hostId']) || !isToken(call['runId'])) throw malformed('hosts.killRun');
     return actions.killRun(call['hostId'], call['runId']);
   });
+  on(OVERLAY_CHANNELS.hostsEndTerminalHost, (raw) => {
+    const call = exactFields(raw, ['hostId']);
+    if (!call || !isToken(call['hostId'])) throw malformed('hosts.endTerminalHost');
+    return actions.endTerminalHost(call['hostId']);
+  });
   on(OVERLAY_CHANNELS.hostsOpenRun, (raw) => {
     const call = exactFields(raw, ['hostId', 'runId']);
     if (!call || !isToken(call['hostId']) || !isToken(call['runId'])) throw malformed('hosts.openRun');
@@ -299,5 +308,10 @@ export function registerConnectChannels(overlay: ConnectOverlay, actions: Connec
     const call = exactFields(raw, ['hostId']);
     if (!call || !isToken(call['hostId'])) throw malformed('hosts.copyHostKeyCommand');
     return actions.copyHostKeyCommand(call['hostId']);
+  });
+  on(OVERLAY_CHANNELS.hostsUpdateAction, (raw) => {
+    const call = exactFields(raw, ['hostId', 'action']);
+    if (!call || !isToken(call['hostId']) || !(HOST_UPDATE_ACTIONS as readonly unknown[]).includes(call['action'])) throw malformed('hosts.updateAction');
+    return actions.updateAction(call['hostId'], call['action'] as HostUpdateAction);
   });
 }

@@ -385,7 +385,7 @@ const tabLabel = (terminal: TerminalInfo): string => [terminal.title, terminal.d
               aria-hidden="true"
               data-testid="terminal-row-status"
               class="terminal-status-dot absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full"
-              :class="terminal.status === 'running' ? 'bg-(--d-success-fill)' : terminal.exitCode === 0 ? 'bg-(--d-faint)' : 'bg-(--d-danger-fill)'"
+              :class="terminal.status === 'running' ? 'bg-(--d-success-fill)' : terminal.status === 'notResponding' ? 'bg-(--d-warning-fill)' : terminal.exitCode === 0 ? 'bg-(--d-faint)' : 'bg-(--d-danger-fill)'"
             />
           </span>
           <TerminalRename

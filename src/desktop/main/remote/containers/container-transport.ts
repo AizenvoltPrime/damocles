@@ -27,6 +27,8 @@ export interface ContainerTransportOptions {
   readonly previousInstallFolder?: string | null;
   // aborting before the connect resolves ends the exec and rejects with cancelled
   readonly signal: AbortSignal;
+  // the user started or joined the attempt (stage1.ts StageParameters.userStarted), read as stage 1 is built
+  readonly userStarted: () => boolean;
   readonly hooks: Pick<SshAttemptHooks, 'step' | 'progress' | 'notice'>;
   installFolderSettled(): Promise<void>;
   readonly manifest: ServerManifest;
@@ -62,6 +64,7 @@ export async function startContainerTransport(options: ContainerTransportOptions
   const cacheFolder = containerCacheFolder();
   const stage1 = buildPosixStage1({
     manifest: options.manifest,
+    userStarted: options.userStarted(),
     ...(options.releasesUrl !== undefined ? { releasesUrl: options.releasesUrl } : {}),
     ...(options.installFolder !== undefined ? { installFolder: options.installFolder } : {}),
     ...(options.previousInstallFolder !== undefined ? { previousInstallFolder: options.previousInstallFolder } : {}),

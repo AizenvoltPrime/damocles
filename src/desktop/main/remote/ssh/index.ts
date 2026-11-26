@@ -4,7 +4,8 @@ export { controlMasterPlan, exitControlMaster, runSsh, systemControlMasterDeps, 
 export { HostNotConnectedError, keyFolder, setUpPasswordless, type KeySetupDeps } from './key-setup';
 export { createMainAskpassServer } from './ssh-askpass';
 export { createRememberedSecrets, type RememberedSecrets } from './remembered-secrets';
+export { sshClientChoice, sshClientPathRefusal } from './ssh-client-setting';
 export { checkSavedAddress, parseSshCommand, type SshDestination, type SshParseResult } from './ssh-command-parse';
 export { configuredAliases, sshEnvironment } from './ssh-environment';
 export { knownHostsRemoveCommand } from './ssh-stderr';
-export { runSshStage, SshConnectError, sshVersion, startSshTransport, type RememberedOption, type SshAttemptHooks } from './ssh-transport';
+export { runSshStage, SshConnectError, sshVersion, startSshTransport, systemSshTransportDeps, type RememberedOption, type SshAttemptHooks } from './ssh-transport';

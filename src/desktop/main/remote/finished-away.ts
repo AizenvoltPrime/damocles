@@ -43,16 +43,16 @@ function actionLabels(chats: readonly AwayChat[], untitled: string): string[] {
 }
 
 /**
- * Once a fresh connection's chats reopened: one notice for the recorded chats that finished meanwhile, the still running ones
- * kept for a later attach; when their core ended meanwhile, every recorded chat was stopped with it, and the notice says so.
+ * Once a fresh connection's chats reopened: one notice for the recorded chats that finished meanwhile; when their core ended
+ * meanwhile, every recorded chat was stopped with it, and the notice says so. The record empties, since this app follows the
+ * still running ones from now on.
  */
 export async function announceFinishedAway(deps: FinishedAwayDeps, authorityKey: string): Promise<void> {
   const recorded = deps.recorded(authorityKey);
   if (recorded.length === 0) return;
   const stopped = deps.coreRestarted(authorityKey);
   const finished = stopped ? [...recorded] : finishedChats(recorded, await deps.runs(authorityKey));
-  const stillRunning = recorded.filter((chat) => !finished.includes(chat));
-  await deps.record(authorityKey, stillRunning);
+  await deps.record(authorityKey, []);
   if (finished.length === 0) return;
   const name = deps.hostName(authorityKey);
   const message = stopped

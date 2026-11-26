@@ -9,9 +9,10 @@ import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../..
 import type { ChimeTone, NotificationBody, NotificationCenterState, ToastAnswer } from './notifications';
 import type { ReleaseIndex, ReleaseNotes, UpdateSnapshot, VersionInfo } from './updates';
 import type { ScmLetter } from './scm-channels';
-import type { HostLatency, HostReconnect } from '../../shared/host-connection';
+import type { HostLatency, HostReconnect, HostRemoved } from '../../shared/host-connection';
 import type { LinkRefusal } from '../../platform/file-confinement';
 import type { HostColor } from '../../shared/host-colors';
+import type { HostUpdate } from '../../shared/host-update';
 import type { PermissionMode } from '../../shared/types/settings';
 import type { TerminalColor, TerminalGlyph, TerminalPickShells, TerminalProfileReport, TerminalProjectOption } from './terminal-channels';
 import { INPUT_VALIDATIONS, MAX_INPUT_VALUE_LENGTH, inputProblem, type InputPlatform, type InputValidation } from '../../shared/input-validation';
@@ -161,6 +162,8 @@ export const OVERLAY_CHANNELS = {
   hostsRuns: 'damocles:overlay:hosts:runs',
   // { hostId, runId }: ends that terminal on the host
   hostsKillRun: 'damocles:overlay:hosts:kill-run',
+  // { hostId } → boolean: after main's confirmation, ends every terminal host the Running rows name not responding; true: one ended
+  hostsEndTerminalHost: 'damocles:overlay:hosts:end-terminal-host',
   // { hostId, runId }: that terminal gets a tab in this window's terminal panel, active and focused, and this computer keeps
   // showing it; its other viewers keep theirs
   hostsOpenRun: 'damocles:overlay:hosts:open-run',
@@ -171,6 +174,8 @@ export const OVERLAY_CHANNELS = {
   // { hostId }: writes the host's hostKeyChanged failure's params.command (ssh-keygen -R with the name quoted for any shell)
   // to the clipboard
   hostsCopyHostKeyCommand: 'damocles:overlay:hosts:copy-host-key-command',
+  // { hostId, action: HostUpdateAction }: the card's Update section; Switch now asks main's confirmation first
+  hostsUpdateAction: 'damocles:overlay:hosts:update-action',
   // { hostId } → LingerResult: loginctl enable-linger for the host's own user; answers closed unless a connect or closeRemote
   // request is open
   hostsAllowBackground: 'damocles:overlay:hosts:allow-background',
@@ -194,7 +199,8 @@ export const OVERLAY_CHANNELS = {
   // { hostId, options: RemoveServerOptions } -> RemoveServerResult; this and hostsRetryRemoval join the host's removal while
   // one runs, and its progress follows on hostsOperationsChanged
   hostsRemoveServer: 'damocles:overlay:hosts:remove-server',
-  // { hostId } -> RemoveServerResult: the removal stage that refused with daemonRunning, run again over ssh alone
+  // { hostId } -> RemoveServerResult: the removal stage that refused with daemonRunning or terminalHostRunning, run again over
+  // ssh alone
   hostsRetryRemoval: 'damocles:overlay:hosts:retry-removal',
   // { hostId } -> HostOperations, the host's setup and removal as main holds them now
   hostsOperations: 'damocles:overlay:hosts:operations',
@@ -343,6 +349,14 @@ export const SSH_FAILURE_CODES = [
   'hostKeyChanged', 'hostKeyRefused', 'permissionDenied', 'unresolved', 'refused', 'timedOut', 'unreachable', 'cancelled',
   'unsupportedOs', 'glibcTooOld', 'glibcxxMissing', 'kernelTooOld', 'macosTooOld', 'windowsBuildTooOld', 'nixLdMissing',
   'noexec', 'lowSpace', 'installFolderInvalid', 'installFolderUnsafe', 'hashMismatch', 'downloadAndUploadFailed', 'selfTestFailed', 'bridgeFailed',
+  // no server runs on the host and its security floor {floor} is above this app, so the bridge started none
+  'belowFloor',
+  // the host's security floor or the server's version could not be read ({reason}: an errno code or `unreadable`), so the
+  // bridge could not tell whether it may start a server and started none
+  'floorUnreadable',
+  // an automatic connect found that Remove Damocles server ran on the host and the version it needs is not installed, so it
+  // installed nothing; a connect the user starts installs again
+  'serverRemoved',
   // the host's saved address holds something the parser's rules now refuse (params.setting); ssh did not start
   'destinationRefused', 'unknown',
   // a container attempt: folderUntrusted and configRefused ran nothing; composeUnsupported: a dockerComposeFile configuration,
@@ -367,6 +381,10 @@ export interface HostNotice {
 
 // a sharedHome notice's hosts param joins the other machines' hostnames, which OTHER_HOSTNAME keeps free of line breaks
 export const SHARED_HOME_SEPARATOR = '\n';
+
+// The host card's Update section: Switch when they finish, Switch now, and the app's own Check for updates.
+export const HOST_UPDATE_ACTIONS = ['switchWhenIdle', 'switchNow', 'checkForUpdates'] as const;
+export type HostUpdateAction = (typeof HOST_UPDATE_ACTIONS)[number];
 
 export interface ConnectFailure {
   readonly code: ConnectFailureCode;
@@ -477,6 +495,8 @@ export interface HostCardInfo {
   readonly notices: readonly HostNotice[];
   // the last attempt's failure while it is the host's state
   readonly failure?: ConnectFailure;
+  // Remove Damocles server ran on the host, by another device or as an automatic connect found it, until the next connect
+  readonly removed?: HostRemoved;
   // the handshake's measured skew, present only past CLOCK_SKEW_WARN_MS
   readonly clockSkewMs?: number;
   // the host's install folder setting; absent: ~/.damocles/server
@@ -485,8 +505,15 @@ export interface HostCardInfo {
   readonly reconnect?: HostReconnect;
   // the latest round trip and the last ten, which the card's sparkline draws
   readonly latency?: HostLatency;
+  // a pending server switch, or this app being too old for the host, which the card's Update section shows
+  readonly update?: HostUpdate;
+  // the app's updater runs, so the Update section offers Check for updates; absent in the unpackaged app
+  readonly canCheckForUpdates?: true;
   // the devices attached to the host's daemon, this one included, while connected
   readonly devices?: readonly HostDevice[];
+  // this window's terminals on the host whose terminal host does not answer, unique and never empty; the open card lists the
+  // host's runs again when it changes
+  readonly notRespondingTerminals?: readonly string[];
   // the safety profile the card's Safety line shows
   readonly defaultPermissionMode?: PermissionMode;
   readonly allowBypass: boolean;
@@ -680,13 +707,14 @@ export interface RemotePick {
 
 // A terminal running on a host, from its daemon's run list; projectKey is this computer's key for its project, when listed.
 // canOpen: hosts.openRun adds a tab for it here: it has no live tab here, its folder is open here, and its host recorded
-// what a view needs.
+// what a view needs. notResponding: its terminal host does not answer the daemon, which End terminal host ends.
 export interface HostRun {
   readonly id: string;
   readonly title: string;
   readonly state: 'running' | 'waiting' | 'background';
   readonly projectKey?: string;
   readonly canOpen: boolean;
+  readonly notResponding?: true;
 }
 
 // invalid: not an absolute path or ~-prefixed, or it holds a newline or NUL
@@ -808,18 +836,23 @@ export interface RemovalInfo {
   readonly runs: readonly RemovalRun[];
   readonly offerRemoveKey: boolean;
   readonly offerDisableLinger: boolean;
+  // the other devices attached to the daemon, by device name, which the removal disconnects until the user connects them again
+  readonly otherDevices: readonly string[];
 }
 export interface RemoveServerOptions {
   readonly removeKey: boolean;
   readonly disableLinger: boolean;
 }
 // stageFailed: {code} of STAGE_FAILED_CODES, and {exitCode} with code exit; daemonRunning: this machine's daemon runs or holds its
-// lock
+// lock; terminalHostRunning: {pids}, the space-separated pids of this machine's terminal hosts still running from the install,
+// and {os}, posix or win32, the host's as main ran the stage for it
 export const STAGE_FAILED_CODES = ['keyFile', 'runKey', 'userName', 'protocol', 'killed', 'exit'] as const;
-export type RemoveServerFailureCode = 'notConnected' | 'unsupported' | 'daemonRunning' | 'stageFailed';
-// versionKept: {version, machine}, another machine's live daemon runs it; serverFolderKept: other machines' entries stay;
-// deleteFailed: {entry} could not be deleted; installInProgress: {folder} is kept while a stage installs there
-export type RemoveServerNoticeCode = 'versionKept' | 'serverFolderKept' | 'keyNotFound' | 'lingerFailed' | 'deleteFailed' | 'installInProgress';
+export type RemoveServerFailureCode = 'notConnected' | 'unsupported' | 'daemonRunning' | 'terminalHostRunning' | 'stageFailed';
+// versionKept: {version, machine}, another machine's live daemon runs it; floorKept: install {folder} keeps {files}: its
+// security floor (floor), its removed marker (marker) or both; serverFolderKept: entries besides those stay; deleteFailed: {entry} could not be deleted;
+// installInProgress: {folder} is kept while a stage installs there; markerFailed: the removed marker could not be written in
+// install {folder}
+export type RemoveServerNoticeCode = 'versionKept' | 'floorKept' | 'serverFolderKept' | 'keyNotFound' | 'lingerFailed' | 'deleteFailed' | 'installInProgress' | 'markerFailed';
 export type RemoveServerResult =
   | { readonly ok: true; readonly notices: ReadonlyArray<{ readonly code: RemoveServerNoticeCode; readonly params: Readonly<Record<string, string>> }> }
   | { readonly ok: false; readonly code: RemoveServerFailureCode; readonly params: Readonly<Record<string, string>> };
@@ -2142,7 +2175,11 @@ export interface ThemeEditorApi {
   importSpriteFile(sessionId: number, strip?: { readonly frames: number; readonly fps: number }): Promise<ThemeEditorSpriteResult>;
 }
 
-export type OverlayPrefWrite = { readonly ok: true; readonly file: string } | { readonly ok: false; readonly error: string };
+// Why main refused a value its settings page localizes (settingsHost.prefRefusal.<code>).
+export const PREF_REFUSALS = ['sshPathNotAbsolute', 'sshPathNotFile'] as const;
+export type PrefRefusal = (typeof PREF_REFUSALS)[number];
+
+export type OverlayPrefWrite = { readonly ok: true; readonly file: string } | { readonly ok: false; readonly error: string; readonly refusal?: PrefRefusal };
 
 export interface DamoclesOverlayApi {
   getState(): Promise<OverlayState>;
@@ -2293,11 +2330,14 @@ export interface DamoclesOverlayApi {
   pickHostFolder(hostId: string, path: string): Promise<PopupAnswer<{ readonly projectKey: string }>>;
   hostRuns(hostId: string): Promise<PopupAnswer<readonly HostRun[]>>;
   killHostRun(hostId: string, runId: string): Promise<PopupAnswer<void>>;
+  endTerminalHost(hostId: string): Promise<PopupAnswer<boolean>>;
   openHostRun(hostId: string, runId: string): Promise<PopupAnswer<void>>;
   showHostLog(hostId: string): Promise<PopupAnswer<void>>;
   setInstallFolder(hostId: string, folder: string | null): Promise<PopupAnswer<InstallFolderResult>>;
   // rejects unless the host's failure is hostKeyChanged
   copyHostKeyCommand(hostId: string): Promise<PopupAnswer<void>>;
+  // the card's Update section; a switch rejects while none is pending, Check for updates while the updater is off
+  hostUpdateAction(hostId: string, action: HostUpdateAction): Promise<PopupAnswer<void>>;
   // returns the unsubscribe
   onConnectStep(listener: (event: ConnectStepEvent) => void): () => void;
   onConnectHosts(listener: (hosts: readonly HostCardInfo[]) => void): () => void;

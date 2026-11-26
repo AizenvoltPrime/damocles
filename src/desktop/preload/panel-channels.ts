@@ -2,9 +2,10 @@
 // that view's messages reach, so the renderer never needs to know which panel it is.
 
 import type { FileIconTheme } from '../local-services/desktop-configuration';
-import type { ChatConnection } from '../../shared/host-connection';
+import type { ChatConnection, HostRemoved } from '../../shared/host-connection';
 import type { HostColor } from '../../shared/host-colors';
-import type { HostAttention, HostUpdate } from './shell-channels';
+import type { HostAttention } from './shell-channels';
+import type { HostUpdate } from '../../shared/host-update';
 
 export type ThemeKind = 'dark' | 'light';
 
@@ -32,16 +33,20 @@ export interface PanelHostLabel {
   readonly computer: string;
   // the host is offline or waits for the user to sign in (hostAttention), which the page's banner under its header names
   readonly attention?: HostAttention;
-  // a daemon of another protocol still runs agents there (ShellHost.update), which the update banner names
+  // Remove Damocles server ran on the host (ShellHost.removed), which the page's banner names with its Connect
+  readonly removed?: HostRemoved;
+  // a pending server switch on the host, or this app being too old for it (ShellHost.update), which the update banner names
   readonly update?: HostUpdate;
+  // the app's updater runs, so the update banner offers Check for updates; absent in the unpackaged app
+  readonly canCheckForUpdates?: true;
   // the host has a saved record, so main may ask to allow YOLO on it; absent for loopback
   readonly canAllowYolo?: true;
 }
 
 // The page banner's button: Reconnect (also Reconnect now and Retry), Sign in, Show log or Edit host, and the update banner's
-// Switch when they finish and Switch now, for the page's own host.
-export type PanelHostAction = 'reconnect' | 'signIn' | 'showLog' | 'editHost' | 'switchWhenIdle' | 'switchNow';
-export const PANEL_HOST_ACTIONS: readonly PanelHostAction[] = ['reconnect', 'signIn', 'showLog', 'editHost', 'switchWhenIdle', 'switchNow'];
+// Switch when they finish, Switch now and Check for updates, for the page's own host.
+export type PanelHostAction = 'reconnect' | 'signIn' | 'showLog' | 'editHost' | 'switchWhenIdle' | 'switchNow' | 'checkForUpdates';
+export const PANEL_HOST_ACTIONS: readonly PanelHostAction[] = ['reconnect', 'signIn', 'showLog', 'editHost', 'switchWhenIdle', 'switchNow', 'checkForUpdates'];
 
 export type { ChatConnection as PanelConnection, HeldMessage as PanelQueuedMessage, HeldMessageAction as PanelQueueAction } from '../../shared/host-connection';
 

@@ -25,6 +25,7 @@ import { connectClient, resumeClient } from './test-client';
 import { holdStream } from '../../../remote/tunnel-pipe';
 import type { AgentRelay } from '../agent-relay';
 import type { ConnectionMirrorWatches, MirrorWatches } from '../mirror-server';
+import { RUNS_EVENT_MS, type Run } from '../control-messages';
 
 // no terminal or formatter runs in these tests
 const NO_HOSTS: HostStarters = {
@@ -178,7 +179,8 @@ describe('daemon connections', () => {
 
   it('keeps the frozen control commands open after refusing another protocol version', async () => {
     const client = await connectClient(await daemon.connect(), { protocolVersion: 99 });
-    expect(client.outcome).toMatchObject({ kind: 'refused', refused: { reason: 'protocol' } });
+    // a refused connection has no welcome, so the refusal names the frozen commands a later app may call
+    expect(client.outcome).toMatchObject({ kind: 'refused', refused: { reason: 'protocol', frozenFeatures: ['control.handOver'] } });
     expect(await client.frozen.request('listRuns', {})).toEqual({ runs: [] });
     // a command outside the frozen set is a violation there, which closes the connection
     const viaFrozen = client.frozen as unknown as { request(method: string, params: unknown): Promise<unknown> };
@@ -186,9 +188,43 @@ describe('daemon connections', () => {
     expect(await client.closed).toBeTruthy();
   });
 
+  it('serves handOver on the frozen endpoint of a refused connection: now exits', async () => {
+    const client = await connectClient(await daemon.connect(), { protocolVersion: 99 });
+    await client.frozen.request('handOver', { when: 'now' });
+    expect(await daemon.exited).toBe('handOver now');
+    expect(await readPidFile(daemon.paths.pidFile)).toBeUndefined();
+  });
+
+  it('serves handOver idle on the frozen endpoint, waiting for a connected client that did not ask', async () => {
+    const other = await connectClient(await daemon.connect(), { clientId: 'other' });
+    const asker = await connectClient(await daemon.connect(), { clientId: 'asker', protocolVersion: 99 });
+    await asker.frozen.request('handOver', { when: 'idle' });
+    const running = await Promise.race([daemon.exited, new Promise<string>((resolve) => setTimeout(() => resolve('running'), 200))]);
+    expect(running).toBe('running');
+    other.protocol.close('done');
+    expect(await daemon.exited).toBe('handOver, and no agent run, damocles --wait or other client is left');
+  });
+
+  it('serves handOverIfIdle: with no agent run and no damocles --wait, answers now and exits handed over', async () => {
+    const client = await connectClient(await daemon.connect());
+    expect(client.outcome.kind === 'welcome' && client.outcome.welcome.features).toContain('control.handOverIfIdle');
+    expect(await client.control.request('handOverIfIdle', {})).toEqual({ when: 'now' });
+    expect(await daemon.exited).toBe('handOver now, and no agent run or damocles --wait was pending');
+    expect(await readPidFile(daemon.paths.pidFile)).toBeUndefined();
+  });
+
+  it('closes a connection that asks handOver with a when outside its closed list, and stays up', async () => {
+    const client = await connectClient(await daemon.connect(), { protocolVersion: 99 });
+    const viaFrozen = client.frozen as unknown as { request(method: string, params: unknown): Promise<unknown> };
+    await expect(viaFrozen.request('handOver', { when: 'later' })).rejects.toThrow();
+    expect(await client.closed).toBeTruthy();
+    const running = await Promise.race([daemon.exited, new Promise<string>((resolve) => setTimeout(() => resolve('running'), 200))]);
+    expect(running).toBe('running');
+  });
+
   it('refuses an unknown reconnection token and closes', async () => {
     const client = await connectClient(await daemon.connect(), { reconnectionToken: new Uint8Array(32) });
-    expect(client.outcome).toMatchObject({ kind: 'refused', refused: { reason: 'unknown-token' } });
+    expect(client.outcome).toMatchObject({ kind: 'refused', refused: { reason: 'unknown-token', frozenFeatures: ['control.handOver'] } });
     expect(await client.closed).toBeTruthy();
   });
 
@@ -265,6 +301,32 @@ describe('daemon connections', () => {
     client.protocol.close('done');
   });
 
+  it('tells every other device that asked, by the asking device\'s name, that a switch ends it, before their connections end', async () => {
+    for (const ask of ['handOverIfIdle', 'handOver now', 'shutdownNow'] as const) {
+      const asker = await connectClient(await daemon.connect(), { clientId: 'asker', deviceName: 'DESKTOP-A' });
+      const watching = await connectClient(await daemon.connect(), { clientId: 'watching', deviceName: 'Laptop B' });
+      const unasked = await connectClient(await daemon.connect(), { clientId: 'unasked', deviceName: 'Old app' });
+      expect(asker.outcome.kind === 'welcome' && asker.outcome.welcome.features).toContain('control.handingOver');
+      const seen: string[] = [];
+      for (const [name, connection] of [['asker', asker], ['watching', watching], ['unasked', unasked]] as const) {
+        connection.control.onEvent('handingOver', ({ deviceName }) => seen.push(`${name} told: ${deviceName}`));
+        void connection.closed.then(() => seen.push(`${name} closed`));
+      }
+      await asker.control.request('attach', { terminalIdleDays: 7, watchHandOver: true });
+      await watching.control.request('attach', { terminalIdleDays: 7, watchHandOver: true });
+      await unasked.control.request('attach', { terminalIdleDays: 7 });
+      if (ask === 'handOverIfIdle') expect(await asker.control.request('handOverIfIdle', {})).toEqual({ when: 'now' });
+      else if (ask === 'handOver now') await asker.control.request('handOver', { when: 'now' });
+      else await asker.control.request('shutdownNow', {});
+      await daemon.exited;
+      await Promise.all([asker.closed, watching.closed, unasked.closed]);
+      expect(seen.filter((line) => line.includes('told')), ask).toEqual(['watching told: DESKTOP-A']);
+      expect(seen.indexOf('watching told: DESKTOP-A'), ask).toBeLessThan(seen.indexOf('watching closed'));
+      await daemon.shutdown();
+      daemon = await startInProcessDaemon({ starters: NO_HOSTS });
+    }
+  });
+
   it('answers shutdownNow, then removes its pid file and exits', async () => {
     const client = await connectClient(await daemon.connect());
     await client.control.request('shutdownNow', {});
@@ -289,7 +351,7 @@ describe('daemon connections', () => {
 describe('daemon connections inside the grace', () => {
   const token = randomBytes(32);
 
-  function harness(maxHeldBytes: number, overrides: Partial<Pick<ConnectionsDeps, 'control' | 'mirrorWatches' | 'agentUpstream'>> = {}) {
+  function harness(maxHeldBytes: number, overrides: Partial<Pick<ConnectionsDeps, 'control' | 'mirrorWatches' | 'agentUpstream' | 'runs'>> = {}) {
     let core: CoreTransport | undefined;
     let coreDrained: (() => Promise<void>) | undefined;
     const links: ClientLink[] = [];
@@ -299,7 +361,7 @@ describe('daemon connections inside the grace', () => {
     const connections = createConnections({
       serverVersion: '0.0.0-test',
       facts: TEST_FACTS,
-      workspace: { serve: () => ({ dispose: () => undefined }) },
+      workspace: { serve: () => ({ dispose: () => undefined }), attached: () => undefined },
       ports: { serve: () => ({ dispose: () => undefined }) },
       core: {
         epoch: () => null,
@@ -313,6 +375,7 @@ describe('daemon connections inside the grace', () => {
       },
       control: {} as never,
       mirrorWatches: mirrorWatches(),
+      runs: { runs: () => [], cliWaits: () => [], onChange: () => ({ dispose: () => undefined }) },
       connectionsChanged: (connected) => presence.push(connected),
       connectionClosed: (id) => closed.push(id),
       agentUpstream: () => undefined,
@@ -433,6 +496,58 @@ describe('daemon connections inside the grace', () => {
       await connections.endAll();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  it('sends the runs to an attach that watches them, at once and then one event for the changes of each RUNS_EVENT_MS, to no other attach, until it closes', async () => {
+    const run = (id: string, kind: Run['kind']): Run => ({ kind, id, projectKey: '', title: id, state: 'running', providers: [] });
+    let current: readonly Run[] = [];
+    const changed = new Set<() => void>();
+    const setRuns = (next: readonly Run[]): void => {
+      current = next;
+      for (const listener of [...changed]) listener();
+    };
+    const { connections, socket } = harness(64 * 1024, {
+      control: { attach: () => undefined } as never,
+      runs: { runs: () => current, cliWaits: () => [], onChange: (listener) => (changed.add(listener), { dispose: () => { changed.delete(listener); } }) },
+    });
+    const watcher = await connectClient(await socket(), { clientId: 'watcher' });
+    const other = await connectClient(await socket(), { clientId: 'other' });
+    const seen: string[][] = [];
+    const unasked = vi.fn();
+    watcher.control.onEvent('runs', ({ runs }) => seen.push(runs.map((listed) => listed.id)));
+    other.control.onEvent('runs', unasked);
+    await watcher.control.request('attach', { terminalIdleDays: 7, watchRuns: true });
+    await other.control.request('attach', { terminalIdleDays: 7 });
+    expect(seen).toEqual([[]]);
+    setRuns([run('term-1', 'terminal')]);
+    setRuns([run('term-1', 'terminal'), run('panel-1', 'chat')]);
+    setRuns([run('panel-1', 'chat')]);
+    await vi.waitFor(() => expect(seen).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, RUNS_EVENT_MS * 2));
+    expect(seen).toEqual([[], ['panel-1']]);
+    expect(unasked).not.toHaveBeenCalled();
+    watcher.protocol.close('done');
+    other.protocol.close('done');
+    await connections.endAll();
+    expect(changed.size).toBe(0);
+  });
+
+  it('sends the pending damocles --wait requests with each runs event, which listRuns leaves out', async () => {
+    let waits: readonly string[] = [];
+    const changed = new Set<() => void>();
+    const { connections, socket } = harness(64 * 1024, {
+      control: { attach: () => undefined } as never,
+      runs: { runs: () => [], cliWaits: () => waits, onChange: (listener) => (changed.add(listener), { dispose: () => { changed.delete(listener); } }) },
+    });
+    const watcher = await connectClient(await socket(), { clientId: 'watcher' });
+    const seen: Array<readonly string[] | undefined> = [];
+    watcher.control.onEvent('runs', ({ cliWaits }) => seen.push(cliWaits));
+    await watcher.control.request('attach', { terminalIdleDays: 7, watchRuns: true });
+    waits = ['COMMIT_EDITMSG'];
+    for (const listener of [...changed]) listener();
+    await vi.waitFor(() => expect(seen).toEqual([[], ['COMMIT_EDITMSG']]));
+    watcher.protocol.close('done');
+    await connections.endAll();
   });
 
   it('follows a project before it serves the project\'s mirror.sync, sends mirror.changed for it, and lets go of it with the connection', async () => {

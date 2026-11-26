@@ -269,12 +269,16 @@ export function startCoreScm(platform: CorePlatform, gitLog: LogSink, log: (line
     if (relay === undefined && relays && !closed) void listenRelay();
     return relay;
   };
-  // the daemon made the relay's removed folder again: the relay listens at its new handle from then on
+  let relayHandle = init.paths.askpass.credentialRelay?.handle;
+  // the daemon made the relay's removed folder again: the relay listens at its new handle from then on; and a terminal host
+  // attached or left, whose nonce the relay accepts while it is attached
   const relayMoved = relays
-    ? endpoint.onMirror('hostSockets', ({ relayHandle }) => {
-      if (relayHandle === undefined) return;
+    ? endpoint.onMirror('hostSockets', (patch) => {
+      if (patch.relayNonces !== undefined) askpass.acceptRelayNonces(patch.relayNonces);
+      if (patch.relayHandle === undefined || patch.relayHandle === relayHandle) return;
+      relayHandle = patch.relayHandle;
       relay = undefined;
-      askpass.moveRelay(relayHandle).then(listenRelay, relayFailed);
+      askpass.moveRelay(patch.relayHandle).then(listenRelay, relayFailed);
     })
     : undefined;
   if (relays) {

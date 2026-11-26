@@ -3583,6 +3583,9 @@
   "remote": {
     "offline": "{host} is offline",
     "offlineNote": "This chat is read-only until {host} reconnects. Its transcript is the copy this computer keeps.",
+    "outdatedTitle": "{host} runs a newer Damocles",
+    "outdatedFloorTitle": "{host} needs a newer Damocles",
+    "outdatedNote": "This chat is read-only until this app updates. Its transcript is the copy this computer keeps.",
     "signIn": "{host} is waiting for you to sign in",
     "reconnect": "Reconnect",
     "signInAction": "Sign in to {host}",
@@ -3594,6 +3597,9 @@
     "showLog": "Show log",
     "editHost": "Edit host",
     "reconnected": "Reconnected to {host}",
+    "removedBy": "The Damocles server on {host} was removed from {device}. Connect to install it again.",
+    "removedFound": "The Damocles server was removed from {host}. Connect to install it again.",
+    "connect": "Connect",
     "announce": {
       "reconnecting": "Reconnecting to {host}",
       "failed": "Couldn't reconnect to {host}"
@@ -3617,10 +3623,34 @@
     "stop": "Stop"
   },
   "hostUpdate": {
-    "running": "{host} is running {count} agent on Damocles {version} | {host} is running {count} agents on Damocles {version}",
-    "waiting": "Waiting for the agents on {host} to finish",
+    "running": "{host} is running {count} agent on Damocles {from}. Damocles {to} is ready. | {host} is running {count} agents on Damocles {from}. Damocles {to} is ready.",
+    "runningTerminals": "{host} is running {count} terminal on Damocles {from}. Damocles {to} is ready. | {host} is running {count} terminals on Damocles {from}. Damocles {to} is ready.",
+    "waiting": "{host} switches to Damocles {to} when {count} agent finishes. | {host} switches to Damocles {to} when {count} agents finish.",
+    "waitingTerminals": "{host} switches to Damocles {to} when {count} terminal closes. | {host} switches to Damocles {to} when {count} terminals close.",
+    "waitingDevices": "{host} switches to Damocles {to} when {count} other device disconnects. | {host} switches to Damocles {to} when {count} other devices disconnect.",
+    "waitingFree": "{host} switches to Damocles {to} when it is free.",
+    "switching": "Switching {host} to Damocles {to}.",
+    "appOutdated": "{host} runs Damocles {from}. Update this app to use it.",
+    "appOutdatedFloor": "{host} needs Damocles {from} or later. Update this app to use it.",
+    "waitingDrain": "{host} switches to Damocles {to} at {time}. {count} other device reconnects then. | {host} switches to Damocles {to} at {time}. {count} other devices reconnect then.",
+    "required": "{host} must switch to Damocles {to} {by}{left}.",
+    "byTime": "by {time}",
+    "byDay": "by {day} {time}",
+    "left": ", {in}",
+    "requiredAgents": "{count} agent is still running. | {count} agents are still running.",
+    "countdown": "{host} switches to Damocles {to} in {clock}.",
+    "countdownAgents": "{count} agent will stop. | {count} agents will stop.",
+    "inHours": "in {count} h | in {count} h",
+    "inMinutes": "in {count} minute | in {count} minutes",
+    "minutes": "less than a minute | {count} minute | {count} minutes",
+    "terminalsClose": "Its terminal closes when it switches. | Its {count} terminals close when it switches.",
+    "waitingCliWaits": "{host} switches to Damocles {to} when you close the file a terminal is waiting for. | {host} switches to Damocles {to} when you close the files {count} terminals are waiting for.",
+    "cliWaits": "{count} terminal is waiting for a file. | {count} terminals are waiting for files.",
+    "countdownCliWaits": "{count} terminal will stop waiting for its file. | {count} terminals will stop waiting for their files.",
     "switchWhenIdle": "Switch when they finish",
-    "switchNow": "Switch now"
+    "switchWhenClosed": "Switch when they close",
+    "switchNow": "Switch now",
+    "checkUpdates": "Check for updates"
   },
   "design": {
     "markup": {

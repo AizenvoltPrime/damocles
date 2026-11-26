@@ -7,6 +7,7 @@ import { FuseState, FuseV1Options, getCurrentFuseWire } from '@electron/fuses';
 import { CREDENTIAL_RELAY_SCRIPTS } from '../esbuild.config.ts';
 import { ASAR_UNPACK, asarUnpackFor } from '../src/desktop/main/platform/unpacked-assets.ts';
 import { parseServerManifest } from '../src/desktop/main/remote/server-manifest-format.ts';
+import { SERVER_REQUIREMENT } from '../src/desktop/main/remote/server-requirement.ts';
 import { asarFiles, readAsarBytes, readAsarFile, readAsarHeader, type AsarFileEntry } from './asar-archive.ts';
 import { THEME_LINK_SCHEME } from '../src/shared/themes/theme-links.ts';
 import { serverManifest, type ManifestPackage, type ServerManifest } from './build-server.ts';
@@ -68,8 +69,8 @@ const PACKED_NOTICES = ['LICENSE', 'THIRD-PARTY-NOTICES.md'];
 const RESOURCE_NOTICES = ['monaco-editor-ThirdPartyNotices.txt'];
 // Damocles Core's bundle: utilityProcess.fork loads it from inside app.asar, so it stays under asar integrity (coreHostEntryPath).
 export const CORE_HOST_BUNDLE = 'dist/core-host.js';
-// The loopback daemon is dev and e2e only: electron-builder never lists it.
-export const DAEMON_BUNDLE = 'dist/daemon.js';
+// The loopback daemon and the terminal host it starts are dev and e2e only: electron-builder never lists them.
+export const DAEMON_BUNDLES = ['dist/daemon.js', 'dist/terminal-host.js'];
 // Settings › About's What's new reads it (src/desktop/main/release-notes.ts); the desktop build copies it from the repo root.
 const PACKED_CHANGELOG = 'dist/desktop/CHANGELOG.md';
 // readServerManifest reads it beside main.js; package-desktop writes it from the release's server packages
@@ -283,11 +284,14 @@ export function checkCoreHost(entries: PackedEntry[], unpackedFiles: string[]): 
   return [problems.length === 0 ? pass('core host', `${CORE_HOST_BUNDLE} is inside app.asar only`) : fail('core host', problems.join('; '))];
 }
 
+const requirementText = (requirement: ServerManifest['requirement']): string =>
+  (requirement === undefined ? 'nothing' : `servers of ${requirement.minimumServerVersion} or later within ${requirement.graceHours} hours`);
+
 /**
- * The packed server manifest parses as the app reads it, is for `version`, is published, so hosts download from the release,
- * and names exactly the packages of `expected` with their server versions.
+ * The packed server manifest parses as the app reads it, requires what server-requirement.ts does, is for `version`, is
+ * published, so hosts download from the release, and names exactly the packages of `expected` with their server versions.
  */
-export function checkServerManifest(packed: string | undefined, version: string, expected: Pick<ServerManifest, 'protocolVersion' | 'packages'>): CheckResult[] {
+export function checkServerManifest(packed: string | undefined, version: string, expected: Pick<ServerManifest, 'protocolVersion' | 'packages' | 'requirement'>): CheckResult[] {
   if (packed === undefined) return [fail('server manifest', `${PACKED_SERVER_MANIFEST} is not in app.asar`)];
   const manifest = parseServerManifest(JSON.parse(packed));
   if (manifest === undefined) return [fail('server manifest', `${PACKED_SERVER_MANIFEST} does not parse as the app reads it`)];
@@ -297,15 +301,19 @@ export function checkServerManifest(packed: string | undefined, version: string,
     ...(manifest.version === version ? [] : [`it is for ${manifest.version}, the app is ${version}`]),
     ...(manifest.published ? [] : ['it is unpublished, the dev manifest build-server.ts writes without --write-manifest']),
     ...(manifest.protocolVersion === expected.protocolVersion ? [] : [`it names protocol ${manifest.protocolVersion}, the build ${expected.protocolVersion}`]),
+    ...(requirementText(manifest.requirement) === requirementText(expected.requirement) ? [] : [`it requires ${requirementText(manifest.requirement)}, server-requirement.ts ${requirementText(expected.requirement)}`]),
     ...Object.entries(expected.packages).filter(([target, pkg]) => !same(packages[target], pkg)).map(([target, pkg]) => `${target} is not ${pkg.file} with its SHA-256, size and server version ${pkg.serverVersion}`),
   ];
   return [problems.length === 0 ? pass('server manifest', `names the ${Object.keys(expected.packages).length} release packages`) : fail('server manifest', problems.join('; '))];
 }
 
-/** The loopback daemon ships neither in app.asar nor beside it. */
+/** The loopback daemon and its terminal host ship neither in app.asar nor beside it. */
 export function checkNoDaemon(entries: PackedEntry[], unpackedFiles: string[]): CheckResult[] {
-  const found = [...entries.filter(({ path }) => path === DAEMON_BUNDLE).map(() => 'in app.asar'), ...(unpackedFiles.includes(DAEMON_BUNDLE) ? ['in app.asar.unpacked'] : [])];
-  return [found.length === 0 ? pass('loopback daemon', `${DAEMON_BUNDLE} does not ship`) : fail('loopback daemon', `${DAEMON_BUNDLE} ships ${found.join(' and ')}`)];
+  const found = DAEMON_BUNDLES.flatMap((bundle) => {
+    const places = [...(entries.some(({ path }) => path === bundle) ? ['in app.asar'] : []), ...(unpackedFiles.includes(bundle) ? ['in app.asar.unpacked'] : [])];
+    return places.length === 0 ? [] : [`${bundle} ships ${places.join(' and ')}`];
+  });
+  return [found.length === 0 ? pass('loopback daemon', `${DAEMON_BUNDLES.join(' and ')} do not ship`) : fail('loopback daemon', found.join('; '))];
 }
 
 // The community store's theme validator (npm run build:theme-validator) is built for the store's CI only: its launcher, and
@@ -803,7 +811,7 @@ export async function verifyPackage({ platform, arch, app, repoRoot, serverPacka
   if (serverPackages !== undefined) {
     const manifestFile = entries.find(({ path, entry }) => path === PACKED_SERVER_MANIFEST && !entry.unpacked);
     const packed = manifestFile === undefined ? undefined : readAsarFile(asarPath, dataOffset, manifestFile.entry);
-    results.push(...checkServerManifest(packed, repoVersion, serverManifest(serverPackages, repoVersion, Object.keys(SERVER_TARGETS), { published: true })));
+    results.push(...checkServerManifest(packed, repoVersion, serverManifest(serverPackages, repoVersion, Object.keys(SERVER_TARGETS), { published: true, requirement: SERVER_REQUIREMENT })));
   }
 
   const unpackedFiles = listFiles(unpacked);

@@ -293,7 +293,7 @@ describe('desktop updater guards', () => {
     await expect(service.openReleasePage()).rejects.toThrow('No update is available');
   });
 
-  it.each(['1.0.0/../../evil', '1.0.0@evil.com', '1.0.0\n', ' 1.0.0', 'javascript:alert(1)', '1.2.3?x=1', '1.2.3#x', '1.2.3-a/b', ''])('refuses the hostile feed version %j', (version) => {
+  it.each(['1.0.0/../../evil', '1.0.0@evil.com', '1.0.0\n', ' 1.0.0', 'javascript:alert(1)', '1.2.3?x=1', '1.2.3#x', '1.2.3-a/b', '', '1.2.3-a..b', '01.2.3', '1.2.3+0123456789ab'])('refuses the hostile or malformed feed version %j', (version) => {
     expect(() => releasePageUrl(version)).toThrow();
   });
 

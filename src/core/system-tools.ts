@@ -2,6 +2,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { executablePathForm, searchPathEntries } from './executable-path';
+import { log } from './logger';
+import { runProcess } from './process-launcher';
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -106,17 +108,88 @@ function isMissing(err: unknown): boolean {
 
 // Where OpenSSH installs its client tools when no absolute PATH folder holds them.
 const POSIX_OPENSSH_FOLDERS: readonly string[] = ['/usr/bin', '/bin'];
+// `ssh -V` of the Win32-OpenSSH build, the only Windows client that reaches the Windows ssh-agent's named pipe.
+const WIN32_OPENSSH_VERSION = /\bOpenSSH_for_Windows_/;
+const SSH_VERSION_TIMEOUT_MS = 15_000;
+
+type OpenSshTool = 'ssh-keygen' | 'ssh-add';
+
+/** What `ssh -V` printed, stderr first; undefined when it gave no answer. */
+export type SshVersionReader = (ssh: string) => Promise<string | undefined>;
+
+/** How the OpenSSH client is chosen beyond the environment's PATH. */
+export interface SshClientChoice {
+  /** The SSH client path setting: an absolute path to a file, which wins on every OS. */
+  readonly configured?: string | undefined;
+  readonly readVersion?: SshVersionReader;
+  readonly log?: (line: string) => void;
+}
+
+/** `ssh -V` on the launcher. */
+export const readSshVersion: SshVersionReader = async (ssh) => {
+  const { exit, stdout, stderr } = await runProcess({ file: ssh, args: ['-V'], windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }, { timeoutMs: SSH_VERSION_TIMEOUT_MS });
+  return exit === null ? undefined : `${stderr.toString('utf8')}${stdout.toString('utf8')}`;
+};
+
+interface VersionEntry {
+  readonly mtimeMs: number;
+  readonly size: number;
+  readonly text: Promise<string | undefined>;
+}
+
+const versionTexts = new WeakMap<SshVersionReader, Map<string, VersionEntry>>();
+// each fallback client is logged once per process
+const loggedFallbacks = new Set<string>();
+
+// One `ssh -V` per binary while its modification time and size stay; a run that gave no answer is read again next time.
+async function sshVersionText(file: string, read: SshVersionReader): Promise<string | undefined> {
+  let stat: fs.Stats;
+  try {
+    stat = await fs.promises.stat(file);
+  } catch {
+    return undefined;
+  }
+  let cache = versionTexts.get(read);
+  if (cache === undefined) versionTexts.set(read, (cache = new Map()));
+  const known = cache.get(file);
+  if (known !== undefined && known.mtimeMs === stat.mtimeMs && known.size === stat.size) return known.text;
+  const entry: VersionEntry = { mtimeMs: stat.mtimeMs, size: stat.size, text: read(file).catch(() => undefined) };
+  cache.set(file, entry);
+  const text = await entry.text;
+  if (text === undefined && cache.get(file) === entry) cache.delete(file);
+  return text;
+}
 
 /**
- * An OpenSSH client tool as an absolute path: an absolute PATH folder's, else Windows' own `%SystemRoot%\System32\OpenSSH`
- * one or, elsewhere, `/usr/bin`'s or `/bin`'s; undefined when none exists.
+ * The first OpenSSH for Windows build among the absolute PATH folders' ssh.exe and `%SystemRoot%\System32\OpenSSH\ssh.exe`;
+ * an MSYS or Cygwin build (Git for Windows' usr\bin, MSYS2) only when there is none, with a log line.
  */
-async function openSshTool(name: 'ssh' | 'ssh-keygen', env: Env, platform: NodeJS.Platform): Promise<string | undefined> {
-  if (platform !== 'win32') return (await findOnAbsolutePathAsync(name, platform, env)) ?? firstFile(POSIX_OPENSSH_FOLDERS.map((dir) => path.posix.join(dir, name)));
-  const onPath = await findOnAbsolutePathAsync(`${name}.exe`, 'win32', env);
-  if (onPath !== undefined) return onPath;
-  const builtIn = path.win32.join(windowsSystemDirectory(env), 'OpenSSH', `${name}.exe`);
-  return (await isFileAsync(builtIn)) ? builtIn : undefined;
+async function windowsSshClient(env: Env, choice: SshClientChoice): Promise<string | undefined> {
+  const onPath = await findAllOnAbsolutePath('ssh.exe', 'win32', env);
+  const builtIn = path.win32.join(windowsSystemDirectory(env), 'OpenSSH', 'ssh.exe');
+  const candidates = [...onPath, ...((await isFileAsync(builtIn)) ? [builtIn] : [])].filter((file, index, all) => all.findIndex((other) => other.toLowerCase() === file.toLowerCase()) === index);
+  const read = choice.readVersion ?? readSshVersion;
+  for (const candidate of candidates) if (WIN32_OPENSSH_VERSION.test((await sshVersionText(candidate, read)) ?? '')) return candidate;
+  const fallback = candidates[0];
+  if (fallback !== undefined && !loggedFallbacks.has(fallback)) {
+    loggedFallbacks.add(fallback);
+    (choice.log ?? log)(`[ssh] no OpenSSH for Windows client was found, so ${fallback} runs; an MSYS or Cygwin ssh cannot reach the Windows ssh-agent`);
+  }
+  return fallback;
+}
+
+async function findAllOnAbsolutePath(fileName: string, platform: NodeJS.Platform, env: Env): Promise<string[]> {
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  const found: string[] = [];
+  for (const dir of searchPathEntries(platform, env)) {
+    const candidate = join(dir, fileName);
+    if (await isFileAsync(candidate)) found.push(candidate);
+  }
+  return found;
+}
+
+async function posixOpenSshTool(name: 'ssh' | OpenSshTool, env: Env, platform: NodeJS.Platform): Promise<string | undefined> {
+  return (await findOnAbsolutePathAsync(name, platform, env)) ?? firstFile(POSIX_OPENSSH_FOLDERS.map((dir) => path.posix.join(dir, name)));
 }
 
 async function firstFile(candidates: readonly string[]): Promise<string | undefined> {
@@ -124,9 +197,31 @@ async function firstFile(candidates: readonly string[]): Promise<string | undefi
   return undefined;
 }
 
-/** The OpenSSH client as an absolute path (openSshTool). */
-export function resolveSshExecutable(env: Env = process.env, platform: NodeJS.Platform = process.platform): Promise<string | undefined> {
-  return openSshTool('ssh', env, platform);
+/**
+ * The OpenSSH client as an absolute path, undefined when none exists: the SSH client path setting when it names a file, else
+ * on Windows windowsSshClient, elsewhere an absolute PATH folder's ssh, then `/usr/bin`'s or `/bin`'s. A setting that is not
+ * an absolute path to a file is logged and the default runs.
+ */
+export async function resolveSshExecutable(env: Env = process.env, platform: NodeJS.Platform = process.platform, choice: SshClientChoice = {}): Promise<string | undefined> {
+  const { configured } = choice;
+  if (configured !== undefined) {
+    const form = executablePathForm(configured, platform);
+    if (form.kind === 'absolute' && (await isFileAsync(form.file))) return form.file;
+    (choice.log ?? log)(`[ssh] the SSH client path setting names ${configured}, which is not ${form.kind === 'absolute' ? 'a file' : 'an absolute path'}; the default client runs`);
+  }
+  return platform === 'win32' ? windowsSshClient(env, choice) : posixOpenSshTool('ssh', env, platform);
+}
+
+/**
+ * The OpenSSH tool in `ssh`'s own folder, as every OpenSSH build installs them, so a Win32-OpenSSH ssh never pairs with an MSYS
+ * ssh-keygen or ssh-add. Only on macOS and Linux, whose builds share key files and the agent socket, does a folder without it
+ * fall back to an absolute PATH folder's, then `/usr/bin`'s or `/bin`'s.
+ */
+export async function openSshToolBeside(ssh: string, name: OpenSshTool, env: Env = process.env, platform: NodeJS.Platform = process.platform): Promise<string | undefined> {
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  const beside = paths.join(paths.dirname(ssh), platform === 'win32' ? `${name}.exe` : name);
+  if (await isFileAsync(beside)) return beside;
+  return platform === 'win32' ? undefined : posixOpenSshTool(name, env, platform);
 }
 
 /**
@@ -145,9 +240,10 @@ export async function resolveGitShell(git: string | undefined, platform: NodeJS.
   return undefined;
 }
 
-/** OpenSSH's ssh-keygen as an absolute path (openSshTool). */
-export function resolveSshKeygenExecutable(env: Env = process.env, platform: NodeJS.Platform = process.platform): Promise<string | undefined> {
-  return openSshTool('ssh-keygen', env, platform);
+/** The chosen client's ssh-keygen as an absolute path (resolveSshExecutable, openSshToolBeside). */
+export async function resolveSshKeygenExecutable(env: Env = process.env, platform: NodeJS.Platform = process.platform, choice: SshClientChoice = {}): Promise<string | undefined> {
+  const ssh = await resolveSshExecutable(env, platform, choice);
+  return ssh === undefined ? undefined : openSshToolBeside(ssh, 'ssh-keygen', env, platform);
 }
 
 /** `%SystemRoot%\System32`; a root that is not a local absolute path falls back to C:\Windows. */

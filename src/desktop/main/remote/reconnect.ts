@@ -34,7 +34,7 @@ export type ReconnectEvent =
   // the loop stopped without a connection: no open views, the user cancelled or disconnected
   | { readonly kind: 'idle'; readonly authorityKey: string };
 
-const PREREQUISITES: ReadonlySet<string> = new Set(['unsupportedOs', 'glibcTooOld', 'glibcxxMissing', 'kernelTooOld', 'macosTooOld', 'windowsBuildTooOld', 'nixLdMissing', 'noexec', 'lowSpace', 'installFolderInvalid', 'installFolderUnsafe']);
+const PREREQUISITES: ReadonlySet<string> = new Set(['unsupportedOs', 'glibcTooOld', 'glibcxxMissing', 'kernelTooOld', 'macosTooOld', 'windowsBuildTooOld', 'nixLdMissing', 'noexec', 'lowSpace', 'installFolderInvalid', 'installFolderUnsafe', 'floorUnreadable']);
 const INSTALL: ReadonlySet<string> = new Set(['hashMismatch', 'downloadAndUploadFailed', 'selfTestFailed']);
 // a refusal no retry changes without the user: the server refused every key, or strict checking refused an unknown host key
 const AUTH: ReadonlySet<string> = new Set(['permissionDenied', 'hostKeyRefused']);
@@ -47,6 +47,8 @@ export function permanentFailureOf(failure: ConnectFailure): PermanentFailureCod
   if (INSTALL.has(failure.code)) return 'install';
   if (AUTH.has(failure.code)) return 'authFailed';
   if (failure.code === 'containerNeedsBuild') return 'containerBuild';
+  if (failure.code === 'belowFloor') return 'belowFloor';
+  if (failure.code === 'serverRemoved') return 'serverRemoved';
   // the distro was unregistered: the target is gone until the user brings it back
   if (failure.code === 'distroNotListed') return 'hostRemoved';
   return undefined;
@@ -71,7 +73,8 @@ export interface HeldConnection {
 }
 
 export interface ReconnectorDeps {
-  // the authority is another owner's (the update flow follows a daemon of another protocol there): no loop runs for it
+  // the authority is another owner's (the update flow follows a daemon of another protocol there, or shows that the host's
+  // security floor is above this app): no loop runs for it
   readonly handedOff: (authorityKey: string) => boolean;
   // Authorities' coarse state: failed after a drop or a failed attempt, connecting while any attempt runs, offline otherwise
   readonly state: (authorityKey: string) => ProjectConnection;
@@ -83,8 +86,9 @@ export interface ReconnectorDeps {
   // editor tabs of its files, its terminals, its chats, or the selected project's authority
   readonly hasOpenViews: (authorityKey: string) => boolean;
   // one attempt, unwatched: its outcome resolves once connected, rejects with the attempt's error; signal aborts an attempt
-  // the loop started. force (Reconnect now) gives up a suspect connection's transport, which any other connect joins.
-  readonly attempt: (authorityKey: string, signal: AbortSignal, force: boolean) => LoopAttempt;
+  // the loop started. force (Reconnect now) gives up a suspect connection's transport, which any other connect joins. user: the
+  // user's Reconnect or Retry started it; every other attempt of the loop is automatic.
+  readonly attempt: (authorityKey: string, signal: AbortSignal, force: boolean, user: boolean) => LoopAttempt;
   // the attempt in flight builds its container or runs stage 1 on the target (building, checking, installing, starting)
   readonly staging: (authorityKey: string) => boolean;
   // a user watches the attempt in flight in the Connect dialog
@@ -245,8 +249,11 @@ export class Reconnector {
     this.emit({ kind: 'gain', gain });
   }
 
-  /** Reconnect now and Retry: an attempt at once, the backoff from its start; a permanent failure is tried again. */
-  reconnectNow(authorityKey: string): void {
+  /**
+   * Reconnect now and Retry: an attempt at once, the backoff from its start; a permanent failure is tried again. user: the
+   * user asked, so the attempt installs where Remove Damocles server ran.
+   */
+  reconnectNow(authorityKey: string, user: boolean): void {
     if (this.disposed || this.deps.usable(authorityKey)) return;
     let record = this.records.get(authorityKey);
     if (record?.attempt) return;
@@ -257,7 +264,7 @@ export class Reconnector {
     }
     this.stop(record);
     record.index = 0;
-    this.run(authorityKey, record, true);
+    this.run(authorityKey, record, true, user);
   }
 
   /** The user disconnected the authority: no loop until the next connect. */
@@ -366,15 +373,15 @@ export class Reconnector {
   }
 
   // A start the transport refuses (a removal stage runs, the app quits) fails as the attempt would.
-  private startAttempt(authorityKey: string, attempt: LoopRun, force: boolean): LoopAttempt {
+  private startAttempt(authorityKey: string, attempt: LoopRun, force: boolean, user: boolean): LoopAttempt {
     try {
-      return this.deps.attempt(authorityKey, attempt.controller.signal, force);
+      return this.deps.attempt(authorityKey, attempt.controller.signal, force, user);
     } catch (err) {
       return { joined: false, outcome: Promise.reject(err) };
     }
   }
 
-  private run(authorityKey: string, record: Unhealthy, force = false): void {
+  private run(authorityKey: string, record: Unhealthy, force = false, user = false): void {
     if (this.records.get(authorityKey) !== record || this.disposed) return;
     if (!this.deps.hostExists(authorityKey)) {
       this.fail(authorityKey, record, 'hostRemoved');
@@ -391,7 +398,7 @@ export class Reconnector {
     const ended = this.endMasterFirst.delete(authorityKey) ? this.deps.endMaster(authorityKey) : Promise.resolve();
     void ended.then(() => {
       if (record.attempt !== attempt || attempt.controller.signal.aborted) return;
-      const started = this.startAttempt(authorityKey, attempt, force);
+      const started = this.startAttempt(authorityKey, attempt, force, user);
       if (started.joined) {
         attempt.bounded = false;
         this.deps.log(`[remote] ${authorityKey}: an attempt is already running; the loop waits for its outcome`);

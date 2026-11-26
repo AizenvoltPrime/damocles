@@ -34,6 +34,7 @@ function desktop(opened?: Promise<void>, launching = false) {
   let selectedProject: string | undefined = launching ? undefined : LOCAL_PROJECT;
   let selectedChat: Chat | undefined = launching ? undefined : LOCAL_CHAT;
   const selections: Array<readonly [FakeCore, string]> = [];
+  const shown: Array<readonly [string, boolean]> = [];
   const host: CoreHost<FakeCore> = new CoreHost<FakeCore>({
     start: () => {
       const core: FakeCore = { authority: 'loopback', ready: Promise.resolve(), isReady: () => !core.ended, hasEnded: () => core.ended === true, dispose: async () => undefined };
@@ -56,8 +57,9 @@ function desktop(opened?: Promise<void>, launching = false) {
     selectedProject: () => selectedProject,
     selectedChat: () => selectedChat,
     host: (authority) => (authority === 'loopback' ? host : undefined),
-    showProject: (key) => {
+    showProject: (key, userStarted) => {
       selectedProject = key;
+      shown.push([key, userStarted]);
     },
     selectChatOf: async (core, key) => {
       selections.push([core, key]);
@@ -67,7 +69,7 @@ function desktop(opened?: Promise<void>, launching = false) {
   });
   // what the title bar pairs: the selected project and the chat it may name with it
   const breadcrumb = (): readonly [string | undefined, string | undefined] => [selectedProject, chatOfSelectedProject(selectedProject, selectedChat)?.id];
-  return { host, selection, selections, selectChat, breadcrumb };
+  return { host, selection, selections, selectChat, breadcrumb, shown };
 }
 
 async function started(host: CoreHost<FakeCore>): Promise<FakeCore> {
@@ -78,12 +80,19 @@ async function started(host: CoreHost<FakeCore>): Promise<FakeCore> {
 }
 
 describe('remote project selection', () => {
+  it('connects the project\'s host as the user\'s connect only when the user selected it, never when a launch restores it', async () => {
+    const { selection, shown } = desktop();
+    await selection.select(REMOTE_PROJECT, false);
+    await selection.select(REMOTE_PROJECT, true);
+    expect(shown).toEqual([[REMOTE_PROJECT, false], [REMOTE_PROJECT, true]]);
+  });
+
   it('adding a remote project while its core runs selects its chat, and the title never pairs it with another chat', async () => {
     const opening = deferred();
     const { host, selection, selections, breadcrumb } = desktop(opening.promise);
     const core = await started(host);
 
-    const selecting = selection.select(REMOTE_PROJECT);
+    const selecting = selection.select(REMOTE_PROJECT, true);
     expect(selections).toEqual([[core, REMOTE_PROJECT]]);
     // the local chat still shows while the project's chat opens: the title names the project alone
     expect(breadcrumb()).toEqual([REMOTE_PROJECT, undefined]);
@@ -94,7 +103,7 @@ describe('remote project selection', () => {
 
   it('a remote project selected while its core is down gets its chat once the core starts', async () => {
     const { host, selection, selections, breadcrumb } = desktop();
-    await selection.select(REMOTE_PROJECT);
+    await selection.select(REMOTE_PROJECT, true);
     expect(selections).toEqual([]);
     expect(breadcrumb()).toEqual([REMOTE_PROJECT, undefined]);
 
@@ -106,7 +115,7 @@ describe('remote project selection', () => {
   // index.ts selecting the saved project before openTabsAtLaunch is guarded by offline-launch.spec and loopback-agent.spec
   it('a remote project selected while its core is down and no chat is selected shows no chat until that core opened its chats', async () => {
     const { host, selection, selections, breadcrumb } = desktop(undefined, true);
-    await selection.select(REMOTE_PROJECT);
+    await selection.select(REMOTE_PROJECT, true);
     expect(selections).toEqual([]);
     expect(breadcrumb()).toEqual([REMOTE_PROJECT, undefined]);
 
@@ -119,7 +128,7 @@ describe('remote project selection', () => {
     const { host, selection, selections, breadcrumb } = desktop();
     const crashed = await started(host);
     crashed.ended = true;
-    await selection.select(REMOTE_PROJECT);
+    await selection.select(REMOTE_PROJECT, true);
     expect(selections).toEqual([]);
 
     await host.restart(crashed);
@@ -130,7 +139,7 @@ describe('remote project selection', () => {
 
   it('a chat the user selects before the core starts stays selected', async () => {
     const { host, selection, selections, selectChat, breadcrumb } = desktop();
-    await selection.select(REMOTE_PROJECT);
+    await selection.select(REMOTE_PROJECT, true);
     selectChat(LOCAL_CHAT);
 
     await started(host);

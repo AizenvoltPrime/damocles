@@ -6,10 +6,14 @@ import * as path from 'node:path';
 import type { ElectronApplication } from '@playwright/test';
 import { isAlive, run, windowsProcessTree } from '../desktop/support/app';
 import { openInEditor, editorShows, quickOpen, quickPick } from '../desktop/support/editor';
-import { killDaemonIn, pidIn } from '../desktop/support/loopback';
-import { localRunPaths } from '../../src/desktop/daemon/token';
+import { writeUserSettings } from '../desktop/support/hermetic';
+import { killDaemonIn, pidIn, processTree, terminalHostPids } from '../desktop/support/loopback';
+import { hostTerminalsFile, localRunPaths } from '../../src/desktop/daemon/token';
+import { confirmDialog, readyOverlay } from '../desktop/support/overlay';
 import { overlayPage, shellPage, shellState } from '../desktop/support/shell';
-import { openTerminal, runInTerminal, waitForOutputLine } from '../desktop/support/terminal';
+import { activeTerminal, openTerminal, runInTerminal, terminalText, waitForOutputLine } from '../desktop/support/terminal';
+import { openConnect } from './support/connect-ui';
+import { NOT_RESPONDING_MS, suspendProcess, terminalStatus } from './support/not-responding';
 import { addHost, control, cutTransport, DARWIN_TARGET_TAG, dropConnection, expect, openRemoteFolder, readRemoteBytes, releaseTransport, remoteProjectKey, test as remoteTest, WINDOWS_TARGET_TAG, writeRemoteBytes } from './support/remote';
 import { runnerTargetEnv } from './support/runner-target';
 
@@ -26,11 +30,13 @@ async function connectTarget(app: ElectronApplication, folder: string): Promise<
   return { hostId, key };
 }
 
-/** Ends the target's daemon and waits until its process (Windows: its whole tree) is gone. */
+/** Ends the target's daemon and waits until the whole trees of its process and its terminal hosts are gone. */
 async function shutdownTarget(app: ElectronApplication, hostId: string): Promise<void> {
   const pid = await targetDaemonPid();
   expect(pid).toBeDefined();
-  const tree = process.platform === 'win32' ? await windowsProcessTree(pid!) : [pid!];
+  // a terminal host is detached, so the daemon's tree does not hold it
+  const roots = [pid!, ...(await terminalHostPids(os.homedir()))];
+  const tree = (await Promise.all(roots.map(processTree))).flat();
   await control(app, hostId, 'shutdownNow');
   await expect.poll(() => tree.filter(isAlive), { timeout: 30_000 }).toEqual([]);
 }
@@ -91,7 +97,101 @@ for (const [tag, platform] of [[WINDOWS_TARGET_TAG, 'win32'], [DARWIN_TARGET_TAG
       expect(await targetDaemonPid()).toBe(pid);
       await shutdownTarget(app, hostId);
     });
+
+    test(`handOver now on ${platform} ends the daemon and leaves its terminal's shell running in the terminal host, which the next daemon adopts with the same processes`, async ({ foreground: _foreground, home, launch }) => {
+      const folder = path.join(home.root, 'target-project');
+      fs.mkdirSync(folder, { recursive: true });
+      const { app } = await launch({ env: await runnerTargetEnv(home) });
+      const { hostId } = await connectTarget(app, folder);
+      const terminal = await openTerminal(app);
+      const view = activeTerminal(terminal);
+      const id = (await view.getAttribute('data-terminal-id'))!;
+      await runInTerminal(terminal, 'echo kept-before-7c');
+      await waitForOutputLine(terminal, 'kept-before-7c');
+      const daemon = (await targetDaemonPid())!;
+      const hosts = await terminalHostPids(os.homedir());
+      expect(hosts).toHaveLength(1);
+      // the host with the shell under it (Windows: the ConPTY's processes too)
+      const tree = await processTree(hosts[0]!);
+      expect(tree.length).toBeGreaterThan(1);
+
+      await control(app, hostId, 'handOver', { when: 'now' });
+      await expect.poll(() => isAlive(daemon), { timeout: 30_000 }).toBe(false);
+      expect(tree.filter(isAlive)).toEqual(tree);
+
+      // openRemoteFolder resolves also when the reconnect loop connected first
+      await openRemoteFolder(app, hostId, folder);
+      await remoteProjectKey(app, { authorityKey: `ssh+${hostId}` }, folder);
+      expect(await targetDaemonPid()).not.toBe(daemon);
+      expect(await terminalHostPids(os.homedir())).toEqual(hosts);
+      expect(tree.filter(isAlive)).toEqual(tree);
+      await expect(view).toHaveAttribute('data-terminal-id', id);
+      await expect(view).toHaveAttribute('data-status', 'running', { timeout: 60_000 });
+      await expect.poll(async () => (await terminalText(terminal)).split('\n').filter((row) => row === 'kept-before-7c'), { timeout: 30_000 }).toHaveLength(1);
+      await runInTerminal(terminal, 'echo typed-after-7c');
+      await waitForOutputLine(terminal, 'typed-after-7c');
+      await shutdownTarget(app, hostId);
+    });
+
+    test(`on ${platform}, Kill ends a not-responding terminal host's terminal with its process tree and End terminal host ends the host's tree, and nothing else`, async ({ foreground: _foreground, home, launch }) => {
+      test.setTimeout(900_000);
+      writeUserSettings(home, { 'damocles.desktop.terminal.confirmOnKill': 'never' });
+      const folder = path.join(home.root, 'target-project');
+      fs.mkdirSync(folder, { recursive: true });
+      const { app } = await launch({ env: await runnerTargetEnv(home) });
+      const { hostId, key } = await connectTarget(app, folder);
+      const shell = await openTerminal(app);
+      const killed = (await activeTerminal(shell).getAttribute('data-terminal-id'))!;
+      const created = await shell.evaluate((project) => window.damoclesShell!.terminal.create({ profileId: null, target: { project } }), key);
+      if (!created.ok) throw new Error(`no terminal: ${created.reason}`);
+      const kept = created.id;
+      await expect(activeTerminal(shell)).toHaveAttribute('data-terminal-id', kept);
+      await expect(activeTerminal(shell)).toHaveAttribute('data-status', 'running', { timeout: 60_000 });
+      const hosts = await terminalHostPids(os.homedir());
+      expect(hosts).toHaveLength(1);
+      const host = hosts[0]!;
+      let shells = new Map<string, number>();
+      await expect.poll(async () => [...(shells = await hostShellPids(host)).keys()].sort(), { timeout: 30_000 }).toEqual([killed, kept].sort());
+      const killedTree = await processTree(shells.get(killed)!);
+      const keptTree = await processTree(shells.get(kept)!);
+      const hostTree = await processTree(host);
+      expect(hostTree).toEqual(expect.arrayContaining([...killedTree, ...keptTree]));
+      const daemon = (await targetDaemonPid())!;
+
+      suspendProcess(host);
+      await expect.poll(() => terminalStatus(shell, killed), { timeout: NOT_RESPONDING_MS }).toBe('notResponding');
+
+      // Kill: the terminal's shell and its tree end, which the identity proof allows; the host and its other terminal run on
+      await shell.evaluate((id) => window.damoclesShell!.terminal.kill(id), killed);
+      await expect.poll(() => terminalStatus(shell, killed), { timeout: 30_000 }).toBeUndefined();
+      await expect.poll(() => killedTree.filter(isAlive), { timeout: 30_000 }).toEqual([]);
+      expect([host, ...keptTree].filter(isAlive)).toEqual([host, ...keptTree]);
+
+      // End terminal host: the host's whole tree ends, and the daemon runs on
+      const overlay = await openConnect(app);
+      await overlay.getByRole('button', { name: 'Details for prod-1' }).click();
+      const card = overlay.getByTestId('host-card');
+      await expect(card.locator('[data-testid="host-run"][data-state="notResponding"]')).toHaveCount(1, { timeout: 30_000 });
+      await card.getByTestId('host-end-terminal-host').click();
+      const confirming = await readyOverlay(app);
+      await expect(confirmDialog(confirming)).toContainText('End the terminal host on prod-1?');
+      await confirmDialog(confirming).getByRole('button', { name: 'End terminal host' }).click();
+      await expect.poll(() => hostTree.filter(isAlive), { timeout: 30_000 }).toEqual([]);
+      await expect.poll(() => terminalStatus(shell, kept), { timeout: 30_000 }).toBe('exited');
+      await expect(card.getByTestId('host-run')).toHaveCount(0, { timeout: 30_000 });
+      expect(isAlive(daemon)).toBe(true);
+      await overlay.keyboard.press('Escape');
+      await shutdownTarget(app, hostId);
+    });
   });
+}
+
+/** Each of the host's terminals with a process, by id, from the terminals file the host keeps in the run folder. */
+async function hostShellPids(host: number): Promise<Map<string, number>> {
+  const file = hostTerminalsFile(await localRunPaths(os.homedir()), host);
+  if (!fs.existsSync(file)) return new Map();
+  const { terminals } = JSON.parse(fs.readFileSync(file, 'utf8')) as { terminals: Array<{ id: string; pid: number }> };
+  return new Map(terminals.filter((terminal) => terminal.pid > 0).map((terminal) => [terminal.id, terminal.pid]));
 }
 
 test.describe('win32 target', { tag: WINDOWS_TARGET_TAG }, () => {
@@ -114,6 +214,32 @@ test.describe('win32 target', { tag: WINDOWS_TARGET_TAG }, () => {
       fs.writeFileSync(path.join(folder, back), bytes);
       expect((await readRemoteBytes(app, key, back)).equals(bytes)).toBe(true);
     }
+    await shutdownTarget(app, hostId);
+  });
+
+  test('damocles opens a file from a terminal that survived handOver now, through its terminal host\'s pipe and the active junction, on the next daemon', async ({ foreground: _foreground, home, launch }) => {
+    const folder = path.join(home.root, 'target-project');
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, 'survived.md'), '# Survived\n');
+    const { app } = await launch({ env: await runnerTargetEnv(home) });
+    const { hostId } = await connectTarget(app, folder);
+    const terminal = await openTerminal(app);
+    const view = activeTerminal(terminal);
+    const daemon = (await targetDaemonPid())!;
+    // the run folder's active link is a junction to the running package
+    const paths = await localRunPaths(os.homedir());
+    const active = path.join(paths.runDir, 'active');
+    expect(fs.lstatSync(active).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(path.join(fs.realpathSync(active), 'server-package.json'))).toBe(true);
+
+    await control(app, hostId, 'handOver', { when: 'now' });
+    await expect.poll(() => isAlive(daemon), { timeout: 30_000 }).toBe(false);
+    await openRemoteFolder(app, hostId, folder);
+    await remoteProjectKey(app, { authorityKey: `ssh+${hostId}` }, folder);
+    expect(await targetDaemonPid()).not.toBe(daemon);
+    await expect(view).toHaveAttribute('data-status', 'running', { timeout: 60_000 });
+    await runInTerminal(terminal, `damocles "${path.join(folder, 'survived.md')}"`);
+    await editorShows(await shellPage(app), '# Survived');
     await shutdownTarget(app, hostId);
   });
 

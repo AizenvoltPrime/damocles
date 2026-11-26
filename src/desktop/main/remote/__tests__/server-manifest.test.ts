@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SERVER_TARGETS as SCRIPT_TARGETS, serverArtifact } from '../../../../../scripts/server-targets.ts';
 import { readServerManifest, SERVER_MANIFEST_FILE } from '../server-manifest';
-import { appVersionOf, parseServerManifest, SERVER_TARGETS, serverVersionsOf, type ServerManifest } from '../server-manifest-format';
+import { appVersionOf, MAX_GRACE_HOURS, parseServerManifest, requiredOf, SERVER_TARGETS, serverVersionsOf, type ServerManifest } from '../server-manifest-format';
 
 const SHA = 'a'.repeat(64);
 // a build per target, as each target's package hashes to its own
@@ -52,6 +52,7 @@ describe('the server manifest', () => {
 
   it('refuses a version that is not an app version, since the artifact cache names a folder after it', () => {
     for (const version of ['', '..', '.', '../3.7.0', '3.7.0/..', '3.7']) expect(parseServerManifest({ ...full('3.7.0'), version }), version).toBeUndefined();
+    for (const version of ['3.7.0-a..b', '03.7.0', '3.7.0-01', `3.7.0-${'a'.repeat(59)}`]) expect(parseServerManifest(full(version)), version).toBeUndefined();
     expect(parseServerManifest(full('3.8.0-beta.1'))).toEqual(full('3.8.0-beta.1'));
     // the build follows the one +, so the app version carries none
     expect(parseServerManifest(full('3.7.0+local'))).toBeUndefined();
@@ -65,6 +66,40 @@ describe('the server manifest', () => {
     }
     for (const published of [undefined, 'true', 1]) expect(parseServerManifest({ ...base, published }), String(published)).toBeUndefined();
     expect(parseServerManifest({ ...base, published: true })).toEqual({ ...base, published: true });
+  });
+
+  it('parses a requirement of a minimum up to its version and a grace above 0 up to 168 hours, and is invalid with a malformed one', () => {
+    const base = full('3.7.0');
+    for (const requirement of [{ minimumServerVersion: '3.7.0', graceHours: 24 }, { minimumServerVersion: '3.6.2', graceHours: 0.01 }, { minimumServerVersion: '3.7.0-beta.1', graceHours: MAX_GRACE_HOURS }]) {
+      expect(parseServerManifest({ ...base, requirement })).toEqual({ ...base, requirement });
+    }
+    for (const requirement of [
+      null, 'soon', [],
+      { minimumServerVersion: '3.7.1', graceHours: 24 },
+      { minimumServerVersion: '3.7.0+0123456789ab', graceHours: 24 },
+      { minimumServerVersion: '3.7', graceHours: 24 },
+      { minimumServerVersion: '3.7.0' },
+      { minimumServerVersion: '3.7.0', graceHours: 0 },
+      { minimumServerVersion: '3.7.0', graceHours: -1 },
+      { minimumServerVersion: '3.7.0', graceHours: 168.5 },
+      { minimumServerVersion: '3.7.0', graceHours: Number.POSITIVE_INFINITY },
+      { minimumServerVersion: '3.7.0', graceHours: '24' },
+      { minimumServerVersion: '3.7.0', graceHours: 24, force: true },
+    ]) expect(parseServerManifest({ ...base, requirement }), JSON.stringify(requirement)).toBeUndefined();
+  });
+
+  it('requires a server whose app version is below the minimum, whatever its build, and nothing without a requirement', () => {
+    const manifest: ServerManifest = { ...full('3.9.0'), requirement: { minimumServerVersion: '3.8.0', graceHours: 24 } };
+    expect(requiredOf(manifest, '3.7.0+0123456789ab')).toEqual(manifest.requirement);
+    expect(requiredOf(manifest, '3.7.12')).toEqual(manifest.requirement);
+    expect(requiredOf(manifest, '3.8.0-beta.1+0123456789ab')).toEqual(manifest.requirement);
+    expect(requiredOf(manifest, 'not-a-version')).toEqual(manifest.requirement);
+    for (const serverVersion of ['3.9.0-a..b+0123456789ab', '3.9.01+0123456789ab']) expect(requiredOf(manifest, serverVersion), serverVersion).toEqual(manifest.requirement);
+    // two builds of one version never require anything of each other
+    expect(requiredOf(manifest, '3.8.0+0123456789ab')).toBeUndefined();
+    expect(requiredOf(manifest, '3.8.0+fedcba987654')).toBeUndefined();
+    expect(requiredOf(manifest, '3.10.0+0123456789ab')).toBeUndefined();
+    expect(requiredOf(full('3.9.0'), '3.7.0+0123456789ab')).toBeUndefined();
   });
 
   it('gives the server versions of its packages, and the app version of a server version', () => {

@@ -486,6 +486,21 @@ describe('a terminal tab', () => {
     expect(tab.findAll('.sr-only').map((hint) => hint.text())).toEqual(['Reconnecting']);
   });
 
+  it('marks a terminal whose terminal host does not answer on its glyph and says so, in English and Greek', async () => {
+    const { wrapper, api } = await mountTerminalTabs();
+    const tab = tabOf(wrapper);
+    expect(tab.find('[data-testid="editor-tab-terminal-not-responding"]').exists()).toBe(false);
+    api.terminal.pushState({ ...(await api.terminal.getState()), terminals: [...terminals().slice(0, 2), terminalInfo('e1', { title: 'api', status: 'notResponding' })] });
+    await flushPromises();
+    expect(tab.attributes('data-status')).toBe('notResponding');
+    expect(tab.find('[data-testid="editor-tab-terminal-icon"]').exists()).toBe(true);
+    expect(tab.find('[data-testid="editor-tab-terminal-not-responding"]').exists()).toBe(true);
+    expect(tab.findAll('.sr-only').map((hint) => hint.text())).toEqual(['Not responding']);
+    shellI18n.global.locale.value = 'el';
+    await flushPromises();
+    expect(tab.findAll('.sr-only').map((hint) => hint.text())).toEqual(['Δεν αποκρίνεται']);
+  });
+
   it('drags as its terminal, with the id alone, dimmed until the drag ends', async () => {
     const { wrapper } = await mountTerminalTabs();
     const tab = tabOf(wrapper);

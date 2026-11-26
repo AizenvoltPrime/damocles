@@ -67,7 +67,7 @@ test.describe('Dev Containers on an SSH host', () => {
         expect(attemptLog.filter((line) => /asks for the upload|uploading the/.test(line))).toEqual([]);
 
         // the agent relay through the nested connection: off by default, on with the container's switch while prod-1's stays
-        // off, and gone at once when it turns off
+        // off, and refused at once when it turns off
         const shell = await openTerminal(app);
         expect(await agentInTerminal(app, containerId, 'agent-off')).toMatchObject({ sock: 'unset', code: 2 });
         const { overlay: settings, block } = await openRemoteHostSettings(app, record!.hostId);
@@ -85,8 +85,12 @@ test.describe('Dev Containers on an SSH host', () => {
         const again = await openRemoteHostSettings(app, record!.hostId);
         await setHostSwitch(again.block, 'Forward my SSH agent', false);
         await closeSettingsModal(again.overlay);
-        await expect.poll(() => agentSockets(containerId), { timeout: 60_000 }).toEqual([]);
-        expect(await agentInTerminal(app, containerId, 'agent-cut')).toMatchObject({ sock: on.sock, code: 2 });
+        // the daemon's own socket goes; the terminal's, its terminal host's for the shell's life, refuses every connection
+        await expect.poll(() => agentSockets(containerId), { timeout: 60_000 }).toEqual([`600 node ${on.sock}`]);
+        const cut = await agentInTerminal(app, containerId, 'agent-cut');
+        expect(cut).toMatchObject({ sock: on.sock });
+        expect(cut.code).not.toBe(0);
+        expect(cut.output).not.toContain('damocles-e2e-agent');
         await shutdownContainerDaemon(app, record!.hostId, containerId);
         expect(await containerServerProcesses(containerId)).toEqual([]);
       } finally {

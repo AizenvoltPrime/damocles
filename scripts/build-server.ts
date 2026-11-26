@@ -36,6 +36,8 @@ import {
 } from './server-targets.ts';
 import { DESKTOP_ONLY_PACKAGES, isPlatformBinary, platformFamilyGlob, productionClosure } from './sync-vscodeignore.ts';
 import { PLUGIN_DIR, vendorSubscriptionPlugin } from './subscription-plugin.ts';
+import { MAX_GRACE_HOURS, parseServerRequirement, type ServerRequirement } from '../src/desktop/main/remote/server-manifest-format.ts';
+import { SERVER_REQUIREMENT } from '../src/desktop/main/remote/server-requirement.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const OUT_DIR = join(ROOT, 'dist', 'server-packages');
@@ -66,8 +68,8 @@ export interface SourceEntry { path: string; mode: number; source: string }
 
 export type PackageEntry = ArchiveEntry | SourceEntry;
 
-/** server-package.json's fields but `serverVersion`. */
-export type PackageInfo = { name: string; version: string; target: string; node: string; externals: string[]; packages: string[] };
+/** server-package.json's fields but `serverVersion`; minimumServerVersion only for a release that requires one. */
+export type PackageInfo = { name: string; version: string; target: string; node: string; externals: string[]; packages: string[]; minimumServerVersion?: string };
 
 export interface PackageBuildOptions {
   version: string;
@@ -79,7 +81,7 @@ export interface PackageBuildOptions {
 
 export interface ManifestPackage { file: string; sha256: string; size: number; serverVersion: string }
 
-export interface ServerManifest { version: string; protocolVersion: number; published: boolean; packages: Record<string, ManifestPackage> }
+export interface ServerManifest { version: string; protocolVersion: number; published: boolean; packages: Record<string, ManifestPackage>; requirement?: ServerRequirement }
 
 export function modeOf(path: string): number {
   return EXECUTABLES.some((re) => re.test(path)) ? 0o755 : 0o644;
@@ -90,7 +92,8 @@ export function serverRoots(spec: Pick<ServerTarget, 'platform'>): string[] {
   const roots = new Set(DESKTOP_EXTERNALS.filter((name) => !name.startsWith('node:')).map((name) => name.replace(/\/\*+$/, '')));
   roots.delete('electron');
   roots.delete('electron-updater');
-  // Windows never loads @parcel/watcher (file-watcher-factory.ts), and only Windows loads koffi (process-tree.ts, dos-devices.ts).
+  // Windows never loads @parcel/watcher (file-watcher-factory.ts), and only Windows loads koffi (process-tree.ts, dos-devices.ts,
+  // win32-processes.ts).
   if (spec.platform === 'win32') roots.delete('@parcel/watcher');
   else roots.delete('koffi');
   roots.add('node-pty');
@@ -252,15 +255,28 @@ export function packageEntries({ spec, distDir, nodeModules = join(ROOT, 'node_m
 
 const SERVER_PACKAGE_FILE = 'server-package.json';
 
-/** server-package.json's fields but `serverVersion`, in the order packageBuild hashes them. */
-export function packageInfo({ spec, target, version, nodeVersion, portable }: {
+/** `requirement` as a release of `version` may carry it; throws on a minimum above the version or a grace out of bounds. */
+export function checkedRequirement(requirement: ServerRequirement | null, version: string): ServerRequirement | undefined {
+  if (requirement === null) return undefined;
+  const parsed = parseServerRequirement(requirement, version);
+  if (!parsed) throw new Error(`SERVER_REQUIREMENT ${JSON.stringify(requirement)} is not a minimum server version up to ${version} with a grace above 0 and up to ${MAX_GRACE_HOURS} hours`);
+  return parsed;
+}
+
+/**
+ * server-package.json's fields but `serverVersion`, in the order packageBuild hashes them; the release's minimum server version
+ * last, which the daemon raises the host's security floor to.
+ */
+export function packageInfo({ spec, target, version, nodeVersion, portable, requirement }: {
   spec: Pick<ServerTarget, 'platform' | 'natives'>;
   target: string;
   version: string;
   nodeVersion: string;
   portable: readonly string[];
+  requirement: ServerRequirement | null;
 }): PackageInfo {
-  return { name: 'damocles-server', version, target, node: nodeVersion, externals: selfTestExternals(spec), packages: [...portable, ...spec.natives].sort() };
+  const minimum = checkedRequirement(requirement, version)?.minimumServerVersion;
+  return { name: 'damocles-server', version, target, node: nodeVersion, externals: selfTestExternals(spec), packages: [...portable, ...spec.natives].sort(), ...(minimum !== undefined ? { minimumServerVersion: minimum } : {}) };
 }
 
 /**
@@ -389,7 +405,7 @@ export async function assemblePackage(target: string, { version, nodeVersion, di
   const spec = serverTarget(target);
   const { portable } = serverClosure(spec);
   const entries = loaded(await targetEntries(target, { version, nodeVersion, distDir, nodePtyBinary, signedBrowserHelper, portable }));
-  const info = packageInfo({ spec, target, version, nodeVersion, portable });
+  const info = packageInfo({ spec, target, version, nodeVersion, portable, requirement: SERVER_REQUIREMENT });
   return [...entries, serverPackageEntry(info, serverVersionOf(version, packageBuild(entries, info)))];
 }
 
@@ -407,19 +423,21 @@ export function archiveOf(target: string, entries: readonly ArchiveEntry[]): Buf
 const BUILD = /^[0-9a-f]{12}$/;
 
 // The server-package.json of `target`'s archive `data`, whose fields serverManifest checks.
-function archivedPackageInfo(target: string, data: Buffer): { version?: unknown; target?: unknown; serverVersion?: unknown } {
+function archivedPackageInfo(target: string, data: Buffer): { version?: unknown; target?: unknown; serverVersion?: unknown; minimumServerVersion?: unknown } {
   const entries = serverTarget(target).platform === 'win32' ? readZip(data) : readTarGz(data);
   const found = entries.find((entry) => entry.path === SERVER_PACKAGE_FILE);
   if (!found) throw new Error(`The ${target} package has no ${SERVER_PACKAGE_FILE}`);
-  return JSON.parse(found.data.toString('utf8')) as { version?: unknown; target?: unknown; serverVersion?: unknown };
+  return JSON.parse(found.data.toString('utf8')) as { version?: unknown; target?: unknown; serverVersion?: unknown; minimumServerVersion?: unknown };
 }
 
 /**
- * The manifest of the packages in `dir` for `targets`: `{ version, protocolVersion, published, packages }`, each package with the
- * server version its server-package.json names. Only the release's manifest is `published`, so only its hosts download.
+ * The manifest of the packages in `dir` for `targets`: `{ version, protocolVersion, published, packages, requirement? }`, each
+ * package with the server version its server-package.json names. Only the release's manifest is `published`, so only its hosts
+ * download. `requirement` (SERVER_REQUIREMENT) is refused with a minimum above `version`, and each package must carry its minimum.
  */
-export function serverManifest(dir: string, version: string, targets: readonly string[], { published }: { published: boolean }): ServerManifest {
+export function serverManifest(dir: string, version: string, targets: readonly string[], { published, requirement }: { published: boolean; requirement: ServerRequirement | null }): ServerManifest {
   const { protocolVersion } = readProtocolVersion();
+  const required = checkedRequirement(requirement, version);
   const packages: Record<string, ManifestPackage> = {};
   for (const target of targets) {
     const name = serverArtifact(target, version);
@@ -431,14 +449,17 @@ export function serverManifest(dir: string, version: string, targets: readonly s
       const ptyOption = serverTarget(target).alpine ? ' --node-pty-binary <pty.node compiled against musl>' : '';
       throw new Error(`${name} names the server version ${serverVersion}, not ${version}+<12 hex digits>; build it again with npm run build:server -- --target ${target}${ptyOption}, or delete it`);
     }
+    if (info.minimumServerVersion !== required?.minimumServerVersion) {
+      throw new Error(`${name} carries the minimum server version ${String(info.minimumServerVersion)}, the requirement names ${String(required?.minimumServerVersion)}; build it again with npm run build:server -- --target ${target}`);
+    }
     packages[target] = { file: name, sha256: sha256(data), size: data.length, serverVersion };
   }
-  return { version, protocolVersion, published, packages };
+  return { version, protocolVersion, published, packages, ...(required !== undefined ? { requirement: required } : {}) };
 }
 
 function writeManifest(dir: string, version: string, targets: readonly string[], published: boolean): void {
   mkdirSync(dirname(MANIFEST_PATH), { recursive: true });
-  writeFileSync(MANIFEST_PATH, `${JSON.stringify(serverManifest(dir, version, targets, { published }), null, 2)}\n`);
+  writeFileSync(MANIFEST_PATH, `${JSON.stringify(serverManifest(dir, version, targets, { published, requirement: SERVER_REQUIREMENT }), null, 2)}\n`);
   console.log(`Wrote ${MANIFEST_PATH} for ${targets.join(', ') || 'no package'}${published ? ', published' : ''}`);
 }
 

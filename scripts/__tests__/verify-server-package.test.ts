@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { browserHelperProblems, cliScriptProblems, credentialRelayProblems, devcontainersCliProblems, distScopeProblems, dynamicLinkage, loadAlignProblems, muslLinkageProblems, selfTestCommand, selfTestPlan, serverVersionProblems } from '../verify-server-package.ts';
+import { activeLinkProblems, browserHelperProblems, cliScriptProblems, credentialRelayProblems, devcontainersCliProblems, distScopeProblems, dynamicLinkage, loadAlignProblems, minimumVersionProblems, muslLinkageProblems, selfTestCommand, selfTestPlan, serverVersionProblems, terminalHostProblems } from '../verify-server-package.ts';
 import { packageBuild, serverPackageEntry } from '../build-server.ts';
 import { readTarGz, readZip, tarGz, zip } from '../server-archive.ts';
 
@@ -139,6 +139,17 @@ describe('the module scope of a server package dist/', () => {
   });
 });
 
+describe('the terminal host of a server package', () => {
+  const entry = (path: string, text = 'bundle') => ({ path, data: Buffer.from(text, 'utf8') });
+
+  it('needs dist/terminal-host.js, and no pty host, which only the desktop app forks', () => {
+    expect(terminalHostProblems([entry('dist/terminal-host.js')])).toEqual([]);
+    expect(terminalHostProblems([entry('dist/daemon.js')])).toEqual(['no dist/terminal-host.js']);
+    expect(terminalHostProblems([entry('dist/terminal-host.js', '')])).toEqual(['no dist/terminal-host.js']);
+    expect(terminalHostProblems([entry('dist/terminal-host.js'), entry('dist/pty-host.js')])).toEqual(['dist/pty-host.js ships, which no daemon runs']);
+  });
+});
+
 describe('the damocles command in a server package', () => {
   const entry = (path: string, text: string) => ({ path, data: Buffer.from(text, 'utf8') });
   const cli = entry('dist/cli-remote.js', 'run()');
@@ -163,6 +174,45 @@ describe('the damocles command in a server package', () => {
     const scripts = [cli, read('remote-cli/damocles', 'bin/remote-cli/damocles'), read('helpers/browser.sh', 'bin/helpers/browser.sh')];
     expect(cliScriptProblems({ platform: 'linux' }, scripts)).toEqual([]);
     expect(cliScriptProblems({ platform: 'win32' }, [...scripts, read('remote-cli/damocles.cmd', 'bin/remote-cli/damocles.cmd')])).toEqual([]);
+  });
+});
+
+describe('what shells of other server versions name through the active link', () => {
+  const entry = (path: string, text = 'x') => ({ path, data: Buffer.from(text, 'utf8') });
+  const resource = (from: string, to: string) => ({ path: to, data: readFileSync(join(__dirname, '..', '..', 'resources', from)) });
+  const scripts = ['shellIntegration-bash.sh', 'shellIntegration-env.zsh', 'shellIntegration-login.zsh', 'shellIntegration-profile.zsh', 'shellIntegration-rc.zsh', 'shellIntegration.fish', 'shellIntegration.ps1'];
+  const common = [
+    entry('bin/remote-cli/damocles'),
+    entry('dist/askpass-main.js', 'env.DAMOCLES_ASKPASS_HANDLE;env.DAMOCLES_CREDENTIAL_NONCE;args[0]==="--takeover"'),
+    entry('dist/cli-remote.js', 'env.DAMOCLES_CLI_HOOK'),
+    resource('git-credential/git-credential-relay.sh', 'dist/git-credential/git-credential-relay.sh'),
+    resource('git-credential/git-credential-relay.cmd', 'dist/git-credential/git-credential-relay.cmd'),
+    ...scripts.map((name) => resource(`shell-integration/${name}`, `resources/shell-integration/${name}`)),
+  ];
+  const posix = [...common, entry('bin/helpers/browser.sh'), entry('node/node')];
+  const windows = [...common, entry('bin/remote-cli/damocles.cmd'), entry('bin/helpers/browser.exe'), entry('node/node.exe')];
+  const without = (entries: typeof posix, path: string) => entries.filter((found) => found.path !== path);
+
+  it('passes a package holding every frozen path, whose readers name every frozen variable and argument', () => {
+    expect(activeLinkProblems({ platform: 'linux' }, posix)).toEqual([]);
+    expect(activeLinkProblems({ platform: 'win32' }, windows)).toEqual([]);
+  });
+
+  it('names each frozen path a package lacks, the askpass helper and the shell integration scripts included', () => {
+    expect(activeLinkProblems({ platform: 'linux' }, without(posix, 'dist/askpass-main.js'))).toEqual(['no dist/askpass-main.js']);
+    expect(activeLinkProblems({ platform: 'darwin' }, without(posix, 'resources/shell-integration/shellIntegration-rc.zsh'))).toEqual(['no resources/shell-integration/shellIntegration-rc.zsh']);
+    expect(activeLinkProblems({ platform: 'linux' }, without(posix, 'node/node'))).toEqual(['no node/node']);
+    expect(activeLinkProblems({ platform: 'win32' }, without(windows, 'node/node.exe'))).toEqual(['no node/node.exe']);
+    expect(activeLinkProblems({ platform: 'win32' }, without(windows, 'bin/remote-cli/damocles.cmd'))).toEqual(['no bin/remote-cli/damocles.cmd']);
+    expect(activeLinkProblems({ platform: 'linux' }, without(posix, 'dist/cli-remote.js'))).toEqual(['no dist/cli-remote.js']);
+  });
+
+  it('names a frozen variable or argument a package\'s reader no longer reads', () => {
+    expect(activeLinkProblems({ platform: 'linux' }, [...without(posix, 'dist/askpass-main.js'), entry('dist/askpass-main.js', 'env.DAMOCLES_ASKPASS_HANDLE;env.DAMOCLES_RELAY_NONCE;args[0]==="--take-over"')]))
+      .toEqual(['dist/askpass-main.js does not read DAMOCLES_CREDENTIAL_NONCE', 'dist/askpass-main.js does not read --takeover']);
+    expect(activeLinkProblems({ platform: 'linux' }, [...without(posix, 'dist/cli-remote.js'), entry('dist/cli-remote.js', 'env.DAMOCLES_CLI_SOCKET')])).toEqual(['dist/cli-remote.js does not read DAMOCLES_CLI_HOOK']);
+    expect(activeLinkProblems({ platform: 'win32' }, [...without(windows, 'dist/git-credential/git-credential-relay.cmd'), entry('dist/git-credential/git-credential-relay.cmd', '"%DAMOCLES_NODE%" "%DAMOCLES_ASKPASS_MAIN%"')]))
+      .toEqual(['dist/git-credential/git-credential-relay.cmd does not read DAMOCLES_ASKPASS_NODE']);
   });
 });
 
@@ -233,5 +283,15 @@ describe('the server version in a server package', () => {
     const { version: _version, ...unversioned } = info;
     expect(serverVersionProblems([...files, { path: 'server-package.json', mode: 0o644, data: Buffer.from(JSON.stringify(unversioned)) }])).toEqual(['server-package.json names no version']);
     expect(serverVersionProblems(files)).toEqual(['no server-package.json']);
+  });
+
+  it('needs the minimum server version to be the requirement\'s, hashed into the build, and absent with none', () => {
+    const required = { ...info, minimumServerVersion: '0.9.0' };
+    const withMinimum = [...files, serverPackageEntry(required, `1.0.0+${packageBuild(files, required)}`)];
+    expect(serverVersionProblems(withMinimum)).toEqual([]);
+    expect(minimumVersionProblems(withMinimum, { minimumServerVersion: '0.9.0' })).toEqual([]);
+    expect(minimumVersionProblems(assembled(`1.0.0+${build}`), null)).toEqual([]);
+    expect(minimumVersionProblems(withMinimum, null)).toEqual(['server-package.json names the minimum server version 0.9.0, the requirement undefined']);
+    expect(minimumVersionProblems(assembled(`1.0.0+${build}`), { minimumServerVersion: '0.9.0' })).toEqual(['server-package.json names the minimum server version undefined, the requirement 0.9.0']);
   });
 });

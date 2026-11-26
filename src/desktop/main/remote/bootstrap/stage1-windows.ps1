@@ -1,15 +1,15 @@
-# Stage 1 on a Windows target: the prerequisite probe, the install, and then the bridge itself. Stage 0 runs it dot-sourced
-# with $DamoclesIn and $DamoclesOut, unbuffered streams on stdin and stdout; nothing may reach PowerShell's own output, which would re-encode
-# bytes as text, so tool output goes to stderr and only Send-DamoclesLine writes to stdout until the bridge copies bytes.
+# Stage 1 on a Windows target: the prerequisite probe, the install, and then the package's bridge (daemon.js attach) on stage 0's
+# own stdin and stdout. Stage 0 runs it dot-sourced with $DamoclesIn and $DamoclesOut, unbuffered streams on stdin and stdout;
+# nothing may reach PowerShell's own output, which would re-encode bytes as text, so tool output goes to stderr and only
+# Send-DamoclesLine writes to stdout until the bridge takes stdout over.
 # Everything above "BEGIN MAIN" only defines; the tests dot-source that part and call the functions.
 # BEGIN PARAMETERS
+$D_AUTOMATIC = '1'
 $D_INSTALL_FOLDER = ''
 $D_PREVIOUS_KIND = 'none'
 $D_PREVIOUS_FOLDER = ''
 $D_WIN32_X64 = ''
 $D_WIN32_ARM64 = ''
-$D_ATTACH_DEADLINE_MS = 0
-$D_AUTH_TIMEOUT_MS = 0
 # END PARAMETERS
 
 $NEEDED_BUILD = 17763
@@ -21,12 +21,11 @@ $LOCK_WAIT_S = 600
 # the count curl --retry gets in stage1-posix.sh
 $DOWNLOAD_RETRIES = 3
 $MOVE_RETRY_S = 30
-$HANDSHAKE_MAX_BYTES = 65536
-$PIPE_PATTERN = '^\\\\\.\\pipe\\(damocles-server-[0-9a-f]{32})$'
 $RUN_FOLDER_LABEL = 'damocles-server-run-folder'
 
 # The stage loads only the running PowerShell's own modules: a PSModulePath inherited from the other edition (Windows
-# PowerShell 5.1 under PowerShell 7's) names modules it cannot load, Get-FileHash's among them. The daemon gets the inherited one.
+# PowerShell 5.1 under PowerShell 7's) names modules it cannot load, Get-FileHash's among them. The bridge, and so its daemon,
+# gets the inherited one.
 $DamoclesInheritedModulePath = $env:PSModulePath
 $env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')
 
@@ -58,6 +57,76 @@ namespace Damocles {
         if (final.StartsWith(@"\\?\UNC\")) return @"\\" + final.Substring(8);
         if (final.StartsWith(@"\\?\")) return final.Substring(4);
         return final;
+      }
+    }
+  }
+}
+'@
+
+# CreateProcess with STARTF_USESTDHANDLES and this process's own standard handles, Win32-OpenSSH's overlapped pipes: a .NET
+# redirect would relay through new pipes, and a start without the flag passes no handles under CREATE_NO_WINDOW.
+$ATTACH_SOURCE = @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace Damocles {
+  public static class Attach {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct StartupInfo {
+      public int cb; public string reserved; public string desktop; public string title;
+      public int x; public int y; public int xSize; public int ySize; public int xCountChars; public int yCountChars; public int fillAttribute;
+      public int flags; public short showWindow; public short reserved2; public IntPtr reserved3;
+      public IntPtr stdInput; public IntPtr stdOutput; public IntPtr stdError;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct ProcessInformation { public IntPtr process; public IntPtr thread; public int processId; public int threadId; }
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr GetStdHandle(int which);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetHandleInformation(IntPtr handle, int mask, int flags);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool CreateProcessW(string application, StringBuilder commandLine, IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, int flags, IntPtr environment, string cwd, ref StartupInfo startup, out ProcessInformation information);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetExitCodeProcess(IntPtr process, out int code);
+    [DllImport("kernel32.dll")]
+    static extern bool CloseHandle(IntPtr handle);
+    // STARTF_USESTDHANDLES hands the child only inheritable handles
+    static IntPtr Inheritable(int which) {
+      IntPtr handle = GetStdHandle(which);
+      if (!SetHandleInformation(handle, 1, 1)) throw new Win32Exception(Marshal.GetLastWin32Error(), "standard handle " + which);
+      return handle;
+    }
+    public static int Run(string application, string commandLine, string[] environment) {
+      StartupInfo startup = new StartupInfo();
+      startup.cb = Marshal.SizeOf(typeof(StartupInfo));
+      startup.flags = 0x100;
+      startup.stdInput = Inheritable(-10);
+      startup.stdOutput = Inheritable(-11);
+      startup.stdError = Inheritable(-12);
+      // CreateProcess wants the block sorted by name, case-insensitively
+      string[] names = Array.ConvertAll(environment, entry => entry.Substring(0, entry.IndexOf('=')));
+      string[] sorted = (string[])environment.Clone();
+      Array.Sort(names, sorted, StringComparer.OrdinalIgnoreCase);
+      // StringToHGlobalUni adds the block's second terminating NUL
+      IntPtr block = Marshal.StringToHGlobalUni(string.Join("\0", sorted) + "\0");
+      try {
+        ProcessInformation information;
+        // CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT
+        if (!CreateProcessW(application, new StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero, true, 0x08000400, block, null, ref startup, out information)) throw new Win32Exception(Marshal.GetLastWin32Error(), commandLine);
+        CloseHandle(information.thread);
+        try {
+          if (WaitForSingleObject(information.process, 0xFFFFFFFF) != 0) throw new Win32Exception(Marshal.GetLastWin32Error(), "waiting for " + commandLine);
+          int code;
+          if (!GetExitCodeProcess(information.process, out code)) throw new Win32Exception(Marshal.GetLastWin32Error(), "the exit code of " + commandLine);
+          return code;
+        } finally {
+          CloseHandle(information.process);
+        }
+      } finally {
+        Marshal.FreeHGlobal(block);
       }
     }
   }
@@ -161,16 +230,23 @@ function Test-DamoclesGitBash([string[]]$programFolders, [string]$pathValue) {
   if ($null -eq (Find-DamoclesGitBash $programFolders $pathValue)) { Send-DamoclesNotice 'noGitBash' }
 }
 
-# The PSModulePath the stage inherited as a NAME=value entry, none when it inherited none.
-function Get-DamoclesInheritedModulePathEntry {
-  if ($null -eq $DamoclesInheritedModulePath) { return @() }
-  return @("PSModulePath=$DamoclesInheritedModulePath")
+# The PSModulePath the stage inherited and the execution policy stage 0 kept ($DamoclesInheritedExecutionPolicy) as NAME=value
+# entries, none for one the stage did not inherit.
+function Get-DamoclesInheritedEntries {
+  $inherited = [ordered]@{ PSModulePath = $DamoclesInheritedModulePath; PSExecutionPolicyPreference = $DamoclesInheritedExecutionPolicy }
+  return @($inherited.GetEnumerator() | Where-Object { $null -ne $_.Value } | ForEach-Object { "$($_.Key)=$($_.Value)" })
+}
+
+# The stage's environment as NAME=value entries for a process it starts, with the PSModulePath and execution policy it
+# inherited in place of its own, so the stage's Bypass reaches no daemon, terminal host or shell.
+function Get-DamoclesChildEnvironment {
+  return [string[]](@(Get-ChildItem Env: | Where-Object { @('PSModulePath', 'PSExecutionPolicyPreference') -notcontains $_.Name } | ForEach-Object { "$($_.Name)=$($_.Value)" }) + @(Get-DamoclesInheritedEntries))
 }
 
 # Starts a command line outside the ssh session's job object; $null when WMI refuses it (policy or a blocked service).
 function Start-DamoclesWmi([string]$commandLine, [string]$cwd) {
   try {
-    $environment = [string[]](@(Get-ChildItem Env: | Where-Object { $_.Name -ne 'PSModulePath' } | ForEach-Object { "$($_.Name)=$($_.Value)" }) + @(Get-DamoclesInheritedModulePathEntry))
+    $environment = [string[]](Get-DamoclesChildEnvironment)
     $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ EnvironmentVariables = $environment; ShowWindow = [uint16]0 }
     $result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $commandLine; CurrentDirectory = $cwd; ProcessStartupInformation = $startup }
   } catch {
@@ -311,9 +387,20 @@ function Exit-DamoclesLock([string]$lock) {
   Remove-Item -LiteralPath $lock -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# Removes a staging folder; $false, with the failure on stderr, while a file in it is open, which a later install tries again.
+function Remove-DamoclesStaging([string]$staging) {
+  try {
+    Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction Stop
+    return $true
+  } catch {
+    Write-DamoclesLog "[stage1] removing $staging failed, so a later install tries again: $($_.Exception.Message)"
+    return $false
+  }
+}
+
 function Remove-DamoclesOldStaging([string]$install) {
   $cutoff = (Get-Date).AddMinutes(-$STAGING_STALE_MIN)
-  Get-ChildItem -LiteralPath $install -Directory -Force -Filter '.staging-*' | Where-Object { $_.LastWriteTime -lt $cutoff } | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
+  Get-ChildItem -LiteralPath $install -Directory -Force -Filter '.staging-*' | Where-Object { $_.LastWriteTime -lt $cutoff } | ForEach-Object { [void](Remove-DamoclesStaging $_.FullName) }
 }
 
 function New-DamoclesStaging([string]$install) {
@@ -421,10 +508,15 @@ function Test-DamoclesInstalled([string]$path) {
   return (Test-Path -LiteralPath (Join-Path $path 'node\node.exe') -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $path 'server-package.json') -PathType Leaf)
 }
 
+# Every run folder's daemon pid file and terminal host records <pid>.json, the only names token.ts reads.
 function Get-DamoclesPidFiles {
   $server = Join-Path $env:USERPROFILE '.damocles\server'
   if (-not (Test-Path -LiteralPath $server)) { return @() }
-  return @(Get-ChildItem -LiteralPath $server -Directory -Force -Filter 'run-*' | ForEach-Object { Join-Path $_.FullName 'daemon.pid' } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+  return @(Get-ChildItem -LiteralPath $server -Directory -Force -Filter 'run-*' | ForEach-Object {
+      Join-Path $_.FullName 'daemon.pid'
+      $hosts = Join-Path $_.FullName 'terminal-hosts'
+      if (Test-Path -LiteralPath $hosts -PathType Container) { Get-ChildItem -LiteralPath $hosts -File -Force -Filter '*.json' | Where-Object { $_.Name -cmatch '^[1-9][0-9]{0,14}\.json$' } | ForEach-Object { $_.FullName } }
+    } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
 }
 
 function Read-DamoclesPidRecord([string]$file) {
@@ -435,20 +527,35 @@ function Read-DamoclesPidRecord([string]$file) {
   }
 }
 
-# The versions recently touched pid files name; with $exceptRun (run-<key>), only other machines' (this machine's daemon is
-# Test-DamoclesDaemonRunsFrom's).
+# The versions recently touched pid files name, a daemon's or a terminal host's; with $exceptRun (run-<key>), only other
+# machines' (this machine's daemon and terminal hosts are Test-DamoclesDaemonRunsFrom's).
 function Get-DamoclesLiveVersions([string]$exceptRun = '') {
   $cutoff = (Get-Date).AddMinutes(-$LIVE_PID_FILE_MIN)
-  return @(Get-DamoclesPidFiles | Where-Object { (Split-Path -Leaf (Split-Path -Parent $_)) -ne $exceptRun -and (Get-Item -LiteralPath $_ -Force).LastWriteTime -ge $cutoff } | ForEach-Object { (Read-DamoclesPidRecord $_).version } | Where-Object { $_ -is [string] })
+  return @(Get-DamoclesPidFiles | Where-Object { ($exceptRun -eq '' -or -not $_.Contains("\$exceptRun\")) -and (Get-Item -LiteralPath $_ -Force).LastWriteTime -ge $cutoff } | ForEach-Object { (Read-DamoclesPidRecord $_).version } | Where-Object { $_ -is [string] })
 }
 
-# Keeps the current version, every version a live pid file names, and the newest previous one.
+# Removes version folder $dir by moving it out of place first, as a staging folder, which Windows refuses while a file in it is
+# open: a refusal leaves the folder whole for a later install, and what a failed delete leaves goes with the old staging folders.
+# $true once nothing of it is left.
+function Remove-DamoclesVersionDir([string]$install, [string]$dir) {
+  $staging = Join-Path $install ".staging-$(Split-Path -Leaf $dir)"
+  try {
+    [IO.Directory]::Move($dir, $staging)
+  } catch {
+    Write-DamoclesLog "[stage1] pruning $dir failed, so a later install tries again: $($_.Exception.Message)"
+    return $false
+  }
+  return Remove-DamoclesStaging $staging
+}
+
+# Keeps the current version, every version a live daemon's or terminal host's pid file names, every folder a live one of this
+# machine runs from (a record a suspend kept from its touch looks stale), and the newest previous one.
 function Invoke-DamoclesPrune([string]$install, [string]$current) {
   $keep = Get-DamoclesLiveVersions
   # by name: a listing spells the folder in full, the setting may not (C:/tools, an 8.3 name)
   $others = @(Get-ChildItem -LiteralPath $install -Directory -Force | Where-Object { (Test-DamoclesVersionDir $_.FullName) -and $_.Name -ne (Split-Path -Leaf $current) } | Sort-Object LastWriteTime -Descending)
   foreach ($dir in ($others | Select-Object -Skip 1)) {
-    if ($keep -notcontains (Get-DamoclesDirVersion $dir.FullName)) { Remove-Item -LiteralPath $dir.FullName -Recurse -Force }
+    if ($keep -notcontains (Get-DamoclesDirVersion $dir.FullName) -and -not (Test-DamoclesDaemonRunsFrom $dir.FullName)) { [void](Remove-DamoclesVersionDir $install $dir.FullName) }
   }
 }
 
@@ -464,8 +571,8 @@ function Test-DamoclesDaemonRunsFrom([string]$folder) {
 }
 
 # Removes Damocles' own entries from the previous <install> under its install lock, never the folder itself, which may be
-# shared. Reports settled once nothing of Damocles is left there; a daemon of this machine running from it, a live lock, or a
-# version another machine's live pid file names defers that to a later connect.
+# shared. Reports settled once nothing of Damocles is left there; a daemon of this machine running from it, a live lock, a
+# version another machine's live pid file names, or an entry with a file open in it defers that to a later connect.
 function Clear-DamoclesPrevious([string]$previous, [string]$install) {
   if (-not (Test-Path -LiteralPath $previous -PathType Container) -or (Get-DamoclesFinalPath $previous) -eq (Get-DamoclesFinalPath $install)) {
     Send-DamoclesLine '{"kind":"settled"}'
@@ -479,9 +586,9 @@ function Clear-DamoclesPrevious([string]$previous, [string]$install) {
   foreach ($entry in @(Get-ChildItem -LiteralPath $previous -Force)) {
     $version = Get-DamoclesDirVersion $entry.FullName
     if ($version -ne '') {
-      if ($keep -contains $version) { $kept = $true } else { Remove-Item -LiteralPath $entry.FullName -Recurse -Force }
+      if ($keep -contains $version -or -not (Remove-DamoclesVersionDir $previous $entry.FullName)) { $kept = $true }
     } elseif ($entry.Name -like '.staging-*') {
-      Remove-Item -LiteralPath $entry.FullName -Recurse -Force
+      if (-not (Remove-DamoclesStaging $entry.FullName)) { $kept = $true }
     }
   }
   Exit-DamoclesLock $lock
@@ -521,9 +628,16 @@ function Stop-DamoclesInstall([string]$staging, [string]$lock, [string]$code, [h
 # checked before it is unpacked, its self-test run, then renamed into place.
 function Install-DamoclesVersion {
   Enter-DamoclesLock $lock
+  # again under the lock: a removal may have written the marker since
+  Clear-DamoclesRemoval
   if (Test-DamoclesInstalled $versionDir) {
     Exit-DamoclesLock $lock
     return
+  }
+  # Remove Damocles server's marker (remove-windows.ps1 Set-DamoclesRemovedMark): only a connect the user started installs again
+  if ($D_AUTOMATIC -eq '1' -and (Test-Path -LiteralPath (Join-Path $install 'removed'))) {
+    Exit-DamoclesLock $lock
+    Send-DamoclesFail 'serverRemoved'
   }
   Send-DamoclesStep 'installing'
   Remove-DamoclesOldStaging $install
@@ -560,6 +674,17 @@ function Install-DamoclesVersion {
   Exit-DamoclesLock $lock
 }
 
+# A connect the user started deletes Remove Damocles server's marker in $install, so later automatic connects install again.
+function Clear-DamoclesRemoval {
+  $marker = Join-Path $install 'removed'
+  if ($D_AUTOMATIC -eq '1' -or -not (Test-Path -LiteralPath $marker)) { return }
+  try {
+    Remove-Item -LiteralPath $marker -Force
+  } catch {
+    Write-DamoclesLog "[stage1] deleting $marker failed: $($_.Exception.Message)"
+  }
+}
+
 function Get-DamoclesRunKey {
   $key = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64).OpenSubKey('SOFTWARE\Microsoft\Cryptography')
   $machineId = ([string]$key.GetValue('MachineGuid')).ToLowerInvariant()
@@ -568,189 +693,14 @@ function Get-DamoclesRunKey {
   return ((($digest | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 16))
 }
 
-function Get-DamoclesHmac([byte[]]$token, [string]$label, [byte[]]$first, [byte[]]$second) {
-  $hmac = New-Object Security.Cryptography.HMACSHA256 (, $token)
-  $data = New-Object IO.MemoryStream
-  $labelBytes = [Text.Encoding]::ASCII.GetBytes($label)
-  $data.Write($labelBytes, 0, $labelBytes.Length)
-  $data.Write($first, 0, $first.Length)
-  $data.Write($second, 0, $second.Length)
-  return , $hmac.ComputeHash($data.ToArray())
-}
-
-# Compares in time independent of where the bytes differ.
-function Test-DamoclesEqual([byte[]]$a, [byte[]]$b) {
-  if ($a.Length -ne $b.Length) { return $false }
-  $diff = 0
-  for ($i = 0; $i -lt $a.Length; $i++) { $diff = $diff -bor ($a[$i] -bxor $b[$i]) }
-  return $diff -eq 0
-}
-
-# A PersistentProtocol control frame: type 2, id 0, ack 0, the body's length big-endian, then the body.
-function New-DamoclesControlFrame([byte[]]$body) {
-  $frame = New-Object byte[] (13 + $body.Length)
-  $frame[0] = 2
-  $frame[9] = [byte](($body.Length -shr 24) -band 0xff)
-  $frame[10] = [byte](($body.Length -shr 16) -band 0xff)
-  $frame[11] = [byte](($body.Length -shr 8) -band 0xff)
-  $frame[12] = [byte]($body.Length -band 0xff)
-  [Array]::Copy($body, 0, $frame, 13, $body.Length)
-  return , $frame
-}
-
-# The codec's object of one or two keys, each a short UTF-8 key and a value: an unsigned integer below 128, or 32 bytes.
-function New-DamoclesCodecObject([object[]]$entries) {
-  $out = New-Object IO.MemoryStream
-  $out.WriteByte(11)
-  $out.WriteByte([byte]($entries.Count / 2))
-  for ($i = 0; $i -lt $entries.Count; $i += 2) {
-    $key = [Text.Encoding]::ASCII.GetBytes([string]$entries[$i])
-    $out.WriteByte(7)
-    $out.WriteByte([byte]$key.Length)
-    $out.Write($key, 0, $key.Length)
-    $value = $entries[$i + 1]
-    if ($value -is [byte[]]) {
-      $out.WriteByte(9)
-      $out.WriteByte([byte]$value.Length)
-      $out.Write($value, 0, $value.Length)
-    } else {
-      $out.WriteByte(4)
-      $out.WriteByte([byte]$value)
-    }
-  }
-  return , $out.ToArray()
-}
-
-# The daemon's challenge answer: exactly an object with the 32-byte nonce and proof, or $null.
-function Read-DamoclesChallengeAnswer([byte[]]$body) {
-  if ($body.Length -lt 2 -or $body[0] -ne 11 -or $body[1] -ne 2) { return $null }
-  $at = 2
-  $fields = @{}
-  for ($entry = 0; $entry -lt 2; $entry++) {
-    if ($at + 2 -gt $body.Length -or $body[$at] -ne 7 -or $body[$at + 1] -gt 8) { return $null }
-    $length = $body[$at + 1]
-    if ($at + 2 + $length + 2 + 32 -gt $body.Length) { return $null }
-    $name = [Text.Encoding]::ASCII.GetString($body, $at + 2, $length)
-    $at += 2 + $length
-    if ($body[$at] -ne 9 -or $body[$at + 1] -ne 32) { return $null }
-    $value = New-Object byte[] 32
-    [Array]::Copy($body, $at + 2, $value, 0, 32)
-    $fields[$name] = $value
-    $at += 34
-  }
-  if ($at -ne $body.Length -or -not $fields.ContainsKey('nonce') -or -not $fields.ContainsKey('proof')) { return $null }
-  return $fields
-}
-
-# Reads exactly $count bytes of $stream within the task deadline; $null on an early end or a timeout.
-function Read-DamoclesExact([IO.Stream]$stream, [int]$count, [DateTime]$deadline) {
-  $buffer = New-Object byte[] $count
-  $have = 0
-  while ($have -lt $count) {
-    $task = $stream.ReadAsync($buffer, $have, $count - $have)
-    $left = [int][Math]::Max(0, ($deadline - (Get-Date)).TotalMilliseconds)
-    if (-not $task.Wait($left)) { return $null }
-    if ($task.Result -le 0) { return $null }
-    $have += $task.Result
-  }
-  return , $buffer
-}
-
-# The bridge's side of the mutual authentication: proves the pipe's server holds the token before sending it anything but
-# the first nonce, then proves its own. $false means the endpoint is not this user's daemon.
-function Invoke-DamoclesHandshake([IO.Pipes.NamedPipeClientStream]$pipe, [byte[]]$token) {
-  $bridgeNonce = New-Object byte[] 32
-  (New-Object Security.Cryptography.RNGCryptoServiceProvider).GetBytes($bridgeNonce)
-  $hello = New-DamoclesControlFrame (New-DamoclesCodecObject @('v', 1, 'nonce', $bridgeNonce))
-  $pipe.Write($hello, 0, $hello.Length)
-  $pipe.Flush()
-  $deadline = (Get-Date).AddMilliseconds($D_AUTH_TIMEOUT_MS)
-  $header = Read-DamoclesExact $pipe 13 $deadline
-  if ($null -eq $header -or $header[0] -ne 2) { return $false }
-  $length = ([int64]$header[9] -shl 24) -bor ([int64]$header[10] -shl 16) -bor ([int64]$header[11] -shl 8) -bor [int64]$header[12]
-  if ($length -gt $HANDSHAKE_MAX_BYTES) { return $false }
-  $body = Read-DamoclesExact $pipe ([int]$length) $deadline
-  if ($null -eq $body) { return $false }
-  $answer = Read-DamoclesChallengeAnswer $body
-  if ($null -eq $answer) { return $false }
-  if (-not (Test-DamoclesEqual $answer['proof'] (Get-DamoclesHmac $token 'damocles-daemon' $bridgeNonce $answer['nonce']))) { return $false }
-  $proof = New-DamoclesControlFrame (New-DamoclesCodecObject @('proof', (Get-DamoclesHmac $token 'damocles-bridge' $answer['nonce'] $bridgeNonce)))
-  $pipe.Write($proof, 0, $proof.Length)
-  $pipe.Flush()
-  return $true
-}
-
-# Whether the pid record names a process of this host that has ended (token.ts goneFromThisHost): a crashed daemon's, whose
-# pipe another process may hold now.
-function Test-DamoclesRecordGone($record) {
-  return ($record.hostname -eq [Net.Dns]::GetHostName()) -and ($record.pid -is [int] -or $record.pid -is [int64]) -and -not (Test-DamoclesPidAlive ([int]$record.pid))
-}
-
-# The daemon pid record $record names, authenticated, or $null.
-function Connect-DamoclesDaemon([string]$runDir, $record) {
-  if ($null -ne $record.socketFolder -or -not ($record.endpoint -is [string]) -or $record.endpoint -notmatch $PIPE_PATTERN) { return $null }
-  $pipeName = $Matches[1]
-  $pipe = New-Object IO.Pipes.NamedPipeClientStream('.', $pipeName, [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::Asynchronous)
-  try {
-    $tokenText = ([IO.File]::ReadAllText((Join-Path $runDir 'token'))).Trim()
-    if ($tokenText -notmatch '^[0-9a-f]{64}$') { throw 'the token file does not hold a daemon token' }
-    $token = New-Object byte[] 32
-    for ($i = 0; $i -lt 32; $i++) { $token[$i] = [Convert]::ToByte($tokenText.Substring($i * 2, 2), 16) }
-    $pipe.Connect(2000)
-    if (Invoke-DamoclesHandshake $pipe $token) { return $pipe }
-    Write-DamoclesLog '[stage1] the pipe the pid file names is not this user''s daemon'
-  } catch {
-    Write-DamoclesLog "[stage1] the daemon did not answer: $($_.Exception.Message)"
-  }
-  $pipe.Dispose()
-  return $null
-}
-
-# Starts the daemon through WMI, so it outlives the ssh session; inside the session when WMI refuses.
-function Start-DamoclesDaemon([string]$versionDir) {
+# The bridge line, then the package's bridge on stage 0's own stdin and stdout, as stage1-posix.sh execs it: PowerShell reads
+# nothing past stage 1 and has no read pending, so every byte after the line is the bridge's. The stage exits with its code.
+function Invoke-DamoclesAttach([string]$versionDir) {
+  if (-not ('Damocles.Attach' -as [type])) { Add-Type -TypeDefinition $ATTACH_SOURCE }
   $node = Join-Path $versionDir 'node\node.exe'
-  $daemon = Join-Path $versionDir 'dist\daemon.js'
-  $commandLine = "$(ConvertTo-DamoclesArgument $node) $(ConvertTo-DamoclesArgument $daemon) serve"
-  if ($null -ne (Start-DamoclesWmi $commandLine $versionDir)) { return }
-  $info = New-Object Diagnostics.ProcessStartInfo
-  $info.FileName = $node
-  $info.Arguments = "$(ConvertTo-DamoclesArgument $daemon) serve"
-  $info.WorkingDirectory = $versionDir
-  $info.UseShellExecute = $false
-  $info.CreateNoWindow = $true
-  $info.EnvironmentVariables.Remove('PSModulePath')
-  if ($null -ne $DamoclesInheritedModulePath) { $info.EnvironmentVariables['PSModulePath'] = $DamoclesInheritedModulePath }
-  [void][Diagnostics.Process]::Start($info)
-}
-
-# The bridge: the authenticated daemon pipe, started first when none answers, then bytes copied both ways on stage 0's
-# streams. As attach.ts connectToDaemon does, each pid record is tried once and a crashed daemon's never.
-function Start-DamoclesBridge([string]$versionDir) {
-  $runDir = Join-Path $env:USERPROFILE ".damocles\server\run-$(Get-DamoclesRunKey)"
-  $deadline = (Get-Date).AddMilliseconds($D_ATTACH_DEADLINE_MS)
-  $started = $false
-  $tried = $null
-  $pipe = $null
-  while ($null -eq $pipe) {
-    $record = Read-DamoclesPidRecord (Join-Path $runDir 'daemon.pid')
-    if ($null -ne $record -and -not (Test-DamoclesRecordGone $record) -and "$($record.pid) $($record.endpoint)" -ne $tried) {
-      $tried = "$($record.pid) $($record.endpoint)"
-      $pipe = Connect-DamoclesDaemon $runDir $record
-      if ($null -ne $pipe) { break }
-    }
-    if (-not $started) {
-      $started = $true
-      Start-DamoclesDaemon $versionDir
-    }
-    if ((Get-Date) -ge $deadline) { Send-DamoclesFail 'bridgeFailed' @{ reason = 'noDaemon' } }
-    Start-Sleep -Milliseconds 200
-  }
+  $commandLine = "$(ConvertTo-DamoclesArgument $node) $(ConvertTo-DamoclesArgument (Join-Path $versionDir 'dist\daemon.js')) attach"
   Send-DamoclesLine '{"kind":"bridge"}'
-  $up = $DamoclesIn.CopyToAsync($pipe)
-  $down = $pipe.CopyToAsync($DamoclesOut)
-  [void][Threading.Tasks.Task]::WaitAny([Threading.Tasks.Task[]]@($up, $down))
-  $pipe.Dispose()
-  exit 0
+  exit ([Damocles.Attach]::Run($node, $commandLine, (Get-DamoclesChildEnvironment)))
 }
 
 # BEGIN MAIN
@@ -781,10 +731,11 @@ Send-DamoclesLine (ConvertTo-Json -Compress -InputObject @{ kind = 'probe'; targ
 
 $versionDir = Join-Path $install "$serverVersion-$target"
 $lock = Join-Path $install 'install.lock'
+Clear-DamoclesRemoval
 if (-not (Test-DamoclesInstalled $versionDir)) { Install-DamoclesVersion }
 
 if ($D_PREVIOUS_KIND -eq 'default') { Clear-DamoclesPrevious (Get-DamoclesInstallDir '' $user) $install }
 if ($D_PREVIOUS_KIND -eq 'folder') { Clear-DamoclesPrevious (Get-DamoclesInstallDir $D_PREVIOUS_FOLDER $user) $install }
 
 Send-DamoclesStep 'starting'
-Start-DamoclesBridge $versionDir
+Invoke-DamoclesAttach $versionDir

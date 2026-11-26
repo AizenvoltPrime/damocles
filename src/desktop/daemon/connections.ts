@@ -12,7 +12,7 @@ import { CHANNEL, createMux, MAX_FRAME_BYTES, MAX_HELD_BYTES, type Mux, type Str
 import { streamClaims } from '../../remote/tunnel-pipe';
 import { listeners } from '../../remote/listeners';
 import { createPersistentProtocol, type PersistentProtocol } from '../../remote/persistent-protocol';
-import { FEATURES, PROTOCOL_VERSION } from '../../remote/protocol-version';
+import { FEATURES, FROZEN_FEATURES, PROTOCOL_VERSION } from '../../remote/protocol-version';
 import { END_TIMEOUT_MS, streamSocket } from '../../remote/stream-transport';
 import { WORKSPACE_MAX_MESSAGE_BYTES } from '../workspace/messages';
 import {
@@ -26,7 +26,10 @@ import {
   type AttachedClient,
   type CoreState,
   type FrozenClientToControl,
+  type RunsEvent,
+  RUNS_EVENT_MS,
 } from './control-messages';
+import type { RunRegistry } from './run-registry';
 import type { AgentUpstream } from './agent-proxy';
 import { createAgentRelay, type AgentRelay } from './agent-relay';
 import type { ClientLink } from './core-routes';
@@ -85,6 +88,8 @@ export interface ConnectionsDeps {
   readonly core: CoreHostAccess;
   readonly control: ControlService;
   readonly mirrorWatches: MirrorWatches;
+  // the run registry, whose changes reach every attach that watches the runs
+  readonly runs: Pick<RunRegistry, 'runs' | 'cliWaits' | 'onChange'>;
   // every welcomed connection, connected or dropped inside its grace; a refused connection is not one
   readonly connectionsChanged: (connections: readonly ConnectionPresence[]) => void;
   // every connection, a refused one included, before connectionsChanged drops it
@@ -106,9 +111,15 @@ export interface ConnectionPresence {
   readonly state: 'connected' | 'inGrace';
 }
 
+// The events that tell a client why the daemon ends, each sent only to a connected client whose attach asked for it.
+export type EndingEvent = 'removing' | 'handingOver';
+
 export interface Connections {
   // token: the one the endpoint the socket reached was opened with
   accept(socket: Duplex, token: Uint8Array): void;
+  // the device name of connection `by` to every other connected client that asked for `event`; called before endAll, so each
+  // mux flushes it ahead of the end
+  announce(event: EndingEvent, by: string): void;
   // ends every connection but those named, letting each write what it has sent
   endAll(except?: ReadonlySet<string>): Promise<void>;
   destroyAll(): void;
@@ -122,6 +133,9 @@ interface Live {
   readonly deviceName: string;
   // set once the client's attach asked for control.clients events
   clientsEvents?: ((clients: readonly AttachedClient[]) => void) | undefined;
+  // the ending events the client's attach asked for
+  readonly endings: Set<EndingEvent>;
+  readonly tellEnding: (event: EndingEvent, deviceName: string) => void;
   // set while the connection is dropped and inside its grace
   grace?: NodeJS.Timeout | undefined;
   // tells the core channel's link the connection resumed
@@ -129,6 +143,25 @@ interface Live {
   readonly relay: AgentRelay;
   // set once the client called agent.relay on this connection
   relaying: boolean;
+}
+
+// The runs to an attach that watches them: at once, then at most one event per RUNS_EVENT_MS while they change.
+function watchRuns(registry: Pick<RunRegistry, 'runs' | 'cliWaits' | 'onChange'>, send: (event: RunsEvent) => void): Disposable {
+  let timer: NodeJS.Timeout | undefined;
+  const current = (): RunsEvent => ({ runs: registry.runs(), cliWaits: registry.cliWaits() });
+  const changed = registry.onChange(() => {
+    timer ??= setTimeout(() => {
+      timer = undefined;
+      send(current());
+    }, RUNS_EVENT_MS);
+  });
+  send(current());
+  return {
+    dispose: () => {
+      clearTimeout(timer);
+      changed.dispose();
+    },
+  };
 }
 
 // The relay wins over a bridge's agent socket: in a container that socket is the image's own agent, never the client's.
@@ -147,6 +180,8 @@ export function createConnections(deps: ConnectionsDeps): Connections {
   const unauthenticated = new Set<Duplex>();
   // welcomed connections by clientId, connected or inside their grace; a new connection with a known id replaces it
   const clients = new Map<string, Live>();
+  // every open connection's hello device name by connection id, a refused one's included
+  const deviceNames = new Map<string, string>();
   let nextId = 0;
   const graceMs = deps.graceMs ?? RECONNECTION_GRACE_MS;
   const now = deps.now ?? Date.now;
@@ -186,10 +221,10 @@ export function createConnections(deps: ConnectionsDeps): Connections {
   };
 
   const answer = (hello: Hello): HelloAnswer => {
-    if (hello.protocolVersion !== PROTOCOL_VERSION) return { kind: 'refused', refused: { reason: 'protocol', serverVersion: deps.serverVersion, protocolVersion: PROTOCOL_VERSION } };
+    if (hello.protocolVersion !== PROTOCOL_VERSION) return { kind: 'refused', refused: { reason: 'protocol', serverVersion: deps.serverVersion, protocolVersion: PROTOCOL_VERSION, frozenFeatures: FROZEN_FEATURES } };
     const resumed = hello.reconnectionToken ? resumable(hello) : undefined;
     // past the grace, after an overflow or a daemon restart the token names nothing, and the client attaches fresh
-    if (hello.reconnectionToken && !resumed) return { kind: 'refused', refused: { reason: 'unknown-token', serverVersion: deps.serverVersion, protocolVersion: PROTOCOL_VERSION } };
+    if (hello.reconnectionToken && !resumed) return { kind: 'refused', refused: { reason: 'unknown-token', serverVersion: deps.serverVersion, protocolVersion: PROTOCOL_VERSION, frozenFeatures: FROZEN_FEATURES } };
     if (resumed) {
       return {
         kind: 'welcome',
@@ -240,6 +275,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     }
     const id = `connection-${++nextId}`;
     socketIds.set(socket, id);
+    deviceNames.set(id, accepted.hello.deviceName);
     const close = (reason: string): void => protocol.close(reason);
     const end = (reason: string): void => protocol.end(reason);
     protocol.setMaxBodyBytes(MAX_FRAME_BYTES);
@@ -248,7 +284,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     const mux = createMux({ protocol, side: 'daemon', acceptStreams: accepted.answer.kind === 'welcome', maxHeldBytes: deps.maxHeldBytes ?? MAX_HELD_BYTES, onOverflow: () => close('held frames passed the per-connection bound'), onViolation: close, log });
     const disposables: Array<{ dispose(): void }> = [{ dispose: () => mux.dispose() }];
     if (accepted.answer.kind === 'refused') {
-      const endpoint = serveControl<FrozenClientToControl>(id, accepted.hello.clientId, mux, () => undefined, FROZEN_CLIENT_TO_CONTROL, ['listRuns', 'shutdownWhenIdle', 'shutdownNow', 'mirror.sync'], close, end, () => undefined);
+      const endpoint = serveControl<FrozenClientToControl>(id, accepted.hello.clientId, mux, () => undefined, FROZEN_CLIENT_TO_CONTROL, ['listRuns', 'shutdownWhenIdle', 'shutdownNow', 'handOver', 'mirror.sync'], close, end, () => undefined);
       disposables.push({ dispose: () => endpoint.close('the connection closed') });
       log(`[daemon] ${id} speaks protocol ${accepted.hello.protocolVersion}, not ${PROTOCOL_VERSION}: serving the frozen control commands only`);
     } else {
@@ -297,7 +333,18 @@ export function createConnections(deps: ConnectionsDeps): Connections {
       const { clientId, deviceName } = accepted.hello;
       const previous = clients.get(clientId);
       const relay = createAgentRelay({ ask: (request) => endpoint.emit('agent.request', { request }), log });
-      const live: Live = { id, clientId, protocol, token: accepted.answer.welcome.reconnectionToken, deviceName, resumed: () => lostChanged.fire(), relay, relaying: false };
+      const live: Live = {
+        id,
+        clientId,
+        protocol,
+        token: accepted.answer.welcome.reconnectionToken,
+        deviceName,
+        endings: new Set(),
+        tellEnding: (event, name) => endpoint.emit(event, { deviceName: name }),
+        resumed: () => lostChanged.fire(),
+        relay,
+        relaying: false,
+      };
       endpoint.serve('agent.relay', () => {
         live.relaying = true;
         if (clients.get(clientId) === live && !live.grace) deps.agentUpstream(clientId, upstreamOf(live, undefined));
@@ -312,8 +359,15 @@ export function createConnections(deps: ConnectionsDeps): Connections {
         return { ok: relay.connect(request, stream) };
       });
       endpoint.serve('agent.refuse', ({ request }) => relay.refuse(request));
+      let watchingRuns = false;
       endpoint.serve('attach', async (params) => {
         await deps.control.attach(params, { id, clientId, mux, claimStream, core, close, end });
+        if (params.watchRuns === true && !watchingRuns) {
+          watchingRuns = true;
+          disposables.push(watchRuns(deps.runs, (event) => endpoint.emit('runs', event)));
+        }
+        if (params.watchRemoval === true) live.endings.add('removing');
+        if (params.watchHandOver === true) live.endings.add('handingOver');
         if (params.watchClients !== true || live.clientsEvents) return;
         live.clientsEvents = (list) => endpoint.emit('clients', { clients: list });
         live.clientsEvents(attachedFor(live));
@@ -350,6 +404,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
       log(`[daemon] ${id}: client ${clientId} (${accepted.hello.deviceName}, app ${accepted.hello.appVersion}) attached`);
     }
     protocol.onClose((reason) => {
+      deviceNames.delete(id);
       for (const disposable of disposables.reverse()) disposable.dispose();
       deps.connectionClosed(id);
       presence();
@@ -384,6 +439,14 @@ export function createConnections(deps: ConnectionsDeps): Connections {
         // runs from a timer too, so it only logs
         failed: (reason) => log(`[daemon] refused a connection: ${reason}`),
       });
+    },
+    announce: (event, by) => {
+      const deviceName = deviceNames.get(by);
+      if (deviceName === undefined) {
+        log(`[daemon] ${event}: ${by} is no longer open, so no device is named to the others`);
+        return;
+      }
+      for (const live of clients.values()) if (live.id !== by && !live.grace && live.endings.has(event)) live.tellEnding(event, deviceName);
     },
     endAll: async (except) => {
       ending = true;

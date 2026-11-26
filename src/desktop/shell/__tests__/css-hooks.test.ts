@@ -42,7 +42,7 @@ vi.mock('@/utils/highlightDiff', () => ({
 // Each union a hook publishes, as a map that must name every member: a new member fails typecheck here until it is added, and
 // then the registry comparison below until CSS_HOOKS and docs/themes.md list it.
 const CHAT_STATUSES = { idle: true, running: true, waiting: true } satisfies Record<ChatStatus, true>;
-const TERMINAL_STATUSES = { starting: true, running: true, exited: true, reconnecting: true } satisfies Record<TerminalStatus, true>;
+const TERMINAL_STATUSES = { starting: true, running: true, exited: true, reconnecting: true, notResponding: true } satisfies Record<TerminalStatus, true>;
 // the chat counts that put a project in each state
 const PROJECT_COUNTS = { idle: [0, 0], running: [1, 0], waiting: [1, 1] } satisfies Record<CharacterState, readonly [running: number, waiting: number]>;
 const keysOf = <K extends string>(map: Readonly<Record<K, unknown>>): K[] => Object.keys(map) as K[];

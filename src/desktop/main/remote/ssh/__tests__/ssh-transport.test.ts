@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LaunchedProcess, Launcher, ProcessExit, SpawnSpec } from '../../../../../core/process-launcher';
 import { createFakeSecretsStore } from '../../../../../__mocks__/fake-platform';
 import type { AskpassRegistration, AskpassServer, PromptCredential } from '../../../../../core/scm/askpass/askpass-server';
-import type { SshPrompt } from '../../../../preload/overlay-channels';
+import type { HostNotice, SshPrompt } from '../../../../preload/overlay-channels';
 import { createRememberedSecrets } from '../remembered-secrets';
 import { createArtifactCache } from '../../artifact-cache';
 import type { ServerManifest } from '../../server-manifest-format';
@@ -129,6 +129,7 @@ function fixture(script: (ssh: FakeSsh) => void, run?: SshRun) {
     }),
     env: {},
     userInfo: () => os.userInfo(),
+    agentAnswers: async () => true,
   };
   const registrations: Array<{ disposed: boolean }> = [];
   const askpass = {
@@ -152,6 +153,7 @@ function transportOptions(askpass: AskpassServer, extra: Partial<SshTransportOpt
     forwardAgent: false,
     ...(detect ? {} : { cachedPlatform: { os: 'linux' as const } }),
     signal: controller.signal,
+    userStarted: () => false,
     hooks: { step: (step) => steps.push(step), progress: () => undefined, prompt: async () => undefined, notice: () => undefined },
     savePlatform: vi.fn(async () => undefined),
     installFolderSettled: vi.fn(async () => undefined),
@@ -432,6 +434,44 @@ describe('startSshTransport', () => {
     expect(bridgeSsh.killed).toBe(0);
   });
 
+  it('ends the bridge\'s stream with the failure the bridge writes where the handshake would start, however its line is split', async () => {
+    const line = '@@DAMOCLES {"kind":"fail","code":"belowFloor","params":{"floor":"3.9.0"}}\n';
+    for (const chunks of [[`${PROBE}${BRIDGE}${line}`], [`${PROBE}${BRIDGE}`, line], [`${PROBE}${BRIDGE}@@DAM`, line.slice(5, 40), line.slice(40)]]) {
+      let bridgeSsh!: FakeSsh;
+      const { deps, askpass } = fixture((ssh) => {
+        bridgeSsh = ssh;
+        ssh.stdout(chunks[0]!);
+      });
+      const result = await startSshTransport(transportOptions(askpass).options, deps);
+      const ended = new Promise<unknown>((resolve) => result.stream.once('error', resolve));
+      let read = '';
+      result.stream.on('data', (chunk: Buffer) => { read += chunk.toString('utf8'); });
+      for (const chunk of chunks.slice(1)) bridgeSsh.stdout(chunk);
+      expect(await ended).toMatchObject({ code: 'belowFloor', params: { floor: '3.9.0' } });
+      expect(read).toBe('');
+      expect(bridgeSsh.killed).toBe(1);
+    }
+  });
+
+  it('passes on bytes that only begin like a status line, and a marked line that is no failure (a belowFloor without an app version included), as the protocol\'s', async () => {
+    for (const bytes of ['@@DAMOCLEZ and more', '@@DAMOCLES {"kind":"step","step":"starting"}\nframes', '@@DAMOCLES not json\nframes', '@@DAMOCLES {"kind":"fail","code":"belowFloor","params":{"floor":"3.9"}}\nframes']) {
+      let bridgeSsh!: FakeSsh;
+      const { deps, askpass } = fixture((ssh) => {
+        bridgeSsh = ssh;
+        ssh.stdout(`${PROBE}${BRIDGE}`);
+      });
+      const result = await startSshTransport(transportOptions(askpass).options, deps);
+      let read = '';
+      result.stream.on('data', (chunk: Buffer) => { read += chunk.toString('utf8'); });
+      bridgeSsh.stdout(bytes.slice(0, 4));
+      bridgeSsh.stdout(bytes.slice(4));
+      bridgeSsh.stdout('-later');
+      await tick();
+      expect(read).toBe(`${bytes}-later`);
+      result.dispose();
+    }
+  });
+
   it('takes the stage\'s first output, not every chunk of it, as the proof that ssh signed in', async () => {
     const { deps, askpass } = fixture((ssh) => {
       ssh.stdout('@@DAMOCLES {"kind":"step","step":"checking"}\n');
@@ -443,6 +483,42 @@ describe('startSshTransport', () => {
     const result = await startSshTransport(transportOptions(askpass).options, deps);
     expect(authenticatedCalls.count).toBe(1);
     result.dispose();
+  });
+
+  it('says so once the attempt signed in when the host forwards the agent and ssh-add, with ssh\'s environment, reaches none', async () => {
+    const { deps, askpass } = fixture((ssh) => ssh.stdout(`${PROBE}${BRIDGE}`));
+    const checks: Array<{ readonly ssh: string; readonly env: Readonly<Record<string, string | undefined>> }> = [];
+    const notices: HostNotice[] = [];
+    const { options } = transportOptions(askpass, { forwardAgent: true });
+    const result = await startSshTransport({ ...options, hooks: { ...options.hooks, notice: (notice) => notices.push(notice) } }, {
+      ...deps,
+      env: { SSH_AUTH_SOCK: '/tmp/agent.sock' },
+      agentAnswers: async (ssh, env) => {
+        checks.push({ ssh, env });
+        return false;
+      },
+    });
+    expect(notices).toEqual([{ code: 'agentNotRunning', params: {} }]);
+    expect(checks).toEqual([{ ssh: await deps.resolveSsh(), env: expect.objectContaining({ SSH_AUTH_SOCK: '/tmp/agent.sock', SSH_ASKPASS: '/askpass.sh' }) }]);
+    // an agent answers or the check cannot tell: the host says nothing
+    expect(result.probe.notices).toEqual([]);
+    result.dispose();
+    for (const answer of [true, undefined]) {
+      const quiet = fixture((ssh) => ssh.stdout(`${PROBE}${BRIDGE}`));
+      const shown: HostNotice[] = [];
+      const quietOptions = transportOptions(quiet.askpass, { forwardAgent: true }).options;
+      (await startSshTransport({ ...quietOptions, hooks: { ...quietOptions.hooks, notice: (notice) => shown.push(notice) } }, { ...quiet.deps, agentAnswers: async () => answer })).dispose();
+      expect(shown).toEqual([]);
+    }
+  });
+
+  it('checks no agent for a host that does not forward it, nor for an attempt that never signed in', async () => {
+    const agentAnswers = vi.fn(async () => false);
+    const off = fixture((ssh) => ssh.stdout(`${PROBE}${BRIDGE}`));
+    (await startSshTransport(transportOptions(off.askpass).options, { ...off.deps, agentAnswers })).dispose();
+    const unreachable = fixture((ssh) => ssh.exit(255));
+    await rejection(startSshTransport(transportOptions(unreachable.askpass, { forwardAgent: true }).options, { ...unreachable.deps, agentAnswers }));
+    expect(agentAnswers).not.toHaveBeenCalled();
   });
 
   it('passes the plan\'s ControlMaster options and doubles a % in the key path', async () => {
@@ -506,6 +582,15 @@ describe('startSshTransport', () => {
     expect(fetch).not.toHaveBeenCalled();
     // stage 1's frame alone: no length line and no package bytes
     expect(launched[0]!.written).toHaveLength(1);
+  });
+
+  it('builds stage 1 as an automatic connect unless the user started or joined the attempt by the time it is built', async () => {
+    for (const [userStarted, automatic] of [[false, '1'], [true, '0']] as const) {
+      const { launched, deps, askpass } = fixture((ssh) => ssh.stdout(`${PROBE}@@DAMOCLES {"kind":"fail","code":"serverRemoved","params":{}}\n`));
+      const failure = await rejection(startSshTransport(transportOptions(askpass, { userStarted: () => userStarted }).options, deps));
+      expect(failure.code).toBe('serverRemoved');
+      expect(Buffer.concat(launched[0]!.written).toString('utf8')).toContain(`\nD_AUTOMATIC='${automatic}'\n`);
+    }
   });
 
   it('fails a cache request from an SSH target as a stage protocol error, filling no cache on this computer', async () => {

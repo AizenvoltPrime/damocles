@@ -29,7 +29,7 @@ function harness(options: { views?: boolean; hostExists?: boolean } = {}) {
   let lastFailure: ConnectFailure | undefined;
   let online = true;
   const logs: string[] = [];
-  const attempts: Array<{ readonly signal: AbortSignal; readonly force: boolean; readonly joined: boolean; resolve: () => void; reject: (failure: ConnectFailure) => void }> = [];
+  const attempts: Array<{ readonly signal: AbortSignal; readonly force: boolean; readonly user: boolean; readonly joined: boolean; resolve: () => void; reject: (failure: ConnectFailure) => void }> = [];
   const endedMasters: string[] = [];
   const events: ReconnectEvent[] = [];
   const usable = (): boolean => state === 'connected' && connection !== undefined && !connection.isLost && connection.suspect === undefined;
@@ -39,7 +39,7 @@ function harness(options: { views?: boolean; hostExists?: boolean } = {}) {
     held: () => connection,
     hostExists: () => options.hostExists ?? true,
     hasOpenViews: () => views,
-    attempt: (_key, signal, force) => {
+    attempt: (_key, signal, force, user) => {
       if (refuseNext) {
         const refused = refuseNext;
         refuseNext = undefined;
@@ -49,7 +49,7 @@ function harness(options: { views?: boolean; hostExists?: boolean } = {}) {
       joinNext = false;
       const outcome = new Promise<void>((resolve, reject) => {
         state = 'connecting';
-        attempts.push({ signal, force, joined, resolve, reject: (failure) => reject(new ConnectError(failure)) });
+        attempts.push({ signal, force, user, joined, resolve, reject: (failure) => reject(new ConnectError(failure)) });
       });
       return { joined, outcome };
     },
@@ -325,7 +325,7 @@ describe('the reconnect loop', () => {
     expect(h.events.at(-1)).toEqual({ kind: 'permanent', authorityKey: KEY, code: 'hostKeyChanged', dropped: true });
     await vi.advanceTimersByTimeAsync(10 * 60_000);
     expect(h.attempts).toHaveLength(1);
-    h.reconnector.reconnectNow(KEY);
+    h.reconnector.reconnectNow(KEY, true);
     await vi.advanceTimersByTimeAsync(0);
     expect(h.attempts).toHaveLength(2);
   });
@@ -349,7 +349,7 @@ describe('the reconnect loop', () => {
       await vi.advanceTimersByTimeAsync(0);
     }
     expect(h.attempts).toHaveLength(4);
-    h.reconnector.reconnectNow(KEY);
+    h.reconnector.reconnectNow(KEY, true);
     await vi.advanceTimersByTimeAsync(0);
     expect(h.attempts).toHaveLength(5);
     h.failAttempt({ code: 'refused', params: {} });
@@ -414,6 +414,11 @@ describe('the reconnect loop', () => {
     permanent.failedOutside({ code: 'glibcTooOld', params: {} });
     expect(permanent.reconnector.phase(KEY)).toMatchObject({ phase: 'failed', code: 'prerequisites' });
     expect(permanent.events.at(-1)).toMatchObject({ kind: 'permanent', dropped: false });
+    const belowFloor = harness();
+    belowFloor.failedOutside({ code: 'belowFloor', params: { floor: '3.9.0' } });
+    expect(belowFloor.reconnector.phase(KEY)).toMatchObject({ phase: 'failed', code: 'belowFloor' });
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(belowFloor.attempts).toHaveLength(0);
   });
 
   it('a connection closed for good loops as a drop and lands as a fresh attach', async () => {
@@ -522,9 +527,23 @@ describe('a suspect connection', () => {
     await vi.advanceTimersByTimeAsync(backoffMs(1));
     h.failAttempt({ code: 'refused', params: {} });
     await vi.advanceTimersByTimeAsync(0);
-    h.reconnector.reconnectNow(KEY);
+    h.reconnector.reconnectNow(KEY, false);
     await vi.advanceTimersByTimeAsync(0);
     expect(h.attempts.map((attempt) => attempt.force)).toEqual([false, false, true]);
+  });
+
+  it('makes only the attempt a user\'s Reconnect starts the user\'s, so the scheduled ones never install after a removal', async () => {
+    const h = harness();
+    h.connect();
+    h.drop();
+    await vi.advanceTimersByTimeAsync(0);
+    h.failAttempt({ code: 'refused', params: {} });
+    await vi.advanceTimersByTimeAsync(0);
+    h.reconnector.reconnectNow(KEY, true);
+    await vi.advanceTimersByTimeAsync(0);
+    h.failAttempt({ code: 'refused', params: {} });
+    await vi.advanceTimersByTimeAsync(backoffMs(1));
+    expect(h.attempts.map((attempt) => attempt.user)).toEqual([false, true, false]);
   });
 
   it('goes on with the schedule when an attempt connected but the connection is no longer usable', async () => {
@@ -547,7 +566,7 @@ describe('failure classification', () => {
   it('names the permanent failures and leaves the rest to the schedule', () => {
     const of = (code: ConnectFailure['code']) => permanentFailureOf({ code, params: {} });
     expect(of('hostKeyChanged')).toBe('hostKeyChanged');
-    for (const code of ['unsupportedOs', 'glibcTooOld', 'glibcxxMissing', 'kernelTooOld', 'macosTooOld', 'windowsBuildTooOld', 'nixLdMissing', 'noexec', 'lowSpace', 'installFolderInvalid'] as const) expect(of(code)).toBe('prerequisites');
+    for (const code of ['unsupportedOs', 'glibcTooOld', 'glibcxxMissing', 'kernelTooOld', 'macosTooOld', 'windowsBuildTooOld', 'nixLdMissing', 'noexec', 'lowSpace', 'installFolderInvalid', 'floorUnreadable'] as const) expect(of(code)).toBe('prerequisites');
     for (const code of ['hashMismatch', 'downloadAndUploadFailed', 'selfTestFailed'] as const) expect(of(code)).toBe('install');
     expect(of('permissionDenied')).toBe('authFailed');
     expect(of('hostKeyRefused')).toBe('authFailed');
@@ -555,6 +574,10 @@ describe('failure classification', () => {
     // a devcontainer to build waits for a user, whom the loop's attempts never ask
     expect(of('containerNeedsBuild')).toBe('containerBuild');
     expect(of('distroNotListed')).toBe('hostRemoved');
+    // the host's security floor is above this app: no retry starts a server
+    expect(of('belowFloor')).toBe('belowFloor');
+    // Remove Damocles server ran there: only a connect the user starts installs again
+    expect(of('serverRemoved')).toBe('serverRemoved');
     for (const code of ['refused', 'timedOut', 'unreachable', 'unresolved', 'unknown', 'bridgeFailed', 'handshakeFailed', 'cancelled'] as const) expect(of(code)).toBeUndefined();
   });
 });

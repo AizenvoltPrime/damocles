@@ -304,6 +304,96 @@ describe("one panel per stored conversation: panel restore", () => {
   });
 });
 
+describe("one panel per stored conversation: panel restore on a daemon's core", () => {
+  // a daemon's core panel host, whose views the daemon moves to the holder when `merged`
+  const merging = (panel: Panel, merged: boolean) => {
+    const mergeInto = vi.fn(async (_holder: unknown) => merged);
+    Object.assign(panel.host, { mergeInto });
+    return mergeInto;
+  };
+  const types = (h: ReturnType<typeof harness>, panel: Panel): string[] => h.sent.get(panel.host)!.map((m) => m.type);
+  const notices = (): string[] => platform.notifications.calls.map((c) => c.message);
+
+  it("a restore whose conversation another panel holds hands its views to that panel, with no notice, no claim and nothing more posted", async () => {
+    const holder = makePanel("host-1", "sess-x");
+    const restored = makePanel("host-2", null);
+    const mergeInto = merging(restored, true);
+    const h = harness(holder, restored);
+
+    await h.session.ready!(ready("sess-x"), restored.ctx);
+
+    expect(mergeInto).toHaveBeenCalledTimes(1);
+    expect(mergeInto).toHaveBeenCalledWith(holder.host);
+    expect(notices()).not.toContain(MESSAGE);
+    // the duplicate never binds the conversation, so it takes no lease and never writes its file
+    expect(restored.session.setResumeSession).not.toHaveBeenCalled();
+    expect(sessionLeasesOf(restored.session)).toEqual([]);
+    expect(restored.session.openResumeTarget).not.toHaveBeenCalled();
+    expect(restored.session.initializeEarly).not.toHaveBeenCalled();
+    expect(h.loadSessionHistory).not.toHaveBeenCalled();
+    // the holder's join replays the conversation, the session list and the models to the merged views
+    for (const type of ["sessionCleared", "sessionStarted", "storedSessions", "promptHistory"]) expect(types(h, restored)).not.toContain(type);
+    expect(holder.target()).toBe("sess-x");
+    expect(holder.host.reveal).not.toHaveBeenCalled();
+    expect(restored.host.reveal).not.toHaveBeenCalled();
+  });
+
+  it("a merge the daemon refuses opens the restore empty with the notice, as a core with no merge does", async () => {
+    const holder = makePanel("host-1", "sess-x");
+    const restored = makePanel("host-2", null);
+    const mergeInto = merging(restored, false);
+    const h = harness(holder, restored);
+
+    await h.session.ready!(ready("sess-x"), restored.ctx);
+
+    expect(mergeInto).toHaveBeenCalledWith(holder.host);
+    expect(infos()).toEqual([MESSAGE]);
+    expect(restored.session.setResumeSession).not.toHaveBeenCalled();
+    expect(restored.target()).toBeNull();
+    expect(h.sent.get(restored.host)!.filter((m) => m.type === "sessionCleared")).toEqual([{ type: "sessionCleared" }]);
+    expect(types(h, restored)).toContain("storedSessions");
+    expect(restored.session.initializeEarly).toHaveBeenCalledTimes(1);
+  });
+
+  it("a merge that failed because every view of the panel went meanwhile tells nobody and starts nothing", async () => {
+    const holder = makePanel("host-1", "sess-x");
+    const restored = makePanel("host-2", null);
+    const h = harness(holder, restored);
+    const panels = h.deps.getPanels;
+    // the daemon disposed the panel before answering
+    merging(restored, false).mockImplementation(async () => {
+      (h.deps as { getPanels: typeof panels }).getPanels = () => new Map([...panels()].filter(([id]) => id !== restored.panelId));
+      return false;
+    });
+
+    await h.session.ready!(ready("sess-x"), restored.ctx);
+
+    expect(notices()).not.toContain(MESSAGE);
+    expect(restored.session.setResumeSession).not.toHaveBeenCalled();
+    expect(restored.session.initializeEarly).not.toHaveBeenCalled();
+  });
+
+  it("two restores of one conversation at once: one resumes it, and the other hands its views to it", async () => {
+    const first = makePanel("host-1", null);
+    const second = makePanel("host-2", null);
+    const merges = [merging(first, true), merging(second, true)];
+    const h = harness(first, second);
+
+    await Promise.all([h.session.ready!(ready("sess-x"), first.ctx), h.session.ready!(ready("sess-x"), second.ctx)]);
+
+    const [resumed, ...others] = [first, second].filter((p) => p.target() === "sess-x");
+    expect(others).toEqual([]);
+    const duplicate = resumed === first ? second : first;
+    expect(merges[resumed === first ? 0 : 1]).not.toHaveBeenCalled();
+    expect(merges[resumed === first ? 1 : 0]).toHaveBeenCalledWith(resumed!.host);
+    expect(duplicate.session.setResumeSession).not.toHaveBeenCalled();
+    expect(h.loadSessionHistory).toHaveBeenCalledTimes(1);
+    expect(notices()).not.toContain(MESSAGE);
+    expect(resumed!.session.initializeEarly).toHaveBeenCalledTimes(1);
+    expect(duplicate.session.initializeEarly).not.toHaveBeenCalled();
+  });
+});
+
 describe("findStoredSessionHolder", () => {
   it("names the other panel holding the session and changes nothing", () => {
     const mine = makePanel("host-1", "sess-mine");

@@ -53,6 +53,21 @@ interface AuthorityState {
   readonly coreEpoch: string | null;
   // the stored chat last viewed in each of the authority's projects, one entry per project; no session once it is gone (LastChats)
   readonly lastChats: readonly RemoteSelection[];
+  readonly requiredSince?: RequiredSince | undefined;
+  readonly pendingSince?: PendingSince | undefined;
+}
+
+// When this app first found the authority's daemon of serverVersion waiting to switch (epoch ms), which its reminders count from.
+export interface PendingSince {
+  readonly serverVersion: string;
+  readonly since: number;
+}
+
+// A required update as this app first saw it on an authority's daemon of serverVersion (epoch ms); its deadline only moves earlier.
+export interface RequiredSince {
+  readonly serverVersion: string;
+  readonly detectedAt: number;
+  readonly deadline: number;
 }
 
 // The selected project and chat when they are remote, which panels.json (read by older versions) never names; cleared when a
@@ -86,9 +101,28 @@ interface StateFile {
 
 const EMPTY_AUTHORITY: AuthorityState = { terminals: [], pendingKills: [], chats: [], away: [], awayEpoch: null, coreEpoch: null, lastChats: [] };
 const isEmptyAuthority = (state: AuthorityState): boolean =>
-  state.terminals.length === 0 && state.pendingKills.length === 0 && state.chats.length === 0 && state.away.length === 0 && state.awayEpoch === null && state.coreEpoch === null && state.lastChats.length === 0;
+  state.terminals.length === 0 && state.pendingKills.length === 0 && state.chats.length === 0 && state.away.length === 0 && state.awayEpoch === null && state.coreEpoch === null && state.lastChats.length === 0 && state.requiredSince === undefined && state.pendingSince === undefined;
 // a chat title as the run registry clamps it (MAX_RUN_TITLE_CHARS)
 const MAX_AWAY_TITLE = 1024;
+
+function parseRequiredSince(value: unknown): RequiredSince | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  const serverVersion = own(record, 'serverVersion');
+  const detectedAt = own(record, 'detectedAt');
+  const deadline = own(record, 'deadline');
+  if (!isText(serverVersion) || serverVersion.length > 64 || typeof detectedAt !== 'number' || !Number.isFinite(detectedAt) || typeof deadline !== 'number' || !Number.isFinite(deadline)) return undefined;
+  return { serverVersion, detectedAt, deadline };
+}
+
+function parsePendingSince(value: unknown): PendingSince | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  const serverVersion = own(record, 'serverVersion');
+  const since = own(record, 'since');
+  if (!isText(serverVersion) || serverVersion.length > 64 || typeof since !== 'number' || !Number.isFinite(since)) return undefined;
+  return { serverVersion, since };
+}
 
 function parseAway(value: unknown): AwayChat | undefined {
   if (typeof value !== 'object' || value === null) return undefined;
@@ -219,7 +253,11 @@ function parseStateFile(text: string): StateFile {
     const coreEpoch = record ? own(record, 'coreEpoch') : undefined;
     const awayEpoch = record ? own(record, 'awayEpoch') : undefined;
     if (!isText(key) || record === undefined) continue;
+    const requiredSince = parseRequiredSince(own(record, 'requiredSince'));
+    const pendingSince = parsePendingSince(own(record, 'pendingSince'));
     authorities.set(key, {
+      ...(requiredSince !== undefined ? { requiredSince } : {}),
+      ...(pendingSince !== undefined ? { pendingSince } : {}),
       terminals: Array.isArray(terminals) ? terminals.flatMap((entry) => parseTerminal(entry) ?? []) : [],
       pendingKills: Array.isArray(pendingKills) ? [...new Set(pendingKills.filter(isTerminalId))] : [],
       chats: Array.isArray(chats) ? chats.flatMap((entry) => parseChat(entry, key) ?? []) : [],
@@ -306,6 +344,26 @@ export class RemoteState {
   /** Replaces them: on a detach, the chats running then under coreEpoch; on the next attach's notice, none. */
   setAway(authorityKey: string, away: readonly AwayChat[], coreEpoch: string | null): Promise<void> {
     return this.change(authorityKey, { away: [...away], awayEpoch: away.length > 0 ? coreEpoch : null });
+  }
+
+  /** The required update first seen on the authority's daemon, read at every connect. */
+  requiredSince(authorityKey: string): RequiredSince | undefined {
+    return this.file.authorities.get(authorityKey)?.requiredSince;
+  }
+
+  /** Written at first detection and when a shorter grace tightens it; undefined once the daemon is no longer required to switch. */
+  setRequiredSince(authorityKey: string, requiredSince: RequiredSince | undefined): Promise<void> {
+    return this.change(authorityKey, { requiredSince });
+  }
+
+  /** When the authority's pending switch started waiting, read at every connect. */
+  pendingSince(authorityKey: string): PendingSince | undefined {
+    return this.file.authorities.get(authorityKey)?.pendingSince;
+  }
+
+  /** Written when a connect first finds the daemon waiting to switch; undefined once a connect finds no switch pending. */
+  setPendingSince(authorityKey: string, pendingSince: PendingSince | undefined): Promise<void> {
+    return this.change(authorityKey, { pendingSince });
   }
 
   /** Every chat page's held messages, by panel token. */

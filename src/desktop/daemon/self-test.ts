@@ -1,6 +1,6 @@
 // `daemon.js self-test`: proves a server package runs on this machine with its own Node (scripts/verify-server-package.ts).
 // Every package of node_modules is present, every external the bundles load is imported, node:sqlite opens with FTS5,
-// ripgrep runs through the launcher's worker thread, the pty host's node-pty runs echo, and Damocles Core forks and answers
+// ripgrep runs through the launcher's worker thread, a terminal host's node-pty runs echo, and Damocles Core forks and answers
 // its init through parentChannel().
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
@@ -9,17 +9,17 @@ import { DatabaseSync } from 'node:sqlite';
 import { resolveRgPath } from '../../core/chat-panel/ripgrep';
 import { createLauncherPool, installProcessLauncher, lockThreadSpawns, runProcess } from '../../core/process-launcher';
 import { windowsSystemTool } from '../../core/system-tools';
-import type { HostMessage, HostRequest } from '../pty-host/protocol';
+import { terminalHostArgs } from '../terminal-host/records';
 import { daemonChildEnv } from './child-env';
 import { devcontainersCliEntry } from './container-commands';
 import type { CoreAttach, CoreState } from './control-messages';
 import type { DaemonState } from './daemon-state';
-import { forkChild } from './process-starts';
+import { forkChild, startDetached } from './process-starts';
 import { createRemoteCoreHost } from './remote-core-host';
 import { createRunRegistry } from './run-registry';
-import { daemonStarters } from './serve';
 import { readServerVersion } from './server-version';
-import { localRunPaths } from './token';
+import { createTerminalHosts, type TerminalHosts } from './terminal-hosts';
+import { localRunPaths, makeRunDir, runPathsIn } from './token';
 
 const STEP_TIMEOUT_MS = 60_000;
 const MARKER = 'damocles-self-test';
@@ -92,24 +92,39 @@ async function runDevcontainersCli(root: string): Promise<string> {
   return `devcontainer ${text}`;
 }
 
-function echoThroughPty(root: string): Promise<string> {
-  const host = daemonStarters(root).startPtyHost();
+// A terminal host of this package, started detached in a scratch run folder and reached over its own endpoint and token, as
+// the daemon reaches it; the host is ended and the folder removed whatever the echo did, a timeout included.
+async function echoThroughTerminalHost(root: string, version: string, log: (line: string) => void): Promise<string> {
+  const paths = runPathsIn(await fs.mkdtemp(path.join(os.tmpdir(), 'damocles-self-test-')));
+  await makeRunDir(paths);
+  const hosts = createTerminalHosts({ paths, version, start: () => startDetached(process.execPath, terminalHostArgs(root, paths.runDir), daemonChildEnv('node'), root, log), log });
+  try {
+    return await within('node-pty', echo(hosts));
+  } finally {
+    await hosts.endAll();
+    await fs.rm(paths.runDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }
+}
+
+async function echo(hosts: TerminalHosts): Promise<string> {
+  const link = await hosts.currentHost();
   const [file, args] = process.platform === 'win32' ? [windowsSystemTool('cmd'), ['/d', '/c', `echo ${MARKER}`]] : ['/bin/sh', ['-c', `echo ${MARKER}`]];
-  const spawn: HostRequest = { type: 'spawn', id: 'term-1', file, args, cwd: os.homedir(), env: daemonChildEnv('user'), cols: 80, rows: 24, scrollback: 1000 };
-  return new Promise<string>((resolve, reject) => {
+  const echoed = new Promise<string>((resolve, reject) => {
     let output = '';
-    host.onExit(({ code, error }) => reject(new Error(`the pty host exited (${code}${error ? `: ${error}` : ''})`)));
-    host.onMessage((raw) => {
-      const message = raw as HostMessage;
-      if (message.type === 'data') output += message.data;
+    link.onClose((reason) => reject(new Error(`the terminal host closed its link: ${reason}`)));
+    link.onMessage((message) => {
+      if (message.type === 'data') {
+        output += message.data;
+        link.endpoint.emit('ack', { id: message.id, chars: message.data.length });
+      }
       if (message.type === 'error') reject(new Error(`the pty did not start: ${message.message}`));
       if (message.type !== 'exit') return;
-      host.postMessage({ type: 'shutdown' } satisfies HostRequest);
-      if (output.includes(MARKER)) resolve(`echo exited ${message.exitCode}`);
+      if (output.includes(MARKER)) resolve(`echo exited ${message.exitCode} in the terminal host ${link.pid}`);
       else reject(new Error(`echo printed no ${MARKER}: ${JSON.stringify(output.slice(-500))}`));
     });
-    host.postMessage(spawn);
   });
+  await link.endpoint.request('spawn', { id: 'term-1', file, args, cwd: os.homedir(), env: daemonChildEnv('user'), cols: 80, rows: 24, scrollback: 1000, title: 'echo', projectKey: '', endpoints: { cli: true, relay: false } });
+  return await echoed;
 }
 
 async function startCore(root: string, version: string, log: (line: string) => void): Promise<string> {
@@ -169,18 +184,19 @@ export async function selfTest(root: string): Promise<boolean> {
   const info = JSON.parse(await fs.readFile(path.join(root, 'server-package.json'), 'utf8')) as PackageInfo;
   lockThreadSpawns();
   installProcessLauncher(createLauncherPool({ workerPath: path.join(root, 'dist', 'process-launcher-worker.js'), sentinelPath: path.join(root, 'dist', 'sentinel.js') }));
+  // each step bounds itself inside its own cleanup, so a step that times out leaves no process of it running
   const steps: ReadonlyArray<readonly [string, () => Promise<string> | string]> = [
-    ['modules', () => importExternals(root, info)],
+    ['modules', () => within('modules', importExternals(root, info))],
     ['node:sqlite', () => openSqlite()],
     ['launcher worker and ripgrep', () => runRipgrep(root)],
-    ['node-pty', () => echoThroughPty(root)],
+    ['node-pty', async () => echoThroughTerminalHost(root, await readServerVersion(root), log)],
     ['devcontainers CLI', () => runDevcontainersCli(root)],
     ['Damocles Core', () => startCore(root, info.version, log)],
   ];
   process.stdout.write(`self-test: Damocles server ${await readServerVersion(root)} (${info.target}) on Node ${process.versions.node}\n`);
   for (const [name, run] of steps) {
     try {
-      process.stdout.write(`self-test: ${name} ok (${await within(name, Promise.resolve().then(run))})\n`);
+      process.stdout.write(`self-test: ${name} ok (${await run()})\n`);
     } catch (err) {
       process.stdout.write(`self-test: ${name} FAILED: ${err instanceof Error ? err.message : String(err)}\n`);
       return false;

@@ -2,9 +2,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication, Locator, Page, TestInfo } from '@playwright/test';
 import { ACTOR_INTENT_EXPIRY_MS } from '../../src/desktop/daemon/actor-outbox';
+import type { HostUpdate } from '../../src/shared/host-update';
 import { designChatName } from '../../src/shared/types/design';
+import { mainLog } from '../desktop/support/app';
 import { approveDesign, DESIGN_SCHEME, designApproval, designTabs, startDesignChat } from '../desktop/support/design';
-import { chatIdOf, selectChatPage } from '../desktop/support/fixtures';
+import { activeChat, chatIdOf, selectChatPage } from '../desktop/support/fixtures';
 import { writeUserSettings, type HermeticHome } from '../desktop/support/hermetic';
 import { cleanUp } from '../desktop/support/loopback';
 import { mergeJson, sendPrompt } from '../desktop/support/loopback-agent';
@@ -15,9 +17,12 @@ import { listChats } from '../desktop/support/shell-ui';
 import { activeTerminal, openTerminal, runInTerminal, waitForOutputLine } from '../desktop/support/terminal';
 import { awaitTurnEnd, postFromWebview } from '../desktop/support/ui';
 import { openConnect } from './support/connect-ui';
+import { openRemoteHostSettings, removeServerDialog } from './support/host-settings-ui';
+import { closeSettingsModal } from '../desktop/support/settings';
 import { shutdownHostDaemon } from './support/daemon-teardown';
 import { reconnectPhase } from './support/flaky';
-import type { ReleaseMirror } from './support/release-mirror';
+import { CURRENT_PACKAGE, daemonVersions, installOlderServer, OLD } from './support/older-server';
+import { APP_VERSION, LINUX_TARGET, serverVersionOf, type ReleaseMirror } from './support/release-mirror';
 import { addHost, control, expect, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test } from './support/remote';
 import { chatShowing, occurrences, stubOAuth, targetCoreLog, targetSessions } from './support/remote-runs';
 import { proxiedSecondDevice, secondDevice, type ProxiedDevice } from './support/second-device';
@@ -212,6 +217,188 @@ test('a conversation another device holds, resumed on this device, shows on this
   } finally {
     await cleanUp(testInfo, failure, () => other.dispose(testInfo, failure !== undefined));
     await stub.close();
+  }
+});
+
+/** The conversations a device's remote-state.json keeps open on its hosts. */
+function keptConversations(home: HermeticHome): string[] {
+  const file = path.join(home.userData, 'remote-state.json');
+  if (!fs.existsSync(file)) return [];
+  const state = JSON.parse(fs.readFileSync(file, 'utf8')) as { authorities?: Record<string, { chats?: Array<{ sessionId?: string }> }> };
+  return Object.values(state.authorities ?? {}).flatMap((authority) => (authority.chats ?? []).flatMap((chat) => chat.sessionId ?? []));
+}
+
+test('a chat two devices show opens on both after the server\'s engine restarts, one panel holding its conversation and neither device told it is open elsewhere', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }, testInfo) => {
+  test.setTimeout(600_000);
+  const HELD_ELSEWHERE = 'This conversation is already open in another panel.';
+  const fixture = await sshd('prod-1');
+  const stub = await startTargetStub(home, fixture, 'dev', false);
+  const other = await secondDevice(fixture, 'prod-1', mirror);
+  let failure: unknown;
+  try {
+    writeUserSettings(home, { 'damocles.model': STUB_MODEL_ID });
+    writeUserSettings(other.home, { 'damocles.model': STUB_MODEL_ID });
+    const first = (await launch({ env: remoteEnv(ssh, mirror) })).app;
+    await stubOAuth(first, 'alice', TOKEN_MS);
+    const { hostId, key } = await connect(first);
+    const tabA = await newRemoteChat(first, key);
+    await sendPrompt(tabA, 'Shared before the restart');
+    await expect(tabA.getByText('Echo: Shared before the restart', { exact: true })).toBeVisible({ timeout: 60_000 });
+    await awaitTurnEnd(tabA);
+    const sessionId = await chatIdOf(first, tabA);
+
+    const secondDesktop = await other.launch();
+    const second = secondDesktop.app;
+    await stubOAuth(second, 'bob', TOKEN_MS);
+    const { key: secondKey } = await connect(second);
+    await openOtherDevicesChat(second, secondKey, 'Shared before the restart', 'Echo: Shared before the restart');
+    // each device keeps its own record of the chat, which it reopens under the next core epoch
+    for (const device of [home, other.home]) await expect.poll(() => keptConversations(device), { timeout: 30_000 }).toEqual([sessionId]);
+    for (const app of [first, second]) await recordToasts(app);
+
+    // Both devices reattach to the new core at once, each reopening the chat it kept.
+    const before = (await control(first, hostId, 'coreState')) as { epoch: string | null };
+    await control(first, hostId, 'restartCore');
+    await expect.poll(async () => {
+      const state = (await control(first, hostId, 'coreState')) as { phase: string; epoch: string | null };
+      return state.phase === 'running' && state.epoch !== before.epoch;
+    }, { timeout: 90_000 }).toBe(true);
+
+    for (const [device, app] of [['first', first], ['second', second]] as const) {
+      await expect.poll(async () => (await shellState(app)).selected.chatId, { message: `the ${device} device's selection`, timeout: 90_000 }).toBe(sessionId);
+      await expect((await activeChat(app)).getByText('Echo: Shared before the restart', { exact: true }), `on the ${device} device`).toBeVisible({ timeout: 60_000 });
+    }
+    // one panel holds the conversation: one lease, held by the new core, and a send from either device shows on both
+    const corePid = ((await control(first, hostId, 'coreState')) as { pid: number }).pid;
+    await expect.poll(async () => (await leaseOwners(fixture)).map((owner) => owner.pid), { timeout: 30_000 }).toEqual([corePid]);
+    await sendPrompt(await activeChat(second), 'Sent after the restart');
+    for (const [device, app] of [['second', second], ['first', first]] as const) {
+      await expect((await activeChat(app)).getByText('Echo: Sent after the restart', { exact: true }), `on the ${device} device`).toBeVisible({ timeout: 60_000 });
+    }
+    await awaitTurnEnd(await activeChat(second));
+    expect((await targetSessions(fixture)).split('"text":"Sent after the restart"').length - 1).toBe(1);
+    for (const app of [first, second]) expect((await recordedToasts(app)).map((toast) => toast.message)).not.toContain(HELD_ELSEWHERE);
+    for (const device of [home, other.home]) expect(keptConversations(device)).toEqual([sessionId]);
+
+    await secondDesktop.close();
+    await shutdownHostDaemon(first, hostId, fixture);
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    await cleanUp(testInfo, failure, () => other.dispose(testInfo, failure !== undefined));
+    await stub.close();
+  }
+});
+
+test('an older server another computer keeps shows the server in use notice on this computer\'s host card, and no switch', { tag: SSH_TAG }, async ({ foreground: _foreground, launch, mirror, ssh, sshd }, testInfo) => {
+  test.setTimeout(600_000);
+  const fixture = await sshd('prod-1');
+  // a daemon of an older app, without control.shutdownWhenIdle.clients, so a newer app may not ask it to switch while another
+  // computer uses it
+  await installOlderServer(fixture, CURRENT_PACKAGE, { version: OLD, withoutFeature: 'control.shutdownWhenIdle.clients' });
+  const other = await secondDevice(fixture, 'prod-1', mirror);
+  let failure: unknown;
+  try {
+    const secondDesktop = await other.launch({ DAMOCLES_E2E_APP_VERSION: OLD });
+    await connect(secondDesktop.app);
+    expect(await daemonVersions(fixture)).toEqual([OLD]);
+
+    const first = (await launch({ env: remoteEnv(ssh, mirror) })).app;
+    const { hostId } = await connect(first);
+    expect(await daemonVersions(fixture)).toEqual([OLD]);
+    const card = await hostCardOf(first);
+    await expect(card.getByTestId('host-notice').filter({ hasText: 'other device' })).toHaveText(`This host runs Damocles ${OLD} because 1 other device uses it.`);
+    await card.page().keyboard.press('Escape');
+    expect((await shellState(first)).hosts.find((host) => host.hostId === hostId)?.update).toBeUndefined();
+    await expect((await shellPage(first)).getByTestId('host-update-banner')).toHaveCount(0);
+
+    // the other computer leaves, and with it the reason the notice gave
+    await secondDesktop.close();
+    const again = await hostCardOf(first);
+    await expect(again.getByTestId('host-notice').filter({ hasText: 'other device' })).toHaveCount(0, { timeout: 60_000 });
+    await again.page().keyboard.press('Escape');
+    await shutdownHostDaemon(first, hostId, fixture);
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    await cleanUp(testInfo, failure, () => other.dispose(testInfo, failure !== undefined));
+  }
+});
+
+test('an idle second computer delays the switch by the drain, then reconnects to the new version', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }, testInfo) => {
+  test.setTimeout(600_000);
+  // long enough for this computer's connect to finish inside it
+  const DRAIN_MS = 45_000;
+  const fixture = await sshd('prod-1');
+  await installOlderServer(fixture, CURRENT_PACKAGE, { version: OLD });
+  const other = await secondDevice(fixture, 'prod-1', mirror);
+  let failure: unknown;
+  try {
+    // the other computer runs the older app and stays connected, idle but for a terminal, which never holds a switch
+    writeUserSettings(other.home, { 'damocles.desktop.terminal.defaultProfile': 'bash' });
+    const secondDesktop = await other.launch({ DAMOCLES_E2E_APP_VERSION: OLD });
+    const second = await connect(secondDesktop.app);
+    const secondShell = await openTerminal(secondDesktop.app);
+    await runInTerminal(secondShell, targetEcho('before-the-switch'));
+    await waitForOutputLine(secondShell, 'before-the-switch');
+    expect(await daemonVersions(fixture)).toEqual([OLD]);
+    const connectionOf = async (app: ElectronApplication, hostId: string): Promise<string | undefined> => (await shellState(app)).hosts.find((host) => host.hostId === hostId)?.connection;
+
+    const first = (await launch({ env: { ...remoteEnv(ssh, mirror), DAMOCLES_E2E_SWITCH_DRAIN_MS: String(DRAIN_MS) } })).app;
+    const connected = Date.now();
+    const { hostId } = await connect(first);
+    const updateOf = async (): Promise<HostUpdate | undefined> => (await shellState(first)).hosts.find((host) => host.hostId === hostId)?.update;
+    // no agent runs, so only the other computer holds the switch back, until the drain ends
+    await expect.poll(updateOf, { timeout: 30_000 }).toMatchObject({ source: 'compatible', phase: 'waiting', serverVersion: OLD, targetVersion: APP_VERSION, runningAgents: 0, otherDevices: 1, terminalsSurvive: true });
+    const drainEndsAt = (await updateOf())!.drainEndsAt!;
+    expect(drainEndsAt).toBeGreaterThan(connected);
+    expect(drainEndsAt).toBeLessThanOrEqual(Date.now() + DRAIN_MS);
+    expect(await daemonVersions(fixture)).toEqual([OLD]);
+    // the strip and the card give the drain's end as a short time, and say the other computer reconnects then
+    const version = APP_VERSION.replace(/[.+]/g, '\\$&');
+    // the strip shows in the shell with no chat open, else in the chat's page
+    const stripText = async (): Promise<string> => {
+      for (const page of [await shellPage(first), ...first.windows().filter((candidate) => !candidate.isClosed() && candidate.url().includes('/panel/'))]) {
+        const status = page.locator('[data-testid="host-update-banner"][data-tone="info"]').getByRole('status');
+        if (await status.count() > 0) return ((await status.first().textContent()) ?? '').trim();
+      }
+      return '';
+    };
+    await expect.poll(stripText, { timeout: 10_000 }).toMatch(new RegExp(`^prod-1 switches to Damocles ${version} at \\d\\d:\\d\\d\\. 1 other device reconnects then\\.$`));
+    const overlay = await openConnect(first);
+    await overlay.getByRole('button', { name: 'Details for prod-1' }).click();
+    const card = overlay.getByTestId('host-card');
+    await expect(card.getByTestId('host-update-lead')).toHaveText(new RegExp(`^Switches to Damocles ${version} at \\d\\d:\\d\\d\\.$`), { timeout: 10_000 });
+    await expect(card.getByTestId('host-update').locator('[data-blocker="devices"]')).toHaveText(/^1 other device reconnects at \d\d:\d\d$/);
+    await overlay.keyboard.press('Escape');
+
+    await expect.poll(() => daemonVersions(fixture), { timeout: 120_000 }).toEqual([serverVersionOf(LINUX_TARGET)]);
+    expect(Date.now()).toBeGreaterThanOrEqual(drainEndsAt);
+    expect(mainLog(home)).toContain(`[update] the other computers kept the daemon of ${OLD} for ${DRAIN_MS} ms`);
+    expect(mainLog(home)).not.toContain('[update] Switch now on ');
+    await expect.poll(() => connectionOf(first, hostId), { timeout: 120_000 }).toBe('connected');
+    await expect.poll(updateOf, { timeout: 60_000 }).toBeUndefined();
+
+    // the other computer's older app reconnects to the new version and uses it as it is: versions never move backwards
+    await expect.poll(() => connectionOf(secondDesktop.app, second.hostId), { timeout: 120_000 }).toBe('connected');
+    const bridges = async (): Promise<string[]> => (await fixture.userProcesses()).flatMap((line) => /\/\.damocles\/server\/([^/]+)-linux-(?:x64|arm64)\/node\/node .*\/dist\/daemon\.js attach\b/.exec(line)?.[1] ?? []).sort();
+    await expect.poll(bridges, { timeout: 60_000 }).toEqual([OLD, serverVersionOf(LINUX_TARGET)].sort());
+    expect(await daemonVersions(fixture)).toEqual([serverVersionOf(LINUX_TARGET)]);
+    expect((await shellState(secondDesktop.app)).hosts.find((host) => host.hostId === second.hostId)?.update).toBeUndefined();
+    // its terminal ran through the switch and takes input through the new server
+    await runInTerminal(secondShell, targetEcho('after-the-switch'));
+    await waitForOutputLine(secondShell, 'after-the-switch');
+    await expect(activeTerminal(secondShell)).toHaveAttribute('data-status', 'running');
+
+    await secondDesktop.close();
+    await shutdownHostDaemon(first, hostId, fixture);
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    await cleanUp(testInfo, failure, () => other.dispose(testInfo, failure !== undefined));
   }
 });
 
@@ -663,6 +850,54 @@ test('core\'s notice for a device\'s work shows on that device alone: held while
     if (failure !== undefined) await attachTargetLogs(testInfo, fixture);
     await cleanUp(testInfo, failure, () => proxiedA.dispose(testInfo, failure !== undefined));
     await stub.close();
+  }
+});
+
+test('Remove Damocles server on one device names the other, which goes offline as removed and installs nothing until it connects by hand', { tag: SSH_TAG }, async ({ foreground: _foreground, launch, mirror, ssh, sshd }, testInfo) => {
+  test.setTimeout(600_000);
+  const fixture = await sshd('prod-1');
+  const other = await secondDevice(fixture, 'prod-1', mirror);
+  const versionFolders = async (): Promise<string[]> => (await fixture.sh(`ls -A ${TARGET_HOME}/.damocles/server 2>/dev/null | grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+' ; true`)).split('\n').filter(Boolean);
+  const marker = async (): Promise<boolean> => (await fixture.sh(`if [ -f ${TARGET_HOME}/.damocles/server/removed ]; then echo yes; fi`)).trim() === 'yes';
+  let failure: unknown;
+  try {
+    const first = (await launch({ env: { ...remoteEnv(ssh, mirror), DAMOCLES_E2E_DEVICE_NAME: 'alice-laptop' } })).app;
+    const { hostId } = await connect(first);
+    const secondDesktop = await other.launch({ DAMOCLES_E2E_DEVICE_NAME: 'bob-desktop' });
+    const second = secondDesktop.app;
+    const { hostId: secondHostId } = await connect(second);
+    expect(await versionFolders()).not.toEqual([]);
+
+    // the confirmation names the other device, which stays disconnected until its user connects it
+    const { overlay, block } = await openRemoteHostSettings(first, hostId);
+    await block.getByRole('button', { name: /^Remove Damocles server/ }).click();
+    const dialog = removeServerDialog(overlay);
+    await expect(dialog.getByTestId('remove-server-devices')).toHaveText('bob-desktop is connected to prod-1. It disconnects and stays disconnected until you connect it again.');
+    await dialog.getByRole('button', { name: 'Remove server', exact: true }).click();
+    await expect(overlay.getByTestId('remove-server-result')).toHaveRole('status', { timeout: 120_000 });
+    await closeSettingsModal(overlay);
+
+    // the other device is offline as removed, by the device that removed it, and its loop installs nothing
+    await expect.poll(async () => (await shellState(second)).hosts.find((host) => host.hostId === secondHostId), { timeout: 60_000 }).toMatchObject({ connection: 'offline', removed: { by: 'alice-laptop' } });
+    const chat = await activeChat(second);
+    await expect(chat.getByTestId('chat-connection-banner-text')).toHaveText('The Damocles server on prod-1 was removed from alice-laptop. Connect to install it again.', { timeout: 30_000 });
+    await new Promise((resolve) => setTimeout(resolve, 15_000));
+    expect(await versionFolders()).toEqual([]);
+    expect(await marker()).toBe(true);
+
+    // Connect on that device installs the server again and drops the marker
+    await chat.getByTestId('chat-connection-banner-action').click();
+    await expect.poll(async () => (await shellState(second)).hosts.find((host) => host.hostId === secondHostId)?.connection, { timeout: 180_000 }).toBe('connected');
+    expect(await versionFolders()).not.toEqual([]);
+    expect(await marker()).toBe(false);
+    // the removing device stays offline, so the reconnected one stops the daemon
+    await shutdownHostDaemon(second, secondHostId, fixture);
+    await secondDesktop.close();
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    await cleanUp(testInfo, failure, () => other.dispose(testInfo, failure !== undefined));
   }
 });
 

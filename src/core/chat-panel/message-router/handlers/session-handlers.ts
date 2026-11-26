@@ -7,7 +7,7 @@ import type { LocalizedText } from "../../../../shared/localized-text";
 import { perfSpan, timed } from "../../../perf";
 import type { PanelHost } from "../../../../platform/window-service";
 import type { CatalogResult } from "../../session-catalog";
-import { announceLeaseRefusal, claimStoredSession, findStoredSessionHolder, leaseRefusalFor, requestSessionHandoff, type LeaseTakeover } from "../../session-ownership";
+import { announceHeldElsewhere, announceLeaseRefusal, claimStoredSession, findStoredSessionHolder, leaseRefusalFor, requestSessionHandoff, type LeaseTakeover } from "../../session-ownership";
 import { readSessionLeaseOwner } from "../../../pi-session/session-store/session-lease";
 import { isUuid } from "../../../../shared/uuid";
 import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
@@ -104,6 +104,9 @@ export function createViewJoin(deps: HandlerDependencies): (ctx: HandlerContext,
     gate.post({ type: "languageChange", locale: getLanguagePreference(ctx.reply.clientId) });
     postVoiceRuntimeStatus(deps, ctx.reply);
     deps.postWorkspaceFolderState(ctx.panelId);
+    // A status posted before the view joined never reached it, and a page merged into the panel shows its old panel's folder's.
+    const compass = deps.compassRegistry?.get(ctx.folder.key);
+    if (compass?.isEnabled) gate.post({ type: "compassStatusUpdate", status: compass.getStatus() });
 
     await replayLiveConversation(deps, ctx.panelId, ctx.reply, gate);
     try {
@@ -193,6 +196,8 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       let binding: ResumeBinding | undefined;
       // The replay clears the panel itself: under the saved conversation's name, or unnamed when it reads nothing.
       let replayed = false;
+      // Once the daemon moved this page to the panel holding its conversation, this panel posts it nothing more.
+      let merged = false;
       try {
         // The webview renders the conversation with these, so they precede any replay.
         const settingsSpan = perfSpan("ready.settings");
@@ -308,10 +313,20 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
           const otherFoldersCopy = savedSessionId && !heldHere && !leaseRefusal && !listedFolder
             ? (await storageManager.storedFileFrom(target.fsPath, savedSessionId)) === "other"
             : false;
-          // A restored panel whose conversation another panel already holds opens empty instead.
+          // A restored panel whose conversation another panel already holds hands its views to that panel where its host can
+          // (a daemon's core), and otherwise opens empty with the notice; either way it never binds the conversation.
           const resumeSaved = async (instance: Pick<HostInstance, "host" | "session" | "folder">): Promise<boolean> => {
             if (!savedSessionId || leaseRefusal || otherFoldersCopy) return false;
-            if (claimStoredSession(deps.platform.notifications, deps.getPanels(), { panelId: ctx.panelId, session: instance.session }, savedSessionId)) return false;
+            const { host } = instance;
+            const refusal = claimStoredSession(deps.platform.notifications, deps.getPanels(), { panelId: ctx.panelId, session: instance.session }, savedSessionId, { showsHolder: host.mergeInto !== undefined });
+            if (refusal) {
+              if (refusal.holder && host.mergeInto) {
+                merged = await host.mergeInto(refusal.holder.host);
+                // a panel whose views all went during the merge was disposed, and no device shows it
+                if (!merged && deps.getPanels().has(ctx.panelId)) announceHeldElsewhere(deps.platform.notifications);
+              }
+              return false;
+            }
             // A panel pi holds another conversation in shows this one only once pi switched to it, and opens fresh when it cannot.
             const outcome = await timed("ready.open", () => instance.session.openResumeTarget(savedSessionId));
             if (outcome.kind !== "switched" && outcome.kind !== "deferred") return false;
@@ -350,6 +365,12 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
             const compass = deps.compassRegistry?.get(ctx.folder.key);
             if (compass?.isEnabled) postMessage(ctx.reply, { type: "compassStatusUpdate", status: compass.getStatus() });
             route = (await resumeSaved(ctx)) ? "restore" : "fresh";
+          }
+          // The holder's join posts the merged views the conversation, the lists and the models.
+          if (merged) {
+            placeSignaled = true;
+            total.end({ path: "merged" });
+            return;
           }
           // The webview names its saved conversation from mount, so a restore that never replayed it (a lease or another
           // panel refused it, its open failed) drops that name before a send can carry it.

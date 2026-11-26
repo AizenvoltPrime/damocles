@@ -22,6 +22,7 @@ const TREE_ROOTS = [
   'src/desktop/local-services',
   'src/desktop/workspace',
   'src/desktop/daemon',
+  'src/desktop/terminal-host',
   'src/desktop/cli',
   'src/desktop/theme-validate',
   'src/remote',
@@ -43,6 +44,7 @@ const CORE_HOST_PROBES = [
   'src/desktop/local-services/probe.ts',
   'src/desktop/workspace/probe.ts',
   'src/desktop/daemon/probe.ts',
+  'src/desktop/terminal-host/probe.ts',
   ...PROCESS_STARTERS_DAEMON,
 ];
 const SKIPPED = new Set(['__tests__', '__mocks__', 'fixtures']);
@@ -176,7 +178,7 @@ describe('the files allowed to start processes', () => {
     expect(await hostModuleFindings(file)).toBe(3);
   }, 60_000);
 
-  it.each(['src/desktop/pty-host/probe.ts', 'src/desktop/formatter-host/probe.ts', 'src/desktop/pty-host/__tests__/probe.test.ts'])('%s, a host the daemon also runs as plain Node, starts processes and keeps the vscode and electron bans', async (file) => {
+  it.each(['src/desktop/pty-host/probe.ts', 'src/desktop/formatter-host/probe.ts', 'src/desktop/pty-host/__tests__/probe.test.ts'])('%s, a host whose code also runs as plain Node on a target, starts processes and keeps the vscode and electron bans', async (file) => {
     expect(await processFindings(file)).toBe(0);
     expect(await hostModuleFindings(file)).toBe(3);
   }, 60_000);

@@ -32,8 +32,11 @@ export const WINDOWS_STDIO_SETUP: readonly string[] = [
 ];
 
 // One line with no double quote, since Win32-OpenSSH hands a PowerShell default shell the command inside double quotes.
-// Stage 1 runs dot-sourced, so it reads and writes through $DamoclesIn and $DamoclesOut, which never re-encode.
+// Stage 1 runs dot-sourced, so it reads and writes through $DamoclesIn and $DamoclesOut, which never re-encode. The stage runs
+// under Bypass, set only once the session's own policy is kept for stage 1 to hand back to the processes it starts.
 export const WINDOWS_STAGE0_SCRIPT: string = [
+  '$DamoclesInheritedExecutionPolicy=$env:PSExecutionPolicyPreference',
+  '$env:PSExecutionPolicyPreference=\'Bypass\'',
   '$ErrorActionPreference=\'Stop\'',
   '$ProgressPreference=\'SilentlyContinue\'',
   ...WINDOWS_STDIO_SETUP,
@@ -46,11 +49,14 @@ export const WINDOWS_STAGE0_SCRIPT: string = [
   '. ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString($s)))',
 ].join(';');
 
-/** Under cmd (or a POSIX default shell) PowerShell gets the script encoded; under PowerShell the script is the command itself. */
+/**
+ * Under cmd (or a POSIX default shell) PowerShell gets the script encoded; under PowerShell the script is the command itself.
+ * No -ExecutionPolicy: it would set PSExecutionPolicyPreference before the script could keep the session's own.
+ */
 export function windowsStage0(shell: 'cmd' | 'powershell'): string {
   if (shell === 'powershell') return WINDOWS_STAGE0_SCRIPT;
   const encoded = Buffer.from(WINDOWS_STAGE0_SCRIPT, 'utf16le').toString('base64');
-  return `powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`;
+  return `powershell -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
 }
 
 /** What the app writes to ssh's stdin first: stage 1's byte length on a line, then its UTF-8 bytes. */

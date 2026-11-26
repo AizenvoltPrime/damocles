@@ -2,6 +2,7 @@
 // the other's window is full, a FIN crosses as the stream's end (half-close), and an error or a closed connection tears both
 // down; a pipe's owner closes it when the connection is lost (docs/invariants.md "Ports and the remote browser").
 import type { Socket } from 'node:net';
+import { Duplex } from 'node:stream';
 import { STREAM_WINDOW_BYTES, type Mux, type StreamChannel } from './mux';
 import type { Disposable } from './persistent-protocol';
 
@@ -77,7 +78,7 @@ export function pipeTunnel(socket: Socket, stream: StreamChannel, onClosed: () =
  * Pipes socket and stream until both directions ended; onClosed runs once, when the socket closed. reset ends the socket at
  * once: resetAndDestroy for TCP, destroy for a named pipe or Unix socket, which have no RST and on which resetAndDestroy throws.
  */
-export function pipeStream(socket: Socket, stream: StreamChannel, onClosed: () => void, reset: (socket: Socket) => void): TunnelPipe {
+export function pipeStream<S extends Duplex>(socket: S, stream: StreamChannel, onClosed: () => void, reset: (socket: S) => void): TunnelPipe {
   let streamEnded = false;
   let socketClosed = false;
   const endStream = (): void => {
@@ -128,6 +129,50 @@ export function abandonStream(stream: StreamChannel): void {
   stream.onData(() => undefined);
   stream.resume();
   stream.end();
+}
+
+/**
+ * The stream as a Duplex, for code that serves a socket: the peer's credit paces writes, a reader that stops reading pauses the
+ * stream, the peer's end is the Duplex's end, and its end() is the stream's. A destroy abandons the stream; a closed connection
+ * destroys the Duplex.
+ */
+export function streamDuplex(stream: StreamChannel): Duplex {
+  const duplex: Duplex = new Duplex({
+    allowHalfOpen: true,
+    read: () => stream.resume(),
+    write: (chunk: Uint8Array, _encoding, callback) => {
+      if (stream.write(chunk)) {
+        callback();
+        return;
+      }
+      if (stream.closed) {
+        callback(new Error('the connection closed'));
+        return;
+      }
+      const drained = stream.onDrain(() => {
+        drained.dispose();
+        callback(stream.closed ? new Error('the connection closed') : null);
+      });
+    },
+    final: (callback) => {
+      stream.end();
+      callback();
+    },
+    destroy: (err, callback) => {
+      data.dispose();
+      ended.dispose();
+      abandonStream(stream);
+      callback(err);
+    },
+  });
+  const data = stream.onData((bytes) => {
+    if (!duplex.push(bytes)) stream.pause();
+  });
+  const ended = stream.onEnd(() => {
+    if (stream.closed) duplex.destroy();
+    else duplex.push(null);
+  });
+  return duplex;
 }
 
 /**

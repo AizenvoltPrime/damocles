@@ -65,8 +65,10 @@ const exited = computed(() => props.terminal.status === 'exited');
 // In the editor area #editor-panel is the tabpanel, named by the terminal's editor tab, so the view is no second one inside it.
 const inPanel = computed(() => props.terminal.placement === 'panel');
 const paneToken = computed(() => (inPanel.value ? '--d-pane-terminal' : '--d-pane-editor'));
-// A terminal whose host is away takes no input until main reattaches it; its process keeps running there.
-const inputOff = computed(() => exited.value || props.terminal.status === 'reconnecting');
+// A terminal whose host is away, or whose terminal host does not answer its daemon, takes no input until it is back; its
+// process keeps running there.
+const notResponding = computed(() => props.terminal.status === 'notResponding');
+const inputOff = computed(() => exited.value || props.terminal.status === 'reconnecting' || notResponding.value);
 // The label and dim wait for the host's grace like its dot and banner, so a short drop shows nothing; input stops at once.
 const hostView = useHostConnection(() => (props.remoteHost ? { connected: props.remoteHost.connection === 'connected', reconnect: props.remoteHost.reconnect } : undefined));
 const awayShown = computed(() => props.terminal.status === 'reconnecting' && (!props.remoteHost?.reconnect || hostView.shown.value !== undefined));
@@ -248,7 +250,7 @@ async function openCommandMenu(command: XtermCommand, element: HTMLElement): Pro
     kind: 'menu',
     label: t('terminal.mark.menuLabel', { command: commandName(command) }),
     anchor: { x: Math.max(0, rect.left), y: Math.max(0, rect.top), width: rect.width, height: rect.height },
-    items: commandMenuItems(context, t),
+    items: commandMenuItems(context, inputOff.value, t),
   });
   const action = answer.kind === 'menu' ? terminalMenuAction(answer.itemId) : undefined;
   if (action === 'rerunCommand' || action === 'copyCommand' || action === 'copyOutput' || action === 'addOutputToChat') runCommandAction(action, command);
@@ -450,7 +452,7 @@ async function openMenu(anchor: OverlayRect): Promise<void> {
     kind: 'menu',
     label: t('terminal.menu.label', { title: props.terminal.title }),
     anchor: { x: Math.max(0, anchor.x), y: Math.max(0, anchor.y), width: anchor.width, height: anchor.height },
-    items: terminalMenuItems({ target: 'terminal', hasSelection: xterm.hasSelection(), platform: props.platform, group: props.terminal.placement === 'editor' ? null : { panes: groupPanes(store.state.value, props.terminal.id), shortcut: props.splitShortcut }, lastCommand: commandContext(last), navigated: commandContext(navigated) }, t),
+    items: terminalMenuItems({ target: 'terminal', hasSelection: xterm.hasSelection(), platform: props.platform, group: props.terminal.placement === 'editor' ? null : { panes: groupPanes(store.state.value, props.terminal.id), shortcut: props.splitShortcut }, lastCommand: commandContext(last), navigated: commandContext(navigated), inputOff: inputOff.value }, t),
   });
   const action = answer.kind === 'menu' ? terminalMenuAction(answer.itemId) : undefined;
   if (action === undefined) return;
@@ -763,13 +765,17 @@ defineExpose({ focus, openFind });
       <div
         ref="host"
         class="terminal-host d-dim-transition absolute inset-0"
-        :class="{ 'terminal-host-marks': settings.decorationsEnabled, invisible: !revealed, 'opacity-(--d-opacity-disabled)': awayShown }"
+        :class="{ 'terminal-host-marks': settings.decorationsEnabled, invisible: !revealed, 'opacity-(--d-opacity-disabled)': awayShown || notResponding }"
         @contextmenu="onContextMenu"
       />
       <!-- A restored remote terminal waits for its host; main reattaches it there and then it runs again. -->
-      <Transition name="t-fade">
+      <Transition
+        name="t-fade"
+        mode="out-in"
+      >
         <p
           v-if="awayShown"
+          key="reconnecting"
           role="status"
           data-testid="terminal-reconnecting"
           class="absolute top-2 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-(--d-border2) bg-(--d-card) px-3 py-1 text-12 text-(--d-muted) shadow-(--d-shadow)"
@@ -779,6 +785,19 @@ defineExpose({ focus, openFind });
             class="d-pulsing size-1.5 rounded-full bg-(--d-warning-fill)"
           />
           {{ t('terminal.status.reconnecting') }}
+        </p>
+        <p
+          v-else-if="notResponding"
+          key="notResponding"
+          role="status"
+          data-testid="terminal-not-responding"
+          class="absolute top-2 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-(--d-border2) bg-(--d-card) px-3 py-1 text-12 text-(--d-warning) shadow-(--d-shadow)"
+        >
+          <span
+            aria-hidden="true"
+            class="size-1.5 rounded-full bg-(--d-warning-fill)"
+          />
+          {{ t('terminal.hostNotResponding') }}
         </p>
       </Transition>
       <TerminalMarkHover

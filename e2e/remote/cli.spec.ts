@@ -1,11 +1,12 @@
 import type { ElectronApplication, Page } from '@playwright/test';
+import type { DesktopApp } from '../desktop/support/app';
 import { runLocalCli } from '../desktop/support/cli';
 import { activeTab, codeEditor, editorShows, editorTab, replaceText, saveWithKeyboard } from '../desktop/support/editor';
 import { writeUserSettings, type HermeticHome } from '../desktop/support/hermetic';
 import { sendPrompt } from '../desktop/support/loopback-agent';
 import { lastToolResultRequest } from '../desktop/support/openai-stub';
 import { readyOverlay } from '../desktop/support/overlay';
-import { popupPage, shellState } from '../desktop/support/shell';
+import { popupPage, shellPage, shellState } from '../desktop/support/shell';
 import { hoverTerminalText, openTerminal, readFromTerminal, runInTerminal, terminalText } from '../desktop/support/terminal';
 import { awaitTurnEnd, clickMenu } from '../desktop/support/ui';
 import { openedExternally, recordOpenExternal } from '../desktop/support/updates';
@@ -13,9 +14,11 @@ import { messageDialog } from '../desktop/support/file-drops';
 import { connectDialog, hostSearch, openConnect, trustQuestion } from './support/connect-ui';
 import { shutdownHostDaemon } from './support/daemon-teardown';
 import { openRemoteHostSettings, setHostSwitch } from './support/host-settings-ui';
+import { CURRENT_PACKAGE, daemonVersions, installOlderServer, OLD, switchToThisVersion, versionFolder } from './support/older-server';
 import { portRow } from './support/ports-ui';
+import { LINUX_TARGET, serverVersionOf } from './support/release-mirror';
 import { addHost, expect, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test, type RemoteFixtures } from './support/remote';
-import type { SshdFixture } from './support/sshd';
+import { TARGET_HOME, type SshdFixture } from './support/sshd';
 import { newRemoteChat, startTargetStub } from './support/target-agent';
 
 const APP = '/srv/app';
@@ -24,6 +27,8 @@ const DISCONNECT_HOST = 'damocles.remote.disconnectHost';
 const CLOSE_EDITOR = 'damocles.editor.close';
 const LINKS_SWITCH = 'Open links from billing-prod\'s terminals without asking';
 const permissionCard = (tab: Page) => tab.locator('section[role="region"][aria-label="Permission request"]:not([class*="-leave-"])');
+// the command a terminal finds on PATH: the run folder's active link, which each server points at its own package
+const ACTIVE_DAMOCLES = /^\/home\/dev\/\.damocles\/server\/run-[0-9a-f]{16}\/active\/bin\/remote-cli\/damocles$/;
 
 // the files each test opens on prod-1, owned by its user
 const SEED = [
@@ -150,7 +155,7 @@ test('GIT_EDITOR="damocles --wait" git commit waits for the tab and commits the 
   expect(await exitOf(shell, 'printf "%s\\n%s\\n" "$DAMOCLES_CLI_HOOK" "$(command -v damocles)" > /tmp/damocles-cli')).toBe(0);
   const [hook, damocles] = (await fixture.sh('cat /tmp/damocles-cli', 'dev')).trim().split('\n');
   expect(hook).toMatch(/^\/tmp\/damocles-[^/]+\/cli-[0-9a-f]{24}\.sock$/);
-  expect(damocles).toMatch(/^\/home\/dev\/\.damocles\/server\/[^/]+\/bin\/remote-cli\/damocles$/);
+  expect(damocles).toMatch(ACTIVE_DAMOCLES);
   await clickMenu(app, DISCONNECT_HOST);
   await expect.poll(async () => (await shellState(app)).projects.find((project) => project.fsPath === APP)?.connection).not.toBe('connected');
   const answer = await fixture.sh(`cd /srv/app && DAMOCLES_CLI_HOOK='${hook}' '${damocles}' README.md 2>&1; echo "status=$?"`, 'dev');
@@ -239,4 +244,83 @@ test('damocles --remote on this computer opens a folder on a saved host by its n
   await overlay.keyboard.press('Escape');
   expect((await shellState(app)).projects.filter((project) => project.authority.kind === 'ssh')).toHaveLength(3);
   await shutdownHostDaemon(app, hostId, fixture);
+});
+
+interface OnOlderServer {
+  readonly old: DesktopApp;
+  readonly env: Record<string, string>;
+  readonly hostId: string;
+  readonly fixture: SshdFixture;
+  // the shell's DAMOCLES_CLI_HOOK, BROWSER and damocles command, one per line
+  readonly before: string;
+  readonly hook: string;
+  readonly damocles: string;
+}
+
+/** A bash terminal in /srv/app on prod-1, started under the app before an update, whose server is this package installed as OLD. */
+async function terminalOnOlderServer(home: HermeticHome, launch: (options: { env: Record<string, string> }) => Promise<DesktopApp>, fixtures: Pick<RemoteFixtures, 'mirror' | 'ssh'>, sshd: RemoteFixtures['sshd']): Promise<OnOlderServer> {
+  writeUserSettings(home, { 'damocles.desktop.terminal.defaultProfile': 'bash', 'damocles.desktop.terminal.confirmOnKill': 'never' });
+  const fixture = await sshd('prod-1');
+  await fixture.sh(SEED);
+  await installOlderServer(fixture, CURRENT_PACKAGE, { version: OLD });
+  const env = remoteEnv(fixtures.ssh, fixtures.mirror);
+  const old = await launch({ env: { ...env, DAMOCLES_E2E_APP_VERSION: OLD } });
+  const hostId = await addHost(old.app, { alias: 'prod-1', name: 'billing-prod' });
+  await openRemoteFolder(old.app, hostId, APP);
+  await remoteProjectKey(old.app, { authorityKey: `ssh+${hostId}` }, APP);
+  const shell = await openTerminal(old.app);
+  await runInTerminal(shell, 'cd /srv/app');
+  expect(await exitOf(shell, 'printf "%s\\n%s\\n%s\\n" "$DAMOCLES_CLI_HOOK" "$BROWSER" "$(command -v damocles)" > /tmp/before-env')).toBe(0);
+  const before = await fixture.sh('cat /tmp/before-env', 'dev');
+  const [hook, , damocles] = before.trim().split('\n');
+  expect(hook).toMatch(/^\/tmp\/damocles-[^/]+\/cli-[0-9a-f]{24}\.sock$/);
+  expect(damocles).toMatch(ACTIVE_DAMOCLES);
+  expect(await daemonVersions(fixture)).toEqual([OLD]);
+  return { old, env, hostId, fixture, before, hook: hook!, damocles: damocles! };
+}
+
+test('in a terminal that survived a server switch, damocles opens a file and BROWSER asks through the new server, from the endpoints the shell started with', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
+  test.setTimeout(600_000);
+  const older = await terminalOnOlderServer(home, launch, { mirror, ssh }, sshd);
+  await older.old.close();
+  const { fixture } = older;
+  const app = await switchToThisVersion(launch, older.env, older.hostId, fixture);
+  const shell = await shellPage(app);
+  expect(await exitOf(shell, 'printf "%s\\n%s\\n%s\\n" "$DAMOCLES_CLI_HOOK" "$BROWSER" "$(command -v damocles)" > /tmp/after-env')).toBe(0);
+  expect(await fixture.sh('cat /tmp/after-env', 'dev')).toBe(older.before);
+  // the same path now runs this version's command
+  expect((await fixture.sh(`readlink ${TARGET_HOME}/.damocles/server/run-*/active`, 'dev')).trim()).toBe(versionFolder(serverVersionOf(LINUX_TARGET)));
+
+  expect(await exitOf(shell, 'damocles src/app.ts:42')).toBe(0);
+  await expect.poll(async () => (await activeTab(app))?.relativePath).toBe('src/app.ts');
+  await editorShows(shell, 'const line42 = 42;');
+
+  await recordOpenExternal(app);
+  expect(await exitOf(shell, '"$BROWSER" https://example.test/survived')).toBe(0);
+  const popup = await popupPage(app);
+  const notice = popup.locator('[data-testid="overlay-toast"][data-kind="link"]').filter({ has: popup.getByTestId('link-url').getByText('https://example.test/survived', { exact: true }) });
+  await expect(notice).toBeVisible({ timeout: 30_000 });
+  await notice.getByRole('button', { name: 'Open' }).click();
+  await expect.poll(() => openedExternally(app)).toEqual(['https://example.test/survived']);
+  await shutdownHostDaemon(app, older.hostId, fixture);
+});
+
+test('a damocles open typed during a server switch waits while no server runs and completes once the new server is up', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
+  test.setTimeout(600_000);
+  const older = await terminalOnOlderServer(home, launch, { mirror, ssh }, sshd);
+  const { fixture } = older;
+  await older.old.close();
+  // installed already, so the switch only starts a daemon, well inside the host's hold of the waiting connection
+  await installOlderServer(fixture, CURRENT_PACKAGE);
+  // the older server stops; the terminal's host runs on and holds what reaches the terminal's socket meanwhile
+  await fixture.sh("pkill -TERM -u dev -f 'dist/daemon.js serve'");
+  await expect.poll(() => daemonVersions(fixture), { timeout: 30_000 }).toEqual([]);
+  await fixture.sh(`cd /srv/app && nohup sh -c "DAMOCLES_CLI_HOOK='${older.hook}' '${older.damocles}' src/app.ts:7 > /tmp/during.out 2>&1; echo status=\\$? >> /tmp/during.out" > /dev/null 2>&1 &`, 'dev');
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  expect(await fixture.sh('cat /tmp/during.out 2>/dev/null || true', 'dev')).toBe('');
+
+  const app = await switchToThisVersion(launch, older.env, older.hostId, fixture);
+  await expect.poll(() => fixture.sh('cat /tmp/during.out 2>/dev/null || true', 'dev'), { timeout: 60_000 }).toBe('status=0\n');
+  await expect.poll(async () => (await activeTab(app))?.relativePath).toBe('src/app.ts');
+  await shutdownHostDaemon(app, older.hostId, fixture);
 });

@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { findOnAbsolutePathAsync } from '../../../../../core/system-tools';
-import { runProcess } from '../../../../../core/process-launcher';
+import { processLauncher, runProcess } from '../../../../../core/process-launcher';
 import { buildPosixStage1, buildWindowsStage1 } from '../stage1';
 import WINDOWS_STAGE1 from '../stage1-windows.ps1';
 import { powerShell, runPowerShell, runSh, scratchDir, shellPath, stageMessages, withPosixDefinitions, withWindowsDefinitions } from './shells';
@@ -38,6 +38,23 @@ function previousInstall(target: 'linux-x64' | 'win32-x64'): string {
   writeFileSync(path.join(folder, 'README'), 'shared');
   return folder;
 }
+// Four installed versions, oldest first, under a home whose run folder holds a terminal host's record naming the oldest.
+function hostedVersions(target: 'linux-x64' | 'win32-x64'): { readonly home: string; readonly install: string; readonly record: string } {
+  const home = scratchDir('hosted-home-');
+  const install = path.join(home, 'install');
+  ['1.0.0', '2.0.0', '3.0.0', '4.0.0'].forEach((version, index) => {
+    versionFolder(install, `${version}-${target}`);
+    ago(path.join(install, `${version}-${target}`), (4 - index) * 60);
+  });
+  const hosts = path.join(home, '.damocles', 'server', 'run-0123456789abcdef', 'terminal-hosts');
+  mkdirSync(hosts, { recursive: true });
+  const record = path.join(hosts, '4242.json');
+  writeFileSync(record, JSON.stringify({ version: '1.0.0', pid: 4242, hostname: 'nfs-peer', endpoint: '/tmp/damocles-x/host.sock', socketFolder: '/tmp/damocles-x', updatedAt: 1 }));
+  // no <pid>.json: no daemon reads or removes it, so it keeps no version
+  writeFileSync(path.join(hosts, 'notes.json'), JSON.stringify({ version: '2.0.0', pid: 4243, hostname: 'nfs-peer' }));
+  return { home, install, record };
+}
+
 const leftAlone = (target: string): string[] => ['3.4.0', '3.6.0-notes', 'MyApp', 'README', 'node-v20.11.0', 'notes', 'run-0123456789abcdef', 'shared-tool']
   .map((name) => (/^(3\.4\.0|MyApp|node-v20\.11\.0|notes)$/.test(name) ? `${name}-${target}` : name)).sort();
 
@@ -116,6 +133,27 @@ describe('the install folder in a real sh', { timeout: 120_000 }, () => {
     const output = await sh(`printf '{"version":"3.5.0","pid":1,"hostname":"%s"}' "$(uname -n)" > '${own}'\nclean_previous '${shellPath(previous)}' '${shellPath(path.join(home, 'current'))}'`, home);
     expect(stageMessages(output)).toEqual([]);
     expect(readdirSync(previous).sort()).toEqual([...leftAlone('linux-x64'), '3.6.0-linux-x64'].sort());
+  });
+
+  it('keeps a version folder while a terminal host\'s record names its version, and prunes it once the record is gone or stale', async () => {
+    const { home, install, record } = hostedVersions('linux-x64');
+    const prune = (): Promise<unknown> => sh(`prune '${shellPath(install)}' '${shellPath(path.join(install, '4.0.0-linux-x64'))}'`, home);
+    await prune();
+    // 3.0.0 is the newest previous one; 1.0.0 stays for its terminal host alone
+    expect(readdirSync(install).sort()).toEqual(['1.0.0-linux-x64', '3.0.0-linux-x64', '4.0.0-linux-x64']);
+    ago(record, 26 * 60);
+    await prune();
+    expect(readdirSync(install).sort()).toEqual(['3.0.0-linux-x64', '4.0.0-linux-x64']);
+  });
+
+  it('keeps a version another machine\'s terminal host names in the previous <install> and defers settled', async () => {
+    const home = scratchDir('home-');
+    const previous = previousInstall('linux-x64');
+    const hosts = path.join(home, '.damocles', 'server', 'run-fedcba9876543210', 'terminal-hosts');
+    mkdirSync(hosts, { recursive: true });
+    writeFileSync(path.join(hosts, '4242.json'), JSON.stringify({ version: '3.5.0', pid: 4242, hostname: 'nfs-peer', endpoint: '/tmp/damocles-x/host.sock', socketFolder: '/tmp/damocles-x', updatedAt: 1 }));
+    expect(stageMessages(await sh(`clean_previous '${shellPath(previous)}' '${shellPath(path.join(home, 'current'))}'`, home))).toEqual([]);
+    expect(readdirSync(previous).sort()).toEqual([...leftAlone('linux-x64'), '3.5.0-linux-x64'].sort());
   });
 
   it('leaves the previous <install> alone and defers settled while a live stage holds its lock', async () => {
@@ -240,6 +278,43 @@ describe('the noexec check in a Linux container', async () => {
     const output = await runProcess({ file: docker!, args: ['run', '--rm', '-i', '--tmpfs', '/work:rw,noexec,size=512m', ALPINE, 'sh', '-s'], windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }, { input: script, timeoutMs: 180_000 });
     expect(stageMessages(output)).toEqual([{ kind: 'fail', code: 'noexec', params: { folder: '/work/install' } }]);
   }, 200_000);
+
+  it.skipIf(!linux)('finds a live terminal host running from a version folder, and none once its process ended (needs Docker with Linux containers)', async () => {
+    // a sleep copied into the version folder stands in for the terminal host's Node
+    const script = withPosixDefinitions([
+      'HOME=/root; hosts="$HOME/.damocles/server/run-0123456789abcdef/terminal-hosts"',
+      'mkdir -p "$hosts" /opt/install/1.0.0-linux-x64/node/bin /opt/install/2.0.0-linux-x64',
+      'cp /bin/busybox /opt/install/1.0.0-linux-x64/node/bin/sleep',
+      '/opt/install/1.0.0-linux-x64/node/bin/sleep 300 &',
+      'printf \'{"version":"1.0.0","pid":%s,"hostname":"%s"}\' "$!" "$(uname -n)" > "$hosts/$!.json"',
+      'runs() { if daemon_runs_from "$(canonical "$1")"; then printf yes; else printf no; fi; }',
+      'printf "%s %s " "$(runs /opt/install/1.0.0-linux-x64)" "$(runs /opt/install/2.0.0-linux-x64)"',
+      'kill "$!"; wait "$!" 2>/dev/null',
+      'printf "%s\\n" "$(runs /opt/install/1.0.0-linux-x64)"',
+    ].join('\n'));
+    const output = await runProcess({ file: docker!, args: ['run', '--rm', '-i', ALPINE, 'sh', '-s'], windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }, { input: script, timeoutMs: 180_000 });
+    expect(output.stdout.toString('utf8').trim()).toBe('yes no no');
+  }, 200_000);
+
+  it.skipIf(!linux)('keeps a version folder a live terminal host of this machine runs from though its record went stale, and prunes it once the host ended (needs Docker with Linux containers)', async () => {
+    const script = withPosixDefinitions([
+      'HOME=/root; hosts="$HOME/.damocles/server/run-0123456789abcdef/terminal-hosts"; install=/opt/install',
+      'for version in 1.0.0 2.0.0 3.0.0 4.0.0; do mkdir -p "$install/$version-linux-x64"; : > "$install/$version-linux-x64/server-package.json"; done',
+      'mkdir -p "$hosts" "$install/1.0.0-linux-x64/node/bin"',
+      'cp /bin/busybox "$install/1.0.0-linux-x64/node/bin/sleep"',
+      '"$install/1.0.0-linux-x64/node/bin/sleep" 300 &',
+      'host=$!',
+      'printf \'{"version":"1.0.0","pid":%s,"hostname":"%s"}\' "$host" "$(uname -n)" > "$hosts/$host.json"',
+      // a record a suspend kept from its daily touch, and the versions oldest first
+      'touch -t 200001010000 "$hosts/$host.json"',
+      'touch -t 202001010000 "$install/1.0.0-linux-x64"; touch -t 202001020000 "$install/2.0.0-linux-x64"; touch -t 202001030000 "$install/3.0.0-linux-x64"',
+      'prune "$install" "$install/4.0.0-linux-x64"; echo $(ls "$install")',
+      'kill "$host"; wait "$host" 2>/dev/null',
+      'prune "$install" "$install/4.0.0-linux-x64"; echo $(ls "$install")',
+    ].join('\n'));
+    const output = await runProcess({ file: docker!, args: ['run', '--rm', '-i', ALPINE, 'sh', '-s'], windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }, { input: script, timeoutMs: 180_000 });
+    expect(output.stdout.toString('utf8').trim().split('\n')).toEqual(['1.0.0-linux-x64 3.0.0-linux-x64 4.0.0-linux-x64', '3.0.0-linux-x64 4.0.0-linux-x64']);
+  }, 200_000);
 });
 
 describe('the install folder in a real PowerShell', { timeout: 120_000 }, async () => {
@@ -301,6 +376,47 @@ describe('the install folder in a real PowerShell', { timeout: 120_000 }, async 
     const previous = previousInstall('win32-x64');
     expect(stageMessages(await ps(`Clear-DamoclesPrevious '${previous}' '${path.join(home, 'current')}'`, home))).toEqual([{ kind: 'settled' }]);
     expect(readdirSync(previous).sort()).toEqual([...leftAlone('win32-x64'), '.exec-test-zzz'].sort());
+  });
+
+  it.skipIf(windowsOnly)('leaves a previous version folder and a staging folder whole while a file in each is open, defers settled and goes on', async () => {
+    const home = scratchDir('home-');
+    const previous = previousInstall('win32-x64');
+    const heldVersion = path.join(previous, '3.6.0-win32-x64', 'dist', 'daemon.js');
+    const heldStaging = path.join(previous, '.staging-abc123', 'package.zip');
+    mkdirSync(path.dirname(heldVersion));
+    writeFileSync(heldVersion, '');
+    writeFileSync(heldStaging, '');
+    const output = await ps([
+      `$version = [IO.File]::Open('${heldVersion}', 'Open', 'Read', 'None')`,
+      `$staging = [IO.File]::Open('${heldStaging}', 'Open', 'Read', 'None')`,
+      `Clear-DamoclesPrevious '${previous}' '${path.join(home, 'current')}'`,
+      '$version.Dispose(); $staging.Dispose()',
+      'Send-DamoclesLine \'{"kind":"step","step":"starting"}\'',
+    ].join('\n'), home);
+    expect(stageMessages(output)).toEqual([{ kind: 'step', step: 'starting' }]);
+    expect(output.stderr.toString('utf8')).toMatch(/\[stage1\] pruning \S+\\3\.6\.0-win32-x64 failed, so a later install tries again: /);
+    expect(output.stderr.toString('utf8')).toMatch(/\[stage1\] removing \S+\\\.staging-abc123 failed, so a later install tries again: /);
+    expect(readdirSync(previous).sort()).toEqual([...leftAlone('win32-x64'), '.exec-test-zzz', '.staging-abc123', '3.6.0-win32-x64'].sort());
+    expect(readdirSync(path.join(previous, '3.6.0-win32-x64')).sort()).toEqual(['bin', 'dist', 'server-package.json']);
+  });
+
+  it.skipIf(windowsOnly)('skips an old staging folder while a file in it is open, saying so on stderr, and removes the others', async () => {
+    const home = scratchDir('home-');
+    const install = path.join(home, 'install');
+    for (const name of ['.staging-held', '.staging-gone']) {
+      mkdirSync(path.join(install, name), { recursive: true });
+      writeFileSync(path.join(install, name, 'package.zip'), '');
+      ago(path.join(install, name), 2 * 24 * 60);
+    }
+    const output = await ps([
+      `$held = [IO.File]::Open('${path.join(install, '.staging-held', 'package.zip')}', 'Open', 'Read', 'None')`,
+      `Remove-DamoclesOldStaging '${install}'`,
+      '$held.Dispose()',
+      'Send-DamoclesLine \'{"kind":"settled"}\'',
+    ].join('\n'), home);
+    expect(stageMessages(output)).toEqual([{ kind: 'settled' }]);
+    expect(output.stderr.toString('utf8')).toMatch(/\[stage1\] removing \S+\\\.staging-held failed, so a later install tries again: /);
+    expect(readdirSync(install)).toEqual(['.staging-held']);
   });
 
   it.skipIf(windowsOnly)('takes a previous folder spelled with forward slashes or a trailing separator as the current one', async () => {
@@ -384,7 +500,7 @@ describe('the install folder in a real PowerShell', { timeout: 120_000 }, async 
       // the probe's checks pass, and the install and the bridge report what main gave them
       'function Test-DamoclesWindowsBuild { }', 'function Test-DamoclesSpace { }', 'function Test-DamoclesGitBash { }', 'function Test-DamoclesWmi { }',
       'function Install-DamoclesVersion { [Console]::Out.Write("install=$(Split-Path -Leaf $versionDir) url=$packageUrl size=$packageSize|") }',
-      'function Start-DamoclesBridge([string]$dir) { [Console]::Out.Write("bridge=$dir") }',
+      'function Invoke-DamoclesAttach([string]$dir) { [Console]::Out.Write("bridge=$dir") }',
       parameters,
       WINDOWS_STAGE1.slice(WINDOWS_STAGE1.indexOf('# BEGIN MAIN')),
     ].join('\n');
@@ -402,6 +518,92 @@ describe('the install folder in a real PowerShell', { timeout: 120_000 }, async 
     symlinkSync(current, junction, 'junction');
     expect(stageMessages(await ps(`Clear-DamoclesPrevious '${junction}' '${current}'`, home))).toEqual([{ kind: 'settled' }]);
     expect(readdirSync(current)).toEqual(['3.7.0-win32-x64']);
+  });
+
+  it.skipIf(windowsOnly)('keeps a version folder while a terminal host\'s record names its version, and prunes it once the record is gone', async () => {
+    const { home, install, record } = hostedVersions('win32-x64');
+    const prune = (): Promise<unknown> => ps(`Invoke-DamoclesPrune '${install}' '${path.join(install, '4.0.0-win32-x64')}'`, home);
+    await prune();
+    expect(readdirSync(install).sort()).toEqual(['1.0.0-win32-x64', '3.0.0-win32-x64', '4.0.0-win32-x64']);
+    rmSync(record);
+    await prune();
+    expect(readdirSync(install).sort()).toEqual(['3.0.0-win32-x64', '4.0.0-win32-x64']);
+  });
+
+  it.skipIf(windowsOnly)('keeps a version folder a live process of this machine runs from though its record went stale, and prunes it once that process ended', async () => {
+    const { home, install, record } = hostedVersions('win32-x64');
+    // cmd.exe copied into the oldest version stands in for its terminal host, waiting on its stdin
+    const program = path.join(install, '1.0.0-win32-x64', 'node', 'cmd.exe');
+    mkdirSync(path.dirname(program));
+    copyFileSync(path.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'cmd.exe'), program);
+    ago(path.join(install, '1.0.0-win32-x64'), 4 * 60);
+    const host = processLauncher().launch({ file: program, args: ['/d', '/k'], windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'] });
+    try {
+      const pid = await host.pid;
+      rmSync(record);
+      // a record a suspend kept from its daily touch
+      const own = path.join(path.dirname(record), `${pid}.json`);
+      writeFileSync(own, JSON.stringify({ version: '1.0.0', pid }));
+      ago(own, 26 * 60);
+      const prune = (): Promise<unknown> => ps(`Invoke-DamoclesPrune '${install}' '${path.join(install, '4.0.0-win32-x64')}'`, home);
+      await prune();
+      expect(readdirSync(install).sort()).toEqual(['1.0.0-win32-x64', '3.0.0-win32-x64', '4.0.0-win32-x64']);
+      host.kill();
+      await host.exited;
+      await prune();
+      expect(readdirSync(install).sort()).toEqual(['3.0.0-win32-x64', '4.0.0-win32-x64']);
+    } finally {
+      host.kill();
+    }
+  });
+
+  it.skipIf(windowsOnly)('leaves a version folder whole while a file in it is open, saying so on stderr, and goes on', async () => {
+    const { home, install, record } = hostedVersions('win32-x64');
+    rmSync(record);
+    const held = path.join(install, '2.0.0-win32-x64', 'dist', 'daemon.js');
+    mkdirSync(path.dirname(held));
+    writeFileSync(held, '');
+    ago(path.join(install, '2.0.0-win32-x64'), 3 * 60);
+    const output = await ps([
+      `$held = [IO.File]::Open('${held}', 'Open', 'Read', 'None')`,
+      `Invoke-DamoclesPrune '${install}' '${path.join(install, '4.0.0-win32-x64')}'`,
+      '$held.Dispose()',
+      'Send-DamoclesLine \'{"kind":"settled"}\'',
+    ].join('\n'), home);
+    expect(stageMessages(output)).toEqual([{ kind: 'settled' }]);
+    // the listing spells the temp folder's 8.3 parts out
+    expect(output.stderr.toString('utf8')).toMatch(/\[stage1\] pruning \S+\\install\\2\.0\.0-win32-x64 failed, so a later install tries again: /);
+    expect(readdirSync(install).sort()).toEqual(['2.0.0-win32-x64', '3.0.0-win32-x64', '4.0.0-win32-x64']);
+    expect(readdirSync(path.join(install, '2.0.0-win32-x64')).sort()).toEqual(['bin', 'dist', 'server-package.json']);
+  });
+
+  it.skipIf(windowsOnly)('keeps a version another machine\'s terminal host names in the previous <install>, but not one this machine\'s names', async () => {
+    const home = scratchDir('home-');
+    const previous = previousInstall('win32-x64');
+    const other = path.join(home, '.damocles', 'server', 'run-fedcba9876543210', 'terminal-hosts');
+    mkdirSync(other, { recursive: true });
+    writeFileSync(path.join(other, '4242.json'), JSON.stringify({ version: '3.6.0', pid: 4242, hostname: 'nfs-peer' }));
+    const output = await ps([
+      '$own = Join-Path $env:USERPROFILE ".damocles\\server\\run-$(Get-DamoclesRunKey)\\terminal-hosts"',
+      '[void](New-Item -ItemType Directory -Path $own -Force)',
+      // no live process: this machine's own terminal hosts are judged by their process, never by the record's age
+      "[IO.File]::WriteAllText((Join-Path $own '4243.json'), '{\"version\":\"3.5.0\",\"pid\":4243}')",
+      `Clear-DamoclesPrevious '${previous}' '${path.join(home, 'current')}'`,
+    ].join('\n'), home);
+    expect(stageMessages(output)).toEqual([]);
+    expect(readdirSync(previous).sort()).toEqual([...leftAlone('win32-x64'), '.exec-test-zzz', '3.6.0-win32-x64'].sort());
+  });
+
+  it.skipIf(windowsOnly)('finds a terminal host running from a folder, by its record in the run folder', async () => {
+    const home = scratchDir('home-');
+    // this PowerShell stands in for the terminal host: its record names it
+    const script = [
+      '$hosts = Join-Path $env:USERPROFILE ".damocles\\server\\run-0123456789abcdef\\terminal-hosts"',
+      '[void](New-Item -ItemType Directory -Path $hosts -Force)',
+      "[IO.File]::WriteAllText((Join-Path $hosts \"$PID.json\"), \"{`\"version`\":`\"3.7.0`\",`\"pid`\":$PID}\")",
+      `[Console]::Out.Write("$(Test-DamoclesDaemonRunsFrom '${path.dirname(shell!)}')|$(Test-DamoclesDaemonRunsFrom '${home}')")`,
+    ].join('\n');
+    expect((await ps(script, home)).stdout.toString('utf8')).toBe('True|False');
   });
 
   it.skipIf(windowsOnly)('finds a daemon running from a folder named through a junction or an 8.3 name', async () => {
@@ -435,7 +637,7 @@ describe('the install folder in a real PowerShell', { timeout: 120_000 }, async 
       `$hash = (Get-FileHash -LiteralPath '${file}' -Algorithm SHA256).Hash.ToLowerInvariant()`,
       "$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }",
       'Send-DamoclesLine (ConvertTo-Json -Compress -InputObject @{ kind = \'settled\' })',
-      '[Console]::Out.Write("hash=$hash|$($startup.ShowWindow)|$(Get-DamoclesInheritedModulePathEntry)")',
+      '[Console]::Out.Write("hash=$hash|$($startup.ShowWindow)|$(Get-DamoclesInheritedEntries)")',
     ].join('\n');
     const output = await runPowerShell(shell!, withWindowsDefinitions(`$env:USERPROFILE = '${home}'\n${script}`), undefined, { psModulePath: inherited });
     expect(output.stderr.toString('utf8')).toBe('');

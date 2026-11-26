@@ -7,14 +7,16 @@ import { MAX_THEME_NAME_CHARS, THEME_ID } from '../../shared/themes/limits';
 import { parseScheduleRules } from '../../shared/themes/schedule';
 import { isSettingsAccountId, isSettingsSectionId, type SettingsTarget } from '../../shared/settings-sections';
 import { SETTINGS_VIEW_REQUEST_TYPES } from '../../shared/settings-view-messages';
-import { MAX_SETTINGS_MESSAGE_CHARS, OVERLAY_CHANNELS, type OverlayPrefs, type OverlayPrefWrite, type OverlayRect, type OverlaySettingsAwayState, type OverlaySettingsPage, type OverlaySettingsScopes, type OverlayThemeAction, type OverlayThemeResult, type OverlayThemesResult } from '../preload/overlay-channels';
+import { MAX_SETTINGS_MESSAGE_CHARS, OVERLAY_CHANNELS, type OverlayPrefs, type OverlayPrefWrite, type OverlayRect, type PrefRefusal, type OverlaySettingsAwayState, type OverlaySettingsPage, type OverlaySettingsScopes, type OverlayThemeAction, type OverlayThemeResult, type OverlayThemesResult } from '../preload/overlay-channels';
 import type { TerminalProfileReport } from '../preload/terminal-channels';
-import { NEW_CHAT_ID_PREFIX, type HostUpdate, type ProjectConnection } from '../preload/shell-channels';
+import { NEW_CHAT_ID_PREFIX, type ProjectConnection } from '../preload/shell-channels';
+import type { HostUpdate } from '../../shared/host-update';
 import type { HostReconnectPhase } from '../../shared/host-connection';
 import type { CoreState } from '../daemon/control-messages';
 import type { RemoteConnection } from './remote/connection';
-import { DESKTOP_CONFIGURATION, isDesktopSettingValue, TERMINAL_PROFILES_SETTING, THEME_SETTING, THEMES_DARK_SETTING, THEMES_LIGHT_SETTING, THEMES_STORE_SETTING, type DesktopLanguageSetting } from '../local-services/desktop-configuration';
+import { DESKTOP_CONFIGURATION, isDesktopSettingValue, REMOTE_SSH_PATH_SETTING, TERMINAL_PROFILES_SETTING, THEME_SETTING, THEMES_DARK_SETTING, THEMES_LIGHT_SETTING, THEMES_STORE_SETTING, type DesktopLanguageSetting } from '../local-services/desktop-configuration';
 import { parseRect, type OverlayHost } from './overlay';
+import { sshClientPathRefusal } from './remote/ssh';
 import { isVersion } from './semver';
 import { asJsonValue, isWebviewMessage } from './views';
 
@@ -107,7 +109,7 @@ export function hostAwayOf(facts: HostCoreFacts): OverlaySettingsAwayState | und
   if (!facts.connected) {
     if (facts.reconnect === 'signIn' || facts.reconnect === 'failed') return { state: facts.reconnect };
     // only the user ends an offer, on the update banner
-    if (facts.handedOff && facts.update?.phase === 'offer') return { state: 'switchOffered', update: { serverVersion: facts.update.serverVersion, runningAgents: facts.update.runningAgents } };
+    if (facts.handedOff && facts.update?.source === 'otherProtocol' && facts.update.phase === 'offer') return { state: 'switchOffered', update: { serverVersion: facts.update.serverVersion, runningAgents: facts.update.runningAgents } };
     if (facts.reconnect !== undefined || facts.handedOff) return { state: 'reconnecting' };
     return { state: facts.state === 'connecting' || facts.state === 'connected' ? 'reconnecting' : 'offline' };
   }
@@ -165,9 +167,23 @@ function shownHost(host: SettingsScopes['host']): OverlaySettingsScopes['host'] 
   return { name: host.name, ...(host.color !== undefined ? { color: host.color } : {}), ...(host.canAllowYolo ? { canAllowYolo: true } : {}) };
 }
 
+/** A value of a declared type that main refuses for a reason the settings page names. */
+export class PrefRefusedError extends Error {
+  override readonly name = 'PrefRefusedError';
+  readonly refusal: PrefRefusal;
+  constructor(refusal: PrefRefusal) {
+    super(`The setting value was refused: ${refusal}`);
+    this.refusal = refusal;
+  }
+}
+
 /** The one write path for a damocles.desktop.* value: checked against its declaration, written to user settings (D37). */
 export async function writeDesktopSetting(settings: SettingsStore, key: string, value: unknown): Promise<void> {
   if (!isDesktopSettingValue(key, value)) throw new Error('Not a desktop setting value');
+  if (key === REMOTE_SSH_PATH_SETTING) {
+    const refusal = await sshClientPathRefusal(value as string);
+    if (refusal !== undefined) throw new PrefRefusedError(refusal);
+  }
   await settings.update(key, value, 'user');
 }
 
@@ -675,7 +691,7 @@ export class OverlaySettings {
         await writeDesktopSetting(this.deps.settings, request.key, request.value);
       }
     } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      return { ok: false, error: err instanceof Error ? err.message : String(err), ...(err instanceof PrefRefusedError ? { refusal: err.refusal } : {}) };
     }
     const file = this.deps.settings.scopeFile('user');
     if (file === undefined) throw new Error('The desktop settings store has no user file');

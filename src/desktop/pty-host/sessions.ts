@@ -46,7 +46,7 @@ export interface PtySessionsDeps {
   readonly readProcessName: boolean;
   // the screen each pty's output also feeds
   readonly screen: (options: PtyScreenOptions) => PtyScreen;
-  // output is acknowledged once the screen parsed it, and the parent's acks are ignored (the daemon, terminal flow control)
+  // output is acknowledged once the screen parsed it, and the parent's acks are ignored, until setSelfAcknowledge says otherwise
   readonly selfAcknowledge?: boolean;
   readonly log: (line: string) => void;
 }
@@ -84,10 +84,15 @@ function batchEnd(text: string): number {
 
 export interface PtySessions {
   handle(request: HostRequest): Promise<void>;
+  // who acknowledges output from now on: the screen (true) or the parent's acks; every pty's unacknowledged output is forgotten
+  setSelfAcknowledge(self: boolean): void;
 }
 
 export function createPtySessions(deps: PtySessionsDeps): PtySessions {
   const sessions = new Map<string, Session>();
+  let selfAcknowledge = deps.selfAcknowledge === true;
+  // counts the changes of selfAcknowledge: a screen acknowledgement written under an earlier one is dropped
+  let pacing = 0;
   let lastKillOrStart = 0;
   // Windows ptys with no output and no exit yet. node-pty runs their kill only on the first output, in the same data event
   // after the host's listener, so shutdown waits for these; a host that exits sooner leaves their shells running.
@@ -132,8 +137,12 @@ export function createPtySessions(deps: PtySessionsDeps): PtySessions {
       session.paused = true;
       session.pty.pause();
     }
-    if (deps.selfAcknowledge) session.screen.write(data, () => acknowledge(session, data.length));
-    else session.screen.write(data);
+    if (selfAcknowledge) {
+      const written = pacing;
+      session.screen.write(data, () => {
+        if (written === pacing) acknowledge(session, data.length);
+      });
+    } else session.screen.write(data);
     session.buffer += data;
     if (session.buffer.length >= TERMINAL_BATCH_CHARS) flush(id, session);
     else session.timer ??= setTimeout(() => flush(id, session), TERMINAL_BATCH_MS);
@@ -159,14 +168,21 @@ export function createPtySessions(deps: PtySessionsDeps): PtySessions {
     if (cancelled()) return;
     await throttle();
     if (cancelled()) return;
-    let pty: Pty;
+    let screen: PtyScreen;
     try {
-      pty = deps.spawn(request.file, request.args, { name: 'xterm-256color', cwd: request.cwd, env: request.env, cols: request.cols, rows: request.rows });
+      screen = deps.screen({ cols: request.cols, rows: request.rows, scrollback: request.scrollback });
     } catch (err) {
       deps.post({ type: 'error', id: request.id, message: errorText(err) });
       return;
     }
-    const screen = deps.screen({ cols: request.cols, rows: request.rows, scrollback: request.scrollback });
+    let pty: Pty;
+    try {
+      pty = deps.spawn(request.file, request.args, { name: 'xterm-256color', cwd: request.cwd, env: request.env, cols: request.cols, rows: request.rows });
+    } catch (err) {
+      screen.dispose();
+      deps.post({ type: 'error', id: request.id, message: errorText(err) });
+      return;
+    }
     const session: Session = { pty, screen, serializing: undefined, holding: false, unacked: 0, paused: false, buffer: '', timer: undefined, exited: false, announced: false, processTimer: undefined, processName: undefined };
     sessions.set(request.id, session);
     let connected = (): void => undefined;
@@ -281,7 +297,7 @@ export function createPtySessions(deps: PtySessionsDeps): PtySessions {
       resize(session.pty, request.cols, request.rows);
       session.screen.resize(request.cols, request.rows);
     }
-    else if (deps.selfAcknowledge) return;
+    else if (selfAcknowledge) return;
     else if (request.type === 'ack') acknowledge(session, request.chars);
     else acknowledge(session, session.unacked);
   };
@@ -303,6 +319,11 @@ export function createPtySessions(deps: PtySessionsDeps): PtySessions {
     return handled;
   };
   return {
+    setSelfAcknowledge(self) {
+      selfAcknowledge = self;
+      pacing++;
+      for (const session of sessions.values()) acknowledge(session, session.unacked);
+    },
     async handle(request) {
       switch (request.type) {
         case 'spawn': {

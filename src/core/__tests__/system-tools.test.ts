@@ -3,9 +3,26 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { findBash, findOnAbsolutePath, findPwsh, isFileOrAppAlias, posixTool, posixToolAsync, resolveSshExecutable, resolveSshKeygenExecutable, windowsExplorer, windowsPowerShell, windowsSystemTool } from '../system-tools';
+import {
+  findBash,
+  findOnAbsolutePath,
+  findPwsh,
+  isFileOrAppAlias,
+  openSshToolBeside,
+  posixTool,
+  posixToolAsync,
+  readSshVersion,
+  resolveSshExecutable,
+  resolveSshKeygenExecutable,
+  windowsExplorer,
+  windowsPowerShell,
+  windowsSystemDirectory,
+  windowsSystemTool,
+  type SshVersionReader,
+} from '../system-tools';
 
 const SRC = path.join(__dirname, '..', '..');
+const GIT_FOR_WINDOWS_SSH = path.join(process.env['ProgramFiles'] ?? 'C:\\Program Files', 'Git', 'usr', 'bin', 'ssh.exe');
 
 let root: string;
 let cwdRoot: string | undefined;
@@ -168,16 +185,107 @@ describe.runIf(process.platform === 'win32')('findBash', () => {
   });
 });
 
+// What each fake ssh's `ssh -V` prints, by path; every read is counted.
+function versionReader(versions: Readonly<Record<string, string>>): { readonly read: SshVersionReader; readonly reads: string[] } {
+  const reads: string[] = [];
+  return { reads, read: async (ssh) => { reads.push(ssh); return versions[ssh]; } };
+}
+
+const WIN32_OPENSSH_VERSION = 'OpenSSH_for_Windows_9.5p2, LibreSSL 3.8.2\r\n';
+const MSYS_OPENSSH_VERSION = 'OpenSSH_10.0p2, OpenSSL 3.5.1 1 Jul 2025\n';
+
+function windowsOpenSsh(systemRoot: string, ...files: string[]): string {
+  const dir = path.join(systemRoot, 'System32', 'OpenSSH');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const file of files) fs.writeFileSync(path.join(dir, file), '');
+  return dir;
+}
+
 describe('resolveSshExecutable', () => {
-  it.runIf(process.platform === 'win32')('takes an absolute PATH folder\'s ssh.exe, else Windows\' own OpenSSH client, never a relative folder', async () => {
+  it.runIf(process.platform === 'win32')('takes an OpenSSH for Windows build from an absolute PATH folder, else Windows\' own client, never a relative folder', async () => {
     const systemRoot = folder('Windows');
     const relative = relativeFolder('planted-ssh', 'ssh.exe');
-    expect(await resolveSshExecutable({ SystemRoot: systemRoot, PATH: relative }, 'win32')).toBeUndefined();
-    fs.mkdirSync(path.join(systemRoot, 'System32', 'OpenSSH'), { recursive: true });
-    fs.writeFileSync(path.join(systemRoot, 'System32', 'OpenSSH', 'ssh.exe'), '');
-    expect(await resolveSshExecutable({ SystemRoot: systemRoot, PATH: relative }, 'win32')).toBe(path.join(systemRoot, 'System32', 'OpenSSH', 'ssh.exe'));
-    const onPath = folder('openssh', 'ssh.exe');
-    expect(await resolveSshExecutable({ SystemRoot: systemRoot, PATH: [relative, onPath].join(';') }, 'win32')).toBe(path.join(onPath, 'ssh.exe'));
+    expect(await resolveSshExecutable({ SystemRoot: systemRoot, PATH: relative }, 'win32', { readVersion: versionReader({}).read })).toBeUndefined();
+    const builtIn = path.join(windowsOpenSsh(systemRoot, 'ssh.exe'), 'ssh.exe');
+    const onPath = path.join(folder('openssh', 'ssh.exe'), 'ssh.exe');
+    const { read } = versionReader({ [builtIn]: WIN32_OPENSSH_VERSION, [onPath]: WIN32_OPENSSH_VERSION });
+    expect(await resolveSshExecutable({ SystemRoot: systemRoot, PATH: relative }, 'win32', { readVersion: read })).toBe(builtIn);
+    expect(await resolveSshExecutable({ SystemRoot: systemRoot, PATH: [relative, path.dirname(onPath)].join(';') }, 'win32', { readVersion: read })).toBe(onPath);
+  });
+
+  it.runIf(process.platform === 'win32')('passes over an MSYS ssh first on PATH for Windows\' own OpenSSH client', async () => {
+    const systemRoot = folder('Windows');
+    const builtIn = path.join(windowsOpenSsh(systemRoot, 'ssh.exe'), 'ssh.exe');
+    const gitBash = path.join(folder('git-usr-bin', 'ssh.exe'), 'ssh.exe');
+    const logs: string[] = [];
+    const { read } = versionReader({ [gitBash]: MSYS_OPENSSH_VERSION, [builtIn]: WIN32_OPENSSH_VERSION });
+    expect(await resolveSshExecutable({ SystemRoot: systemRoot, PATH: path.dirname(gitBash) }, 'win32', { readVersion: read, log: (line) => logs.push(line) })).toBe(builtIn);
+    expect(logs).toEqual([]);
+  });
+
+  it.runIf(process.platform === 'win32')('runs an MSYS ssh only when no OpenSSH for Windows exists, and says why', async () => {
+    const systemRoot = folder('Windows');
+    const gitBash = path.join(folder('git-usr-bin', 'ssh.exe'), 'ssh.exe');
+    const logs: string[] = [];
+    const { read } = versionReader({ [gitBash]: MSYS_OPENSSH_VERSION });
+    expect(await resolveSshExecutable({ SystemRoot: systemRoot, PATH: path.dirname(gitBash) }, 'win32', { readVersion: read, log: (line) => logs.push(line) })).toBe(gitBash);
+    expect(logs).toEqual([`[ssh] no OpenSSH for Windows client was found, so ${gitBash} runs; an MSYS or Cygwin ssh cannot reach the Windows ssh-agent`]);
+  });
+
+  it.runIf(process.platform === 'win32')('runs ssh -V once per binary until the file changes', async () => {
+    const systemRoot = folder('Windows');
+    const builtIn = path.join(windowsOpenSsh(systemRoot, 'ssh.exe'), 'ssh.exe');
+    const gitBash = path.join(folder('git-usr-bin', 'ssh.exe'), 'ssh.exe');
+    const env = { SystemRoot: systemRoot, PATH: path.dirname(gitBash) };
+    const versions: Record<string, string> = { [gitBash]: MSYS_OPENSSH_VERSION, [builtIn]: WIN32_OPENSSH_VERSION };
+    const { read, reads } = versionReader(versions);
+    expect(await resolveSshExecutable(env, 'win32', { readVersion: read })).toBe(builtIn);
+    expect(await resolveSshExecutable(env, 'win32', { readVersion: read })).toBe(builtIn);
+    expect(reads).toEqual([gitBash, builtIn]);
+    // an update in place, here Git for Windows' ssh replaced by an OpenSSH for Windows build, is read again
+    fs.writeFileSync(gitBash, 'a newer build');
+    versions[gitBash] = WIN32_OPENSSH_VERSION;
+    expect(await resolveSshExecutable(env, 'win32', { readVersion: read })).toBe(gitBash);
+    expect(reads).toEqual([gitBash, builtIn, gitBash]);
+  });
+
+  it.runIf(process.platform === 'win32')('reads ssh -V again after a run that gave no answer', async () => {
+    const systemRoot = folder('Windows');
+    const builtIn = path.join(windowsOpenSsh(systemRoot, 'ssh.exe'), 'ssh.exe');
+    const answer: { text?: string } = {};
+    const reads: string[] = [];
+    const read: SshVersionReader = async (ssh) => { reads.push(ssh); return answer.text; };
+    expect(await resolveSshExecutable({ SystemRoot: systemRoot, PATH: '' }, 'win32', { readVersion: read, log: () => undefined })).toBe(builtIn);
+    answer.text = WIN32_OPENSSH_VERSION;
+    expect(await resolveSshExecutable({ SystemRoot: systemRoot, PATH: '' }, 'win32', { readVersion: read })).toBe(builtIn);
+    expect(await resolveSshExecutable({ SystemRoot: systemRoot, PATH: '' }, 'win32', { readVersion: read })).toBe(builtIn);
+    expect(reads).toEqual([builtIn, builtIn]);
+  });
+
+  it('takes the SSH client path setting before any other client, and the default for one that names no file or is not absolute', async () => {
+    const systemRoot = folder('Windows');
+    const builtIn = path.join(windowsOpenSsh(systemRoot, 'ssh.exe'), 'ssh.exe');
+    const named = path.join(folder('chosen', process.platform === 'win32' ? 'ssh.exe' : 'ssh'), process.platform === 'win32' ? 'ssh.exe' : 'ssh');
+    const env = process.platform === 'win32' ? { SystemRoot: systemRoot, PATH: '' } : { PATH: path.dirname(builtIn) };
+    const { read, reads } = versionReader({ [builtIn]: WIN32_OPENSSH_VERSION, [named]: MSYS_OPENSSH_VERSION });
+    expect(await resolveSshExecutable(env, process.platform, { configured: named, readVersion: read })).toBe(named);
+    expect(reads).toEqual([]);
+    const logs: string[] = [];
+    const missing = path.join(root, 'gone', 'ssh.exe');
+    const fallback = process.platform === 'win32' ? builtIn : installedTool('ssh');
+    expect(await resolveSshExecutable(env, process.platform, { configured: missing, readVersion: read, log: (line) => logs.push(line) })).toBe(fallback);
+    expect(await resolveSshExecutable(env, process.platform, { configured: 'ssh', readVersion: read, log: (line) => logs.push(line) })).toBe(fallback);
+    expect(logs).toEqual([
+      `[ssh] the SSH client path setting names ${missing}, which is not a file; the default client runs`,
+      '[ssh] the SSH client path setting names ssh, which is not an absolute path; the default client runs',
+    ]);
+  });
+
+  it.runIf(process.platform === 'win32' && fs.existsSync(GIT_FOR_WINDOWS_SSH) && fs.existsSync(path.join(windowsSystemDirectory(), 'OpenSSH', 'ssh.exe')))('tells this machine\'s Git for Windows ssh from its OpenSSH for Windows through the launcher', { timeout: 30_000 }, async () => {
+    const builtIn = path.join(windowsSystemDirectory(), 'OpenSSH', 'ssh.exe');
+    const env = { SystemRoot: process.env['SystemRoot'], PATH: path.dirname(GIT_FOR_WINDOWS_SSH) };
+    expect((await resolveSshExecutable(env, 'win32'))?.toLowerCase()).toBe(builtIn.toLowerCase());
+    expect(await readSshVersion(GIT_FOR_WINDOWS_SSH)).toMatch(/^OpenSSH_\d/);
   });
 
   it.runIf(process.platform !== 'win32')('takes an absolute PATH folder\'s ssh, never a relative folder\'s, else the one OpenSSH installs in /usr/bin', async () => {
@@ -188,23 +296,30 @@ describe('resolveSshExecutable', () => {
   });
 });
 
-describe('resolveSshKeygenExecutable', () => {
-  it.runIf(process.platform === 'win32')('takes an absolute PATH folder\'s ssh-keygen.exe, else Windows\' own OpenSSH one, never a relative folder', async () => {
+describe('resolveSshKeygenExecutable and openSshToolBeside', () => {
+  it.runIf(process.platform === 'win32')('take ssh-keygen and ssh-add only from the chosen ssh\'s folder, so a Windows ssh never pairs with an MSYS tool', async () => {
     const systemRoot = folder('Windows');
-    const relative = relativeFolder('planted-keygen', 'ssh-keygen.exe');
-    expect(await resolveSshKeygenExecutable({ SystemRoot: systemRoot, PATH: relative }, 'win32')).toBeUndefined();
-    fs.mkdirSync(path.join(systemRoot, 'System32', 'OpenSSH'), { recursive: true });
-    fs.writeFileSync(path.join(systemRoot, 'System32', 'OpenSSH', 'ssh-keygen.exe'), '');
-    expect(await resolveSshKeygenExecutable({ SystemRoot: systemRoot, PATH: relative }, 'win32')).toBe(path.join(systemRoot, 'System32', 'OpenSSH', 'ssh-keygen.exe'));
-    const onPath = folder('openssh-keygen', 'ssh-keygen.exe');
-    expect(await resolveSshKeygenExecutable({ SystemRoot: systemRoot, PATH: [relative, onPath].join(';') }, 'win32')).toBe(path.join(onPath, 'ssh-keygen.exe'));
+    const builtInDir = windowsOpenSsh(systemRoot, 'ssh.exe');
+    const gitBash = folder('git-usr-bin', 'ssh.exe', 'ssh-keygen.exe', 'ssh-add.exe');
+    const env = { SystemRoot: systemRoot, PATH: gitBash };
+    const { read } = versionReader({ [path.join(gitBash, 'ssh.exe')]: MSYS_OPENSSH_VERSION, [path.join(builtInDir, 'ssh.exe')]: WIN32_OPENSSH_VERSION });
+    expect(await resolveSshKeygenExecutable(env, 'win32', { readVersion: read })).toBeUndefined();
+    expect(await openSshToolBeside(path.join(builtInDir, 'ssh.exe'), 'ssh-add', env, 'win32')).toBeUndefined();
+    windowsOpenSsh(systemRoot, 'ssh-keygen.exe', 'ssh-add.exe');
+    expect(await resolveSshKeygenExecutable(env, 'win32', { readVersion: read })).toBe(path.join(builtInDir, 'ssh-keygen.exe'));
+    expect(await openSshToolBeside(path.join(builtInDir, 'ssh.exe'), 'ssh-add', env, 'win32')).toBe(path.join(builtInDir, 'ssh-add.exe'));
+    const chosen = folder('chosen', 'ssh.exe', 'ssh-keygen.exe');
+    expect(await resolveSshKeygenExecutable(env, 'win32', { configured: path.join(chosen, 'ssh.exe'), readVersion: read })).toBe(path.join(chosen, 'ssh-keygen.exe'));
   });
 
-  it.runIf(process.platform !== 'win32')('takes an absolute PATH folder\'s ssh-keygen, never a relative folder\'s, else the one OpenSSH installs in /usr/bin', async () => {
+  it.runIf(process.platform !== 'win32')('take ssh-keygen beside the chosen ssh, else an absolute PATH folder\'s, else the one OpenSSH installs in /usr/bin', async () => {
     const relative = relativeFolder('planted-keygen', 'ssh-keygen');
-    const onPath = folder('keygen-bin', 'ssh-keygen');
-    expect(await resolveSshKeygenExecutable({ PATH: [relative, onPath].join(':') }, process.platform)).toBe(path.join(onPath, 'ssh-keygen'));
-    expect(await resolveSshKeygenExecutable({ PATH: [relative, folder('keygen-empty')].join(':') }, process.platform)).toBe(installedTool('ssh-keygen'));
+    const pair = folder('pair', 'ssh', 'ssh-keygen');
+    const keygenOnly = folder('keygen-bin', 'ssh-keygen');
+    expect(await resolveSshKeygenExecutable({ PATH: [relative, keygenOnly, pair].join(':') }, process.platform)).toBe(path.join(pair, 'ssh-keygen'));
+    const sshOnly = folder('ssh-bin', 'ssh');
+    expect(await resolveSshKeygenExecutable({ PATH: [relative, sshOnly, keygenOnly].join(':') }, process.platform)).toBe(path.join(keygenOnly, 'ssh-keygen'));
+    expect(await resolveSshKeygenExecutable({ PATH: [relative, sshOnly].join(':') }, process.platform)).toBe(installedTool('ssh-keygen'));
   });
 });
 

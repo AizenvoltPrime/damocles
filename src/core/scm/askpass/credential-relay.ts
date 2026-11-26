@@ -27,6 +27,8 @@ export interface RelayIdentity {
   readonly helper: string;
   readonly handle: string;
   readonly nonce: string;
+  // each attached terminal host's nonce, which its shells send; accepted like `nonce`, for credential requests only
+  readonly relayNonces?: readonly string[];
 }
 
 /** A POSIX sh single-quoted literal; git runs a `!` helper through sh, Git for Windows' sh included. */

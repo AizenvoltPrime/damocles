@@ -1,5 +1,5 @@
 import { readonly, shallowRef, type Ref } from 'vue';
-import type { BridgeHost } from '@shared/damocles-bridge';
+import type { BridgeHost, DamoclesBridge } from '@shared/damocles-bridge';
 import { isHostColor, type HostColor } from '@shared/host-colors';
 
 export interface ChatHost {
@@ -10,8 +10,12 @@ export interface ChatHost {
   readonly computer: string;
   // the host is offline or waits for the user to sign in
   readonly attention?: 'offline' | 'signIn';
-  // a daemon of another protocol still runs agents there
+  // Remove Damocles server ran on the host, by another device (its name) or as an automatic connect found it
+  readonly removed?: { readonly by?: string };
+  // a pending server switch on the host, or this app being too old for it
   readonly update?: BridgeHost['update'];
+  // the app's updater runs, so the update banner offers Check for updates
+  readonly canCheckForUpdates?: true;
   // main may ask to allow YOLO on the host (a saved host)
   readonly canAllowYolo?: true;
 }
@@ -30,7 +34,9 @@ export function useChatHost(): Readonly<Ref<ChatHost | undefined>> {
       ...(isHostColor(label.color) ? { color: label.color } : {}),
       computer: label.computer,
       ...(label.attention !== undefined ? { attention: label.attention } : {}),
+      ...(label.removed !== undefined ? { removed: typeof label.removed.by === 'string' ? { by: label.removed.by } : {} } : {}),
       ...(label.update !== undefined ? { update: label.update } : {}),
+      ...(label.canCheckForUpdates === true ? { canCheckForUpdates: true as const } : {}),
       ...(label.canAllowYolo === true ? { canAllowYolo: true as const } : {}),
     });
     bridge.onHost((next) => {
@@ -50,7 +56,10 @@ export function chatOffline(): { readonly hostId: string; readonly hostName: str
   return typeof window === 'undefined' ? undefined : window.damoclesBridge?.getOffline();
 }
 
-/** The connection banner's Reconnect (Reconnect now, Retry), Sign in, Show log or Edit host, which main runs on the chat's own host. */
-export function chatHostAction(action: 'reconnect' | 'signIn' | 'showLog' | 'editHost' | 'switchWhenIdle' | 'switchNow'): void {
+/**
+ * The connection banner's Reconnect (Reconnect now, Retry), Sign in, Show log or Edit host, and the update banner's actions,
+ * which main runs on the chat's own host.
+ */
+export function chatHostAction(action: Parameters<DamoclesBridge['hostAction']>[0]): void {
   window.damoclesBridge?.hostAction(action);
 }

@@ -9,7 +9,7 @@ import type { WorkerName } from '../../platform/app-paths';
 import type { Disposable } from '../../platform/disposable';
 import { isAttachedFrame } from '../core-protocol/attached-transport';
 import { createMainEndpoint, processActor, type CoreTransport, type MainEndpoint } from '../core-protocol';
-import type { ClientPolicy, CoreEvents, CoreInit, MirrorTopics } from '../core-protocol/messages';
+import { MAX_RELAY_NONCES, type ClientPolicy, type CoreEvents, type CoreInit, type MirrorTopics } from '../core-protocol/messages';
 import type { ClientForges } from '../../shared/git-credential';
 import { restartDecision } from '../local-services/restart-policy';
 import type { GitProbe } from '../local-services/shell-env';
@@ -54,6 +54,8 @@ export interface RemoteCoreHostDeps {
   readonly agentFolder: () => string | undefined;
   // the daemon's git credential relay, which every core it starts listens at; absent for the self-test's core
   readonly credentialRelay?: () => RelayIdentity;
+  // the attached terminal hosts' relay nonces, which core accepts at the relay for credential requests only
+  readonly relayNonces?: () => readonly string[];
   // a URL an agent shell printed, for the port detector
   readonly agentShellUrl: (hit: CoreEvents['ports.urlSeen']) => void;
   // an attached client's clientPolicy was set, changed or dropped (the agent proxy follows agentForwarding)
@@ -86,7 +88,8 @@ export interface RemoteCoreHost {
   clientForges(clientId: string): ClientForges | undefined;
   // a client's UI language while attached, else the last it had
   clientLanguage(clientId: string): MirrorTopics['language']['language'] | undefined;
-  // the agent folder or the relay's handle moved: a running core hears the new paths, a later one reads them in its init
+  // the agent folder or the relay's handle moved, or the hosts' relay nonces changed: a running core hears them, a later one
+  // reads them in its init
   socketsMoved(): void;
 }
 
@@ -134,6 +137,13 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
   let running: Running | undefined;
   let state: CoreState = { epoch: null, phase: 'halted', restarts: 0, pid: null, ppid: null };
   let closed = false;
+
+  // core's parser holds MAX_RELAY_NONCES; a host's terminals past it get no credentials, which the log names
+  const relayNonces = (): readonly string[] => {
+    const nonces = deps.relayNonces?.() ?? [];
+    if (nonces.length > MAX_RELAY_NONCES) log(`[core-host] ${nonces.length} terminal hosts have a relay nonce; core takes the first ${MAX_RELAY_NONCES}`);
+    return nonces.slice(0, MAX_RELAY_NONCES);
+  };
 
   const setState = (next: Partial<CoreState>): void => {
     state = { ...state, ...next };
@@ -191,7 +201,7 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
           sshAskpass: dist('askpass', 'ssh-askpass.sh'),
           node: process.execPath,
           main: dist('askpass-main.js'),
-          ...(deps.credentialRelay ? { credentialRelay: deps.credentialRelay() } : {}),
+          ...(deps.credentialRelay ? { credentialRelay: { ...deps.credentialRelay(), relayNonces: relayNonces() } } : {}),
         },
       },
       logs: { dir: deps.paths.logsDir, echo: false },
@@ -423,7 +433,7 @@ export function createRemoteCoreHost(deps: RemoteCoreHostDeps): RemoteCoreHost {
     socketsMoved: () => {
       if (!running || running.stopping) return;
       const relayHandle = deps.credentialRelay?.().handle;
-      running.endpoint.publish('hostSockets', { ...agentFolderOf(deps.agentFolder()), ...(relayHandle !== undefined ? { relayHandle } : {}) });
+      running.endpoint.publish('hostSockets', { ...agentFolderOf(deps.agentFolder()), ...(relayHandle !== undefined ? { relayHandle, relayNonces: relayNonces() } : {}) });
     },
     kill: async () => {
       closed = true;

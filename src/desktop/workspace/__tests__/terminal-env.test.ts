@@ -70,20 +70,20 @@ describe('terminal environment', () => {
     expect(env).toEqual({ LANG: 'en_US.UTF-8', BROWSER: 'firefox', COLORTERM: 'truecolor' });
   });
 
-  it('gives a target\'s user terminal its hook, bin/remote-cli first on PATH and the BROWSER helper', () => {
-    const posix = cliTerminalEnvironment({ PATH: '/usr/bin:/bin', BROWSER: 'firefox', HOME: '/home/ada' }, { hook: '/tmp/damocles-a/cli-1.sock', remoteCliDir: '/home/ada/.damocles/server/1.0.0/bin/remote-cli', browser: '/home/ada/.damocles/server/1.0.0/bin/helpers/browser.sh', platform: 'linux' });
+  it('gives a target\'s user terminal bin/remote-cli first on PATH and the BROWSER helper, through the active link', () => {
+    const posix = cliTerminalEnvironment({ PATH: '/usr/bin:/bin', BROWSER: 'firefox', HOME: '/home/ada' }, { remoteCliDir: '/home/ada/.damocles/server/run-1/active/bin/remote-cli', browser: '/home/ada/.damocles/server/run-1/active/bin/helpers/browser.sh', platform: 'linux' });
     expect(posix).toEqual({
-      PATH: '/home/ada/.damocles/server/1.0.0/bin/remote-cli:/usr/bin:/bin',
-      [CLI_HOOK_ENV]: '/tmp/damocles-a/cli-1.sock',
-      BROWSER: '/home/ada/.damocles/server/1.0.0/bin/helpers/browser.sh',
+      PATH: '/home/ada/.damocles/server/run-1/active/bin/remote-cli:/usr/bin:/bin',
+      BROWSER: '/home/ada/.damocles/server/run-1/active/bin/helpers/browser.sh',
       HOME: '/home/ada',
     });
-    expect(cliTerminalEnvironment({}, { hook: 'h', remoteCliDir: '/r', browser: '/b', platform: 'darwin' })['PATH']).toBe('/r');
+    expect(posix[CLI_HOOK_ENV]).toBeUndefined();
+    expect(cliTerminalEnvironment({}, { remoteCliDir: '/r', browser: '/b', platform: 'darwin' })['PATH']).toBe('/r');
   });
 
-  it('replaces Path, the hook and BROWSER in whatever case a Windows target names them, so the shell gets each once', () => {
-    const env = cliTerminalEnvironment({ Path: 'C:\\Windows', browser: 'msedge', Damocles_Cli_Hook: 'old' }, { hook: '\\\\.\\pipe\\damocles-cli-1', remoteCliDir: 'C:\\srv\\bin\\remote-cli', browser: 'C:\\srv\\bin\\helpers\\browser.exe', platform: 'win32' });
-    expect(env).toEqual({ Path: 'C:\\srv\\bin\\remote-cli;C:\\Windows', browser: 'C:\\srv\\bin\\helpers\\browser.exe', Damocles_Cli_Hook: '\\\\.\\pipe\\damocles-cli-1' });
+  it('replaces Path and BROWSER in whatever case a Windows target names them, so the shell gets each once', () => {
+    const env = cliTerminalEnvironment({ Path: 'C:\\Windows', browser: 'msedge' }, { remoteCliDir: 'C:\\srv\\bin\\remote-cli', browser: 'C:\\srv\\bin\\helpers\\browser.exe', platform: 'win32' });
+    expect(env).toEqual({ Path: 'C:\\srv\\bin\\remote-cli;C:\\Windows', browser: 'C:\\srv\\bin\\helpers\\browser.exe' });
   });
 
   it('builds LANG as VS Code\'s getLangEnvVariable does', () => {

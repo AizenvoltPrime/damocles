@@ -18,7 +18,12 @@ const DAEMON_LABEL = Buffer.from('damocles-daemon');
 const BRIDGE_LABEL = Buffer.from('damocles-bridge');
 
 export class HandshakeError extends Error {
-  override readonly name = 'HandshakeError';
+  override readonly name: string = 'HandshakeError';
+}
+
+/** The endpoint answered and could not prove the token: it is not the process the caller looked for. */
+export class TokenProofError extends HandshakeError {
+  override readonly name: string = 'TokenProofError';
 }
 
 export type OsName = 'linux' | 'darwin' | 'win32';
@@ -65,6 +70,8 @@ export interface Refused {
   // the daemon's, so the app can say which version runs there
   readonly serverVersion: string;
   readonly protocolVersion: number;
+  // the FROZEN_FEATURES the daemon serves; absent from a daemon that predates the field
+  readonly frozenFeatures?: readonly string[];
 }
 
 export type HelloAnswer = { readonly kind: 'welcome'; readonly welcome: Welcome } | { readonly kind: 'refused'; readonly refused: Refused };
@@ -148,7 +155,10 @@ function parseAnswer(fields: Fields): HelloAnswer | undefined {
   if (!isVersionText(serverVersion) || !isVersion(protocolVersion)) return undefined;
   if (type === 'refused') {
     const reason = field(fields, 'reason');
-    return reason === 'protocol' || reason === 'unknown-token' ? { kind: 'refused', refused: { reason, serverVersion, protocolVersion } } : undefined;
+    const frozenFeatures = field(fields, 'frozenFeatures');
+    if (reason !== 'protocol' && reason !== 'unknown-token') return undefined;
+    if (frozenFeatures !== undefined && (!Array.isArray(frozenFeatures) || frozenFeatures.length > MAX_FEATURES || !frozenFeatures.every(isName))) return undefined;
+    return { kind: 'refused', refused: { reason, serverVersion, protocolVersion, ...(frozenFeatures !== undefined ? { frozenFeatures: [...(frozenFeatures as string[])] } : {}) } };
   }
   if (type !== 'welcome') return undefined;
   const features = field(fields, 'features');
@@ -165,7 +175,7 @@ function parseAnswer(fields: Fields): HelloAnswer | undefined {
 function encodeAnswer(answer: HelloAnswer): Uint8Array {
   return answer.kind === 'welcome'
     ? encode({ type: 'welcome', ...answer.welcome, features: [...answer.welcome.features], facts: { ...answer.welcome.facts } })
-    : encode({ type: 'refused', ...answer.refused });
+    : encode({ type: 'refused', ...answer.refused, ...(answer.refused.frozenFeatures !== undefined ? { frozenFeatures: [...answer.refused.frozenFeatures] } : {}) });
 }
 
 /**
@@ -190,7 +200,7 @@ export function authenticateBridge(protocol: PersistentProtocol, token: Uint8Arr
       const fields = parseFields(body);
       const daemonNonce = fields && field(fields, 'nonce');
       if (!fields || !isBytes(daemonNonce, NONCE_BYTES) || !proves(field(fields, 'proof'), proof(token, DAEMON_LABEL, bridgeNonce, daemonNonce))) {
-        finish(new HandshakeError('the endpoint is not this user\'s daemon'));
+        finish(new TokenProofError('the endpoint is not this user\'s daemon'));
         return;
       }
       protocol.sendControl(encode({ proof: proof(token, BRIDGE_LABEL, daemonNonce, bridgeNonce), ...(agentSock !== undefined ? { agentSock } : {}) }));

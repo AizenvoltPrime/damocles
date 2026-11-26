@@ -72,6 +72,7 @@ function options(containerSide: ContainerSide, overrides: Partial<ContainerTrans
     user: 'node',
     dataFolder: true,
     signal: new AbortController().signal,
+    userStarted: () => false,
     hooks: { step: () => undefined, progress: () => undefined, notice: () => undefined },
     installFolderSettled: async () => undefined,
     manifest,

@@ -326,6 +326,8 @@ interface Terminal {
   // its host reported the process ended, failed to start or not running, or no longer lists it; a host exit or a closed
   // connection leaves it false, since a daemon's terminal outlives both. A remote one is then no longer kept for a relaunch.
   ended: boolean;
+  // the pid of its terminal host while that host does not answer the daemon; a resume reads it under reconnecting
+  notRespondingHost?: number | undefined;
   cols: number;
   rows: number;
   name: string | null;
@@ -1387,6 +1389,7 @@ export class TerminalService {
     terminal.status = 'starting';
     terminal.exitCode = null;
     terminal.ended = false;
+    terminal.notRespondingHost = undefined;
     const shell = newShellSession(terminal.launchCwd);
     terminal.shell = shell;
     const held: string[] = [];
@@ -1529,9 +1532,10 @@ export class TerminalService {
         shell,
         commands: new Map(),
         nextCommandId: 1,
-        status: 'running',
+        status: found.notRespondingHost === undefined ? 'running' : 'notResponding',
         exitCode: null,
         ended: false,
+        notRespondingHost: found.notRespondingHost,
         cols: found.cols,
         rows: found.rows,
         name: existing ? existing.name : record.name,
@@ -1584,7 +1588,7 @@ export class TerminalService {
     let changed = false;
     for (const terminal of this.terminals) {
       if (terminal.projectKey === null || authorityKeyOfProject(terminal.projectKey) !== authorityKey) continue;
-      if (terminal.status !== 'running' && terminal.status !== 'starting') continue;
+      if (terminal.status !== 'running' && terminal.status !== 'starting' && terminal.status !== 'notResponding') continue;
       terminal.status = 'reconnecting';
       terminal.held ??= [];
       changed = true;
@@ -1598,11 +1602,30 @@ export class TerminalService {
     for (const terminal of this.terminals) {
       // a launch's placeholder has no backend yet; only a reattach gives it one
       if (terminal.backend === undefined || terminal.projectKey === null || authorityKeyOfProject(terminal.projectKey) !== authorityKey || terminal.status !== 'reconnecting') continue;
-      terminal.status = 'running';
+      terminal.status = terminal.notRespondingHost === undefined ? 'running' : 'notResponding';
       this.flushHeld(terminal, terminal);
       changed = true;
     }
     if (changed) this.changed(false);
+  }
+
+  /**
+   * The daemon of backend says whether the terminal host of terminal id answers it (terminals.responding). A terminal whose
+   * host does not answer takes no input from the page; reconnecting shows over it, and a resume shows it again.
+   */
+  responding(backend: TerminalBackend, event: { readonly id: string; readonly hostPid: number; readonly responding: boolean }): void {
+    const terminal = this.find(event.id);
+    if (!terminal || terminal.backend !== backend || terminal.status === 'exited') return;
+    terminal.notRespondingHost = event.responding ? undefined : event.hostPid;
+    if (terminal.status === 'reconnecting') return;
+    if (event.responding && terminal.status !== 'notResponding') return;
+    terminal.status = event.responding ? 'running' : 'notResponding';
+    this.changed(false);
+  }
+
+  /** The ids of the authority's terminals whose terminal host does not answer its daemon. */
+  notResponding(authorityKey: string): string[] {
+    return this.terminals.filter((terminal) => terminal.status === 'notResponding' && terminal.projectKey !== null && authorityKeyOfProject(terminal.projectKey) === authorityKey).map((terminal) => terminal.id);
   }
 
   /**
@@ -1755,9 +1778,10 @@ export class TerminalService {
     return terminal.startCwd;
   }
 
+  // A not-responding terminal's requests go to its daemon, which holds them until its host answers.
   private live(id: string): boolean {
     const status = this.find(id)?.status;
-    return status === 'starting' || status === 'running';
+    return status === 'starting' || status === 'running' || status === 'notResponding';
   }
 
   // A reconnecting tab holds what reaches main before the shell page turned its input off.

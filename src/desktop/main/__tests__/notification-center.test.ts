@@ -746,6 +746,99 @@ describe('notification center: sticky notices', () => {
   });
 });
 
+describe('notification center: host update notices', () => {
+  const HOST = { name: 'prod-1', color: 'danger' as const };
+  const REMINDER = { kind: 'hostUpdate', severity: 'info', title: 'prod-1 still runs Damocles 3.7.0', message: 'Damocles 3.9.0 waits for 2 agents to finish.', actions: ['Switch now', 'Show host'], host: 'prod-1', hostColor: 'danger' };
+
+  it('a reminder pops up with its actions, lives as a notice that asks does, and answers with the chosen action\'s index', async () => {
+    const notifications = center();
+    const answer = notifications.hostUpdate(HOST, 'info', REMINDER.title, REMINDER.message, REMINDER.actions);
+    expect(shown).toEqual([expect.objectContaining({ lifeMs: NOTICE_LIFE_MS.withActions, body: REMINDER })]);
+    expect(chimes).toEqual(['done']);
+    notifications.resolveToast(shown[0]!.id, TOAST_OPEN_ACTION);
+    notifications.resolveToast(shown[0]!.id, 2);
+    notifications.resolveToast(shown[0]!.id, 1);
+    await expect(answer).resolves.toBe(1);
+  });
+
+  it('a reminder follows Do not disturb and Notify me: no popup, chime or flash, its entry kept, its answer undefined', async () => {
+    focused = false;
+    for (const silence of [() => { dnd = true; }, () => { dnd = false; popups = false; }]) {
+      silence();
+      const notifications = center();
+      await expect(notifications.hostUpdate(HOST, 'warning', REMINDER.title, REMINDER.message, REMINDER.actions)).resolves.toBeUndefined();
+      expect(shown).toEqual([]);
+      expect(notifications.state().entries).toEqual([expect.objectContaining({ read: false, body: { ...REMINDER, severity: 'warning' } })]);
+    }
+    expect(chimes).toEqual([]);
+    expect(flashes).toEqual([]);
+  });
+
+  it('a reminder showing when Do not disturb turns on goes, and never flashes the taskbar button', async () => {
+    focused = false;
+    const notifications = center();
+    const answer = notifications.hostUpdate(HOST, 'info', REMINDER.title, REMINDER.message, REMINDER.actions);
+    expect(flashes).toEqual([]);
+    await notifications.setDoNotDisturb(true);
+    expect(dismissed).toEqual([shown[0]!.id]);
+    await expect(answer).resolves.toBeUndefined();
+  });
+
+  it('a renamed host relabels its reminder', () => {
+    const notifications = center();
+    void notifications.hostUpdate(HOST, 'info', REMINDER.title, REMINDER.message, []);
+    notifications.relabelHost('prod-1', { name: 'prod-eu' });
+    expect(notifications.state().entries[0]!.body).toEqual({ ...REMINDER, actions: [], host: 'prod-eu', hostColor: undefined });
+  });
+
+  it('the sticky countdown names its host and its deadline, breaks through Do not disturb and flashes until the window is focused', async () => {
+    dnd = true;
+    focused = false;
+    const notifications = center();
+    const sticky = notifications.stickyNotice('error', 'Damocles 3.9.0 is required.', ['Switch now'], HOST, { title: 'prod-1 switches in', countdownTo: 900_000, timeSensitive: true });
+    expect(shown).toEqual([expect.objectContaining({ sticky: true, body: { kind: 'notice', severity: 'error', title: 'prod-1 switches in', message: 'Damocles 3.9.0 is required.', actions: ['Switch now'], host: 'prod-1', hostColor: 'danger', countdownTo: 900_000 } })]);
+    expect(flashes).toEqual([true]);
+    // Do not disturb changing leaves a time-sensitive flash alone
+    notifications.popupPolicyChanged();
+    expect(flashes).toEqual([true]);
+    expect(dismissed).toEqual([]);
+    notifications.windowFocused();
+    expect(flashes).toEqual([true, false]);
+    sticky.withdraw();
+    await expect(sticky.answer).resolves.toBeUndefined();
+    expect(dismissed).toEqual([shown[0]!.id]);
+  });
+
+  it('a withdrawn time-sensitive notice stops its flash, and one raised with the window focused never flashes', async () => {
+    focused = false;
+    const notifications = center();
+    const sticky = notifications.stickyNotice('error', 'Damocles 3.9.0 is required.', ['Switch now'], HOST, { timeSensitive: true });
+    sticky.withdraw();
+    expect(flashes).toEqual([true, false]);
+    focused = true;
+    notifications.stickyNotice('error', 'Damocles 3.9.0 is required.', [], HOST, { timeSensitive: true });
+    expect(flashes).toEqual([true, false]);
+  });
+
+  it('a time-sensitive notice, the forced after-switch one, pops up and flashes under Do not disturb; a plain notice never flashes', async () => {
+    dnd = true;
+    focused = false;
+    const notifications = center();
+    void notifications.notice('info', 'Saved', []);
+    expect(flashes).toEqual([]);
+    void notifications.notice('warning', 'The required update ran at 16:30. 2 agents stopped; their chats are kept.', [], HOST, 'prod-1 now runs Damocles 3.9.0', { timeSensitive: true });
+    expect(shown).toHaveLength(2);
+    expect(shown[1]!.body).toMatchObject({ kind: 'notice', severity: 'warning', title: 'prod-1 now runs Damocles 3.9.0', host: 'prod-1' });
+    expect(flashes).toEqual([true]);
+    // its life ending leaves the taskbar button flashing until the window is focused
+    vi.advanceTimersByTime(NOTICE_LIFE_MS.warning);
+    expect(dismissed).toContain(shown[1]!.id);
+    expect(flashes).toEqual([true]);
+    notifications.windowFocused();
+    expect(flashes).toEqual([true, false]);
+  });
+});
+
 describe('notification center channels', () => {
   it('read the entries, clear them and set Do not disturb only while the center is open, and answer closed as a value otherwise', async () => {
     const handlers = new Map<string, (...args: unknown[]) => unknown>();

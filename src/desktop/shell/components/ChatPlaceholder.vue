@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { CircleX, FolderMinus, FolderSearch, FolderX, LoaderCircle, MessageSquarePlus, RotateCw } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
+import { providePageHeading } from '@/composables/usePageHeading';
 import { visibleText } from '@shared/visible-text';
 import type { DamoclesShellApi, ShellHost, ShellProject } from '../../preload/shell-channels';
 import ConnectionBanner from './ConnectionBanner.vue';
@@ -15,8 +16,14 @@ const props = defineProps<{ api: DamoclesShellApi; project: ShellProject | undef
 // removed: Remove project answered, taking its focused button with the project if main removed it
 const emit = defineEmits<{ removed: [key: string] }>();
 const { t } = useI18n();
+const title = ref<HTMLElement | null>(null);
+providePageHeading(() => title.value);
 
 const hostName = computed(() => (props.project && props.project.authority.kind !== 'local' ? props.project.authority.name : undefined));
+
+function checkForUpdates(): void {
+  props.api.runUpdateAction('check').catch((error: unknown) => console.error('[update] checking for updates failed', error));
+}
 
 const removeRefusal = ref<string>();
 watch(() => props.project?.key, () => { removeRefusal.value = undefined; });
@@ -69,7 +76,14 @@ async function remove(project: ShellProject): Promise<void> {
       data-testid="chat-placeholder-header"
     >
       <div class="flex min-w-0 items-baseline gap-1.5">
-        <span class="truncate text-13.5/5 font-semibold tracking-[-.005em]">{{ project.name }}</span>
+        <h1
+          ref="title"
+          tabindex="-1"
+          class="truncate text-13.5/5 font-semibold tracking-[-.005em]"
+          data-testid="chat-placeholder-title"
+        >
+          {{ project.name }}
+        </h1>
         <span
           v-if="hostName !== undefined"
           class="shrink-0 text-12 text-(--d-faint)"
@@ -85,6 +99,7 @@ async function remove(project: ShellProject): Promise<void> {
       @edit-host="api.renameHostOnCard($event)"
       @switch-when-idle="api.switchHostWhenIdle($event)"
       @switch-now="api.switchHostNow($event)"
+      @check-for-updates="checkForUpdates"
     />
     <div
       v-if="project?.presence"

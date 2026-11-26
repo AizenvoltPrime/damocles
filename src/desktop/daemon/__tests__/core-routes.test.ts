@@ -1087,11 +1087,19 @@ describe('core routes', () => {
     expect(h.registry.isEmpty()).toBe(true);
     h.core.emit('chat.activity', { panelId: 'panel-1', activity: { state: 'running', pendingKinds: [], pendingPrompts: [], background: false } });
     expect(h.registry.runs()).toEqual([{ kind: 'chat', id: 'panel-1', projectKey: '/srv/app', title: 'Fix the parser', state: 'running', providers: [] }]);
+    // a title that comes mid-turn names the run at once, with no further activity
     h.core.postPanel('view-1', 'setTitle', { title: 'Parser fixed' });
-    h.core.emit('chat.activity', { panelId: 'panel-1', activity: { state: 'running', pendingKinds: [], pendingPrompts: [], background: false } });
     expect(h.registry.runs()[0]?.title).toBe('Parser fixed');
     h.core.emit('chat.turnSettled', { panelId: 'panel-1', outcome: { kind: 'completed' } });
     expect(h.registry.isEmpty()).toBe(true);
+  });
+
+  it('list a run whose chat has no title yet with an empty title, never its panel id', async () => {
+    const h = setUp();
+    h.client('c1');
+    h.core.publish('chats', { panelId: 'panel-1', entry: entry('panel-1', 'view-1') });
+    h.core.emit('chat.activity', { panelId: 'panel-1', activity: { state: 'running', pendingKinds: [], pendingPrompts: [], background: false } });
+    expect(h.registry.runs()[0]?.title).toBe('');
   });
 
   // core sends chat.activity only at a change, so a client that was away (an app relaunched while a turn ran) learns it here
@@ -2345,5 +2353,186 @@ describe('a device that attaches again', () => {
     await pending;
     client.detach();
     await expect(answer).rejects.toThrow('credential-client-absent');
+  });
+});
+
+describe('a restored panel whose conversation another panel holds (views.merge)', () => {
+  const MERGE = ['views.merge'];
+  const unsaved = (panelId: string, viewId: string): ChatEntry => {
+    const { sessionId: _held, ...rest } = entry(panelId, viewId);
+    return { ...rest, hasConversation: false };
+  };
+  // each patch folded into the panels a client's chats mirror shows, by panel id
+  const shownChats = (patches: ReadonlyArray<{ panelId: string; entry?: ChatEntry }>): Record<string, string | undefined> => {
+    const shown: Record<string, string | undefined> = {};
+    for (const patch of patches) {
+      if (patch.entry === undefined) delete shown[patch.panelId];
+      else shown[patch.panelId] = patch.entry.viewId;
+    }
+    return shown;
+  };
+
+  // device a's view-1 shows panel-1, which holds S1 (its page holds token-1); device b restored its own record of S1 into view-b,
+  // panel-2 (its page holds token-b), whose claim found panel-1 holding the conversation
+  async function duplicate(h: Harness, options: { featuresOfB?: readonly string[]; join?: () => { panelId: string } | null } = {}) {
+    h.core.serve('chats.restore', () => undefined);
+    const joins: Array<Record<string, unknown>> = [];
+    h.core.serve('views.join', (params) => {
+      joins.push(params);
+      return options.join ? options.join() : { panelId: params.viewId === 'view-1' ? 'panel-1' : 'panel-2' };
+    });
+    const a = h.client('connection-1', { clientId: 'device-a', features: MERGE });
+    await a.main.request('chats.restore', { viewId: 'view-1' });
+    a.main.postPanel('view-1', 'message', { message: { type: 'ready', panelToken: 'token-1' } });
+    h.core.publish('chats', { panelId: 'panel-1', entry: entry('panel-1', 'view-1') });
+    const b = h.client('connection-2', { clientId: 'device-b', features: options.featuresOfB ?? MERGE });
+    await b.main.request('chats.restore', { viewId: 'view-b' });
+    b.main.postPanel('view-b', 'message', { message: { type: 'ready', panelToken: 'token-b' } });
+    h.core.publish('chats', { panelId: 'panel-2', entry: unsaved('panel-2', 'view-b') });
+    const toCore: unknown[] = [];
+    h.core.onPanel((viewId, envelope) => toCore.push([viewId, envelope.op, envelope.payload]));
+    const toA: unknown[] = [];
+    const toB: unknown[] = [];
+    a.main.onPanel((viewId, envelope) => toA.push([viewId, envelope.op]));
+    b.main.onPanel((viewId, envelope) => toB.push([viewId, envelope.op]));
+    const chatsOfB: Array<{ panelId: string; entry?: ChatEntry }> = [];
+    b.main.onMirror('chats', (patch) => chatsOfB.push(patch));
+    return { a, b, joins, toCore, toA, toB, chatsOfB };
+  }
+  const merge = (h: Harness, viewId = 'view-b'): Promise<boolean> => h.core.request('views.merge', { viewId, into: 'view-1' });
+
+  it('shows the holder in every view of the duplicate under each client\'s own view id, replays it to each view alone, and disposes the duplicate without closing or revealing a view', async () => {
+    const h = setUp();
+    const { b, joins, toCore, toA, toB, chatsOfB } = await duplicate(h);
+    // device c joined the duplicate by its page token
+    const c = h.client('connection-3', { clientId: 'device-c', features: MERGE });
+    expect(await c.main.request('views.join', { viewId: 'view-c', viewKey: 'token-b' })).toEqual({ panelId: 'panel-2' });
+    const toC: unknown[] = [];
+    c.main.onPanel((viewId, envelope) => toC.push([viewId, envelope.op]));
+    const chatsOfC: Array<{ panelId: string; entry?: ChatEntry }> = [];
+    c.main.onMirror('chats', (patch) => chatsOfC.push(patch));
+    joins.length = 0;
+
+    expect(await merge(h)).toBe(true);
+
+    // core replays the holder to each moved view alone, by the holder's own token
+    expect(joins).toEqual([
+      { viewId: 'view-1', viewKey: 'token-1', joining: expect.stringMatching(/^view-\d+$/) },
+      { viewId: 'view-1', viewKey: 'token-1', joining: expect.stringMatching(/^view-\d+$/) },
+    ]);
+    const [keyOfB, keyOfC] = joins.map((join) => join['joining'] as string) as [string, string];
+    expect(keyOfB).not.toBe(keyOfC);
+    // the duplicate goes at once, and no client's view closes or is revealed
+    expect(toCore).toEqual([['view-b', 'disposed', { reason: 'user' }]]);
+    expect([toA, toB, toC]).toEqual([[], [], []]);
+    // each client's view keeps its id and shows the holder, the duplicate's entry gone before the holder's arrives
+    expect(chatsOfB).toEqual([{ panelId: 'panel-2' }, { panelId: 'panel-1', entry: { ...entry('panel-1', 'view-1'), viewId: 'view-b' } }]);
+    expect(shownChats(chatsOfC)).toEqual({ 'panel-1': 'view-c' });
+    // the holder's posts reach the moved views, and their messages reach the holder under their own keys
+    h.core.postPanel('view-1', 'post', { type: 'x', json: '{}', viewKey: keyOfB });
+    h.core.postPanel('view-1', 'post', { type: 'y', json: '{}' });
+    expect(toB).toEqual([['view-b', 'post'], ['view-b', 'post']]);
+    expect(toC).toEqual([['view-c', 'post']]);
+    expect(toA).toEqual([['view-1', 'post']]);
+    b.main.postPanel('view-b', 'message', { message: { type: 'x' } });
+    c.main.postPanel('view-c', 'message', { message: { type: 'x' } });
+    expect(toCore.slice(1)).toEqual([['view-1', 'message', { message: { type: 'x' }, viewKey: keyOfB }], ['view-1', 'message', { message: { type: 'x' }, viewKey: keyOfC }]]);
+  });
+
+  it('joins the holder again when a merged page loads again, so core never takes that page\'s token as the panel\'s, and a later attach of the device rejoins by the conversation', async () => {
+    const h = setUp();
+    const { b, joins, toCore } = await duplicate(h);
+    expect(await merge(h)).toBe(true);
+    const keyOfB = joins[0]!['joining'];
+    toCore.length = 0;
+
+    b.main.postPanel('view-b', 'message', { message: { type: 'ready', panelToken: 'token-b' } });
+    await flush();
+    expect(joins.slice(1)).toEqual([{ viewId: 'view-1', viewKey: 'token-1', joining: keyOfB }]);
+    expect(toCore).toEqual([]);
+
+    // the duplicate's token names nothing any more: a rejoin by it finds the holder through the conversation
+    b.detach();
+    const again = h.client('connection-3', { clientId: 'device-b', features: MERGE });
+    expect(await again.main.request('views.join', { viewId: 'view-b2', viewKey: 'token-b', sessionId: 'S1' })).toEqual({ panelId: 'panel-1' });
+    expect(joins.at(-1)).toEqual({ viewId: 'view-1', viewKey: 'token-1', joining: expect.stringMatching(/^view-\d+$/) });
+  });
+
+  it('answers false and moves nothing when the holder is gone or has no token, or no client shows the duplicate', async () => {
+    const h = setUp();
+    const { joins, toCore, toB, chatsOfB } = await duplicate(h);
+    expect(await h.core.request('views.merge', { viewId: 'view-b', into: 'view-unknown' })).toBe(false);
+    h.core.publish('chats', { panelId: 'panel-1' });
+    expect(await merge(h)).toBe(false);
+    expect(await h.core.request('views.merge', { viewId: 'view-none', into: 'view-b' })).toBe(false);
+    expect([joins, toCore, toB, chatsOfB]).toEqual([[], [], [], []]);
+  });
+
+  it('answers false and moves nothing when a client showing the duplicate predates views.merge', async () => {
+    const h = setUp();
+    const { joins, toCore, chatsOfB } = await duplicate(h, { featuresOfB: [] });
+    expect(await merge(h)).toBe(false);
+    expect([joins, toCore, chatsOfB]).toEqual([[], [], []]);
+  });
+
+  it('never merges a view into another view of the same client', async () => {
+    const h = setUp();
+    const { a, joins, toCore } = await duplicate(h);
+    await a.main.request('chats.restore', { viewId: 'view-a2' });
+    a.main.postPanel('view-a2', 'message', { message: { type: 'ready', panelToken: 'token-a2' } });
+    h.core.publish('chats', { panelId: 'panel-3', entry: unsaved('panel-3', 'view-a2') });
+    toCore.length = 0;
+    expect(await merge(h, 'view-a2')).toBe(false);
+    expect([joins, toCore]).toEqual([[], []]);
+  });
+
+  it('puts every view back on the duplicate, under its own key, when core cannot replay the holder to it', async () => {
+    const h = setUp();
+    const { b, joins, toCore, toB, chatsOfB } = await duplicate(h, { join: () => null });
+    toCore.length = 0;
+    expect(await merge(h)).toBe(false);
+    const keyOfB = joins[0]!['joining'];
+    // core forgets the key the join named, and the duplicate stays
+    expect(toCore).toEqual([['view-1', 'viewDetached', { viewKey: keyOfB }]]);
+    expect(shownChats(chatsOfB)).toEqual({ 'panel-2': 'view-b' });
+    // the duplicate's posts under the key it had still reach the page, and its page's messages still reach it
+    const messages: unknown[] = [];
+    h.core.onPanel((viewId, envelope) => messages.push([viewId, envelope.op, (envelope.payload as { viewKey?: string }).viewKey]));
+    b.main.postPanel('view-b', 'message', { message: { type: 'x' } });
+    expect(messages).toEqual([['view-b', 'message', expect.stringMatching(/^view-\d+$/)]]);
+    const keyOfDuplicate = (messages[0] as [string, string, string])[2];
+    expect(keyOfDuplicate).not.toBe(keyOfB);
+    h.core.postPanel('view-b', 'post', { type: 'sessionCleared', json: '{}', viewKey: keyOfDuplicate });
+    h.core.postPanel('view-1', 'post', { type: 'x', json: '{}' });
+    expect(toB).toEqual([['view-b', 'post']]);
+  });
+
+  it('closes no view still waiting for its join when core closes the holder meanwhile, and puts it back on the duplicate', async () => {
+    const h = setUp();
+    const { toA, toB, toCore, chatsOfB } = await duplicate(h, {
+      join: () => {
+        h.core.postPanel('view-1', 'close', {});
+        return null;
+      },
+    });
+    expect(await merge(h)).toBe(false);
+    expect(toA).toEqual([['view-1', 'close']]);
+    expect(toB).toEqual([]);
+    expect(shownChats(chatsOfB)).toEqual({ 'panel-2': 'view-b' });
+    expect(toCore.filter((sent) => (sent as unknown[])[1] === 'disposed')).toEqual([]);
+  });
+
+  it('disposes a duplicate whose every view detached during a failed merge before answering, as a view-less idle panel', async () => {
+    const h = setUp();
+    let detachB = (): void => undefined;
+    const { b, joins, toCore } = await duplicate(h, {
+      join: () => {
+        detachB();
+        return null;
+      },
+    });
+    detachB = () => b.detach();
+    expect(await merge(h)).toBe(false);
+    expect(toCore).toEqual([['view-1', 'viewDetached', { viewKey: joins[0]!['joining'] }], ['view-b', 'disposed', { reason: 'detach' }]]);
   });
 });

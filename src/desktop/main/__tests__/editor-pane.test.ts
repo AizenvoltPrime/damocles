@@ -12,7 +12,7 @@ import { rootKey } from '../../preload/folder-root';
 import type { BackupRecord } from '../documents/backups';
 import type { Confined, LinkRule, Project } from '../../local-services/confine';
 import { DocumentService, type TextDocument } from '../documents/document-service';
-import { EditorPane, revealPathOf, selectionText, settingLine, type BrowserTabSource, type PersistedEditor, type TerminalTabSource } from '../editor-pane';
+import { EditorPane, revealPathOf, selectionText, settingLine, withoutHosts, type BrowserTabSource, type PersistedEditor, type TerminalTabSource } from '../editor-pane';
 import type { MessageQuestion } from '../message-dialog';
 import { projectKeyOf } from '../../../shared/project-location';
 import { englishText, LocalizedError } from '../../../shared/localized-text';
@@ -2536,6 +2536,156 @@ describe('files outside every project', () => {
       `mention:${JSON.stringify({ path: file, authority: 'loopback' })}`,
       `mention:${JSON.stringify({ path: notes, authority: 'local' })}`,
     ]);
+  });
+});
+
+describe('Forget host', () => {
+  const config = { query: 'needle', isRegex: false, matchCase: false, wholeWord: false, include: '', exclude: '', useExcludeSettingsAndIgnoreFiles: true, onlyOpenEditors: false, contextLines: 1, showIncludesExcludes: false };
+  const settled = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+  let remote: Project;
+  let outside: string;
+
+  beforeEach(() => {
+    remote = { key: projectKeyOf({ kind: 'loopback' }, folderKey(projectDir)), fsPath: projectDir, name: 'proj' };
+    roots = [project, remote];
+    outside = path.join(root, 'elsewhere', 'notes.txt');
+    fs.mkdirSync(path.dirname(outside));
+    fs.writeFileSync(outside, 'host notes\n');
+  });
+
+  function typeInto(tabId: string, text: string): void {
+    const document = textOf(tabId);
+    pane.edit(document.id, { version: document.version, seq: 1, text, overReload: false });
+  }
+
+  it('asks Save, Don\'t Save or Cancel for each unsaved document of the hosts and none of another authority\'s; Cancel keeps every tab, Save saves at once', async () => {
+    write('a.ts', 'disk a');
+    write('b.ts', 'disk b');
+    const local = await pane.openFromUser(project.key, 'a.ts');
+    const onHost = await pane.openFromUser(remote.key, 'b.ts');
+    if (!local.ok || !onHost.ok) throw new Error('not opened');
+    const hostFile = await pane.openNamedPath('loopback', outside, { focus: false });
+    typeInto(local.tabId, 'local edit');
+    typeInto(onHost.tabId, 'host edit');
+    typeInto(hostFile, 'outside edit');
+
+    answers = [1, undefined];
+    expect(await pane.confirmCloseHosts(['loopback'])).toBeUndefined();
+    expect(asked.map((question) => [question.message, question.cancelLabel])).toEqual([
+      ['Do you want to save the changes you made to b.ts?', 'Cancel'],
+      ['Do you want to save the changes you made to notes.txt?', 'Cancel'],
+    ]);
+    expect(pane.state().tabs).toHaveLength(3);
+
+    answers = [0, 1];
+    const answered = await pane.confirmCloseHosts(['loopback']);
+    expect(answered).toBeDefined();
+    expect(fs.readFileSync(path.join(projectDir, 'b.ts'), 'utf8')).toBe('host edit');
+    // Don't Save drops nothing until the forget closes the host's tabs
+    expect(textOf(hostFile).text).toBe('outside edit');
+    expect(pane.state().tabs).toHaveLength(3);
+    expect(pane.closeHosts(['loopback'], answered!)).toBe(true);
+    expect(pane.state().tabs.map((tab) => tab.id)).toEqual([local.tabId]);
+    expect(textOf(local.tabId).text).toBe('local edit');
+  });
+
+  // an offline save would wait for a host the forget then drops, so Save is not offered
+  it('offers only Don\'t Save or Cancel for an unsaved document of a host that is not connected', async () => {
+    write('b.ts', 'disk b');
+    const onHost = await pane.openFromUser(remote.key, 'b.ts');
+    if (!onHost.ok) throw new Error('not opened');
+    typeInto(onHost.tabId, 'host edit');
+    loopbackUp = false;
+    answers = [0];
+    const answered = await pane.confirmCloseHosts(['loopback']);
+    expect(asked.map((question) => [question.message, question.detail, question.actions, question.cancelLabel])).toEqual([
+      ['loopback is not connected, so your changes to b.ts cannot be saved.', 'Connect it first to save them. Otherwise your changes will be lost.', ["Don't Save"], 'Cancel'],
+    ]);
+    expect(fs.readFileSync(path.join(projectDir, 'b.ts'), 'utf8')).toBe('disk b');
+    expect(pane.closeHosts(['loopback'], answered!)).toBe(true);
+    expect(pane.state().tabs).toEqual([]);
+  });
+
+  it('closes no tab while a document of the hosts holds unsaved text no answer covers', async () => {
+    write('b.ts', 'disk b');
+    const onHost = await pane.openFromUser(remote.key, 'b.ts');
+    if (!onHost.ok) throw new Error('not opened');
+    typeInto(onHost.tabId, 'host edit');
+    expect(pane.closeHosts(['loopback'], new Map())).toBe(false);
+    expect(pane.state().tabs).toHaveLength(1);
+  });
+
+  it('closes every tab of the hosts\' projects and files once forgotten, releasing their documents, and keeps this computer\'s', async () => {
+    write('a.ts', 'local');
+    write('README.md', '# host');
+    write('site/index.html', '<p>hi</p>');
+    write('away.md', '# away');
+    // restored while the host was away, so the offline placeholder of its file
+    loopbackUp = false;
+    await pane.restore({ tabs: [{ kind: 'code', file: { projectKey: remote.key, relativePath: 'away.md' } }], active: 0, recent: [] }, []);
+    expect(documents.content(pane.state().tabs[0]!.documentId!)).toMatchObject({ kind: 'offline' });
+    loopbackUp = true;
+    const local = await pane.openFromUser(project.key, 'a.ts');
+    if (!local.ok) throw new Error('not opened');
+    const localDocument = textOf(local.tabId);
+    await pane.openFromUser(remote.key, 'README.md', { as: 'preview' });
+    await pane.openFromUser(remote.key, 'site/index.html', { as: 'preview' });
+    await pane.openNamedPath('loopback', outside, { focus: false });
+    await pane.showRemoteDiff((name) => `${name} (Current ↔ Proposed)`, { authority: 'loopback', path: outside }, { name: 'notes.txt', content: 'old\n' }, { file: { authority: 'loopback', path: outside } }, { focus: false });
+    pane.openReplacePreview({ projectKey: remote.key, relativePath: 'README.md' }, '# host', '# replaced');
+    pane.openMarkdownText('loopback: notes.md', '# from the host', false, 'loopback');
+    const search = documents.openSearchEditor(remote.key, config, '', { dirty: false });
+    pane.showSearchEditor(search, { focus: false });
+    expect(pane.state().tabs.map((tab) => tab.kind)).toEqual(['code', 'code', 'markdownPreview', 'htmlPreview', 'code', 'diff', 'diff', 'markdownPreview', 'searchEditor']);
+    expect(pane.activeTabId()).not.toBe(local.tabId);
+
+    expect(pane.closeHosts(['loopback'], new Map())).toBe(true);
+    expect(pane.state().tabs.map((tab) => tab.id)).toEqual([local.tabId]);
+    expect(pane.activeTabId()).toBe(local.tabId);
+    expect(documents.all()).toEqual([localDocument]);
+    expect(events).toContain(`searchEditorClosed:${search.id}`);
+    expect(previewSync?.tabs).toEqual([]);
+    expect(pane.hasProjectTab((key) => key === remote.key)).toBe(false);
+    expect(pane.hasHostFileTab('loopback')).toBe(false);
+    await settled();
+    expect(persisted?.tabs).toEqual([{ kind: 'code', file: { projectKey: project.key, relativePath: 'a.ts' } }]);
+    // Quick Open's recent files keep nothing of a forgotten host
+    expect(pane.recentFiles()).toEqual([{ projectKey: project.key, relativePath: 'a.ts' }]);
+    expect(persisted?.recent).toEqual([{ projectKey: project.key, relativePath: 'a.ts' }]);
+  });
+});
+
+describe('a saved layout of hosts no longer saved', () => {
+  const gone = (authority: string): boolean => authority === 'ssh+gone';
+  const goneFile = { projectKey: 'ssh+gone|/srv/app', relativePath: 'math.ts' };
+  const keptFile = { projectKey: 'ssh+kept|/srv/app', relativePath: 'a.ts' };
+  const localFile = { projectKey: 'C:/proj', relativePath: 'b.ts' };
+
+  it('keeps no tab or recent file of them, and the active tab where it still is', () => {
+    const saved: PersistedEditor = {
+      tabs: [
+        { kind: 'code', file: goneFile, backupId: 'b1' },
+        { kind: 'code', file: localFile },
+        { kind: 'code', authority: 'ssh+gone', path: '/etc/hosts' },
+        { kind: 'htmlPreview', file: goneFile },
+        { kind: 'searchEditor', projectKey: 'ssh+gone|/srv/app', config: { query: 'x' } as never },
+        { kind: 'code', file: keptFile },
+        { kind: 'log', name: 'Damocles.log' },
+      ],
+      active: 5,
+      recent: [goneFile, keptFile, localFile],
+    };
+    expect(withoutHosts(saved, gone)).toEqual({
+      tabs: [{ kind: 'code', file: localFile }, { kind: 'code', file: keptFile }, { kind: 'log', name: 'Damocles.log' }],
+      active: 1,
+      recent: [keptFile, localFile],
+    });
+  });
+
+  it('activates nothing when the active tab was one of them, and returns a layout naming none as it is', () => {
+    expect(withoutHosts({ tabs: [{ kind: 'code', file: localFile }, { kind: 'code', file: goneFile }], active: 1, recent: [] }, gone).active).toBeNull();
+    const clean: PersistedEditor = { tabs: [{ kind: 'code', file: keptFile }], active: 0, recent: [localFile] };
+    expect(withoutHosts(clean, gone)).toBe(clean);
   });
 });
 

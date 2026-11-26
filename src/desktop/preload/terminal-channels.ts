@@ -148,7 +148,8 @@ export type TerminalColor = (typeof TERMINAL_COLORS)[number];
 
 // starting: spawned, no pid yet; exited with exitCode null: the pty host stopped
 // reconnecting: a restored remote terminal whose host is not connected yet
-export type TerminalStatus = 'starting' | 'running' | 'exited' | 'reconnecting';
+// notResponding: a remote terminal whose terminal host does not answer its daemon, which holds what is sent to it
+export type TerminalStatus = 'starting' | 'running' | 'exited' | 'reconnecting' | 'notResponding';
 
 export interface TerminalInfo {
   // `term-<n>`, issued by main; kept across a restart

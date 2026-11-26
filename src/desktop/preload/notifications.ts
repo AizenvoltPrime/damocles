@@ -52,7 +52,11 @@ export type NotificationBody =
     }
   // A core NotificationService call: its text is already localized, and an action answers the caller. host: a remote core's,
   // named by this computer's host store
-  | { readonly kind: 'notice'; readonly severity: NoticeSeverity; readonly title?: string; readonly message: string; readonly actions: readonly string[]; readonly host?: string; readonly hostColor?: HostColor }
+  // countdownTo (epoch ms): the toast and the row append the time left to the title, as mm:ss, each second
+  | { readonly kind: 'notice'; readonly severity: NoticeSeverity; readonly title?: string; readonly message: string; readonly actions: readonly string[]; readonly host?: string; readonly hostColor?: HostColor; readonly countdownTo?: number }
+  // A host's pending server switch, a reminder or what a switch the user chose stopped: a notice in everything but its popup,
+  // which Do not disturb and Notify me silence. Its text is already localized, and an action answers by its index
+  | { readonly kind: 'hostUpdate'; readonly severity: NoticeSeverity; readonly title: string; readonly message: string; readonly actions: readonly string[]; readonly host: string; readonly hostColor?: HostColor }
   // A target asked to open a web page here: Open is the only answer that opens it. url: exactly what Open opens
   | { readonly kind: 'link'; readonly host: string; readonly hostColor?: HostColor; readonly url: string };
 
@@ -116,6 +120,7 @@ export function chimeTone(body: NotificationBody): ChimeTone {
     case 'limit':
       return 'warning';
     case 'notice':
+    case 'hostUpdate':
       return body.severity === 'info' ? 'done' : 'warning';
   }
 }

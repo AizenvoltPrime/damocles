@@ -90,6 +90,7 @@ function harness(script: Script): { deps: ContainerConnectDeps; calls: string[];
     dataVolumeMissing: () => calls.push('notice'),
     hooks: { step: (step) => calls.push(`step ${step}`), progress: () => undefined, notice: () => undefined, buildLog: () => undefined },
     signal: script.signal ?? new AbortController().signal,
+    userStarted: () => false,
     watched: () => script.watched ?? true,
     installFolderSettled: async () => undefined,
     log: () => undefined,

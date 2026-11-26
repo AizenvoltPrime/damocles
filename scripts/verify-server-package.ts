@@ -14,9 +14,12 @@
  * - on Alpine, Node, node-pty and the watcher link against musl;
  * - on x64 Linux and Alpine, no executable ELF file has a PT_LOAD aligned past 4 KiB, which WSL 1 refuses to run (readelf);
  * - dist/package.json declares type commonjs, the bundles' format;
+ * - dist/terminal-host.js is there and dist/pty-host.js, the desktop app's forked pty host, is not;
  * - dist/git-credential/ holds the git credential relay helpers, the .sh with LF line ends and the .cmd with CRLF;
  * - dist/cli-remote.js, bin/remote-cli/damocles and bin/helpers/browser.sh (LF sh scripts), and on Windows bin/remote-cli/damocles.cmd
  *   (CRLF, delayed expansion off) and bin/helpers/browser.exe, a PE executable for the target's architecture;
+ * - every path and name in FROZEN_THROUGH_ACTIVE_LINK (src/desktop/daemon/active-link.ts), which shells of other server
+ *   versions name through <runDir>/active;
  * - node_modules/@devcontainers/cli holds the CLI's entry and bundle at the version package-lock.json pins;
  * - the launcher and every other executable are mode 0755, and the gzip header is normalized;
  * - on the machine's own target, `bin/damocles-server self-test` passes; --require-self-test fails on another machine, and
@@ -35,6 +38,8 @@ import { isEntryPoint } from './entry-point.ts';
 import { gzipHeader, readTarGz, readZip, sha256, type ArchiveEntry } from './server-archive.ts';
 import { DEVCONTAINERS_CLI, DEVCONTAINERS_CLI_ENTRY, SERVER_TARGETS, isServerTarget, serverNodeVersion, type ServerTarget } from './server-targets.ts';
 import { subscriptionPluginProblems } from './subscription-plugin.ts';
+import { FROZEN_THROUGH_ACTIVE_LINK } from '../src/desktop/daemon/active-link.ts';
+import { SERVER_REQUIREMENT } from '../src/desktop/main/remote/server-requirement.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -72,12 +77,27 @@ export function serverVersionProblems(entries: readonly ArchiveEntry[]): string[
   return serverVersion === expected ? [] : [`server-package.json names the server version ${serverVersion}, its entries make ${expected}`];
 }
 
+/** Problems with server-package.json's minimumServerVersion, which must be the requirement's that the manifest carries, or absent with none. */
+export function minimumVersionProblems(entries: readonly ArchiveEntry[], requirement: { minimumServerVersion: string } | null): string[] {
+  const file = entries.find((entry) => entry.path === 'server-package.json');
+  if (!file) return [];
+  const found = (JSON.parse(file.data.toString('utf8')) as Record<string, unknown>)['minimumServerVersion'];
+  const expected = requirement?.minimumServerVersion;
+  return found === expected ? [] : [`server-package.json names the minimum server version ${String(found)}, the requirement ${String(expected)}`];
+}
+
 /** Problems with dist/package.json, which keeps the CommonJS bundles out of the root package.json's "type": "module" scope. */
 export function distScopeProblems(entries: readonly PackageFile[]): string[] {
   const file = entries.find((entry) => entry.path === 'dist/package.json');
   if (!file) return ['no dist/package.json'];
   const { type } = JSON.parse(file.data.toString('utf8')) as { type?: unknown };
   return type === 'commonjs' ? [] : [`dist/package.json declares type ${type ?? 'none'}, not commonjs`];
+}
+
+/** Problems with the terminal host's bundle: a daemon starts its terminals in dist/terminal-host.js and forks no pty host. */
+export function terminalHostProblems(entries: readonly PackageFile[]): string[] {
+  const host = entries.find((entry) => entry.path === 'dist/terminal-host.js');
+  return [...(host && host.data.length > 0 ? [] : ['no dist/terminal-host.js']), ...(entries.some((entry) => entry.path === 'dist/pty-host.js') ? ['dist/pty-host.js ships, which no daemon runs'] : [])];
 }
 
 /** Problems with the git credential relay helpers a daemon's core gives git (src/core/scm/askpass/credential-relay.ts). */
@@ -111,6 +131,22 @@ export function cliScriptProblems(spec: Pick<ServerTarget, 'platform'>, entries:
     }
   }
   return problems;
+}
+
+/** Problems with what shells of other server versions name through the active link: each frozen path, and each frozen name in the files that read it. */
+export function activeLinkProblems(spec: Pick<ServerTarget, 'platform'>, entries: readonly PackageFile[]): string[] {
+  const at = (path: string) => entries.find((entry) => entry.path === path);
+  const { paths, reads } = FROZEN_THROUGH_ACTIVE_LINK;
+  const problems = new Set<string>();
+  for (const path of [...paths.all, ...(spec.platform === 'win32' ? paths.win32 : paths.posix)]) if (!at(path)?.data.length) problems.add(`no ${path}`);
+  for (const { names, by } of reads) {
+    for (const path of by) {
+      const text = at(path)?.data.toString('utf8');
+      if (!text) problems.add(`no ${path}`);
+      else for (const name of names) if (!text.includes(name)) problems.add(`${path} does not read ${name}`);
+    }
+  }
+  return [...problems];
 }
 
 /** Problems with a Windows target's BROWSER (bin/helpers/browser.exe): present only on Windows, as a PE executable for its architecture. */
@@ -311,7 +347,7 @@ async function main() {
 
   const signedHelper = option('--signed-browser-helper');
   const signedBrowserHelper = signedHelper ? readFileSync(signedHelper) : undefined;
-  problems.push(...serverVersionProblems(entries));
+  problems.push(...serverVersionProblems(entries), ...minimumVersionProblems(entries, SERVER_REQUIREMENT));
   // the rebuild needs the version
   if (typeof info.version !== 'string') failed(archive, problems);
   const rebuilt = await assemblePackage(target, { version: info.version, nodeVersion, distDir: join(STAGE_DIR, 'dist'), nodePtyBinary: option('--node-pty-binary'), signedBrowserHelper });
@@ -326,8 +362,10 @@ async function main() {
   problems.push(...prebuildProblems(spec, paths));
   problems.push(...subscriptionPluginProblems(entries));
   problems.push(...distScopeProblems(entries));
+  problems.push(...terminalHostProblems(entries));
   problems.push(...credentialRelayProblems(entries));
   problems.push(...cliScriptProblems(spec, entries));
+  problems.push(...activeLinkProblems(spec, entries));
   problems.push(...browserHelperProblems(spec, entries));
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8')) as { packages: Record<string, { version?: string }> };
   problems.push(...devcontainersCliProblems(entries, lock.packages[`node_modules/${DEVCONTAINERS_CLI}`]?.version));

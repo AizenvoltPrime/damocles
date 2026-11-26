@@ -7,6 +7,7 @@ import type { ForkState, PublishState } from '../../shared/forge/publish';
 import type { ProtectedPushState } from '../../shared/forge/protected-push';
 import { HOST_THEME_STYLE_ID, HOST_TRUSTED_STYLE_ID } from '../../shared/host-theme';
 import { isHostColor } from '../../shared/host-colors';
+import type { HostUpdate } from '../../shared/host-update';
 import { checkProjectLook } from '../../shared/themes/project-looks';
 import {
   MAX_OVERLAY_COORDINATE,
@@ -110,11 +111,12 @@ import { isFullRefName, MAX_SCM_HISTORY_REFS } from '../preload/scm-channels';
 import { MAX_INPUT_VALUE_LENGTH } from '../../shared/input-validation';
 import type { PanelTheme } from '../preload/panel-channels';
 import { TERMINAL_COLORS, TERMINAL_CUSTOM_ICONS, TERMINAL_ICONS, type TerminalColor, type TerminalGlyph } from '../preload/terminal-channels';
+import { isTerminalId } from '../pty-host/protocol';
 import { DEFAULT_GRID_LAYOUT, GRID_PANES, GRID_SLOTS, MAX_EDITOR_LINE, MAX_TAG_LENGTH, PROJECT_CONNECTIONS, type GridPane, type GridSlot, type ProjectConnection, type ShellLocale, type ShellPlatform } from '../preload/shell-channels';
 import { isRelativeFilePath } from '../../shared/relative-path';
 import { isWorktreeId } from '../../shared/worktree-id';
 import { visibleText } from '../../shared/visible-text';
-import { PERMANENT_FAILURE_CODES, type HostLatency, type HostReconnect, type PermanentFailureCode } from '../../shared/host-connection';
+import { PERMANENT_FAILURE_CODES, type HostLatency, type HostReconnect, type HostRemoved, type PermanentFailureCode } from '../../shared/host-connection';
 import { PERMISSION_MODES, type PermissionMode } from '../../shared/types/settings';
 import { PROVIDER_ID_PATTERN } from '../../shared/types/messages';
 import { validPng } from './notification-art';
@@ -680,11 +682,50 @@ function parseLatency(raw: unknown): HostLatency | undefined {
   return { latencyMs, slow, history, measurements: measurements as number };
 }
 
+function parseRemoved(raw: unknown): HostRemoved | undefined {
+  if (!isRecord(raw) || Object.keys(raw).some((key) => key !== 'by')) return undefined;
+  const by = field(raw, 'by');
+  if (by === undefined) return {};
+  return isNonEmptyText(by, MAX_DEVICE_NAME_LENGTH) ? { by } : undefined;
+}
+
 function parseDevice(raw: unknown): HostDevice | undefined {
   if (!isRecord(raw) || Object.keys(raw).length !== 2) return undefined;
   const deviceName = field(raw, 'deviceName');
   const self = field(raw, 'self');
   return isNonEmptyText(deviceName, MAX_DEVICE_NAME_LENGTH) && typeof self === 'boolean' ? { deviceName, self } : undefined;
+}
+
+const UPDATE_SOURCES: ReadonlySet<unknown> = new Set(['compatible', 'otherProtocol']);
+const UPDATE_PHASES: ReadonlySet<unknown> = new Set(['offer', 'waiting', 'switching', 'appOutdated']);
+const isCount = (raw: unknown): raw is number => Number.isSafeInteger(raw) && (raw as number) >= 0;
+
+function parseHostUpdate(raw: unknown): HostUpdate | undefined {
+  if (!isRecord(raw)) return undefined;
+  const [source, phase, outdated, serverVersion, targetVersion] = ['source', 'phase', 'outdated', 'serverVersion', 'targetVersion'].map((key) => field(raw, key));
+  const [runningAgents, runningTerminals, cliWaits, otherDevices, drainEndsAt, waitingSince] = ['runningAgents', 'runningTerminals', 'cliWaits', 'otherDevices', 'drainEndsAt', 'waitingSince'].map((key) => field(raw, key));
+  const terminalsSurvive = field(raw, 'terminalsSurvive');
+  const required = field(raw, 'required');
+  if (!UPDATE_SOURCES.has(source) || !UPDATE_PHASES.has(phase)) return undefined;
+  if (phase === 'appOutdated' ? outdated !== 'runs' && outdated !== 'floor' : outdated !== undefined) return undefined;
+  if (!isNonEmptyText(serverVersion, MAX_OVERLAY_LABEL_LENGTH) || !isNonEmptyText(targetVersion, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
+  if (!isCount(runningAgents) || !isCount(runningTerminals) || typeof terminalsSurvive !== 'boolean' || !isTime(waitingSince)) return undefined;
+  if ((cliWaits !== undefined && !isCount(cliWaits)) || (otherDevices !== undefined && !isCount(otherDevices)) || (drainEndsAt !== undefined && !isTime(drainEndsAt))) return undefined;
+  if (required !== undefined && (!isRecord(required) || !isTime(field(required, 'deadline')) || typeof field(required, 'countdown') !== 'boolean')) return undefined;
+  return {
+    source: source as HostUpdate['source'],
+    ...(phase === 'appOutdated' ? { phase, outdated: outdated as 'runs' | 'floor' } : { phase: phase as 'offer' | 'waiting' | 'switching' }),
+    serverVersion,
+    targetVersion,
+    runningAgents,
+    runningTerminals,
+    ...(cliWaits !== undefined ? { cliWaits } : {}),
+    terminalsSurvive,
+    ...(otherDevices !== undefined ? { otherDevices } : {}),
+    ...(drainEndsAt !== undefined ? { drainEndsAt } : {}),
+    waitingSince,
+    ...(required !== undefined ? { required: { deadline: field(required, 'deadline') as number, countdown: field(required, 'countdown') as boolean } } : {}),
+  };
 }
 
 const WSL_STATES: ReadonlySet<unknown> = new Set(['running', 'stopped', 'other']);
@@ -776,6 +817,13 @@ function parseHostCard(raw: unknown): HostCardInfo | undefined {
   const reconnect = field(raw, 'reconnect') === undefined ? undefined : parseReconnect(field(raw, 'reconnect'));
   const latency = field(raw, 'latency') === undefined ? undefined : parseLatency(field(raw, 'latency'));
   const devices = field(raw, 'devices') === undefined ? undefined : parseList(field(raw, 'devices'), MAX_HOST_DEVICES, parseDevice);
+  const removed = field(raw, 'removed') === undefined ? undefined : parseRemoved(field(raw, 'removed'));
+  const update = field(raw, 'update') === undefined ? undefined : parseHostUpdate(field(raw, 'update'));
+  const canCheckForUpdates = field(raw, 'canCheckForUpdates');
+  const notResponding = field(raw, 'notRespondingTerminals');
+  const notRespondingTerminals = notResponding === undefined ? undefined : parseList(notResponding, MAX_OVERLAY_ITEMS, (item) => (isTerminalId(item) ? item : undefined));
+  if (notResponding !== undefined && (!notRespondingTerminals || notRespondingTerminals.length === 0 || new Set(notRespondingTerminals).size !== notRespondingTerminals.length)) return undefined;
+  if ((field(raw, 'update') !== undefined && !update) || (canCheckForUpdates !== undefined && canCheckForUpdates !== true)) return undefined;
   if (!isNonEmptyText(hostId, MAX_OVERLAY_ID_LENGTH) || !isNonEmptyText(name, MAX_HOST_NAME_LENGTH * 2) || !isNonEmptyText(destinationLabel, MAX_OVERLAY_LABEL_LENGTH * 4)) return undefined;
   if (!(PROJECT_CONNECTIONS as readonly unknown[]).includes(connection) || typeof signInNeeded !== 'boolean' || !recentFolders || !projectFolders || !notices) return undefined;
   if ((color !== undefined && !isHostColor(color)) || (os !== undefined && !SHELL_PLATFORMS.has(os)) || (lastUsed !== undefined && !isTime(lastUsed))) return undefined;
@@ -783,6 +831,7 @@ function parseHostCard(raw: unknown): HostCardInfo | undefined {
   if (defaultPermissionMode !== undefined && !(PERMISSION_MODES as readonly unknown[]).includes(defaultPermissionMode)) return undefined;
   if (!flags.every((flag) => typeof flag === 'boolean') || (agentForwarding !== undefined && typeof agentForwarding !== 'boolean')) return undefined;
   if ((field(raw, 'failure') !== undefined && !failure) || (field(raw, 'reconnect') !== undefined && !reconnect) || (field(raw, 'latency') !== undefined && !latency) || (field(raw, 'devices') !== undefined && !devices)) return undefined;
+  if (field(raw, 'removed') !== undefined && !removed) return undefined;
   const [allowBypass, passwordless, keyInstalledByDamocles, lingerEnabledByDamocles] = flags as boolean[];
   return {
     hostId,
@@ -800,11 +849,15 @@ function parseHostCard(raw: unknown): HostCardInfo | undefined {
     projectFolders,
     notices,
     ...(failure ? { failure } : {}),
+    ...(removed ? { removed } : {}),
     ...(clockSkewMs !== undefined ? { clockSkewMs: clockSkewMs as number } : {}),
     ...(installFolder !== undefined ? { installFolder } : {}),
     ...(reconnect ? { reconnect } : {}),
     ...(latency ? { latency } : {}),
+    ...(update ? { update } : {}),
+    ...(canCheckForUpdates === true ? { canCheckForUpdates } : {}),
     ...(devices ? { devices } : {}),
+    ...(notRespondingTerminals ? { notRespondingTerminals } : {}),
     ...(defaultPermissionMode !== undefined ? { defaultPermissionMode: defaultPermissionMode as PermissionMode } : {}),
     allowBypass: allowBypass!,
     ...(agentForwarding !== undefined ? { agentForwarding } : {}),

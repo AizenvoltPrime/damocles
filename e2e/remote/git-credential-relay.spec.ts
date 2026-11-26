@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import type { ElectronApplication } from '@playwright/test';
+import type { DesktopApp } from '../desktop/support/app';
 import { writeUserSettings, type HermeticHome } from '../desktop/support/hermetic';
 import { answerToast, overlayPage, recordedToasts, recordToasts, shellPage } from '../desktop/support/shell';
 import { openTerminal, runInTerminal } from '../desktop/support/terminal';
@@ -7,7 +8,8 @@ import { gitCalls, recordGitCalls, trustCa } from './support/credentials';
 import { shutdownHostDaemon } from './support/daemon-teardown';
 import { clientCredentialHelper, newGitPassword, scmPush, startHttpsGitServer, type HttpsGitServer } from './support/git-credentials';
 import { gitConsent, storedHost } from './support/host-settings-ui';
-import { addHost, expect, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test } from './support/remote';
+import { CURRENT_PACKAGE, daemonVersions, installOlderServer, OLD, switchToThisVersion } from './support/older-server';
+import { addHost, expect, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test, type RemoteFixtures } from './support/remote';
 import { runProgram, type SshdFixture } from './support/sshd';
 
 const APP = '/srv/app';
@@ -195,6 +197,99 @@ test('with the app closed, a push from a prod-1 terminal fails with the explicit
     const second = await launch({ env: remoteEnv(ssh, mirror) });
     await openRemoteFolder(second.app, hostId, APP);
     await shutdownHostDaemon(second.app, hostId, fixture);
+  } finally {
+    await server.close();
+  }
+});
+
+interface RelayOnOlder {
+  readonly old: DesktopApp;
+  readonly env: Record<string, string>;
+  readonly hostId: string;
+  readonly fixture: SshdFixture;
+  readonly server: HttpsGitServer;
+  readonly head: string;
+  readonly helper: ReturnType<typeof clientCredentialHelper>;
+  // the shell's relay handle and nonce, one per line
+  readonly relay: string;
+}
+
+/** prod-1 with /srv/app pushing to the HTTPS server, under the app before an update (this package installed as OLD), with a bash terminal open. */
+async function relayOnOlderServer(home: HermeticHome, launch: (options: { env: Record<string, string> }) => Promise<DesktopApp>, fixtures: Pick<RemoteFixtures, 'mirror' | 'ssh'>, sshd: RemoteFixtures['sshd'], server: HttpsGitServer, password: string): Promise<RelayOnOlder> {
+  writeUserSettings(home, { 'damocles.desktop.terminal.defaultProfile': 'bash', 'damocles.desktop.terminal.confirmOnKill': 'never' });
+  const fixture = await sshd('prod-1');
+  await trustCa(fixture, server.caPem);
+  const head = await targetRepo(fixture, server);
+  const helper = clientCredentialHelper(home, server.host, USER, password);
+  await installOlderServer(fixture, CURRENT_PACKAGE, { version: OLD });
+  const env = remoteEnv(fixtures.ssh, fixtures.mirror);
+  const old = await launch({ env: { ...env, DAMOCLES_E2E_APP_VERSION: OLD } });
+  const { hostId } = await connect(old.app);
+  await openTerminal(old.app);
+  expect(await inTerminal(old.app, fixture, 'printf "%s\\n%s\\n" "$DAMOCLES_ASKPASS_HANDLE" "$DAMOCLES_CREDENTIAL_NONCE" > /tmp/relay-before', 'before')).toBe('0');
+  const relay = await fixture.sh('cat /tmp/relay-before', 'dev');
+  // the terminal host's own relay socket and nonce
+  expect(relay).toMatch(/^\/tmp\/damocles-[^/]+\/askpass-[0-9a-f]{24}\.sock\n[0-9a-f]{64}\n$/);
+  expect(await daemonVersions(fixture)).toEqual([OLD]);
+  return { old, env, hostId, fixture, server, head, helper, relay };
+}
+
+test('in a terminal that survived a server switch, an HTTPS push gets this computer\'s credential through the new server, from the relay the shell started with', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
+  test.setTimeout(600_000);
+  const password = newGitPassword();
+  const server = await startHttpsGitServer(home, 'app', USER, password);
+  try {
+    const older = await relayOnOlderServer(home, launch, { mirror, ssh }, sshd, server, password);
+    await older.old.close();
+    const { fixture } = older;
+    const app = await switchToThisVersion(launch, older.env, older.hostId, fixture);
+    expect(await inTerminal(app, fixture, 'printf "%s\\n%s\\n" "$DAMOCLES_ASKPASS_HANDLE" "$DAMOCLES_CREDENTIAL_NONCE" > /tmp/relay-after', 'after')).toBe('0');
+    expect(await fixture.sh('cat /tmp/relay-after', 'dev')).toBe(older.relay);
+    const pushed = inTerminal(app, fixture, `GIT_TERMINAL_PROMPT=0 git -C ${APP} push -q origin HEAD:refs/heads/survived`, 'push');
+    const consent = gitConsent(await overlayPage(app));
+    await expect(consent).toBeVisible({ timeout: 60_000 });
+    await consent.getByRole('button', { name: 'Allow once', exact: true }).click();
+    expect(await pushed).toBe('0');
+    expect(await serverRef(home, 'refs/heads/survived')).toBe(older.head);
+    expect(older.helper.calls()).toEqual(['get']);
+    await shutdownHostDaemon(app, older.hostId, fixture);
+  } finally {
+    await server.close();
+  }
+});
+
+test('a push whose credential request comes during a server switch waits while no server runs and gets the credential once the new server is up', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
+  test.setTimeout(600_000);
+  const password = newGitPassword();
+  const server = await startHttpsGitServer(home, 'app', USER, password);
+  try {
+    const older = await relayOnOlderServer(home, launch, { mirror, ssh }, sshd, server, password);
+    const { fixture } = older;
+    // the terminal's push waits on a FIFO, so it starts with the terminal's environment once no server runs
+    const during = [
+      `mkfifo /tmp/go && read line < /tmp/go && GIT_TERMINAL_PROMPT=0 git -C ${APP} push -q origin HEAD:refs/heads/during 2> /tmp/during.err`,
+      'echo $? > /tmp/during.code',
+    ];
+    await fixture.sh('cat > /tmp/during.sh', 'dev', `${during.join('\n')}\n`);
+    await runInTerminal(await shellPage(older.old.app), 'sh /tmp/during.sh');
+    await expect.poll(async () => (await fixture.sh('if [ -p /tmp/go ]; then echo made; fi')).trim()).toBe('made');
+    await older.old.close();
+    // installed already, so the switch only starts a daemon, well inside the host's hold of the waiting connection
+    await installOlderServer(fixture, CURRENT_PACKAGE);
+    await fixture.sh("pkill -TERM -u dev -f 'dist/daemon.js serve'");
+    await expect.poll(() => daemonVersions(fixture), { timeout: 30_000 }).toEqual([]);
+    await fixture.sh('echo go > /tmp/go', 'dev');
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    expect((await fixture.sh('cat /tmp/during.code 2>/dev/null || true')).trim()).toBe('');
+
+    const app = await switchToThisVersion(launch, older.env, older.hostId, fixture);
+    const consent = gitConsent(await overlayPage(app));
+    await expect(consent).toBeVisible({ timeout: 60_000 });
+    await consent.getByRole('button', { name: 'Allow once', exact: true }).click();
+    await expect.poll(async () => (await fixture.sh('cat /tmp/during.code 2>/dev/null || true')).trim(), { timeout: 60_000 }).toBe('0');
+    expect(await serverRef(home, 'refs/heads/during')).toBe(older.head);
+    expect(older.helper.calls()).toEqual(['get']);
+    await shutdownHostDaemon(app, older.hostId, fixture);
   } finally {
     await server.close();
   }

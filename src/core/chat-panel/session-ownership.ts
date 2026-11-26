@@ -209,20 +209,20 @@ export interface ClaimRefusal {
  * Point `requester`'s session at stored session `sessionId`, unless another panel of this process holds it,
  * or its lease cannot be taken (another process holds it, this process is deleting or rewriting it, or the
  * lease failed). Every path that binds a panel to a stored session goes through here, so a conversation has
- * one writer. Returns the refusal, after telling the user; with `revealsHolder` the caller shows the holder instead
- * (`revealHolder`), which tells the user only when it cannot. Never throws.
+ * one writer. Returns the refusal, after telling the user; with `showsHolder` the caller shows the holder instead (`revealHolder`,
+ * or a restore's merge into it), which tells the user only when it cannot. Never throws.
  */
 export function claimStoredSession(
   notifications: NotificationService,
   panels: Map<string, HostInstance>,
   requester: { panelId: string; session: ChatSession },
   sessionId: string,
-  options: { readonly revealsHolder?: boolean } = {},
+  options: { readonly showsHolder?: boolean } = {},
 ): ClaimRefusal | undefined {
   // The check, the lease and the bind must stay in one synchronous step, or two panels could both pass the check.
   const holder = findStoredSessionHolder(panels, requester, sessionId);
   if (holder) {
-    if (options.revealsHolder !== true) announceHeldElsewhere(notifications);
+    if (options.showsHolder !== true) announceHeldElsewhere(notifications);
     return { holder };
   }
   const lease = leaseRefusalFor(sessionId) ?? takeLease(sessionId, requester.session);

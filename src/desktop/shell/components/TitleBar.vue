@@ -3,10 +3,12 @@ import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Bell, BellOff, ChevronRight, Moon, PanelBottom, PanelLeft, PanelRight, Search, Settings, Sun } from 'lucide-vue-next';
 import type { TitleBarApi, TitleBarState } from './title-bar-api';
-import { hostStateLabel } from '../host-label';
+import { hostStateLabel, hostStateTitle } from '../host-label';
 import { chatTitleText } from './chat-title';
 import EnginePill from './EnginePill.vue';
 import HostStatusDot from './HostStatusDot.vue';
+import HostUpdateTag from './HostUpdateTag.vue';
+import { useUpdateClock } from '@/components/host-update-clock';
 import ProjectAvatar from './ProjectAvatar.vue';
 import UpdatePill from './UpdatePill.vue';
 import WindowControls from './WindowControls.vue';
@@ -16,6 +18,7 @@ import { characterState } from '@shared/themes/characters';
 
 const props = defineProps<{ api: TitleBarApi; state: TitleBarState }>();
 const { t } = useI18n();
+const clock = useUpdateClock();
 
 // Served by protocol.ts beside the shell; a bound URL, so vite does not treat it as a module import.
 const LOGO_URL = 'app://damocles/resources/icon.png';
@@ -35,10 +38,13 @@ const host = computed(() => {
   const hostId = project?.authority.hostId;
   if (!project || hostId === undefined) return undefined;
   const saved = props.state.hosts.find((entry) => entry.authorityKey === project.authority.key);
-  const state = { name: project.authority.name, connection: project.connection, reconnect: saved?.reconnect, latency: saved?.latency };
+  const state = { name: project.authority.name, connection: project.connection, reconnect: saved?.reconnect, latency: saved?.latency, update: saved?.update, removed: saved?.removed };
   const { color } = project.authority;
-  return { ...state, key: project.authority.key, hostId, color, look: color === undefined ? undefined : hostColorLook(color), label: hostStateLabel(state, t) };
+  return { ...state, key: project.authority.key, hostId, color, look: color === undefined ? undefined : hostColorLook(color) };
 });
+// Strings of their own: a deadline's text reads the clock each second, and the bar renders only when the text changes.
+const hostLabel = computed(() => (host.value ? hostStateLabel(host.value, t, clock) : ''));
+const hostTitle = computed(() => (host.value ? hostStateTitle(host.value, t, clock) : ''));
 const hostChip = ref<HTMLElement | null>(null);
 const hostCardOpen = ref(false);
 
@@ -167,7 +173,7 @@ async function openCenter(): Promise<void> {
       data-trusted
       :data-tone="host.color === undefined ? undefined : hostColorDataTone(host.color)"
       class="title-bar-control mr-1 inline-flex h-7 max-w-52 shrink-0 items-center gap-1.75 rounded-7 bg-(--d-panel) px-2 hover:bg-(--d-hover) aria-expanded:bg-(--d-hover)"
-      :title="host.label"
+      :title="hostTitle"
       aria-haspopup="dialog"
       :aria-expanded="hostCardOpen"
       @click="openHostCard"
@@ -176,7 +182,8 @@ async function openCenter(): Promise<void> {
         :connection="host.connection"
         :reconnect="host.reconnect"
         :slow="host.latency?.slow"
-        :label="host.label"
+        :update="host.update"
+        :label="hostLabel"
       />
       <!-- A rename swaps the old name for the new one. -->
       <Transition
@@ -192,6 +199,7 @@ async function openCenter(): Promise<void> {
           :style="host.look?.style"
         >{{ host.name }}</span>
       </Transition>
+      <HostUpdateTag :update="host.update" />
     </button>
     <div class="flex h-full min-w-0 items-center overflow-clip">
       <nav

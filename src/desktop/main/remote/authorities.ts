@@ -169,6 +169,8 @@ export class Authorities {
       if (entry.connected?.connection === held) entry.connected = undefined;
       held.close('the daemon no longer holds this connection');
       log(`[remote] ${entry.authorityKey}: the daemon refused the reconnection token; attaching fresh`);
+      // heard while nothing is held, so the fresh connection reattaches what the held one carried (its terminals' views)
+      this.moved(entry, 'connecting');
     }
     const attachFresh = async (): Promise<RemoteConnection> => {
       try {

@@ -175,6 +175,7 @@ export const CORE_REQUEST_ROUTES: { readonly [M in keyof CoreRequests]: CoreRequ
   'user.theme.installCancel': { to: 'pinnedClient', needs: THEMES_FEATURE },
   'views.drained': { to: 'daemon' },
   'chats.reveal': { to: 'daemon' },
+  'views.merge': { to: 'daemon' },
   // the daemon asks it of a client itself, for chats.reveal
   'chats.showSession': { to: 'refused' },
   // a client opens the tab in its own window, of a chat it shows; core matches the refusal's text (DESIGN_PREVIEW_CLIENT_ABSENT)
@@ -884,6 +885,22 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
     publishChatsOfView(session, viewId);
     return viewId;
   };
+  // A client's view goes on showing another core view under another key, its client told nothing; the caller publishes its chats.
+  const moveView = (session: Session, clientViewId: string, from: { readonly viewId: string; readonly viewKey: string }, to: { readonly viewId: string; readonly viewKey: string }): Viewer => {
+    const left = viewers.get(from.viewId);
+    left?.delete(from.viewKey);
+    if (left?.size === 0) viewers.delete(from.viewId);
+    session.views.set(clientViewId, to.viewId);
+    session.viewKeys.set(clientViewId, to.viewKey);
+    const shown = viewers.get(to.viewId) ?? new Map<string, Viewer>();
+    const viewer: Viewer = { session, viewId: clientViewId };
+    shown.set(to.viewKey, viewer);
+    viewers.set(to.viewId, shown);
+    return viewer;
+  };
+  // views a merge moved to a panel and core has not replayed it to yet: a close of that panel leaves them, since a failed join
+  // moves them back to their own
+  const unjoined = new Set<Viewer>();
   const coreViewOf = (session: Session, clientViewId: string): string => {
     const viewId = session.views.get(clientViewId);
     if (viewId === undefined) throw new Error(`View ${clientViewId} is not this client's`);
@@ -1004,6 +1021,60 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
         },
       });
       return (await revealed) ?? false;
+    },
+    // A restored panel whose conversation the panel of view `into` holds: each client's view of it shows that panel instead, under
+    // the client's own view id, replayed to that view alone, and core disposes the duplicate. No client's view closes or is
+    // revealed, a client's chats change only once every view moved, and a failed move puts every view back under its own key.
+    'views.merge': async ({ viewId, into }, signal) => {
+      const token = keys.tokenOf(into);
+      const moving = liveViewers(viewId);
+      const refusal = token === undefined || panelIdOfView(into) === undefined ? 'the holder is gone'
+        : moving.length === 0 ? 'no client shows it'
+        : moving.some((viewer) => !capable(viewer.session, 'views.merge')) ? 'a client showing it predates views.merge'
+        // a client shows a core view in one view
+        : moving.some((viewer) => viewerOf(viewer.session, into) !== undefined) ? 'a client showing it shows the holder already'
+        : undefined;
+      if (token === undefined || refusal !== undefined) {
+        log(`[core-host] not merging view ${viewId} into ${into}: ${refusal}`);
+        return false;
+      }
+      // every view moves before the first await, so a detach meanwhile never finds the duplicate with views left to dispose it by
+      const moved = moving.map((viewer) => {
+        const from = viewer.session.viewKeys.get(viewer.viewId)!;
+        const to = `view-${++nextViewKey}`;
+        const shown = moveView(viewer.session, viewer.viewId, { viewId, viewKey: from }, { viewId: into, viewKey: to });
+        unjoined.add(shown);
+        return { viewer, shown, from, to };
+      });
+      // a view that detached meanwhile let go of its binding already
+      const stillMoved = ({ viewer, to }: (typeof moved)[number]): boolean => live(viewer.session) && viewer.session.viewKeys.get(viewer.viewId) === to;
+      const publish = (): void => {
+        for (const { viewer } of moved) for (const shown of [viewId, into]) publishChatsOfView(viewer.session, shown);
+      };
+      try {
+        for (const move of moved) {
+          if (!stillMoved(move)) continue;
+          if (await core.request('views.join', { viewId: into, viewKey: token, joining: move.to }, signal) === null) throw new Error(`core holds no panel for the view key of ${into}`);
+          unjoined.delete(move.shown);
+        }
+      } catch (err) {
+        for (const move of moved) {
+          if (!stillMoved(move)) continue;
+          moveView(move.viewer.session, move.viewer.viewId, { viewId: into, viewKey: move.to }, { viewId, viewKey: move.from });
+          if (!ended) core.postPanel(into, 'viewDetached', { viewKey: move.to });
+        }
+        publish();
+        // the duplicate opens empty only for a view still there; with none left it goes as a view-less idle panel does
+        if (liveViewers(viewId).length === 0) retention.disposed(viewId, 'detach');
+        log(`[core-host] merging view ${viewId} into ${into} failed, so it keeps its views: ${err instanceof Error ? err.message : String(err)}`);
+        return false;
+      } finally {
+        for (const { shown } of moved) unjoined.delete(shown);
+      }
+      publish();
+      keys.forget(viewId);
+      retention.disposed(viewId, 'user');
+      return true;
     },
   };
   for (const method of Object.keys(CORE_REQUEST_ROUTES) as Array<keyof CoreRequests>) {
@@ -1141,7 +1212,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
   }
   const runOf = (panelId: string): { panelId: string; projectKey: string; title: string } => {
     const entry = chats.get(panelId);
-    return { panelId, projectKey: entry ? (entry.folder.ownerKey ?? entry.folder.key) : '', title: (entry && titles.get(entry.viewId)) ?? panelId };
+    return { panelId, projectKey: entry ? (entry.folder.ownerKey ?? entry.folder.key) : '', title: (entry && titles.get(entry.viewId)) ?? '' };
   };
   disposables.push(
     // a turn pins the client whose work started it, else the acting client (runPinnedTurn)
@@ -1219,7 +1290,11 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
 
   // ---- core's panel envelopes
   const toViews = (viewId: string, envelope: CorePanelEnvelope): void => {
-    if (envelope.op === 'setTitle') titles.set(viewId, (envelope.payload as CorePanelOps['setTitle']).title);
+    if (envelope.op === 'setTitle') {
+      const { title } = envelope.payload as CorePanelOps['setTitle'];
+      titles.set(viewId, title);
+      for (const [panelId, entry] of chats) if (entry.viewId === viewId) deps.registry.panelTitle(panelId, title);
+    }
     // a panel the panel rule kept for its run has no view; a rejoin replays what it missed
     let targets = liveViewers(viewId);
     let payload = envelope.payload;
@@ -1231,6 +1306,7 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
       if (viewKey !== undefined) targets = keyed !== undefined && live(keyed.session) ? [keyed] : [];
       else if (except !== undefined) targets = targets.filter((viewer) => !except.some((key) => shown?.get(key) === viewer));
     }
+    if (envelope.op === 'close') targets = targets.filter((viewer) => !unjoined.has(viewer));
     for (const viewer of targets) deliver(viewer.session, (endpoint) => (endpoint.postPanel as (id: string, op: string, value: unknown) => void)(viewer.viewId, envelope.op, payload));
     if (envelope.op === 'close') {
       for (const viewer of targets) unbindView(viewer.session, viewer.viewId);
@@ -1552,8 +1628,19 @@ export function createCoreRouter(deps: CoreRouterDeps): CoreRouter {
       if (route === 'core') {
         const { message } = envelope.payload as MainPanelOps['message'];
         const token = typeof message === 'object' && message !== null && (message as { type?: unknown }).type === 'ready' ? (message as { panelToken?: unknown }).panelToken : undefined;
+        const own = keys.tokenOf(viewId);
+        // a page whose token is not its panel's (one merged into the panel) joins the panel again when it loads again, so core
+        // never takes its token as the panel's
+        if (typeof token === 'string' && own !== undefined && own !== token) {
+          core.request('views.join', { viewId, viewKey: own, joining: session.viewKeys.get(clientViewId)! })
+            .then((joined) => {
+              if (joined === null) log(`[core-host] core holds no panel for the view key of ${viewId}, so ${client.id}'s reloaded view ${clientViewId} shows nothing`);
+            })
+            .catch((err: unknown) => log(`[core-host] rejoining ${client.id}'s reloaded view ${clientViewId} failed: ${err instanceof Error ? err.message : String(err)}`));
+          return;
+        }
         // the panel's own token names it for views.join; a joined view's page holds a token of its own
-        if (typeof token === 'string' && keys.tokenOf(viewId) === undefined && keys.viewOf(token) === undefined) keys.record(viewId, token);
+        if (typeof token === 'string' && own === undefined && keys.viewOf(token) === undefined) keys.record(viewId, token);
         // the daemon's key of the sending view, whatever the client put there
         core.postPanel(viewId, 'message', { message, viewKey: session.viewKeys.get(clientViewId)! });
         return;

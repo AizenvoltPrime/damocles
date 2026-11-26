@@ -7,13 +7,15 @@ import REMOVE_POSIX from './bootstrap/remove-posix.sh';
 import REMOVE_WINDOWS from './bootstrap/remove-windows.ps1';
 import { RUN_KEY } from '../../daemon/control-messages';
 import { isHostFilePath, KEY_ENTRY } from './host-store';
-import type { RemoveServerFailureCode, RemoveServerNoticeCode, RemoveServerResult } from '../../preload/overlay-channels';
+import type { RemoveServerNoticeCode, RemoveServerResult } from '../../preload/overlay-channels';
 
 const PARAMETERS = /# BEGIN PARAMETERS\r?\n[\s\S]*?# END PARAMETERS/;
-const NOTICE_CODES: readonly RemoveServerNoticeCode[] = ['versionKept', 'serverFolderKept', 'keyNotFound', 'lingerFailed', 'deleteFailed', 'installInProgress'];
-const STAGE_FAILURES: readonly RemoveServerFailureCode[] = ['daemonRunning', 'stageFailed'];
+const NOTICE_CODES: readonly RemoveServerNoticeCode[] = ['versionKept', 'floorKept', 'serverFolderKept', 'keyNotFound', 'lingerFailed', 'deleteFailed', 'installInProgress', 'markerFailed'];
+const FLOOR_KEPT_FILES: readonly string[] = ['floor', 'marker', 'both'];
 // the stageFailed codes the scripts send; main adds protocol, killed and exit (with exitCode)
 const SCRIPT_STAGE_FAILED_CODES: readonly string[] = ['keyFile', 'runKey', 'userName'];
+// terminalHostRunning's pids param: decimal pids, one space apart
+const PIDS = /^[1-9]\d{0,9}(?: [1-9]\d{0,9})*$/;
 const MAX_PARAM_CHARS = 500;
 
 export interface RemovalParameters {
@@ -79,9 +81,10 @@ function stageParams(raw: unknown): Readonly<Record<string, string>> | undefined
 
 /**
  * The removal stage's outcome from its status lines and exit code: removed with its notices, its own failure, or stageFailed
- * for anything outside the protocol (no removed line, a malformed line, a non-zero exit).
+ * for anything outside the protocol (no removed line, a malformed line, a non-zero exit). terminalHostRunning also names the
+ * OS of the host the stage ran for, whose command ends the named processes.
  */
-export function removalOutcome(lines: readonly string[], code: number | null): RemoveServerResult {
+export function removalOutcome(lines: readonly string[], code: number | null, os: RemoveServerDeps['os']): RemoveServerResult {
   const notices: Array<{ readonly code: RemoveServerNoticeCode; readonly params: Readonly<Record<string, string>> }> = [];
   const protocol: RemoveServerResult = { ok: false, code: 'stageFailed', params: { code: 'protocol' } };
   const ended: RemoveServerResult = { ok: false, code: 'stageFailed', params: code === null ? { code: 'killed' } : { code: 'exit', exitCode: String(code) } };
@@ -95,6 +98,8 @@ export function removalOutcome(lines: readonly string[], code: number | null): R
     if (!isRecord(message)) return protocol;
     const params = message['params'] === undefined ? {} : stageParams(message['params']);
     if (message['kind'] === 'removed') return code === 0 ? { ok: true, notices } : ended;
+    // floorKept names which of the security floor and the removed marker stay, whose text says why each one does
+    if (message['kind'] === 'notice' && message['code'] === 'floorKept' && !FLOOR_KEPT_FILES.includes(params?.['files'] ?? '')) return protocol;
     if (message['kind'] === 'notice' && NOTICE_CODES.includes(message['code'] as RemoveServerNoticeCode) && params) {
       notices.push({ code: message['code'] as RemoveServerNoticeCode, params });
       continue;
@@ -103,7 +108,11 @@ export function removalOutcome(lines: readonly string[], code: number | null): R
       const failed = params['code'];
       return failed !== undefined && SCRIPT_STAGE_FAILED_CODES.includes(failed) ? { ok: false, code: 'stageFailed', params: { code: failed } } : protocol;
     }
-    if (message['kind'] === 'fail' && STAGE_FAILURES.includes(message['code'] as RemoveServerFailureCode) && params) return { ok: false, code: message['code'] as RemoveServerFailureCode, params };
+    if (message['kind'] === 'fail' && message['code'] === 'terminalHostRunning' && params) {
+      const pids = params['pids'];
+      return pids !== undefined && PIDS.test(pids) ? { ok: false, code: 'terminalHostRunning', params: { pids, os } } : protocol;
+    }
+    if (message['kind'] === 'fail' && message['code'] === 'daemonRunning' && params) return { ok: false, code: 'daemonRunning', params: {} };
     return protocol;
   }
   return ended;
@@ -126,13 +135,17 @@ export interface RemoveServerDeps {
 }
 
 export const REMOVAL_FEATURE = 'control.shutdownForRemoval';
-// the most the removal waits for the daemon to end its connection; the stage then decides by the daemon's lock
-export const REMOVAL_CLOSE_WAIT_MS = 15_000;
+// the most the removal waits for the daemon to end its connection; the stage then decides by the daemon's lock. At least the
+// daemon's REMOVAL_SHUTDOWN_MAX_MS (lock-timing.ts), plus the close's trip over ssh.
+export const REMOVAL_CLOSE_WAIT_MS = 30_000;
 
-/** The removal stage over ssh and its outcome; a retry after daemonRunning runs the same script again, attaching nothing. */
-export async function runRemovalStage(deps: Pick<RemoveServerDeps, 'runStage' | 'log'>, script: string): Promise<RemoveServerResult> {
+/**
+ * The removal stage over ssh and its outcome; a retry after daemonRunning or terminalHostRunning runs the same script again,
+ * for the same OS, attaching nothing.
+ */
+export async function runRemovalStage(deps: Pick<RemoveServerDeps, 'runStage' | 'log' | 'os'>, script: string): Promise<RemoveServerResult> {
   const { code, lines } = await deps.runStage(script);
-  const outcome = removalOutcome(lines, code);
+  const outcome = removalOutcome(lines, code, deps.os);
   deps.log(`[remote] the removal stage ended: ${outcome.ok ? `removed (${outcome.notices.map((notice) => notice.code).join(', ') || 'no notices'})` : outcome.code}`);
   return outcome;
 }

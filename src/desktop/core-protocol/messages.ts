@@ -107,6 +107,8 @@ export const MAX_ITEMS = 100_000;
 export const MAX_ACTIONS = 64;
 // a repository's remotes, which the forge calls carry whole
 export const MAX_REMOTE_ENDPOINTS = 512;
+// the terminal hosts' relay nonces a daemon's core accepts at once
+export const MAX_RELAY_NONCES = 256;
 
 // The browser page messages main parses out of a core post to persist the page's state (views.ts).
 export const PAGE_STATE_TYPES: ReadonlySet<string> = new Set(['urlChanged', 'navigationState', 'pickingStateChanged']);
@@ -313,6 +315,9 @@ export interface CoreRequests {
   // a daemon's core, inside a client's work: the daemon shows the view on that client alone, opening it there when it shows
   // none; answers once it shows, false when it cannot show there
   'chats.reveal': Call<{ readonly viewId: string; readonly column?: number }, boolean>;
+  // a daemon's core, for a restored panel whose conversation the panel of view `into` holds: every client's view of `viewId`
+  // shows that panel instead, under its own view id, and core gets `disposed` for `viewId`; false, with nothing moved, when it cannot
+  'views.merge': Call<{ readonly viewId: string; readonly into: string }, boolean>;
   // the daemon to a client: select the chat holding stored session sessionId, joining its panel when this client shows no view
   // of it; answers once it shows, and fails when it did not open
   'chats.showSession': Call<{ readonly sessionId: string }, void>;
@@ -994,9 +999,9 @@ export interface MirrorTopics {
   clientFeatures: ClientDelta<{ readonly features: readonly string[] }>;
   // the daemon's: the client that most recently sent core a message, published before that message; a client's is dropped
   actingClient: { readonly clientId?: string };
-  // the daemon's, after a removed socket folder was made again: its agent folder (CoreInit.remote.agentFolder) and the git
-  // credential relay's handle (CoreInit.paths.askpass.credentialRelay), which core listens at from then on; a client's is dropped
-  hostSockets: { readonly agentFolder?: string; readonly relayHandle?: string };
+  // the daemon's (a client's is dropped): the agent folder and relay handle core uses from then on, and the relay nonces it
+  // accepts for credential requests only
+  hostSockets: { readonly agentFolder?: string; readonly relayHandle?: string; readonly relayNonces?: readonly string[] };
   // this computer's core: a remote authority's forwarded local ports and its local-network switch, which its browser
   // context's client-network proxy applies; a daemon drops a client's
   clientNetwork: { readonly authority: string; readonly allowedPorts: readonly number[]; readonly allowLocalNetwork: boolean };
@@ -2072,6 +2077,7 @@ const CORE_REQUESTS: Tables<CoreToMain>['requests'] = {
   'user.theme.installCancel': method(obj({ clientId: id, installId: id }), done),
   'views.drained': method(obj({ viewId: id, viewKey }), done),
   'chats.reveal': method(obj({ viewId: id, column }), bool),
+  'views.merge': method(obj({ viewId: id, into: id }), bool),
   'chats.showSession': method(obj({ sessionId: id }), done),
   'design.openPreview': method(obj({ panelId: id, designId, relPath: filePath }), done),
   'design.capture': method(
@@ -2128,7 +2134,7 @@ const MIRROR_TOPICS: Tables<MainToCore>['mirrors'] = {
   clientUser: clientDelta(clientUser),
   clientPolicy: clientDelta(clientPolicy),
   actingClient,
-  hostSockets: obj({ agentFolder: opt(filePath), relayHandle: opt(filePath) }),
+  hostSockets: obj({ agentFolder: opt(filePath), relayHandle: opt(filePath), relayNonces: opt(arr(credentialNonce, MAX_RELAY_NONCES)) }),
   clientEditor: clientDelta(editorMirror),
   clientTerminal: clientDelta(terminalMirror),
   clientLanguage: clientDelta(obj({ language: oneOf(['en', 'el'] as const) })),
@@ -2521,7 +2527,7 @@ export const parseCoreInit: Parser<CoreInit> = obj({
     watchWorker: filePath,
     remoteMirrors: opt(filePath),
     forge: opt(filePath),
-    askpass: obj({ askpass: filePath, sshAskpass: filePath, node: filePath, main: filePath, credentialRelay: opt(obj({ helper: filePath, handle: filePath, nonce: credentialNonce })) }),
+    askpass: obj({ askpass: filePath, sshAskpass: filePath, node: filePath, main: filePath, credentialRelay: opt(obj({ helper: filePath, handle: filePath, nonce: credentialNonce, relayNonces: opt(arr(credentialNonce, MAX_RELAY_NONCES)) })) }),
   }),
   logs: obj({ dir: filePath, echo: bool }),
   endedCores: arr(obj({ pid: int(1, 2 ** 32), endedAt: int(0, Number.MAX_SAFE_INTEGER) }), MAX_ITEMS),
