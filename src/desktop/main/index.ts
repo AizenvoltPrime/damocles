@@ -2562,7 +2562,7 @@ class DesktopApp {
       }),
       client.onWorktreeRecords((records) => this.worktreeRecords.apply(records)),
       client.onRelocationsChanged(() => {
-        this.relocationsChanged('local');
+        this.relocationsChanged('local', client);
         // a pending relocation's looks show under where it leads
         this.readProjectLooks(client).catch(this.report('Reading the project looks'));
       }),
@@ -4845,14 +4845,18 @@ class DesktopApp {
   }
 
   // A core's relocations mirror changed: rows follow, and a move that reached coreDone is applied here or offered with Open.
-  // What this run kept for a relocation that left the mirror (a new core, Stop moving) is forgotten.
-  private relocationsChanged(authority: string): void {
+  // What this run kept for a relocation that left the mirror (a new core, Stop moving) is forgotten. client: the core whose
+  // mirror changed, which publishes it before its attach is ready, when clientFor still answers undefined.
+  private relocationsChanged(authority: string, client: CoreClient | undefined = this.clientFor(authority)): void {
     this.shellStateChanged();
     this.refreshMenuState();
-    const views = this.clientFor(authority)?.relocations() ?? [];
-    const mirrored = new Set(views.map((view) => view.id));
-    for (const id of this.mirroredRelocations.get(authority) ?? []) if (!mirrored.has(id)) this.forgetRelocation(authority, id);
-    this.mirroredRelocations.set(authority, mirrored);
+    const views = client?.relocations() ?? [];
+    // with no core's mirror read, no relocation left it
+    if (client) {
+      const mirrored = new Set(views.map((view) => view.id));
+      for (const id of this.mirroredRelocations.get(authority) ?? []) if (!mirrored.has(id)) this.forgetRelocation(authority, id);
+      this.mirroredRelocations.set(authority, mirrored);
+    }
     this.relocationTargetsChanged.fire(authority);
     for (const view of views) {
       this.relocationName(authority, view);
@@ -6415,10 +6419,12 @@ class DesktopApp {
           })),
           state: (hostId: string) => this.requireRemoteHosts().connectionOf(hostId),
           connectStep: (hostId: string) => this.requireRemoteConnections().attempt(hostId),
-          // shutdownNow settles once the daemon ended this connection, so nothing the spec does next reaches a daemon stopping
+          // shutdownNow and handOver now settle once the daemon ended this connection, as the app's own switch does, so nothing the
+          // spec does next reaches a daemon stopping
           control: async (hostId: string, command: keyof ClientToControl['requests'], params: object) => {
             if (command === 'shutdownNow') return this.shutDownDaemon(this.authorityOfHost(hostId));
             const connection = this.requireConnection(this.authorityOfHost(hostId));
+            if (command === 'handOver' && (params as { readonly when?: unknown }).when === 'now') return handOverNow(connection, (line) => log(line));
             return (connection.control as unknown as { request(name: string, params: object): Promise<unknown> }).request(command, params);
           },
           dropConnection: (hostId: string) => this.authorities?.connection(this.authorityOfHost(hostId))?.close('the e2e hooks dropped it'),
@@ -6630,9 +6636,10 @@ class DesktopApp {
             if (hold) e2eFinishHolds.set(worktreeId, hold);
             return hold !== undefined;
           },
-          releaseFinish: (worktreeId: string) => {
-            e2eFinishHolds.get(worktreeId)?.dispose();
+          releaseFinish: async (worktreeId: string) => {
+            const hold = e2eFinishHolds.get(worktreeId);
             e2eFinishHolds.delete(worktreeId);
+            await hold?.release();
           },
         },
         // reached turns true once a chat restore waits on the hold; fail makes every held restore reject
@@ -7302,7 +7309,7 @@ class DesktopApp {
         if (project) this.newChat(project.key).catch(this.shellFailure('New Chat', 'Damocles could not open a new conversation: {0}'));
       }),
       client.onUsageThreshold((crossing) => this.notificationCenter.usageThreshold(crossing)),
-      client.onRelocationsChanged(() => this.relocationsChanged(authority)),
+      client.onRelocationsChanged(() => this.relocationsChanged(authority, client)),
       this.requireScmClient().attach(client),
       {
         dispose: () => {

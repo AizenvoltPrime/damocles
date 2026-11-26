@@ -93,12 +93,17 @@ describe('this machine\'s own reads', { timeout: 30_000 }, () => {
 
 describe('a process\'s start identity on macOS', () => {
   it('is ps\'s lstart in the C locale with runs of spaces collapsed', async () => {
-    const macos = reads({ platform: 'darwin', run: answering({ code: 0, signal: null, stdout: 'Mon Jun  3 09:04:05 2024\n', stderr: '' }) });
+    const macos = reads({ platform: 'darwin', run: answering({ code: 0, signal: null, stdout: 'Ss+  Mon Jun  3 09:04:05 2024\n', stderr: '' }) });
     expect(await createStartIdentity(macos)(812)).toBe('darwin1:Mon Jun 3 09:04:05 2024');
     const recorded = reads({ platform: 'darwin' });
     await createStartIdentity(recorded)(812);
     // lstart is local time, so a zone change would make a live process read as another
-    expect(recorded.runs).toEqual(['/bin/ps -o lstart= -p 812 {"LC_ALL":"C","TZ":"UTC0"}']);
+    expect(recorded.runs).toEqual(['/bin/ps -o stat=,lstart= -p 812 {"LC_ALL":"C","TZ":"UTC0"}']);
+  });
+
+  // a shell killed under a stopped terminal host stays its zombie until the host is ended
+  it('is undefined for a zombie, which has ended', async () => {
+    expect(await createStartIdentity(reads({ platform: 'darwin', run: answering({ code: 0, signal: null, stdout: 'Z+   Mon Jun  3 09:04:05 2024\n', stderr: '' }) }))(812)).toBeUndefined();
   });
 
   it('is undefined when ps lists no such process, and fails when ps fails or is missing', async () => {

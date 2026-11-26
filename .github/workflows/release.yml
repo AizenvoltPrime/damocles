@@ -967,16 +967,22 @@ jobs:
         timeout-minutes: 55
         env:
           SHARD: ${{ matrix.shard }}/${{ matrix.shards }}
+          TARGET: ${{ matrix.target }}
+          # the run's per-test times, which `node scripts/e2e-shards.ts timings` records for the next plan; uploaded with the report
+          PLAYWRIGHT_JSON_OUTPUT_FILE: dist/e2e-report/timings.json
           # linux-x64 composites through SwiftShader and fails if a wallpaper test cannot run (docs/release.md "Desktop end-to-end suite").
           DAMOCLES_E2E_SOFTWARE_GL: ${{ matrix.target == 'linux-x64' && '1' || '' }}
           DAMOCLES_E2E_REQUIRE_GPU: ${{ matrix.target == 'linux-x64' && '1' || '' }}
-        # Test homes leave the Windows OS disk (docs/release.md "Desktop end-to-end suite").
+        # Test homes leave the Windows OS disk; the shards split the spec files by their recorded run time (docs/release.md
+        # "Desktop end-to-end suite").
         run: |
           if [ "$RUNNER_OS" = Windows ]; then export TEMP="$RUNNER_TEMP" TMP="$RUNNER_TEMP"; fi
+          export SHARD_TESTS="$RUNNER_TEMP/shard-tests.txt"
+          node scripts/e2e-shards.ts plan --shard "$SHARD" --target "$TARGET" --out "$SHARD_TESTS"
           if [ "$RUNNER_OS" = Linux ]; then
-            xvfb-run -a -s '-screen 0 1920x1080x24' sh -c 'openbox & exec npm run test:desktop -- --shard="$SHARD"'
+            xvfb-run -a -s '-screen 0 1920x1080x24' sh -c 'openbox & exec npm run test:desktop -- --test-list="$SHARD_TESTS" --add-reporter=json'
           else
-            npm run test:desktop -- --shard="$SHARD"
+            npm run test:desktop -- --test-list="$SHARD_TESTS" --add-reporter=json
           fi
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
+import { downloadWithRetry } from './cached-download.ts';
 import { isEntryPoint } from './entry-point.ts';
 
 // The wake model is one release archive in MODEL_MANIFEST.json's `wake_model`; this script extracts the files it lists
@@ -12,13 +12,6 @@ import { isEntryPoint } from './entry-point.ts';
 const MODELS_DIR = join('python', 'damocles_voice_sidecar', 'damocles_voice_sidecar', 'models');
 export const MANIFEST_RELATIVE_PATH = join(MODELS_DIR, 'MODEL_MANIFEST.json');
 export const WAKE_DIR_RELATIVE_PATH = join(MODELS_DIR, 'wake');
-
-export const DOWNLOAD_ATTEMPTS = 5;
-const BACKOFF_BASE_MS = 2_000;
-const BACKOFF_CAP_MS = 30_000;
-const RETRY_AFTER_CAP_MS = 60_000;
-/** Covers the headers and the whole body of one attempt, so a stalled transfer is retried instead of hanging the build. */
-const ATTEMPT_TIMEOUT_MS = 120_000;
 
 export interface WakeFile {
   readonly filename: string;
@@ -35,15 +28,6 @@ interface Checksum {
 export interface WakeModel {
   readonly archive: Checksum & { readonly url: string };
   readonly files: readonly WakeFile[];
-}
-
-export interface DownloadOptions {
-  readonly fetchImpl?: (url: string, init: RequestInit) => Promise<Response>;
-  readonly sleep?: (ms: number) => Promise<unknown>;
-  readonly random?: () => number;
-  readonly now?: () => number;
-  readonly log?: (message: string) => void;
-  readonly attempts?: number;
 }
 
 export interface TarOptions {
@@ -64,68 +48,6 @@ export interface WakeModelResult {
   readonly fetched: number;
   readonly present: number;
   readonly removed: readonly string[];
-}
-
-/** Statuses a later identical request can succeed after; any other failure is permanent. */
-function isTransientStatus(status: number): boolean {
-  return status === 408 || status === 429 || status >= 500;
-}
-
-/** `Retry-After` as seconds or an HTTP date, in milliseconds, or undefined when absent or unreadable. */
-function retryAfterMs(header: string | null, now: number): number | undefined {
-  if (!header) return undefined;
-  const seconds = Number(header);
-  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
-  const date = Date.parse(header);
-  return Number.isNaN(date) ? undefined : Math.max(0, date - now);
-}
-
-/** Exponential backoff with equal jitter: half the step is fixed, half random. */
-function backoffMs(attempt: number, random: () => number): number {
-  const step = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** (attempt - 1));
-  return step / 2 + random() * (step / 2);
-}
-
-/**
- * The body at `url`, retrying network errors, timeouts, 408, 429 and 5xx with backoff. A 404 or any
- * other 4xx fails at once. Retrying is safe because the caller verifies the size and SHA-256.
- */
-export async function downloadWithRetry(url: string, {
-  fetchImpl = fetch,
-  sleep = delay,
-  random = Math.random,
-  now = Date.now,
-  log = console.log,
-  attempts = DOWNLOAD_ATTEMPTS,
-}: DownloadOptions = {}): Promise<Buffer> {
-  const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
-  for (let attempt = 1; ; attempt++) {
-    let failure: string | undefined;
-    let serverWaitMs = 0;
-    let res: Response | undefined;
-    try {
-      res = await fetchImpl(url, { redirect: 'follow', signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS) });
-    } catch (error) {
-      failure = message(error);
-    }
-    if (res?.ok) {
-      try {
-        return Buffer.from(await res.arrayBuffer());
-      } catch (error) {
-        failure = message(error);
-      }
-    } else if (res) {
-      await res.body?.cancel();
-      // HTTP/2 responses carry no status text.
-      failure = res.statusText ? `${res.status} ${res.statusText}` : String(res.status);
-      if (!isTransientStatus(res.status)) throw new Error(`Download failed (${failure}): ${url}`);
-      serverWaitMs = Math.min(RETRY_AFTER_CAP_MS, retryAfterMs(res.headers.get('retry-after'), now()) ?? 0);
-    }
-    if (attempt >= attempts) throw new Error(`Download failed after ${attempts} attempts (${failure}): ${url}`);
-    const waitMs = Math.max(serverWaitMs, backoffMs(attempt, random));
-    log(`  ${failure}; retrying in ${(waitMs / 1000).toFixed(1)}s (attempt ${attempt + 1} of ${attempts})`);
-    await sleep(waitMs);
-  }
 }
 
 /**

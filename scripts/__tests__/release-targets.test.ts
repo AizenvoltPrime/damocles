@@ -153,14 +153,19 @@ describe('the dev end-to-end suite runs in shards on every desktop target', () =
     }
   });
 
-  it('runs shards 1 to N of each target, where N is the shard count it passes to Playwright', () => {
+  it('runs shards 1 to N of each target, where N is the shard count its plan splits the files into', () => {
     for (const leg of matrix!.include) {
       const shards = matrix!.shard!.filter((shard) => !matrix!.exclude?.some((ex) => ex.target === leg.target && ex.shard === shard));
       expect({ target: leg.target, shards }).toEqual({ target: leg.target, shards: Array.from({ length: leg.shards as number }, (_, i) => i + 1) });
     }
     const suite = job!.steps.find((step) => step.run?.includes('npm run test:desktop'));
-    expect(suite?.run).toContain('--shard="$SHARD"');
-    expect(JSON.stringify(suite)).toContain('${{ matrix.shard }}/${{ matrix.shards }}');
+    expect(suite?.env).toMatchObject({ SHARD: '${{ matrix.shard }}/${{ matrix.shards }}', TARGET: '${{ matrix.target }}', PLAYWRIGHT_JSON_OUTPUT_FILE: 'dist/e2e-report/timings.json' });
+    expect(suite?.run).toContain('node scripts/e2e-shards.ts plan --shard "$SHARD" --target "$TARGET" --out "$SHARD_TESTS"');
+    // every run of the suite takes the plan's files and records their times; Playwright's own --shard splits by count
+    const runs = suite!.run!.split('\n').filter((line) => line.includes('npm run test:desktop'));
+    expect(runs).toHaveLength(2);
+    for (const line of runs) expect(line).toContain('--test-list="$SHARD_TESTS" --add-reporter=json');
+    expect(suite?.run).not.toContain('--shard=');
   });
 
   it('uploads every e2e report unless the run was cancelled', () => {

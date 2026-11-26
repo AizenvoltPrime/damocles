@@ -71,6 +71,16 @@ export function isAlive(pid: number): boolean {
   }
 }
 
+/** The pids among `pids` that still run. On POSIX a zombie (stat Z), ended but not yet reaped by a stopped parent, does not. */
+export async function running(pids: readonly number[]): Promise<number[]> {
+  const live = pids.filter(isAlive);
+  if (process.platform === 'win32' || live.length === 0) return live;
+  // ps exits 1 when none of the pids exists any more
+  const table = await run('ps', ['-o', 'pid=,stat=', ...live.flatMap((pid) => ['-p', String(pid)])]);
+  const zombies = new Set(table.stdout.split('\n').map((line) => line.trim().split(/\s+/)).filter(([, stat]) => stat?.startsWith('Z')).map(([pid]) => Number(pid)));
+  return live.filter((pid) => isAlive(pid) && !zombies.has(pid));
+}
+
 /** Kills `proc`'s tree and waits until it is gone; an unreadable Windows process table still kills the root's tree, then rejects. */
 // Playwright spawns a dev launch as a process group leader on POSIX; on Windows taskkill /T ends its Chromium children.
 export async function killTree(proc: Pick<ChildProcess, 'pid' | 'exitCode' | 'signalCode'>): Promise<void> {

@@ -4,7 +4,7 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ElectronApplication } from '@playwright/test';
-import { isAlive, run, windowsProcessTree } from '../desktop/support/app';
+import { isAlive, run, running, windowsProcessTree } from '../desktop/support/app';
 import { openInEditor, editorShows, quickOpen, quickPick } from '../desktop/support/editor';
 import { writeUserSettings } from '../desktop/support/hermetic';
 import { killDaemonIn, pidIn, processTree, terminalHostPids } from '../desktop/support/loopback';
@@ -164,7 +164,8 @@ for (const [tag, platform] of [[WINDOWS_TARGET_TAG, 'win32'], [DARWIN_TARGET_TAG
       // Kill: the terminal's shell and its tree end, which the identity proof allows; the host and its other terminal run on
       await shell.evaluate((id) => window.damoclesShell!.terminal.kill(id), killed);
       await expect.poll(() => terminalStatus(shell, killed), { timeout: 30_000 }).toBeUndefined();
-      await expect.poll(() => killedTree.filter(isAlive), { timeout: 30_000 }).toEqual([]);
+      // the host is stopped, so on darwin the killed shell stays its zombie until End terminal host
+      await expect.poll(() => running(killedTree), { timeout: 30_000 }).toEqual([]);
       expect([host, ...keptTree].filter(isAlive)).toEqual([host, ...keptTree]);
 
       // End terminal host: the host's whole tree ends, and the daemon runs on
@@ -176,7 +177,7 @@ for (const [tag, platform] of [[WINDOWS_TARGET_TAG, 'win32'], [DARWIN_TARGET_TAG
       const confirming = await readyOverlay(app);
       await expect(confirmDialog(confirming)).toContainText('End the terminal host on prod-1?');
       await confirmDialog(confirming).getByRole('button', { name: 'End terminal host' }).click();
-      await expect.poll(() => hostTree.filter(isAlive), { timeout: 30_000 }).toEqual([]);
+      await expect.poll(() => running(hostTree), { timeout: 30_000 }).toEqual([]);
       await expect.poll(() => terminalStatus(shell, kept), { timeout: 30_000 }).toBe('exited');
       await expect(card.getByTestId('host-run')).toHaveCount(0, { timeout: 30_000 });
       expect(isAlive(daemon)).toBe(true);

@@ -187,6 +187,9 @@ test('after Locate and trust, worktree chats live, shared and deleted follow the
       await clickMenu(app, 'damocles.worktree.apply');
       await expect.poll(() => fs.readFileSync(path.join(moved, 'a.ts'), 'utf8'), { timeout: 60_000 }).toBe('export const a = 2;\n');
       expect(await git(home, moved, 'status', '--porcelain')).toContain('a.ts');
+      // the file lands before Apply ends: until core lets go of the worktree, the chat refuses a send
+      await expect.poll(async () => (await recordedToasts(app)).map((toast) => toast.message), { timeout: 60_000 }).toContain('Applied 1 file to the project folder.');
+      await expect(tab.getByTestId('composer-worktree-finishing')).toHaveCount(0);
     });
 
     await test.step('isolation still blocks an Edit into the new project folder', async () => {

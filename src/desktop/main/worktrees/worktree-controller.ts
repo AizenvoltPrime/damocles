@@ -260,7 +260,7 @@ export class WorktreeController {
     try {
       outcome = await held.apply();
     } finally {
-      held.dispose();
+      await held.release();
     }
     if (outcome.kind === 'refused') {
       await this.deps.askDialog({ dialog: 'refusal', action: 'apply', files: outcome.files });
@@ -313,7 +313,7 @@ export class WorktreeController {
     try {
       outcome = await held.mergeInto(message);
     } finally {
-      held.dispose();
+      await held.release();
     }
     switch (outcome.kind) {
       case 'ok':
@@ -359,7 +359,7 @@ export class WorktreeController {
     try {
       return await held.rebaseOnto();
     } finally {
-      held.dispose();
+      await held.release();
     }
   }
 
@@ -376,7 +376,7 @@ export class WorktreeController {
     try {
       outcome = await held.updateFrom();
     } finally {
-      held.dispose();
+      await held.release();
     }
     if (outcome.kind === 'rewritten') {
       const answer = await this.deps.askDialog({ dialog: 'rewritten', branch: outcome.branch });
@@ -465,6 +465,8 @@ export class WorktreeController {
   private async closeAndRemove(record: ChatWorktreeRecord, deleteBranch: boolean, force: boolean): Promise<void> {
     const t = this.deps.t;
     let removed = false;
+    let closed: Awaited<ReturnType<WorktreeControllerDeps['closeWorktree']>> | undefined;
+    let failed: string | undefined;
     let held: FinishHold | undefined;
     let closing: { dispose(): void } | undefined;
     try {
@@ -474,27 +476,30 @@ export class WorktreeController {
         if (held) closing = this.deps.roots.close(record.id);
         return held !== undefined;
       };
-      const closed = await this.deps.closeWorktree(record.id, this.rootKeyOf(record), stop);
-      if (closed === 'edited') void this.deps.notify.warn(t('A file of the worktree was edited while Damocles was deleting it, so the worktree was not deleted. Try again.'));
-      if (closed !== 'closed') return;
-      try {
-        await held!.removeWorktree({ deleteBranch, force });
-        removed = true;
-      } catch (err) {
-        // core published the registry's change before its answer (the ordering rule)
-        removed = this.deps.records.get(record.id)?.deletedAt !== undefined;
-        this.deps.log(`[worktrees] deleting ${record.worktreeRoot} failed: ${errorText(err)}`);
-        const retry = t('Retry');
-        const message = err instanceof EngineStoppedError ? this.engineStopped()
-          : removed ? visibleLines(errorText(err)) : t('Could not delete the worktree "{0}": {1}', visibleText(record.worktreeRoot), visibleLines(errorText(err)));
-        void this.deps.notify.error(message, ...(removed ? [] : [retry]))
-          .then((choice) => (choice === retry ? this.finish(record.id, 'delete', { deleteBranch }) : undefined))
-          .catch((retryErr: unknown) => this.deps.log(`[worktrees] retrying the delete of ${record.worktreeRoot} failed: ${errorText(retryErr)}`));
+      closed = await this.deps.closeWorktree(record.id, this.rootKeyOf(record), stop);
+      if (closed === 'closed') {
+        try {
+          await held!.removeWorktree({ deleteBranch, force });
+          removed = true;
+        } catch (err) {
+          // core published the registry's change before its answer (the ordering rule)
+          removed = this.deps.records.get(record.id)?.deletedAt !== undefined;
+          this.deps.log(`[worktrees] deleting ${record.worktreeRoot} failed: ${errorText(err)}`);
+          failed = err instanceof EngineStoppedError ? this.engineStopped()
+            : removed ? visibleLines(errorText(err)) : t('Could not delete the worktree "{0}": {1}', visibleText(record.worktreeRoot), visibleLines(errorText(err)));
+        }
       }
     } finally {
-      held?.dispose();
+      await held?.release();
       closing?.dispose();
       this.deps.afterClose(record.id, removed);
+    }
+    if (closed === 'edited') void this.deps.notify.warn(t('A file of the worktree was edited while Damocles was deleting it, so the worktree was not deleted. Try again.'));
+    if (failed !== undefined) {
+      const retry = t('Retry');
+      void this.deps.notify.error(failed, ...(removed ? [] : [retry]))
+        .then((choice) => (choice === retry ? this.finish(record.id, 'delete', { deleteBranch }) : undefined))
+        .catch((retryErr: unknown) => this.deps.log(`[worktrees] retrying the delete of ${record.worktreeRoot} failed: ${errorText(retryErr)}`));
     }
     if (removed) this.deps.showProjectFolder(this.projectKeyOf(record));
   }

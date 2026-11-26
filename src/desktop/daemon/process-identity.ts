@@ -89,15 +89,17 @@ export function createStartIdentity(reads: IdentityReads): StartIdentity {
 
   // lstart is local time in the locale's form, so both are fixed, and it pads a single-digit day, so runs of spaces are
   // collapsed (shell-sentinel.ts darwinProbe). lstart has 1 s resolution, so a pid reused within the same second passes; a finer
-  // source takes a new scheme.
+  // source takes a new scheme. stat comes first, a word with no spaces, and Z marks a zombie.
   const ps = async (pid: number): Promise<string | undefined> => {
     const file = await reads.ps();
     if (file === undefined) throw new Error('no ps is installed');
-    const { code, stdout, stderr } = finished('ps', await reads.run(file, ['-o', 'lstart=', '-p', String(pid)], { LC_ALL: 'C', TZ: 'UTC0' }));
-    const stamp = stdout.trim().split(/\s+/).join(' ');
+    const { code, stdout, stderr } = finished('ps', await reads.run(file, ['-o', 'stat=,lstart=', '-p', String(pid)], { LC_ALL: 'C', TZ: 'UTC0' }));
+    const [state = '', ...started] = stdout.trim().split(/\s+/);
+    const stamp = started.join(' ');
+    if (code === 0 && state.startsWith('Z')) return undefined;
     if (code === 0 && stamp !== '') return `${DARWIN_SCHEME}:${stamp}`;
     // ps exits 1 and prints nothing when it lists no process
-    if (code !== 0 && stamp === '' && stderr.trim() === '') return undefined;
+    if (code !== 0 && state === '' && stderr.trim() === '') return undefined;
     throw new Error(`ps exited with ${code}: ${stderr.trim()}`);
   };
 

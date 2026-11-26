@@ -324,7 +324,7 @@ function matchesIntegrity(data: Buffer, integrity: string): boolean {
 
 /** A download, cached under .cache/ and accepted only when `valid` holds for its bytes. */
 function cachedDownload(url: string, name: string, valid: (data: Buffer) => boolean): Promise<Buffer> {
-  return cachedFile(url, join(CACHE_DIR, name), valid);
+  return cachedFile([url], join(CACHE_DIR, name), valid);
 }
 
 async function nativeEntries(spec: Pick<ServerTarget, 'natives'>): Promise<ArchiveEntry[]> {

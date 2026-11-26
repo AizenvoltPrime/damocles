@@ -135,7 +135,7 @@ function controller(overrides: Partial<WorktreeControllerDeps> & { readonly regi
       if (busyAtHold) return undefined;
       H.trail.push(`hold:${worktreeId}:${action}`);
       const hold = holds.add(worktreeId, { dispose: () => H.trail.push('release') });
-      return finishHold({ call, stopped: () => false, worktreeId, hold, release: () => holds.release(hold) });
+      return finishHold({ call, stopped: () => false, worktreeId, hold, release: async () => holds.release(hold) });
     },
     showTask: () => true,
     stopTask: (key) => H.trail.push(`stopTask:${key}`),
@@ -385,6 +385,30 @@ describe('WorktreeController', () => {
     H.applyOutcome = { kind: 'conflicts', files: ['a.ts'] };
     await controller().finish(record.id, 'apply');
     expect(H.trail).toEqual(['hold:abcd1234:apply', 'apply', 'release', 'showProjectFolder', 'conflicts:true:a.ts:damocles/fix']);
+  });
+
+  // the chat may be sent to once Apply says it applied, so core has let go of the worktree's chats by then
+  it('tells Apply\'s outcome only after core released the hold, which answers over the channel later', async () => {
+    const holds = createFinishHolds();
+    const { main, core } = createLoopback();
+    const client = new CoreClient(createMainEndpoint(main, () => undefined), (_view, attach) => attach(), LOCAL_PROJECT_KEYS);
+    const endpoint = createCoreEndpoint(core, () => undefined);
+    const call = coreCalls(recordRegistry(), holds);
+    endpoint.serve('worktree.beginFinish', ({ worktreeId }) => holds.add(worktreeId, { dispose: () => H.trail.push('release') }));
+    endpoint.serve('worktree.endFinish', async ({ hold }) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      holds.release(hold);
+    });
+    endpoint.serve('worktrees.call', ({ method, args }) => call(method, args));
+    const told = (severity: string) => async (message: string): Promise<undefined> => {
+      H.trail.push(`${severity}:${message}`);
+      return undefined;
+    };
+    await controller({
+      beginFinish: (worktreeId, action) => client.beginWorktreeFinish(worktreeId, action, () => false),
+      notify: { info: told('info'), warn: told('warn'), error: told('error') },
+    }).finish(record.id, 'apply');
+    expect(H.trail).toEqual(['apply', 'release', 'showProjectFolder', 'info:Applied 2 files to the project folder.']);
   });
 
   it('asks for a commit message before merging uncommitted worktree files, and Generate fills it from the open dialog\'s worktree', async () => {

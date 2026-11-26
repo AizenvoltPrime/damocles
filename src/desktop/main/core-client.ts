@@ -419,7 +419,7 @@ export class CoreClient implements Disposable {
       worktreeId,
       hold,
       // a core that stopped let go of its holds as it went
-      release: () => void this.request('worktree.endFinish', { hold }).catch(() => undefined),
+      release: () => this.request('worktree.endFinish', { hold }).catch(() => undefined),
     });
   }
 

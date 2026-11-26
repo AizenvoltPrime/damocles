@@ -1,4 +1,3 @@
-import type { Disposable } from '../../../platform/disposable';
 import type { FinishCall, WorktreeCall, WorktreeCalls } from '../../core-protocol';
 
 /**
@@ -7,8 +6,11 @@ import type { FinishCall, WorktreeCall, WorktreeCalls } from '../../core-protoco
  */
 export type WorktreeEngine = Omit<WorktreeCalls, FinishCall>;
 
-/** A finish action's hold of its worktree, and the finish actions, which run on the core that gave the hold and on no other. */
-export type FinishHold = Disposable & {
+/**
+ * A finish action's hold of its worktree, and the finish actions, which run on the core that gave the hold and on no other.
+ * release settles once that core let go of the worktree's chats, so an outcome told after it finds them free to send to.
+ */
+export type FinishHold = { readonly release: () => Promise<void> } & {
   readonly [M in FinishCall]: WorktreeCalls[M] extends (worktreeId: string, hold: string, ...rest: infer A) => infer R ? (...rest: A) => R : never;
 };
 
@@ -50,7 +52,7 @@ export interface FinishHoldDeps {
   readonly stopped: () => boolean;
   readonly worktreeId: string;
   readonly hold: string;
-  readonly release: () => void;
+  readonly release: () => Promise<void>;
 }
 
 export function finishHold(deps: FinishHoldDeps): FinishHold {
@@ -67,6 +69,6 @@ export function finishHold(deps: FinishHoldDeps): FinishHold {
     rebaseOnto: () => held('rebaseOnto', []),
     updateFrom: () => held('updateFrom', []),
     removeWorktree: (options) => held('removeWorktree', [options]),
-    dispose: deps.release,
+    release: deps.release,
   };
 }

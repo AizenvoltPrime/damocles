@@ -1,9 +1,9 @@
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { compileBrowserHelper, PE_MACHINES, peMachine, signedHelperProblems, unsignedImage, versionResource, ZIG_ARCHIVES, zigArguments } from '../browser-helper.ts';
+import { compileBrowserHelper, PE_MACHINES, peMachine, publishTree, signedHelperProblems, unsignedImage, versionResource, ZIG_ARCHIVES, ZIG_VERSION, zigArguments, zigSources } from '../browser-helper.ts';
 import { SERVER_TARGETS } from '../server-targets.ts';
 
 // A minimal PE32+ image of `size` bytes for `machine`, unsigned.
@@ -51,6 +51,32 @@ describe('the BROWSER helper build', () => {
   it('pins a zig for every machine that builds a Windows server package', () => {
     const hosts = Object.values(SERVER_TARGETS as Record<string, { platform: string; arch: string }>).filter((spec) => spec.platform === 'win32').map((spec) => `win32-${spec.arch}`);
     for (const host of hosts) expect(ZIG_ARCHIVES[host], host).toMatchObject({ name: expect.stringMatching(/^zig-[a-z0-9_]+-windows-[0-9.]+\.zip$/), sha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  });
+
+  it('downloads zig from the community mirrors in random order, then ziglang.org, and from ziglang.org alone without the list', async () => {
+    const sources = await zigSources('zig-x.zip', async () => 'https://a.test\nhttps://b.test/zig/\n');
+    expect(sources.at(-1)).toBe(`https://ziglang.org/download/${ZIG_VERSION}/zig-x.zip`);
+    expect(sources.slice(0, -1).sort()).toEqual(['https://a.test/zig-x.zip?source=damocles', 'https://b.test/zig/zig-x.zip?source=damocles']);
+    expect(await zigSources('zig-x.zip', () => Promise.reject(new Error('offline')))).toEqual([`https://ziglang.org/download/${ZIG_VERSION}/zig-x.zip`]);
+  });
+
+  // two builds unpack zig at once: the one that publishes second must neither fail nor remove the tree the first builds with
+  it('publishes an unpacked tree by one rename, and keeps the tree another process published first', () => {
+    const cache = mkdtempSync(join(tmpdir(), 'damocles-zig-publish-'));
+    try {
+      const stage = (marker: string): string => {
+        const dir = mkdtempSync(join(cache, 'staging-'));
+        writeFileSync(join(dir, 'zig'), marker);
+        return dir;
+      };
+      const target = join(cache, 'zig-tree');
+      publishTree(stage('first'), target);
+      publishTree(stage('second'), target);
+      expect(readFileSync(join(target, 'zig'), 'utf8')).toBe('first');
+      expect(() => publishTree(join(cache, 'missing'), join(cache, 'other'))).toThrow();
+    } finally {
+      rmSync(cache, { recursive: true, force: true });
+    }
   });
 
   it('reads the PE machine, and nothing from a file that is no PE', () => {

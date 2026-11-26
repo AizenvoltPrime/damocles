@@ -107,7 +107,7 @@ describe('CoreClient', () => {
     expect(seen).toEqual(['s1']);
   });
 
-  it('holds a worktree for a finish action through core, runs the action under that hold, and lets go of it on dispose', async () => {
+  it('holds a worktree for a finish action through core, runs the action under that hold, and release settles once core let go of it', async () => {
     const { client, core } = connect();
     const ended = vi.fn();
     core.serve('worktree.beginFinish', ({ worktreeId }) => (worktreeId === 'busy' ? undefined : `hold-${worktreeId}`));
@@ -117,8 +117,8 @@ describe('CoreClient', () => {
     const hold = await client.beginWorktreeFinish('w1', 'merge', () => false);
     expect(await hold?.mergeInto('msg')).toEqual({ method: 'mergeInto', args: ['w1', 'hold-w1', 'msg'] });
     expect(await hold?.mergeInto(undefined)).toEqual({ method: 'mergeInto', args: ['w1', 'hold-w1'] });
-    hold?.dispose();
-    await vi.waitFor(() => expect(ended).toHaveBeenCalledWith('hold-w1'));
+    await hold?.release();
+    expect(ended).toHaveBeenCalledWith('hold-w1');
   });
 
   it('hands core the permissions a restore carries, and none for a restore without them', async () => {

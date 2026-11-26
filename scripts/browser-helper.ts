@@ -9,7 +9,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -90,31 +90,74 @@ export function zigArguments({ arch, checkout, include, source, resource, out }:
   ];
 }
 
+const ZIG_MIRROR_LIST = 'https://ziglang.org/download/community-mirrors.txt';
+const ZIG_MIRROR_LIST_TIMEOUT_MS = 15_000;
+
+async function fetchZigMirrorList(): Promise<string> {
+  const response = await fetch(ZIG_MIRROR_LIST, { signal: AbortSignal.timeout(ZIG_MIRROR_LIST_TIMEOUT_MS) });
+  if (!response.ok) throw new Error(`${ZIG_MIRROR_LIST} answered ${response.status}`);
+  return response.text();
+}
+
+/**
+ * Where to download `name` from: the community mirrors in random order, then ziglang.org, as
+ * https://ziglang.org/download/community-mirrors/ asks of automation. The pinned SHA-256 is checked on every copy, so a mirror
+ * cannot substitute other bytes.
+ */
+export async function zigSources(name: string, mirrorList: () => Promise<string> = fetchZigMirrorList): Promise<string[]> {
+  let mirrors: string[] = [];
+  try {
+    mirrors = (await mirrorList()).split('\n').filter((line) => line.startsWith('https://'));
+  } catch (err) {
+    console.log(`No zig mirror list (${err instanceof Error ? err.message : err}), so only ziglang.org`);
+  }
+  for (let i = mirrors.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [mirrors[i], mirrors[j]] = [mirrors[j]!, mirrors[i]!];
+  }
+  return [...mirrors.map((mirror) => `${mirror.replace(/\/+$/, '')}/${name}?source=damocles`), `https://ziglang.org/download/${ZIG_VERSION}/${name}`];
+}
+
+/**
+ * Moves the unpacked tree `staged` to `target`, which another process may have published first; a published tree is only ever
+ * complete, since only this rename creates it, and is never removed while a build may run from it.
+ */
+export function publishTree(staged: string, target: string): void {
+  try {
+    renameSync(staged, target);
+  } catch (err) {
+    if (!existsSync(target)) throw err;
+  }
+}
+
 /** The pinned zig for this machine, downloaded and unpacked into `cacheDir` on first use. */
 export async function zigExecutable(cacheDir = BROWSER_HELPER_CACHE, host = `${process.platform}-${process.arch}`): Promise<string> {
   const pin = ZIG_ARCHIVES[host];
   if (!pin) throw new Error(`No zig is pinned for ${host} (ZIG_ARCHIVES in scripts/browser-helper.ts), so browser.exe cannot be built here`);
   const top = pin.name.replace(/\.(zip|tar\.xz)$/, '');
-  const dir = join(cacheDir, top);
+  // named by the pin, so a re-pinned archive of the same version unpacks beside the old tree
+  const dir = join(cacheDir, `${top}-${pin.sha256.slice(0, 16)}`);
   const zig = join(dir, host.startsWith('win32-') ? 'zig.exe' : 'zig');
-  const unpacked = join(cacheDir, `${top}.unpacked`);
-  if (existsSync(unpacked) && readFileSync(unpacked, 'utf8') === pin.sha256 && existsSync(zig)) return zig;
+  if (existsSync(dir)) return zig;
   const archive = join(cacheDir, pin.name);
-  const data = await cachedDownload(`https://ziglang.org/download/${ZIG_VERSION}/${pin.name}`, archive, (bytes) => sha256(bytes) === pin.sha256);
-  rmSync(unpacked, { force: true });
-  rmSync(dir, { recursive: true, force: true });
-  if (pin.name.endsWith('.zip')) {
-    for (const entry of readZip(data)) {
-      if (!entry.path.startsWith(`${top}/`) || entry.path.split('/').includes('..')) throw new Error(`${pin.name} holds ${entry.path}, outside ${top}/`);
-      const file = join(cacheDir, entry.path);
-      mkdirSync(dirname(file), { recursive: true });
-      writeFileSync(file, entry.data);
+  const data = await cachedDownload(await zigSources(pin.name), archive, (bytes) => sha256(bytes) === pin.sha256);
+  const staging = mkdtempSync(join(cacheDir, `${top}.staging-`));
+  try {
+    if (pin.name.endsWith('.zip')) {
+      for (const entry of readZip(data)) {
+        if (!entry.path.startsWith(`${top}/`) || entry.path.split('/').includes('..')) throw new Error(`${pin.name} holds ${entry.path}, outside ${top}/`);
+        const file = join(staging, entry.path);
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, entry.data);
+      }
+    } else {
+      const result = spawnSync('tar', ['-xJf', archive, '-C', staging], { encoding: 'utf8' });
+      if (result.status !== 0) throw new Error(`tar could not unpack ${archive}: ${result.error?.message ?? result.stderr}`);
     }
-  } else {
-    const result = spawnSync('tar', ['-xJf', archive, '-C', cacheDir], { encoding: 'utf8' });
-    if (result.status !== 0) throw new Error(`tar could not unpack ${archive}: ${result.error?.message ?? result.stderr}`);
+    publishTree(join(staging, top), dir);
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
   }
-  writeFileSync(unpacked, pin.sha256);
   return zig;
 }
 
