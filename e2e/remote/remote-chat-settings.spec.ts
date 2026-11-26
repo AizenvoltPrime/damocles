@@ -31,13 +31,10 @@ async function hostSettings(fixture: Pick<SshdFixture, 'sh'>): Promise<Record<st
   return JSON.parse(await fixture.sh(`cat ${TARGET_HOME}/.damocles/settings.json 2>/dev/null || echo '{}'`, TARGET_USER)) as Record<string, unknown>;
 }
 
-/** Opens the chat page's Tools panel and asks its core for the status, as the header's Tools button does. */
+/** Opens the chat page's Tools panel from its header's More menu, where the test window's narrow header folds it; opening asks its core for the status. */
 async function openToolsPanel(tab: Page): Promise<Locator> {
-  await tab.evaluate(() => {
-    type PiniaHost = { __vue_app__: { config: { globalProperties: { $pinia: { _s: Map<string, { openToolsPanel(): boolean }> } } } } };
-    (document.querySelector('#app') as unknown as PiniaHost).__vue_app__.config.globalProperties.$pinia._s.get('ui')!.openToolsPanel();
-  });
-  await postFromWebview(tab, { type: 'requestToolStatus' });
+  await tab.getByTestId('chat-header-more').click();
+  await tab.locator('[data-testid="chat-header-more-menu"] [data-action="tools"]').click();
   const panel = tab.getByTestId('tools-panel');
   await expect(panel).toBeVisible();
   await expect(panel.getByTestId('tools-loading')).toHaveCount(0, { timeout: 60_000 });

@@ -26,12 +26,10 @@ const REMOTE_AVAILABLE = 'damocles.desktop.mcp.remoteAvailable';
 
 const post = (tab: Page, message: Record<string, unknown>): Promise<void> => tab.evaluate((m) => window.damoclesBridge!.postMessage(m), message);
 
-/** Opens the chat page's MCP panel, as its header's MCP button does. */
+/** Opens the chat page's MCP panel from its header's More menu, where the test window's narrow header folds it. */
 async function openMcpPanel(tab: Page): Promise<ReturnType<Page['getByTestId']>> {
-  await tab.evaluate(() => {
-    type PiniaHost = { __vue_app__: { config: { globalProperties: { $pinia: { _s: Map<string, { openMcpPanel(): void }> } } } } };
-    (document.querySelector('#app') as unknown as PiniaHost).__vue_app__.config.globalProperties.$pinia._s.get('ui')!.openMcpPanel();
-  });
+  await tab.getByTestId('chat-header-more').click();
+  await tab.locator('[data-testid="chat-header-more-menu"] [data-action="mcp"]').click();
   const panel = tab.getByTestId('mcp-panel');
   await expect(panel).toBeVisible();
   await settled(tab);

@@ -142,37 +142,42 @@ async function findChat(app: ElectronApplication, chatId: string): Promise<Page 
 }
 
 /**
+ * The first page `find` resolves within 30 s. A chat page main loads again (a remote chat reopened after an engine restart is
+ * shown by the rejoin and then by the restore) destroys a read's context, which expect.poll does not retry; toPass does.
+ */
+async function pollPage(find: () => Promise<Page | undefined>): Promise<Page> {
+  let page: Page | undefined;
+  await expect(async () => {
+    page = await find();
+    expect(page).toBeDefined();
+  }).toPass({ timeout: 30_000 });
+  return page!;
+}
+
+/**
  * The loaded chat main names `chatId`: `new:<panelId>` is the chat page of that panel, a session id the chat page whose
  * webview state holds it. Waits for the page to load when main has only just created its view.
  */
 export async function chatById(app: ElectronApplication, chatId: string): Promise<Page> {
-  let page: Page | undefined;
-  await expect.poll(async () => (page = await findChat(app, chatId)), { timeout: 30_000 }).toBeDefined();
-  return page!;
+  return pollPage(() => findChat(app, chatId));
 }
 
 /** The selected chat's page; the selected chat's id is read again on every try, since a first file write changes it. */
 export async function activeChat(app: ElectronApplication): Promise<Page> {
-  let page: Page | undefined;
-  await expect.poll(async () => {
+  return pollPage(async () => {
     const chatId = (await shellState(app)).selected.chatId;
-    page = chatId === undefined ? undefined : await findChat(app, chatId);
-    return page;
-  }, { timeout: 30_000 }).toBeDefined();
-  return page!;
+    return chatId === undefined ? undefined : findChat(app, chatId);
+  });
 }
 
 /** Resolves with the selected chat once it is a chat page other than `known`, as after New Chat. */
 export async function nextChat(app: ElectronApplication, known: Page[]): Promise<Page> {
   const knownIds = new Set(known.filter((p) => p.url().includes('/panel/')).map(panelIdOf));
-  let page: Page | undefined;
-  await expect.poll(async () => {
+  return pollPage(async () => {
     const chatId = (await shellState(app)).selected.chatId;
     const candidate = chatId === undefined ? undefined : await findChat(app, chatId);
-    page = candidate && !knownIds.has(panelIdOf(candidate)) ? candidate : undefined;
-    return page;
-  }, { timeout: 30_000 }).toBeDefined();
-  return page!;
+    return candidate && !knownIds.has(panelIdOf(candidate)) ? candidate : undefined;
+  });
 }
 
 /** The id main gives the loaded chat shown in `page`, found among the loaded chats of every project's list. */
