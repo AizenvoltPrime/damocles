@@ -24,26 +24,16 @@ const isAlive = (pid: number): boolean => {
 describe.runIf(process.platform === 'linux')('a daemon the bridge starts detached', () => {
   let root: string;
   let bridgePath: string;
+  let daemonPath: string;
 
   beforeAll(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-inherited-fds-'));
     bridgePath = path.join(root, 'bridge.js');
-    const daemonPath = path.join(root, 'daemon.js');
+    daemonPath = path.join(root, 'daemon.js');
     const options = { bundle: true, platform: 'node', format: 'cjs', target: 'node24', logLevel: 'silent', write: true } as const;
-    const resolveDir = path.resolve(__dirname, '..');
     await Promise.all([
-      build({ ...options, outfile: bridgePath, stdin: { resolveDir, loader: 'ts', contents: `
-        import { startDaemonDetached } from './process-starts';
-        void startDaemonDetached(process.execPath, [${JSON.stringify(daemonPath)}], process.env as Record<string, string>, ${JSON.stringify(root)}).then(() => process.exit(0));
-      ` } }),
-      build({ ...options, outfile: daemonPath, stdin: { resolveDir, loader: 'ts', contents: `
-        import { writeFileSync } from 'node:fs';
-        import { closeInheritedFds } from './process-starts';
-        const named = process.env['DAMOCLES_INHERITED_FDS'] ?? '';
-        closeInheritedFds();
-        writeFileSync(${JSON.stringify(path.join(root, 'daemon.json'))}, JSON.stringify({ pid: process.pid, named }));
-        setTimeout(() => undefined, ${DAEMON_HOLD_MS});
-      ` } }),
+      build({ ...options, outfile: bridgePath, entryPoints: [path.join(__dirname, 'inherited-fds-bridge.ts')] }),
+      build({ ...options, outfile: daemonPath, entryPoints: [path.join(__dirname, 'inherited-fds-daemon.ts')] }),
     ]);
   }, 60_000);
 
@@ -53,8 +43,8 @@ describe.runIf(process.platform === 'linux')('a daemon the bridge starts detache
 
   it('keeps none of the fds its starter inherited, so the starter\'s pipes close when it exits', async () => {
     const stdio = Array.from({ length: LEAKED_FD + 1 }, (_, fd) => (fd === LEAKED_FD ? 'pipe' : 'ignore') as 'pipe' | 'ignore');
-    const bridge = spawn(process.execPath, [bridgePath], { stdio });
     const report = path.join(root, 'daemon.json');
+    const bridge = spawn(process.execPath, [bridgePath, root, daemonPath, report, String(DAEMON_HOLD_MS)], { stdio });
     let daemon: { pid: number; named: string } | undefined;
     try {
       const closed = once(bridge, 'close');

@@ -44,7 +44,7 @@ const message = (err: unknown): string => (err instanceof Error ? err.message : 
  * its parent's pid after that parent ended, so an older process may name a pid a later process got. The list needs no access
  * to a process, as psutil's create_time falls back to it, so another account's process is judged without opening it. Each
  * descendant is opened only to end it, and only while its creation time is still the listed one, then held open to its
- * TerminateProcess, so its pid names it throughout. Answers ended, killing nothing, when pid names no running process or
+ * kill, so its pid names it throughout. One that is already ending counts as ended. Answers ended, killing nothing, when pid names no running process or
  * another one; throws, after killing the rest, when a descendant could not be opened or killed.
  */
 export function windowsTreeKill(pid: number, start: string, processes: Win32Processes = win32Processes()): 'killed' | 'ended' {

@@ -215,25 +215,26 @@ async function hostIdOf(app: ElectronApplication): Promise<string> {
 /**
  * The chat page the window shows that satisfies `shows`. A launch can load one chat in two pages, the restored one and the one
  * the mirror's sync opens, and main shows one of them in a view while the other's is empty, so the page must hold the view
- * for three polls running.
+ * for three polls running. A rejoin may also reload a page while it is looked at, which fails only that attempt: toPass retries
+ * it and reports the last error if none passes.
  */
 async function shownPage(app: ElectronApplication, shows: (page: Page) => Promise<boolean>): Promise<Page> {
   let found: Page | undefined;
   let steady = 0;
-  await expect.poll(async () => {
-    let now: Page | undefined;
+  await expect(async () => {
+    const before = found;
+    found = undefined;
     for (const page of app.windows().filter((candidate) => !candidate.isClosed() && candidate.url().includes('/panel/'))) {
       // a page a rejoin closes while it is looked at shows nothing
       const shown = await page.evaluate(() => window.innerWidth > 0 && document.visibilityState === 'visible').then((laidOut) => laidOut && shows(page)).catch((error: unknown) => {
         if (page.isClosed()) return false;
         throw error;
       });
-      if (shown) now = page;
+      if (shown) found = page;
     }
-    steady = now !== undefined && now === found ? steady + 1 : 0;
-    found = now;
-    return steady;
-  }, { timeout: 60_000, intervals: [500] }).toBeGreaterThanOrEqual(2);
+    steady = found !== undefined && found === before ? steady + 1 : 0;
+    expect(steady, 'polls running that showed the same page').toBeGreaterThanOrEqual(2);
+  }).toPass({ timeout: 60_000, intervals: [500] });
   return found!;
 }
 

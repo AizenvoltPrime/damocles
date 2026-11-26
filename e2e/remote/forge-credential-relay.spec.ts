@@ -245,7 +245,7 @@ test('an account chosen automatically asks consent naming it, once; a project on
   await shutdownHostDaemon(run.app, hostId, fixture);
 });
 
-test('the reference daemon keeps today\'s relay: an account on this computer does not answer its git, its consent names no account and this computer\'s helper answers', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
+test('the reference daemon takes the account relay: an account on this computer answers its git, its consent names the account and this computer\'s helper is not asked', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
   test.setTimeout(600_000);
   if (REFERENCE === undefined || !fs.existsSync(REFERENCE)) {
     throw new Error('DAMOCLES_E2E_REFERENCE_PACKAGE names no reference server package; build one with `node e2e/remote/support/reference-package.mjs --ref remote-protocol-ref --target linux-x64 --out <empty folder>`');
@@ -260,11 +260,12 @@ test('the reference daemon keeps today\'s relay: an account on this computer doe
   await push(run);
   const consent = gitConsent(await overlayPage(run.app));
   await expect(consent).toBeVisible(CHECKED);
-  await expect(consent).toHaveAccessibleName(`prod-1 wants to use your saved credentials for ${run.host}`);
+  await expect(consent).toHaveAccessibleName(`Let prod-1 sign in to ${GITLAB} as alexios-s?`);
   await consent.getByRole('button', { name: 'Allow once', exact: true }).click();
   await expect.poll(() => stubHead(run), CHECKED).toBe(head);
-  expect(pushes(run).at(-1)!.credential).toBe(RECORDER_TOKEN);
-  expect(run.helper.calls().filter((recorded) => recorded.op === 'get' && recorded.host === run.host)).toHaveLength(1);
+  expect(pushes(run).at(-1)!.credential).toBe(TOKENS['alexios-s']);
+  await expect(consent).toHaveCount(0);
+  expect(run.helper.calls()).toEqual([]);
 
   await shutdownHostDaemon(run.app, hostId, fixture);
 });

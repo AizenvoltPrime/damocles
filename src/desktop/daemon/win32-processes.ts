@@ -12,8 +12,11 @@ const SYNCHRONIZE = 0x0010_0000;
 const ERROR_INVALID_PARAMETER = 87;
 const WAIT_OBJECT_0 = 0;
 const WAIT_TIMEOUT = 258;
-// what TerminateProcess makes the exit code, as Node's process.kill and taskkill /F do
+// what the kill makes the exit code, as Node's process.kill and taskkill /F do
 const KILLED_EXIT_CODE = 1;
+// NtTerminateProcess's answer for a process another kill or its own exit already ends; TerminateProcess reports it as access
+// denied, while the handle is not yet signalled
+const STATUS_PROCESS_IS_TERMINATING = 0xc000_010a;
 const FILETIME_BYTES = 8;
 const SYSTEM_PROCESS_INFORMATION = 5;
 const STATUS_INFO_LENGTH_MISMATCH = 0xc000_0004;
@@ -29,7 +32,7 @@ export interface OpenedProcess {
   readonly pid: number;
   // the creation time in FILETIME ticks (100 ns since 1601, UTC)
   readonly created: bigint;
-  // TerminateProcess through the handle; throws unless the process has exited
+  // NtTerminateProcess through the handle; throws unless it ends the process or the process was already ending
   terminate(): void;
   close(): void;
 }
@@ -55,11 +58,12 @@ interface KoffiModule {
 }
 
 // Win32 BOOL is a 4-byte int, so it is bound as int and compared with zero
-interface Kernel32 {
+export interface Kernel32 {
   openProcess: (access: number, inherit: boolean, pid: number) => Handle | null;
   getProcessTimes: (process: Handle, creation: Buffer, exit: Buffer, kernel: Buffer, user: Buffer) => number;
   waitForSingleObject: (handle: Handle, milliseconds: number) => number;
-  terminateProcess: (process: Handle, exitCode: number) => number;
+  // ntdll's, answering an NTSTATUS
+  terminateProcess: (process: Handle, exitStatus: number) => number;
   closeHandle: (handle: Handle) => number;
   // koffi keeps the thread's last error from Node and V8 between its calls
   getLastError: () => number;
@@ -79,7 +83,7 @@ function bind(): Kernel32 {
     openProcess: kernel32.func('__stdcall', 'OpenProcess', 'void*', ['uint32', 'bool', 'uint32']) as Kernel32['openProcess'],
     getProcessTimes: kernel32.func('__stdcall', 'GetProcessTimes', 'int', ['void*', 'void*', 'void*', 'void*', 'void*']) as Kernel32['getProcessTimes'],
     waitForSingleObject: kernel32.func('__stdcall', 'WaitForSingleObject', 'uint32', ['void*', 'uint32']) as Kernel32['waitForSingleObject'],
-    terminateProcess: kernel32.func('__stdcall', 'TerminateProcess', 'int', ['void*', 'uint32']) as Kernel32['terminateProcess'],
+    terminateProcess: ntdll.func('__stdcall', 'NtTerminateProcess', 'uint32', ['void*', 'int32']) as Kernel32['terminateProcess'],
     closeHandle: kernel32.func('__stdcall', 'CloseHandle', 'int', ['void*']) as Kernel32['closeHandle'],
     getLastError: kernel32.func('__stdcall', 'GetLastError', 'uint32', []) as Kernel32['getLastError'],
     querySystemInformation: ntdll.func('__stdcall', 'NtQuerySystemInformation', 'uint32', ['int32', 'void*', 'uint32', 'void*']) as Kernel32['querySystemInformation'],
@@ -101,7 +105,7 @@ export function parseProcessInformation(information: Buffer): SystemProcess[] {
   }
 }
 
-function processesOf(api: Kernel32): Win32Processes {
+export function processesOf(api: Kernel32): Win32Processes {
   const failed = (call: string, pid: number): Error => new Error(`${call}(${pid}) failed with Win32 error ${api.getLastError()}`);
   // WaitForSingleObject with no wait: signalled once the process exited, while its object lives on for each open handle
   const exited = (handle: Handle, pid: number): boolean => {
@@ -129,9 +133,8 @@ function processesOf(api: Kernel32): Win32Processes {
           pid,
           created: times[0]!.readBigUInt64LE(0),
           terminate: () => {
-            if (api.terminateProcess(handle, KILLED_EXIT_CODE) !== 0) return;
-            const error = failed('TerminateProcess', pid);
-            if (!exited(handle, pid)) throw error;
+            const status = api.terminateProcess(handle, KILLED_EXIT_CODE);
+            if (status !== 0 && status !== STATUS_PROCESS_IS_TERMINATING) throw new Error(`NtTerminateProcess(${pid}) failed with NTSTATUS 0x${status.toString(16)}`);
           },
           close: () => {
             if (open) api.closeHandle(handle);
