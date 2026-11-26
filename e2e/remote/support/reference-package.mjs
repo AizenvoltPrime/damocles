@@ -21,7 +21,7 @@ import { npmCliPath } from '../../../scripts/npm-cli.ts';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 export const REFERENCE_TAG = 'remote-protocol-ref';
 // The commit the owner tagged as the oldest protocol peer.
-export const REFERENCE_COMMIT = '0c58749c';
+export const REFERENCE_COMMIT = '8ada422f';
 // A reference tree from before the scripts became TypeScript has the .mjs form.
 const FETCH_GRAMMARS = [join('scripts', 'fetch-grammars.ts'), join('scripts', 'fetch-grammars.mjs')];
 const GRAMMARS = join('resources', 'grammars');

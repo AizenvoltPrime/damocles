@@ -30,9 +30,6 @@ export async function daemonVersions(fixture: Pick<SshdFixture, 'userProcesses'>
 
 const packageEntries = (archive: string): Array<{ path: string; data: Buffer }> => readTarGz(fs.readFileSync(archive)) as Array<{ path: string; data: Buffer }>;
 
-/** Whether the server package `archive` holds a file at `file`, a path relative to its install folder. */
-export const packageHolds = (archive: string, file: string): boolean => packageEntries(archive).some((entry) => entry.path === file);
-
 /** The server version `archive` installs as: its server-package.json's serverVersion, or the version of a package built before it had one. */
 export function packageVersion(archive: string): string {
   const info = packageEntries(archive).find((entry) => entry.path === 'server-package.json');

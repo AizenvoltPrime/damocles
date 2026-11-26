@@ -1,26 +1,24 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { ElectronApplication } from '@playwright/test';
+import type { ElectronApplication, Page } from '@playwright/test';
 import { writeUserSettings } from '../desktop/support/hermetic';
 import { filesUnder } from '../desktop/support/loopback';
 import { sendPrompt } from '../desktop/support/loopback-agent';
 import { shellPage } from '../desktop/support/shell';
 import { listChats } from '../desktop/support/shell-ui';
 import { activeTerminal, openTerminal, readFromTerminal, runInTerminal, terminalText, waitForOutputLine } from '../desktop/support/terminal';
-import { awaitTurnEnd } from '../desktop/support/ui';
+import { awaitTurnEnd, chatInput } from '../desktop/support/ui';
 import { shutdownHostDaemon } from './support/daemon-teardown';
-import { daemonVersions, installOlderServer, packageHolds, terminalHostVersions, versionFolder } from './support/older-server';
+import { daemonVersions, installOlderServer, terminalHostVersions, versionFolder } from './support/older-server';
 import { LINUX_TARGET, serverVersionOf } from './support/release-mirror';
 import { addHost, control, expect, openRemoteFolder, remoteEnv, remoteProjectKey, SSH_TAG, test } from './support/remote';
-import { allowSleep, chatShowing, closeRemoteDialog, exited, requestQuit, sleeping, SLEEP, targetSessions } from './support/remote-runs';
+import { allowSleep, chatShowing, closeRemoteDialog, exited, requestQuit, sleeping, SLEEP } from './support/remote-runs';
 import { newRemoteChat, startTargetStub } from './support/target-agent';
 
 // The reference server package: the oldest protocol peer, built from the tag remote-protocol-ref by
 // e2e/remote/support/reference-package.mjs (pr.yml and release.yml build it; locally run that script and set this variable).
 const REFERENCE = process.env['DAMOCLES_E2E_REFERENCE_PACKAGE'];
 const APP = '/srv/app';
-const TURN_STOPPED = '"customType":"damocles-turn-stopped"';
-const REFERENCE_TERMINAL_HOST = 'dist/terminal-host.js';
 
 function referencePackage(): string {
   if (REFERENCE === undefined || !fs.existsSync(REFERENCE)) {
@@ -40,6 +38,13 @@ async function hostIdOf(app: ElectronApplication): Promise<string> {
   const hosts = await app.evaluate(() => (globalThis as unknown as { __damoclesE2e: { remote: { hosts(): Array<{ hostId: string }> } } }).__damoclesE2e.remote.hosts());
   expect(hosts).toHaveLength(1);
   return hosts[0]!.hostId;
+}
+
+async function openListedChat(app: ElectronApplication, projectKey: string, title: string, showing: string): Promise<Page> {
+  let chatId = '';
+  await expect.poll(async () => (chatId = (await listChats(app, projectKey)).chats.find((chat) => chat.title === title)?.id ?? ''), { timeout: 60_000 }).not.toBe('');
+  expect(await (await shellPage(app)).evaluate((id) => window.damoclesShell!.selectChat(id), chatId)).toEqual({ ok: true });
+  return chatShowing(app, showing);
 }
 
 /** Whether the host's session mirror on this computer holds every one of `needles`. */
@@ -65,7 +70,7 @@ test('this tree\'s app attaches to the reference server package\'s busy daemon, 
     await sendPrompt(done, 'Finish on the reference');
     await expect(done.getByText('Reference finished reply.', { exact: true })).toBeVisible({ timeout: 60_000 });
     await awaitTurnEnd(done);
-    // a tool call in flight, which the Stop path cuts short and records
+    // a tool call in flight, which the shutdown cuts short
     await allowSleep(fixture);
     stub.replies.push({ chunks: ['Reference running.'], toolCalls: [{ name: 'bash', arguments: { command: SLEEP } }] });
     const running = await newRemoteChat(old.app, key);
@@ -92,18 +97,18 @@ test('this tree\'s app attaches to the reference server package\'s busy daemon, 
     const mirrorRoot = path.join(home.userData, 'remote', hostId, 'mirror');
     await expect.poll(() => mirrorHolds(mirrorRoot, ['Reference finished reply.', 'Finish on the reference']), { timeout: 60_000 }).toBe(true);
 
-    // the frozen shutdownNow stops the run through the Stop path and ends the reference daemon
+    // the frozen shutdownNow ends the reference daemon, whose core aborts the run as it disposes the chat
     await shutdownHostDaemon(app, hostId, fixture);
-    expect(await targetSessions(fixture)).toContain(TURN_STOPPED);
     expect(await sleeping(fixture)).toBe(false);
 
     // the next connection starts this build's server, and the reference's chats open on it from the Chats list
     await openRemoteFolder(app, hostId, APP);
     expect(await daemonVersions(fixture)).toEqual([serverVersionOf(LINUX_TARGET)]);
-    let chatId = '';
-    await expect.poll(async () => (chatId = (await listChats(app, key)).chats.find((chat) => chat.title === 'Finish on the reference')?.id ?? ''), { timeout: 60_000 }).not.toBe('');
-    expect(await (await shellPage(app)).evaluate((id) => window.damoclesShell!.selectChat(id), chatId)).toEqual({ ok: true });
-    await chatShowing(app, 'Reference finished reply.');
+    await openListedChat(app, key, 'Finish on the reference', 'Reference finished reply.');
+    // this build's core replays the cut-off call from the reference's session file, whose stopped-result marker names it stopped
+    const stopped = await openListedChat(app, key, 'Keep running on the reference', 'Reference running.');
+    await expect(chatInput(stopped)).toBeVisible({ timeout: 60_000 });
+    await expect(stopped.getByTestId('tool-card').filter({ hasText: SLEEP })).toContainText('Stopped');
     await shutdownHostDaemon(app, hostId, fixture);
   } finally {
     await stub.close();
@@ -112,8 +117,6 @@ test('this tree\'s app attaches to the reference server package\'s busy daemon, 
 
 test('this tree\'s daemon adopts the reference package\'s terminal host: the reference\'s shell comes back in its tab with its screen and the same pid, and takes input', { tag: SSH_TAG }, async ({ foreground: _foreground, home, launch, mirror, ssh, sshd }) => {
   test.setTimeout(600_000);
-  // A reference daemon that forks a pty host has no terminal host to adopt (docs/release.md "Remote end-to-end suites").
-  test.skip(!packageHolds(referencePackage(), REFERENCE_TERMINAL_HOST), `the reference package holds no ${REFERENCE_TERMINAL_HOST}`);
   writeUserSettings(home, { 'damocles.desktop.terminal.defaultProfile': 'bash', 'damocles.desktop.terminal.confirmOnKill': 'never' });
   const fixture = await sshd('prod-1');
   const reference = await installOlderServer(fixture, referencePackage());
