@@ -9,7 +9,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,14 +22,14 @@ export const BROWSER_HELPER_SOURCE = join(ROOT, 'resources', 'server-bin', 'help
 export const BROWSER_HELPER_CACHE = join(ROOT, 'dist', 'server-packages', '.cache');
 
 export const ZIG_VERSION = '0.17.0';
-// zig's builds for the machine that compiles, each SHA-256 from https://ziglang.org/download/index.json
-export const ZIG_ARCHIVES: Record<string, { name: string; sha256: string }> = {
-  'win32-x64': { name: 'zig-x86_64-windows-0.17.0.zip', sha256: 'b5663f69581dcf391293fbf16c06cb80d81d806545ce618b4d0bab7f0eb8c428' },
-  'win32-arm64': { name: 'zig-aarch64-windows-0.17.0.zip', sha256: '0a59d91fa1cb40cf068e9b0954434ce973500c7a2ea749f1e01af62cdab52d26' },
-  'linux-x64': { name: 'zig-x86_64-linux-0.17.0.tar.xz', sha256: '1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026' },
-  'linux-arm64': { name: 'zig-aarch64-linux-0.17.0.tar.xz', sha256: '9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8' },
-  'darwin-x64': { name: 'zig-x86_64-macos-0.17.0.tar.xz', sha256: '4f9a1c5269aa17ebda5e6d3c2b89d6cbf36f7d2b22a0306e9ab98f25f95529c6' },
-  'darwin-arm64': { name: 'zig-aarch64-macos-0.17.0.tar.xz', sha256: 'b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a' },
+// zig's builds for the machine that compiles, each SHA-256 and size from https://ziglang.org/download/index.json
+export const ZIG_ARCHIVES: Record<string, { name: string; sha256: string; size: number }> = {
+  'win32-x64': { name: 'zig-x86_64-windows-0.17.0.zip', sha256: 'b5663f69581dcf391293fbf16c06cb80d81d806545ce618b4d0bab7f0eb8c428', size: 100268137 },
+  'win32-arm64': { name: 'zig-aarch64-windows-0.17.0.zip', sha256: '0a59d91fa1cb40cf068e9b0954434ce973500c7a2ea749f1e01af62cdab52d26', size: 95992853 },
+  'linux-x64': { name: 'zig-x86_64-linux-0.17.0.tar.xz', sha256: '1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026', size: 57332648 },
+  'linux-arm64': { name: 'zig-aarch64-linux-0.17.0.tar.xz', sha256: '9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8', size: 52877280 },
+  'darwin-x64': { name: 'zig-x86_64-macos-0.17.0.tar.xz', sha256: '4f9a1c5269aa17ebda5e6d3c2b89d6cbf36f7d2b22a0306e9ab98f25f95529c6', size: 59317572 },
+  'darwin-arm64': { name: 'zig-aarch64-macos-0.17.0.tar.xz', sha256: 'b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a', size: 53985220 },
 };
 
 const ZIG_TARGETS: Record<string, string> = { x64: 'x86_64-windows-gnu', arm64: 'aarch64-windows-gnu' };
@@ -126,7 +126,21 @@ export function publishTree(staged: string, target: string): void {
   try {
     renameSync(staged, target);
   } catch (err) {
-    if (!existsSync(target)) throw err;
+    if (existsSync(target)) return;
+    // Windows refuses to rename a folder while a file in it is open, which an antivirus scan of the new zig.exe does
+    throw new Error(`Could not publish the unpacked ${staged} as ${target}: ${err instanceof Error ? err.message : err}${process.platform === 'win32' ? ' (a file in it may be open in another process, such as a virus scan)' : ''}`, { cause: err });
+  }
+}
+
+// a staging folder left this long has no unpack running in it, which takes seconds
+const ABANDONED_STAGING_MS = 60 * 60 * 1000;
+
+/** Removes the staging folders of `top` that unpacks killed before their publish left in `cacheDir`. */
+export function removeAbandonedStaging(cacheDir: string, top: string, now = Date.now()): void {
+  for (const entry of readdirSync(cacheDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith(`${top}.staging-`)) continue;
+    const folder = join(cacheDir, entry.name);
+    if (now - statSync(folder).mtimeMs > ABANDONED_STAGING_MS) rmSync(folder, { recursive: true, force: true });
   }
 }
 
@@ -140,7 +154,10 @@ export async function zigExecutable(cacheDir = BROWSER_HELPER_CACHE, host = `${p
   const zig = join(dir, host.startsWith('win32-') ? 'zig.exe' : 'zig');
   if (existsSync(dir)) return zig;
   const archive = join(cacheDir, pin.name);
-  const data = await cachedDownload(await zigSources(pin.name), archive, (bytes) => sha256(bytes) === pin.sha256);
+  const data = await cachedDownload(await zigSources(pin.name), archive, (bytes) => sha256(bytes) === pin.sha256, { maxBytes: pin.size });
+  // another process may have published the tree during the download
+  if (existsSync(dir)) return zig;
+  removeAbandonedStaging(cacheDir, top);
   const staging = mkdtempSync(join(cacheDir, `${top}.staging-`));
   try {
     if (pin.name.endsWith('.zip')) {

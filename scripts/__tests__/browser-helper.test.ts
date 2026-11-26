@@ -1,9 +1,9 @@
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { compileBrowserHelper, PE_MACHINES, peMachine, publishTree, signedHelperProblems, unsignedImage, versionResource, ZIG_ARCHIVES, ZIG_VERSION, zigArguments, zigSources } from '../browser-helper.ts';
+import { compileBrowserHelper, PE_MACHINES, peMachine, publishTree, removeAbandonedStaging, signedHelperProblems, unsignedImage, versionResource, ZIG_ARCHIVES, ZIG_VERSION, zigArguments, zigSources } from '../browser-helper.ts';
 import { SERVER_TARGETS } from '../server-targets.ts';
 
 // A minimal PE32+ image of `size` bytes for `machine`, unsigned.
@@ -50,7 +50,7 @@ describe('the BROWSER helper build', () => {
   // the release builds each Windows package on that target's own runner
   it('pins a zig for every machine that builds a Windows server package', () => {
     const hosts = Object.values(SERVER_TARGETS as Record<string, { platform: string; arch: string }>).filter((spec) => spec.platform === 'win32').map((spec) => `win32-${spec.arch}`);
-    for (const host of hosts) expect(ZIG_ARCHIVES[host], host).toMatchObject({ name: expect.stringMatching(/^zig-[a-z0-9_]+-windows-[0-9.]+\.zip$/), sha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    for (const host of hosts) expect(ZIG_ARCHIVES[host], host).toMatchObject({ name: expect.stringMatching(/^zig-[a-z0-9_]+-windows-[0-9.]+\.zip$/), sha256: expect.stringMatching(/^[0-9a-f]{64}$/), size: expect.any(Number) });
   });
 
   it('downloads zig from the community mirrors in random order, then ziglang.org, and from ziglang.org alone without the list', async () => {
@@ -73,7 +73,24 @@ describe('the BROWSER helper build', () => {
       publishTree(stage('first'), target);
       publishTree(stage('second'), target);
       expect(readFileSync(join(target, 'zig'), 'utf8')).toBe('first');
-      expect(() => publishTree(join(cache, 'missing'), join(cache, 'other'))).toThrow();
+      expect(() => publishTree(join(cache, 'missing'), join(cache, 'other'))).toThrow(`Could not publish the unpacked ${join(cache, 'missing')} as ${join(cache, 'other')}`);
+    } finally {
+      rmSync(cache, { recursive: true, force: true });
+    }
+  });
+
+  // an unpack killed before its publish leaves its staging folder, hundreds of MB, behind
+  it('removes the staging folders of the tree that are an hour old, and keeps a newer one, which an unpack may be using', () => {
+    const cache = mkdtempSync(join(tmpdir(), 'damocles-zig-staging-'));
+    try {
+      for (const name of ['zig-x.staging-old', 'zig-x.staging-new', 'zig-y.staging-old', 'zig-x-0123456789abcdef']) mkdirSync(join(cache, name));
+      const hour = 60 * 60 * 1000;
+      const at = (name: string): number => statSync(join(cache, name)).mtimeMs;
+      utimesSync(join(cache, 'zig-x.staging-old'), new Date(at('zig-x.staging-new') - 2 * hour), new Date(at('zig-x.staging-new') - 2 * hour));
+      utimesSync(join(cache, 'zig-y.staging-old'), new Date(at('zig-x.staging-new') - 2 * hour), new Date(at('zig-x.staging-new') - 2 * hour));
+      utimesSync(join(cache, 'zig-x-0123456789abcdef'), new Date(at('zig-x.staging-new') - 2 * hour), new Date(at('zig-x.staging-new') - 2 * hour));
+      removeAbandonedStaging(cache, 'zig-x', at('zig-x.staging-new'));
+      expect(readdirSync(cache).sort()).toEqual(['zig-x-0123456789abcdef', 'zig-x.staging-new', 'zig-y.staging-old']);
     } finally {
       rmSync(cache, { recursive: true, force: true });
     }

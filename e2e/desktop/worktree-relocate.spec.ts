@@ -55,7 +55,7 @@ const trustedFolders = (home: HermeticHome): string[] => {
   return fs.existsSync(file) ? (JSON.parse(fs.readFileSync(file, 'utf8')) as { folders: string[] }).folders : [];
 };
 
-type Hooks = { __damoclesE2e?: { worktrees: { holdFinish(worktreeId: string): Promise<boolean>; releaseFinish(worktreeId: string): void } } };
+type Hooks = { __damoclesE2e?: { worktrees: { holdFinish(worktreeId: string): Promise<boolean>; releaseFinish(worktreeId: string): Promise<void> } } };
 
 /** Takes core's finish hold on the worktree, as Apply does after its last question, once main's e2e hooks are installed. */
 async function holdFinish(app: ElectronApplication, worktreeId: string): Promise<boolean> {

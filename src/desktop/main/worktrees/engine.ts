@@ -1,4 +1,5 @@
 import type { FinishCall, WorktreeCall, WorktreeCalls } from '../../core-protocol';
+import type { RemoteConnection } from '../remote/connection';
 
 /**
  * The worktree git and registry work core does for main's WorktreeController (core-host/worktrees.ts), records named by id,
@@ -8,7 +9,8 @@ export type WorktreeEngine = Omit<WorktreeCalls, FinishCall>;
 
 /**
  * A finish action's hold of its worktree, and the finish actions, which run on the core that gave the hold and on no other.
- * release settles once that core let go of the worktree's chats, so an outcome told after it finds them free to send to.
+ * release never rejects. It settles once that core let go of the worktree's chats, so an outcome told after it finds them
+ * free to send to, or once the connection to a remote core dropped, after which a send waits in main behind the release.
  */
 export type FinishHold = { readonly release: () => Promise<void> } & {
   readonly [M in FinishCall]: WorktreeCalls[M] extends (worktreeId: string, hold: string, ...rest: infer A) => infer R ? (...rest: A) => R : never;
@@ -52,7 +54,26 @@ export interface FinishHoldDeps {
   readonly stopped: () => boolean;
   readonly worktreeId: string;
   readonly hold: string;
+  // worktree.endFinish on that core
   readonly release: () => Promise<void>;
+  // the connection a remote core answers over; its drop holds every later message of this device until the release went
+  readonly connection?: DroppingConnection;
+}
+
+export type DroppingConnection = Pick<RemoteConnection, 'onLost' | 'onClose' | 'lost'>;
+
+// A drop can last the daemon's 3-hour hold, which must not keep the action's outcome from the user.
+function untilDropped(released: Promise<void>, connection: DroppingConnection | undefined): Promise<void> {
+  if (!connection) return released;
+  return new Promise((resolve) => {
+    const settle = (): void => {
+      for (const subscription of subscriptions) subscription.dispose();
+      resolve();
+    };
+    const subscriptions = [connection.onLost(settle), connection.onClose(settle)];
+    if (connection.lost()) settle();
+    void released.then(settle);
+  });
 }
 
 export function finishHold(deps: FinishHoldDeps): FinishHold {
@@ -69,6 +90,7 @@ export function finishHold(deps: FinishHoldDeps): FinishHold {
     rebaseOnto: () => held('rebaseOnto', []),
     updateFrom: () => held('updateFrom', []),
     removeWorktree: (options) => held('removeWorktree', [options]),
-    release: deps.release,
+    // a core that stopped, or whose connection closed, let go of its holds as it went
+    release: () => untilDropped(deps.release().catch(() => undefined), deps.connection),
   };
 }

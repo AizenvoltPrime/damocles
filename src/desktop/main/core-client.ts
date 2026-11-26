@@ -28,7 +28,7 @@ import type { ChatEntry, ChatPermissions, FolderTargetEntry, MainRequests, Repos
 import { parsedCallText, SCM_CALL_LOCALIZED_TEXT, WORKTREE_CALL_LOCALIZED_TEXT, type MainEndpoint, type ScmCommitOutcome } from '../core-protocol';
 import type { ReviewSession } from './chat-review-host';
 import type { RelayView } from './core-services/host-services';
-import { finishHold, type FinishHold } from './worktrees/engine';
+import { finishHold, type DroppingConnection, type FinishHold } from './worktrees/engine';
 import type { AuthorityMentionTarget } from './mention-authority';
 import { chatEntryToShell, folderTargetToShell, mentionToCore, scmEventToShell, scmPatchToShell, storedSessionToShell, type ProjectKeys } from './remote/remote-project-keys';
 
@@ -409,8 +409,9 @@ export class CoreClient implements Disposable {
   /**
    * D33's hold of the worktree for a finish action, whose finish calls go to this core alone; undefined, holding nothing,
    * while a chat working there is busy. stopped: this core no longer runs, which a failed finish call is then told as.
+   * connection: the one a remote core answers over.
    */
-  async beginWorktreeFinish(worktreeId: string, action: WorktreeFinishAction, stopped: () => boolean): Promise<FinishHold | undefined> {
+  async beginWorktreeFinish(worktreeId: string, action: WorktreeFinishAction, stopped: () => boolean, connection?: DroppingConnection): Promise<FinishHold | undefined> {
     const hold = await this.request('worktree.beginFinish', { worktreeId, action });
     if (hold === undefined) return undefined;
     return finishHold({
@@ -418,8 +419,8 @@ export class CoreClient implements Disposable {
       stopped,
       worktreeId,
       hold,
-      // a core that stopped let go of its holds as it went
-      release: () => this.request('worktree.endFinish', { hold }).catch(() => undefined),
+      release: () => this.request('worktree.endFinish', { hold }),
+      ...(connection ? { connection } : {}),
     });
   }
 

@@ -134,9 +134,9 @@ function extract(tarPath: string, archivePath: string, outDir: string, archivePa
 export async function fetchWakeModel({
   manifestPath,
   wakeDir,
-  download = downloadWithRetry,
-  tarPath = systemTarPath,
   log = console.log,
+  download = (url) => downloadWithRetry(url, { log }),
+  tarPath = systemTarPath,
 }: FetchWakeModelOptions): Promise<WakeModelResult> {
   const wakeModel = readWakeModel(manifestPath);
   mkdirSync(wakeDir, { recursive: true });
@@ -147,7 +147,6 @@ export async function fetchWakeModel({
   const tar = tarPath();
   const workDir = mkdtempSync(join(tmpdir(), 'damocles-wake-'));
   try {
-    log(`Fetching ${wakeModel.archive.url}...`);
     const archive = await download(wakeModel.archive.url);
     const archiveProblem = mismatch(archive, wakeModel.archive);
     if (archiveProblem !== null) throw new Error(`Wake model archive ${wakeModel.archive.url}: ${archiveProblem}`);

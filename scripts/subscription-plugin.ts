@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { downloadWithRetry } from './cached-download.ts';
+import { downloadWithRetry, writeCacheFile } from './cached-download.ts';
 import { isEntryPoint } from './entry-point.ts';
 import { readTarGz, sha256 } from './server-archive.ts';
 import subscriptionPin from '../src/core/pi-session/subscription-pin.json' with { type: 'json' };
@@ -55,20 +55,28 @@ export function pluginDigest(files: readonly PluginFile[]): string {
   return hash.digest('hex');
 }
 
+// a cache file that does not parse counts as missing, so a damaged one is downloaded again
+function pinnedFiles(archive: Buffer, expected: string): PluginFile[] | undefined {
+  let files: PluginFile[];
+  try {
+    files = pluginFiles(archive);
+  } catch {
+    return undefined;
+  }
+  return pluginDigest(files) === expected ? files : undefined;
+}
+
 /** The pinned plugin's files, from the cache when its archive still matches, else downloaded; refused on another digest. */
 export async function subscriptionPluginFiles({ cacheDir = CACHE_DIR, fetchArchive = (url) => downloadWithRetry(url), expected = SUBSCRIPTION_PLUGIN_SHA256 }: SubscriptionPluginOptions = {}): Promise<PluginFile[]> {
   const cached = join(cacheDir, `pi-anthropic-auth-${SUBSCRIPTION_COMMIT}.tar.gz`);
-  if (existsSync(cached)) {
-    const files = pluginFiles(readFileSync(cached));
-    if (pluginDigest(files) === expected) return files;
-  }
+  const kept = existsSync(cached) ? pinnedFiles(readFileSync(cached), expected) : undefined;
+  if (kept) return kept;
   const archive = await fetchArchive(ARCHIVE_URL);
   const files = pluginFiles(archive);
   const digest = pluginDigest(files);
   if (digest !== expected) throw new Error(`${ARCHIVE_URL} holds a subscription plugin with digest ${digest}, not the ${expected} src/core/pi-session/subscription-pin.json pins`);
   if (!files.some((file) => file.path === 'LICENSE')) throw new Error(`${ARCHIVE_URL} holds no LICENSE`);
-  mkdirSync(cacheDir, { recursive: true });
-  writeFileSync(cached, archive);
+  writeCacheFile(cached, archive, (data) => pinnedFiles(data, expected) !== undefined);
   return files;
 }
 

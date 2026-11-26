@@ -465,7 +465,7 @@ export class WorktreeController {
   private async closeAndRemove(record: ChatWorktreeRecord, deleteBranch: boolean, force: boolean): Promise<void> {
     const t = this.deps.t;
     let removed = false;
-    let closed: Awaited<ReturnType<WorktreeControllerDeps['closeWorktree']>> | undefined;
+    let closed: CloseOutcome | undefined;
     let failed: string | undefined;
     let held: FinishHold | undefined;
     let closing: { dispose(): void } | undefined;
@@ -490,9 +490,11 @@ export class WorktreeController {
         }
       }
     } finally {
-      await held?.release();
+      // the root and the selection need nothing of core; only the notices below wait for the release
+      const released = held?.release();
       closing?.dispose();
       this.deps.afterClose(record.id, removed);
+      await released;
     }
     if (closed === 'edited') void this.deps.notify.warn(t('A file of the worktree was edited while Damocles was deleting it, so the worktree was not deleted. Try again.'));
     if (failed !== undefined) {

@@ -164,8 +164,20 @@ describe('the dev end-to-end suite runs in shards on every desktop target', () =
     // every run of the suite takes the plan's files and records their times; Playwright's own --shard splits by count
     const runs = suite!.run!.split('\n').filter((line) => line.includes('npm run test:desktop'));
     expect(runs).toHaveLength(2);
-    for (const line of runs) expect(line).toContain('--test-list="$SHARD_TESTS" --add-reporter=json');
+    // xvfb-run's inner shell gets the list as its argument, since it sees only exported variables
+    expect(runs[0]).toContain('xvfb-run');
+    expect(runs[0]).toContain(`--test-list="$1" --add-reporter=json' sh "$SHARD_TESTS"`);
+    expect(runs[1]).toContain('--test-list="$SHARD_TESTS" --add-reporter=json');
     expect(suite?.run).not.toContain('--shard=');
+  });
+
+  // Playwright empties its report and results folders as a run starts
+  it('keeps the suite\'s report and results apart from the loopback run after it', () => {
+    const loopback = job!.steps.find((step) => step.run?.includes('--grep @loopback'));
+    expect(loopback?.env).toMatchObject({ PLAYWRIGHT_HTML_OUTPUT_DIR: 'dist/e2e-report/loopback' });
+    const runs = loopback!.run!.split('\n').filter((line) => line.includes('--grep @loopback'));
+    expect(runs).toHaveLength(2);
+    for (const line of runs) expect(line).toContain('--output dist/e2e-results/loopback');
   });
 
   it('uploads every e2e report unless the run was cancelled', () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tarGz } from '../server-archive.ts';
@@ -54,6 +54,15 @@ describe('the subscription plugin a server package bundles', () => {
     expect(existsSync(join(dest, 'README.md'))).toBe(false);
     await subscriptionPluginFiles({ cacheDir, fetchArchive, expected });
     expect(downloads).toBe(1);
+  });
+
+  it('downloads again over a cached archive that does not parse', async () => {
+    const cacheDir = tempDir();
+    const cached = join(cacheDir, `pi-anthropic-auth-${SUBSCRIPTION_COMMIT}.tar.gz`);
+    writeFileSync(cached, archive().subarray(0, 40));
+    const files = await subscriptionPluginFiles({ cacheDir, fetchArchive: async () => archive(), expected: pluginDigest(FILES) });
+    expect(files.map((file) => file.path).sort()).toEqual(['LICENSE', 'package.json', 'src/index.ts']);
+    expect(pluginDigest(pluginFiles(readFileSync(cached)))).toBe(pluginDigest(FILES));
   });
 
   it('refuses an archive whose files differ from the pinned digest, writing and caching nothing', async () => {

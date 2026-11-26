@@ -311,7 +311,7 @@ import { HeldPrompts } from './held-prompts';
 import { KeptPermissions } from './kept-permissions';
 import { releaseRemoteTerminals, removeProject, type WaitingChat } from './remove-project';
 import { InterruptedLocates, locateOnce, locateProject, locateShown, preparedMove, relocationText, type LocateConfirm, type LocateOutcome, type LocatePrepared, type LocateProjectDeps } from './locate-project';
-import { presentFiles, RelocatedProjects, type RelocationRequester } from './relocate-project-state';
+import { presentFiles, RelocatedProjects, RelocationMirrors, type RelocationRequester } from './relocate-project-state';
 import { addProjectAt, askToMove, type MissingProject } from './project-readd';
 import type { Coded, RelocationView } from '../../core/project-relocation/types';
 import { ShownFolderState } from './worktrees/shown-folder';
@@ -1501,8 +1501,8 @@ class DesktopApp {
   });
   // by remote authority, the host part of its core's relocations on this computer, built for the host's OS and id it names
   private readonly remoteRelocated = new Map<string, { readonly os: NodeJS.Platform; readonly hostId: string | undefined; readonly relocated: RelocatedProjects }>();
-  // by authority, the ids its core's relocations mirror held last; what leaves it is forgotten
-  private readonly mirroredRelocations = new Map<string, ReadonlySet<string>>();
+  // what leaves an authority's relocations mirror is forgotten; a remote host's trust reads the mirror before its attach is ready
+  private readonly relocationMirrors = new RelocationMirrors();
   // by remote authority, its project paths when its registry last judged its records
   private readonly remoteRecordPaths = new Map<string, string>();
   // remote chats of a project whose folder its host does not find, by panel token: not reopened, their records kept in
@@ -4850,19 +4850,15 @@ class DesktopApp {
   private relocationsChanged(authority: string, client: CoreClient | undefined = this.clientFor(authority)): void {
     this.shellStateChanged();
     this.refreshMenuState();
-    const views = client?.relocations() ?? [];
-    // with no core's mirror read, no relocation left it
-    if (client) {
-      const mirrored = new Set(views.map((view) => view.id));
-      for (const id of this.mirroredRelocations.get(authority) ?? []) if (!mirrored.has(id)) this.forgetRelocation(authority, id);
-      this.mirroredRelocations.set(authority, mirrored);
-    }
-    this.relocationTargetsChanged.fire(authority);
-    for (const view of views) {
+    const views = client?.relocations();
+    for (const id of this.relocationMirrors.publish(authority, views)) this.forgetRelocation(authority, id);
+    for (const view of views ?? []) {
       this.relocationName(authority, view);
       this.relocationReached(authority, view);
       this.relocationRepairNotice(authority, view);
     }
+    // after relocationReached adopted this run's interrupted Locates, whose new folders the host's trust then lists
+    this.relocationTargetsChanged.fire(authority);
   }
 
   private forgetRelocation(authority: string, id: string): void {
@@ -6419,8 +6415,8 @@ class DesktopApp {
           })),
           state: (hostId: string) => this.requireRemoteHosts().connectionOf(hostId),
           connectStep: (hostId: string) => this.requireRemoteConnections().attempt(hostId),
-          // shutdownNow and handOver now settle once the daemon ended this connection, as the app's own switch does, so nothing the
-          // spec does next reaches a daemon stopping
+          // shutdownNow and handOver { when: 'now' } settle once the daemon ended this connection, as the app's own switch does, so
+          // nothing the spec does next reaches a daemon stopping
           control: async (hostId: string, command: keyof ClientToControl['requests'], params: object) => {
             if (command === 'shutdownNow') return this.shutDownDaemon(this.authorityOfHost(hostId));
             const connection = this.requireConnection(this.authorityOfHost(hostId));
@@ -7773,7 +7769,7 @@ class DesktopApp {
       store: this.requireHostStore(),
       folders: () => [
         ...this.remoteProjects().filter((project) => project.authorityKey === authority),
-        ...(this.clientFor(authority)?.relocations() ?? []).map((view) => moved(view.to)),
+        ...this.relocationMirrors.views(authority).map((view) => moved(view.to)),
         ...[...this.locatePrepared.values()].filter((prepared) => ofAuthority(prepared.key)).map((prepared) => moved(prepared.to)),
         ...[...this.locateTargets].filter(([key]) => ofAuthority(key)).map(([, to]) => moved(to)),
         ...this.trustPending.folders(authority),
@@ -9954,7 +9950,7 @@ class DesktopApp {
         this.shownFolders.show(projectKey, 'project');
       },
       // the hold is that core's: a restart before the action answers fails it with the engine-stopped notice
-      beginFinish: (worktreeId, action) => run(`Worktree ${action}`, (client, core) => client.beginWorktreeFinish(worktreeId, action, () => !core.isReady())),
+      beginFinish: (worktreeId, action) => run(`Worktree ${action}`, (client, core) => client.beginWorktreeFinish(worktreeId, action, () => !core.isReady(), local ? undefined : this.authorities?.heldConnection(authority))),
       showTask: (key) => {
         const terminals = this.requireTerminals();
         const id = terminals.taskTerminal(key);

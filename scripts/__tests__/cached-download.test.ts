@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { cachedDownload, DOWNLOAD_ATTEMPTS, downloadWithRetry } from '../cached-download.ts';
+import { cachedDownload, DOWNLOAD_ATTEMPTS, downloadWithRetry, writeCacheFile } from '../cached-download.ts';
 
 const GOOD = Buffer.from('the pinned bytes');
 const hashOf = (data: Buffer): string => createHash('sha256').update(data).digest('hex');
@@ -26,7 +26,17 @@ describe('cachedDownload', () => {
       else if (req.url === '/stall') res.writeHead(200).flushHeaders();
       // GitHub's archive answered a release build 503 once
       else if (req.url === '/flaky' && requests.filter((url) => url === '/flaky').length > 1) res.end(GOOD);
-      else res.writeHead(503).end();
+      // a few bytes now and then, for as long as the client listens: a slow mirror
+      else if (req.url === '/slow') {
+        res.writeHead(200);
+        const trickle = setInterval(() => res.write('x'), 50);
+        res.on('close', () => clearInterval(trickle));
+      } else if (req.url === '/long') res.end(Buffer.concat([GOOD, GOOD]));
+      else if (req.url === '/long-chunked') {
+        res.writeHead(200);
+        res.write(GOOD);
+        res.end(GOOD);
+      } else res.writeHead(503).end();
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -39,15 +49,34 @@ describe('cachedDownload', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('moves past a failing, a stalled and a mismatching source to one whose bytes pass, and caches them with no partial file left', async () => {
+  it('moves past a failing and a mismatching source to one whose bytes pass, and caches them with no partial file left', async () => {
     const cached = join(dir, 'fallback.bin');
     requests.length = 0;
-    const data = await cachedDownload([`${base}/down`, `${base}/stall`, `${base}/other`, `${base}/good`], cached, valid, { stallMs: 300 });
+    const data = await cachedDownload([`${base}/down`, `${base}/other`, `${base}/good`], cached, valid, { log: () => undefined });
     expect(data).toEqual(GOOD);
     expect(readFileSync(cached)).toEqual(GOOD);
     expect(readdirSync(dir).filter((name) => name.endsWith('.part'))).toEqual([]);
     // each source with another after it is asked once
-    expect(requests).toEqual(['/down', '/stall', '/other', '/good']);
+    expect(requests).toEqual(['/down', '/other', '/good']);
+  });
+
+  // a mirror that keeps sending, slowly, would otherwise hold the download for as long as it lasts
+  it('gives up a source with another after it that sends under the rate floor over a window', async () => {
+    requests.length = 0;
+    const logged: string[] = [];
+    const data = await cachedDownload([`${base}/slow`, `${base}/good`], join(dir, 'slow.bin'), valid, { stallMs: 1_000, log: (line) => logged.push(line) });
+    expect(data).toEqual(GOOD);
+    expect(requests.filter((url) => url === '/slow')).toHaveLength(1);
+    expect(logged).toContainEqual(expect.stringMatching(new RegExp(`^Download failed after 1 attempt \\(\\d+ bytes in 1 s, under 262144 a second\\): ${base}/slow$`)));
+  });
+
+  it('fails a source whose body is longer than expected, declared or streamed, without asking it again', async () => {
+    const options = { maxBytes: GOOD.length, sleep: async () => undefined, log: () => undefined };
+    await expect(downloadWithRetry(`${base}/long`, options)).rejects.toThrow(`Download failed (${2 * GOOD.length} bytes, more than the ${GOOD.length} expected): ${base}/long`);
+    requests.length = 0;
+    await expect(downloadWithRetry(`${base}/long-chunked`, options)).rejects.toThrow(`Download failed (more than the ${GOOD.length} bytes expected): ${base}/long-chunked`);
+    expect(requests).toEqual(['/long-chunked']);
+    expect(await downloadWithRetry(`${base}/good`, options)).toEqual(GOOD);
   });
 
   it('retries the last source while its failure may pass', async () => {
@@ -62,8 +91,34 @@ describe('cachedDownload', () => {
 
   it('names every source\'s failure when none passes, and writes no cache file', async () => {
     const cached = join(dir, 'none.bin');
-    await expect(cachedDownload([`${base}/down`, `${base}/other`], cached, valid)).rejects.toThrow(`No source gave none.bin: Download failed after 1 attempts (503 Service Unavailable): ${base}/down; ${base}/other does not match its pinned hash`);
+    await expect(cachedDownload([`${base}/down`, `${base}/other`], cached, valid, { log: () => undefined })).rejects.toThrow(`No source gave none.bin: Download failed after 1 attempt (503 Service Unavailable): ${base}/down; ${base}/other does not match its pinned hash`);
     expect(existsSync(cached)).toBe(false);
+  });
+
+  // several build workers share the cache: Windows refuses a rename onto a file another one is reading
+  it('keeps a valid copy another process holds open', () => {
+    const cached = join(dir, 'shared.bin');
+    writeFileSync(cached, GOOD);
+    const reader = openSync(cached, 'r');
+    try {
+      writeCacheFile(cached, GOOD, valid);
+    } finally {
+      closeSync(reader);
+    }
+    expect(readFileSync(cached)).toEqual(GOOD);
+    expect(readdirSync(dir).filter((name) => name.endsWith('.part'))).toEqual([]);
+  });
+
+  it.runIf(process.platform === 'win32')('fails, leaving no partial file, when the open copy it cannot replace is not valid', () => {
+    const cached = join(dir, 'damaged.bin');
+    writeFileSync(cached, 'damaged');
+    const reader = openSync(cached, 'r');
+    try {
+      expect(() => writeCacheFile(cached, GOOD, valid)).toThrow(/EPERM/);
+    } finally {
+      closeSync(reader);
+    }
+    expect(readdirSync(dir).filter((name) => name.endsWith('.part'))).toEqual([]);
   });
 
   it('reads a cached copy that passes without a request, and downloads again over one that does not', async () => {

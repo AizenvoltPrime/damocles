@@ -82,6 +82,27 @@ export async function presentFiles<T>(files: readonly T[], isFile: (file: T) => 
   return files.filter((_, index) => present[index]);
 }
 
+/**
+ * By authority, its core's relocations mirror as that core last published it. A remote core publishes it before its attach is
+ * ready, while no client of it can be read, so only a published mirror replaces the last one.
+ */
+export class RelocationMirrors {
+  private readonly published = new Map<string, readonly RelocationView[]>();
+
+  /** Records the mirror a core published, or nothing when no core's mirror was read; answers the ids that left it. */
+  publish(authority: string, views: readonly RelocationView[] | undefined): string[] {
+    if (views === undefined) return [];
+    const now = new Set(views.map((view) => view.id));
+    const left = this.views(authority).filter((view) => !now.has(view.id)).map((view) => view.id);
+    this.published.set(authority, views);
+    return left;
+  }
+
+  views(authority: string): readonly RelocationView[] {
+    return this.published.get(authority) ?? [];
+  }
+}
+
 /** Applies coreDone relocations to main's state, once per relocation at a time. */
 export class RelocatedProjects {
   private readonly deps: RelocateStateDeps;

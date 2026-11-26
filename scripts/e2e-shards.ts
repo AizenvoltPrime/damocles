@@ -13,6 +13,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isEntryPoint } from './entry-point.ts';
+import { DESKTOP_TARGETS } from './release-targets.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const TIMINGS_FILE = join(ROOT, 'e2e', 'desktop', 'shard-timings.json');
@@ -28,7 +29,7 @@ export type Timings = Record<string, Record<string, number>>;
 
 interface ReportSpec {
   readonly file: string;
-  readonly tests: ReadonlyArray<{ readonly results?: ReadonlyArray<{ readonly duration: number }> }>;
+  readonly tests: ReadonlyArray<{ readonly results?: ReadonlyArray<{ readonly duration: number; readonly status?: string }> }>;
 }
 
 interface ReportSuite {
@@ -58,17 +59,27 @@ export function specFiles(report: Report): SpecFile[] {
   return [...counts].map(([file, tests]) => ({ file, tests }));
 }
 
-/** The seconds each file's tests took in a run, every attempt counted, as the shard's clock counts them. */
+/**
+ * The seconds each file's tests took in a run, every attempt counted, as the shard's clock counts them. A file with a test
+ * that never started or was cut short (globalTimeout ended the run) is left out, since its time is not known.
+ */
 export function fileSeconds(report: Report): Record<string, number> {
   const seconds: Record<string, number> = {};
+  const unknown = new Set<string>();
   for (const spec of specsOf(report)) {
-    const ms = spec.tests.flatMap((test) => test.results ?? []).reduce((sum, result) => sum + result.duration, 0);
+    const results = spec.tests.map((test) => test.results ?? []);
+    if (results.some((attempts) => attempts.length === 0 || attempts.some((result) => result.status === 'interrupted'))) unknown.add(spec.file);
+    const ms = results.flat().reduce((sum, result) => sum + result.duration, 0);
     seconds[spec.file] = (seconds[spec.file] ?? 0) + ms / 1000;
   }
+  for (const file of unknown) delete seconds[file];
   return seconds;
 }
 
-/** `total` lists of files of about equal estimated time, each in name order; a file always goes to the same shard. */
+/**
+ * `total` lists of files of about equal estimated time, each in name order; a file always goes to the same shard. Throws when a
+ * shard would be empty, since Playwright passes a run of an empty test list.
+ */
 export function planShards(files: readonly SpecFile[], seconds: Readonly<Record<string, number>>, total: number): string[][] {
   const perTest = files.filter((spec) => seconds[spec.file] !== undefined && spec.tests > 0).map((spec) => seconds[spec.file]! / spec.tests).sort((a, b) => a - b);
   const median = perTest.length === 0 ? 1 : perTest[Math.floor(perTest.length / 2)]!;
@@ -80,6 +91,7 @@ export function planShards(files: readonly SpecFile[], seconds: Readonly<Record<
     least.files.push(file);
     least.load += weight;
   }
+  if (files.length < total) throw new Error(`${total} shards for ${files.length} spec files would leave a shard with no tests`);
   return shards.map((shard) => shard.files.sort());
 }
 
@@ -97,7 +109,7 @@ export function parseShard(value: string | undefined): { readonly current: numbe
 const readTimings = (): Timings => JSON.parse(readFileSync(TIMINGS_FILE, 'utf8')) as Timings;
 
 function listedFiles(): SpecFile[] {
-  // the shard step records its run's report through this variable, which would take the listing too
+  // with this set, the json reporter writes the listing to that file instead of stdout
   const env = { ...process.env };
   delete env['PLAYWRIGHT_JSON_OUTPUT_FILE'];
   const cli = join(ROOT, 'node_modules', '@playwright', 'test', 'cli.js');
@@ -113,11 +125,17 @@ const option = (args: readonly string[], name: string): string | undefined => {
   return at === -1 ? undefined : args[at + 1];
 };
 
+/** A desktop target of release-targets.ts, whose times the timings file keeps under its name. */
+export function desktopTarget(value: string | undefined): string {
+  if (value === undefined || !Object.hasOwn(DESKTOP_TARGETS, value)) throw new Error(`--target takes a desktop target (${Object.keys(DESKTOP_TARGETS).join(', ')}), not ${value}`);
+  return value;
+}
+
 function plan(args: readonly string[]): void {
   const { current, total } = parseShard(option(args, '--shard'));
-  const target = option(args, '--target');
+  const target = desktopTarget(option(args, '--target'));
   const out = option(args, '--out');
-  if (!target || !out) throw new Error('Usage: e2e-shards.ts plan --shard <n>/<total> --target <target> --out <file>');
+  if (!out) throw new Error('Usage: e2e-shards.ts plan --shard <n>/<total> --target <target> --out <file>');
   const seconds = readTimings()[target] ?? {};
   const files = listedFiles();
   const shards = planShards(files, seconds, total);
@@ -128,9 +146,9 @@ function plan(args: readonly string[]): void {
 }
 
 function timings(args: readonly string[]): void {
-  const target = option(args, '--target');
+  const target = desktopTarget(option(args, '--target'));
   const reports = args.filter((arg, at) => !arg.startsWith('--') && args[at - 1] !== '--target');
-  if (!target || reports.length === 0) throw new Error('Usage: e2e-shards.ts timings --target <target> <report.json>...');
+  if (reports.length === 0) throw new Error('Usage: e2e-shards.ts timings --target <target> <report.json>...');
   const all = readTimings();
   const recorded = { ...all[target] };
   for (const report of reports) {

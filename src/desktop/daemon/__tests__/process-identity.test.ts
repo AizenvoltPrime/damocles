@@ -109,6 +109,7 @@ describe('a process\'s start identity on macOS', () => {
   it('is undefined when ps lists no such process, and fails when ps fails or is missing', async () => {
     expect(await createStartIdentity(reads({ platform: 'darwin', run: answering({ code: 1, signal: null, stdout: '', stderr: '' }) }))(812)).toBeUndefined();
     await expect(createStartIdentity(reads({ platform: 'darwin', run: answering({ code: 1, signal: null, stdout: '', stderr: 'ps: illegal option' }) }))(812)).rejects.toThrow(/illegal option/);
+    await expect(createStartIdentity(reads({ platform: 'darwin', run: answering({ code: 0, signal: null, stdout: 'Ss\n', stderr: '' }) }))(812)).rejects.toThrow('ps printed no start time for 812: Ss');
     await expect(createStartIdentity(reads({ platform: 'darwin', run: answering({ code: null, signal: null, stdout: '', stderr: '' }) }))(812)).rejects.toThrow('ps did not finish within 5000 ms');
     await expect(createStartIdentity(reads({ platform: 'darwin', run: answering({ code: null, signal: 'SIGSEGV', stdout: '', stderr: '' }) }))(812)).rejects.toThrow('ps ended by SIGSEGV');
     await expect(createStartIdentity(reads({ platform: 'darwin', ps: () => Promise.resolve(undefined) }))(812)).rejects.toThrow(/no ps/);

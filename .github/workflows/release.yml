@@ -977,10 +977,10 @@ jobs:
         # "Desktop end-to-end suite").
         run: |
           if [ "$RUNNER_OS" = Windows ]; then export TEMP="$RUNNER_TEMP" TMP="$RUNNER_TEMP"; fi
-          export SHARD_TESTS="$RUNNER_TEMP/shard-tests.txt"
+          SHARD_TESTS="$RUNNER_TEMP/shard-tests.txt"
           node scripts/e2e-shards.ts plan --shard "$SHARD" --target "$TARGET" --out "$SHARD_TESTS"
           if [ "$RUNNER_OS" = Linux ]; then
-            xvfb-run -a -s '-screen 0 1920x1080x24' sh -c 'openbox & exec npm run test:desktop -- --test-list="$SHARD_TESTS" --add-reporter=json'
+            xvfb-run -a -s '-screen 0 1920x1080x24' sh -c 'openbox & exec npm run test:desktop -- --test-list="$1" --add-reporter=json' sh "$SHARD_TESTS"
           else
             npm run test:desktop -- --test-list="$SHARD_TESTS" --add-reporter=json
           fi
@@ -991,18 +991,21 @@ jobs:
           name: server-${{ matrix.serverTarget }}
           path: server-package
 
-      # The loopback specs once more, the daemon unpacked from this leg's server package and run by its own Node.
+      # The loopback specs once more, the daemon unpacked from this leg's server package and run by its own Node. Its report and
+      # results go beside the suite's, which Playwright would otherwise empty first.
       - name: Loopback specs against this leg's server package
         if: matrix.shard == 1
         timeout-minutes: 20
+        env:
+          PLAYWRIGHT_HTML_OUTPUT_DIR: dist/e2e-report/loopback
         run: |
           if [ "$RUNNER_OS" = Windows ]; then export TEMP="$RUNNER_TEMP" TMP="$RUNNER_TEMP"; fi
           DAMOCLES_LOOPBACK_PACKAGE=$(node -p "require('path').resolve('server-package', require('fs').readdirSync('server-package').find((f) => f.startsWith('damocles-server-')))")
           export DAMOCLES_LOOPBACK_PACKAGE
           if [ "$RUNNER_OS" = Linux ]; then
-            xvfb-run -a -s '-screen 0 1920x1080x24' sh -c 'openbox & exec npx playwright test --config playwright.desktop.config.ts --project=dev --grep @loopback'
+            xvfb-run -a -s '-screen 0 1920x1080x24' sh -c 'openbox & exec npx playwright test --config playwright.desktop.config.ts --project=dev --grep @loopback --output dist/e2e-results/loopback'
           else
-            npx playwright test --config playwright.desktop.config.ts --project=dev --grep @loopback
+            npx playwright test --config playwright.desktop.config.ts --project=dev --grep @loopback --output dist/e2e-results/loopback
           fi
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

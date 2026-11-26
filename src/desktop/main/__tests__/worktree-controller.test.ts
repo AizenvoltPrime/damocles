@@ -411,6 +411,34 @@ describe('WorktreeController', () => {
     expect(H.trail).toEqual(['apply', 'release', 'showProjectFolder', 'info:Applied 2 files to the project folder.']);
   });
 
+  it.each([
+    ['the edited warning', 'edited' as const, undefined, 'warn:A file of the worktree was edited while Damocles was deleting it, so the worktree was not deleted. Try again.'],
+    ['the error with Retry', 'closed' as const, new Error('Permission denied'), `error:Could not delete the worktree "${WT}": Permission denied`],
+  ])('tells Delete\'s %s only after core released the hold, and gives back the root and the selection before it', async (_name, outcome, removeError, told) => {
+    dialogAnswers = [{ dialog: 'delete', choice: 'delete', deleteBranch: false }];
+    H.removeError = removeError;
+    const holds = createFinishHolds();
+    const call = coreCalls(recordRegistry(), holds);
+    let letGo: () => void = () => undefined;
+    const notify = (severity: string) => async (message: string): Promise<undefined> => {
+      H.trail.push(`${severity}:${message}`);
+      return undefined;
+    };
+    const finished = controller({
+      closeWorktree: async (_id, _key, stop) => ((await stop()) ? outcome : 'refused'),
+      beginFinish: async (worktreeId) => {
+        const hold = holds.add(worktreeId, { dispose: () => H.trail.push('release') });
+        return finishHold({ call, stopped: () => false, worktreeId, hold, release: () => new Promise((resolve) => { letGo = () => resolve(holds.release(hold)); }) });
+      },
+      notify: { info: notify('info'), warn: notify('warn'), error: notify('error') },
+    }).finish(record.id, 'delete');
+    await vi.waitFor(() => expect(H.trail).toContain('afterClose:false'));
+    expect(H.trail.some((step) => step.startsWith('warn:') || step.startsWith('error:'))).toBe(false);
+    letGo();
+    await finished;
+    expect(H.trail.slice(-2)).toEqual(['release', told]);
+  });
+
   it('asks for a commit message before merging uncommitted worktree files, and Generate fills it from the open dialog\'s worktree', async () => {
     let generated: unknown;
     const worktrees = controller();

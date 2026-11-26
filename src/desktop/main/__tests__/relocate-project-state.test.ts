@@ -7,7 +7,7 @@ import { folderKey } from '../../../core/workspace-folders/folder-key';
 import { rootKey } from '../../preload/folder-root';
 import type { FileRef } from '../../preload/shell-channels';
 import { ProjectList } from '../projects';
-import { presentFiles, RelocatedProjects, type RelocateStateDeps } from '../relocate-project-state';
+import { presentFiles, RelocatedProjects, RelocationMirrors, type RelocateStateDeps } from '../relocate-project-state';
 
 const t = (message: string, ...args: string[]): string => message.replace(/\{(\d+)\}/g, (_, index: string) => args[Number(index)] ?? '');
 
@@ -281,5 +281,24 @@ describe('presentFiles', () => {
     const logged: string[] = [];
     expect(await presentFiles([...checks.keys()], (file) => checks.get(file)!(), (file, err) => logged.push(`${file}: ${(err as Error).message}`))).toEqual(['a.ts', 'b.ts']);
     expect(logged).toEqual(['denied.ts: EACCES', 'under-a-file.ts: ENOTDIR']);
+  });
+});
+
+describe('RelocationMirrors', () => {
+  it('answers the relocations that left a core\'s mirror, per authority', () => {
+    const mirrors = new RelocationMirrors();
+    expect(mirrors.publish('ssh+h1', [view({ id: 'r1' }), view({ id: 'r2' })])).toEqual([]);
+    expect(mirrors.publish('local', [])).toEqual([]);
+    expect(mirrors.publish('ssh+h1', [view({ id: 'r2' })])).toEqual(['r1']);
+    expect(mirrors.views('ssh+h1').map((mirrored) => mirrored.id)).toEqual(['r2']);
+  });
+
+  // a restarted remote core publishes before its attach is ready, when main can read no client of it
+  it('forgets nothing and keeps the last mirror when no core\'s mirror was read', () => {
+    const mirrors = new RelocationMirrors();
+    mirrors.publish('ssh+h1', [view({ id: 'r1' })]);
+    expect(mirrors.publish('ssh+h1', undefined)).toEqual([]);
+    expect(mirrors.views('ssh+h1').map((mirrored) => mirrored.id)).toEqual(['r1']);
+    expect(mirrors.views('ssh+h2')).toEqual([]);
   });
 });

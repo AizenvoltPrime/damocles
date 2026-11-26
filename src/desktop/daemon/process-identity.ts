@@ -100,7 +100,7 @@ export function createStartIdentity(reads: IdentityReads): StartIdentity {
     if (code === 0 && stamp !== '') return `${DARWIN_SCHEME}:${stamp}`;
     // ps exits 1 and prints nothing when it lists no process
     if (code !== 0 && state === '' && stderr.trim() === '') return undefined;
-    throw new Error(`ps exited with ${code}: ${stderr.trim()}`);
+    throw new Error(code === 0 ? `ps printed no start time for ${pid}: ${stdout.trim()}` : `ps exited with ${code}: ${stderr.trim()}`);
   };
 
   const windows = async (pid: number): Promise<string | undefined> => {
