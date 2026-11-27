@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProjectPresences, type CheckedProject } from '../../project-presence';
-import { keptChatFate, oncePerConversation, reopenKeptChat, type KeptChatProjects } from '../kept-remote-chats';
+import { keptChatFate, oncePerConversation, openThenRestore, reopenKeptChat, type KeptChatProjects } from '../kept-remote-chats';
 import { RemoteState, type RemoteChatRecord } from '../remote-state';
 
 const AUTHORITY = 'ssh+h1';
@@ -92,6 +92,37 @@ describe('a kept remote chat reopening on its host\'s core', () => {
     expect(open.join).toHaveBeenCalledWith('a1', 's-a1');
     expect(open.restoreJoining).toHaveBeenCalledTimes(1);
     expect(open.restore).not.toHaveBeenCalled();
+  });
+
+  it('opens every chat\'s view before the first restore settles, so a selection meanwhile finds its chat, then restores them one after another', async () => {
+    const trail: string[] = [];
+    const settle = new Map<string, () => void>();
+    const reopened = openThenRestore([chat('a1'), chat('b2')], (record) => {
+      trail.push(`open:${record.panelToken}`);
+      return record.panelToken;
+    }, (view) => {
+      trail.push(`restore:${view}`);
+      return new Promise<void>((resolve) => settle.set(view, resolve));
+    });
+    expect(trail).toEqual(['open:a1', 'open:b2']);
+    expect(reopened.map((each) => each.view)).toEqual(['a1', 'b2']);
+    await vi.waitFor(() => expect(trail).toEqual(['open:a1', 'open:b2', 'restore:a1']));
+    settle.get('a1')!();
+    await reopened[0]!.restored;
+    await vi.waitFor(() => expect(trail).toEqual(['open:a1', 'open:b2', 'restore:a1', 'restore:b2']));
+    settle.get('b2')!();
+    await reopened[1]!.restored;
+  });
+
+  it('restores the next chat after one whose restore failed, and that one\'s promise rejects', async () => {
+    const restored: string[] = [];
+    const reopened = openThenRestore([chat('a1'), chat('b2')], (record) => record.panelToken, async (view) => {
+      if (view === 'a1') throw new Error('core refused a1');
+      restored.push(view);
+    });
+    await expect(reopened[0]!.restored).rejects.toThrow('core refused a1');
+    await reopened[1]!.restored;
+    expect(restored).toEqual(['b2']);
   });
 
   it('reopens one chat per conversation, and none of a conversation the window already shows', () => {

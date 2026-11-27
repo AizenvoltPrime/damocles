@@ -32,6 +32,21 @@ export function oncePerConversation<T extends Pick<RemoteChatRecord, 'sessionId'
   return records.filter((record) => record.sessionId === undefined || kept.get(record.sessionId) === record);
 }
 
+/**
+ * Kept chats reopening while the window runs (a folder back, a move done): every chat's view opens first, so a selection made
+ * while they restore finds its chat loaded instead of opening the conversation in a second view, then their restores run one
+ * after another. `restored` is each chat's own restore, which a failure of an earlier one does not stop.
+ */
+export function openThenRestore<R, V>(records: readonly R[], open: (record: R) => V, restore: (view: V, record: R) => Promise<void>): Array<{ readonly view: V; readonly restored: Promise<void> }> {
+  const opened = records.map((record) => ({ record, view: open(record) }));
+  let previous: Promise<unknown> = Promise.resolve();
+  return opened.map(({ record, view }) => {
+    const restored = previous.then(() => restore(view, record));
+    previous = restored.catch(() => undefined);
+    return { view, restored };
+  });
+}
+
 export interface KeptChatOpen {
   // the chat's view joins the panel its page token names, else the one holding sessionId; false when none does
   readonly join: (viewKey: string | undefined, sessionId: string | undefined) => Promise<boolean>;

@@ -411,7 +411,7 @@ import { waitForRemoteFolderConnection } from './e2e-open-folder';
 import { RELOCATE_FEATURE, RemoteCore, type RemoteHostedCore } from './remote/remote-core';
 import { remoteRelocation } from './remote/relocate-remote-project';
 import { clientGitCredential, createGitCredentialClient, type GitCredentialClient } from './remote/git-credential-client';
-import { keptChatFate, oncePerConversation, reopenKeptChat } from './remote/kept-remote-chats';
+import { keptChatFate, oncePerConversation, openThenRestore, reopenKeptChat } from './remote/kept-remote-chats';
 import { remoteServices } from './remote/remote-services';
 import { chatOfSelectedProject, keptChatWithheld, remoteSelection } from './remote/remote-selection';
 import type { RemoteChatRecord } from './remote/remote-state';
@@ -7352,19 +7352,31 @@ class DesktopApp {
   // One kept chat into a new view: rejoined under the epoch it was open in, under a new one joined to the panel another device
   // restored its conversation into, else restored into a new panel, resuming its session (reopenKeptChat).
   private openRemoteChat(core: RemoteHostedCore, record: RemoteChatRecord, rejoin: boolean, permissions: ChatPermissions | undefined): Promise<void> {
+    const host = this.keptRemoteChatView(core, record);
+    const restore = this.restoreKeptRemoteChat(core, host, record, rejoin, permissions);
+    this.chatRestores.set(host, restore);
+    return restore;
+  }
+
+  // A kept chat's view, tracked in its project, which its core restores into next.
+  private keptRemoteChatView(core: RemoteHostedCore, record: RemoteChatRecord): DesktopPanel {
     const host = this.requireViews().create({ options: CHAT_PANEL, restore: { panelId: randomUUID(), state: { ...(record.sessionId !== undefined ? { sessionId: record.sessionId } : {}), panelToken: record.panelToken } }, authority: core.authority });
     this.trackChat(host, keptRemoteChatProjectKey(record, { listed: (key) => this.projectListed(key), movedFrom: (key) => this.movedFrom(key), defaultKey: this.defaultProjectKey(core) }));
     this.lastViewed.set(host, ++this.viewCount);
     if (this.reselectRemote.get(core.authority) === record.panelToken && !this.views?.selected()) this.showChat(host, { focus: 'whenReady' });
-    const restore = reopenKeptChat(record, rejoin, {
+    return host;
+  }
+
+  private async restoreKeptRemoteChat(core: RemoteHostedCore, host: DesktopPanel, record: RemoteChatRecord, rejoin: boolean, permissions: ChatPermissions | undefined): Promise<void> {
+    // a view closed while earlier chats restored is gone; restoring into it would leak a panel on the host
+    if (host.isDisposed) return;
+    await reopenKeptChat(record, rejoin, {
       join: (viewKey, sessionId) => core.rejoin(host, viewKey, sessionId),
       restoreJoining: async () => {
         if (!host.isDisposed) await core.client.restoreRelayed(host.panelId, permissions);
       },
       restore: () => core.client.restoreChat(host, undefined, permissions),
     });
-    this.chatRestores.set(host, restore);
-    return restore;
   }
 
   // The skipped chats of a remote project whose folder is back, or that moved (saved under its new key by then), open again.
@@ -7373,12 +7385,10 @@ class DesktopApp {
     const core = this.remoteCores.get(authority)?.host.current();
     const reopening = [...this.skippedRemoteChats.values()].filter((skipped) => skipped.projectKey === projectKey);
     if (!core || reopening.length === 0) return;
-    let previous: Promise<void> = Promise.resolve();
-    for (const record of reopening) {
-      this.skippedRemoteChats.delete(record.panelToken);
-      previous = previous.then(() => this.openRemoteChat(core, record, false, undefined)).catch(this.report('Reopening a remote chat'));
-    }
-    void previous.then(() => {
+    for (const record of reopening) this.skippedRemoteChats.delete(record.panelToken);
+    const reopened = openThenRestore(reopening, (record) => this.keptRemoteChatView(core, record), (host, record) => this.restoreKeptRemoteChat(core, host, record, false, undefined));
+    for (const { view, restored } of reopened) this.chatRestores.set(view, restored);
+    void Promise.all(reopened.map(({ restored }) => restored.catch(this.report('Reopening a remote chat')))).then(() => {
       this.saveRemoteChats(authority);
       this.scheduleRetention();
     });
