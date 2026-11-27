@@ -58,6 +58,16 @@ export const chatRows = (shell: Page): Locator => chatList(shell).getByRole('opt
 export const sidebarSectionOf = (shell: Page, inner: Locator): Locator => shell.locator('section[data-section]').filter({ has: inner });
 
 /**
+ * Waits for the hover reveal's entering transform (d-actions-in) under `container`. A click on a still-moving action retries
+ * with forced scrollIntoView alignments, which can scroll the row out from under the pointer and hide the action again.
+ */
+async function settleReveal(container: Locator): Promise<void> {
+  await container.evaluate((element) => Promise.all(element.getAnimations({ subtree: true })
+    .filter((animation) => animation instanceof CSSAnimation && animation.animationName === 'd-actions-in')
+    .map((animation) => animation.finished.catch(() => undefined))));
+}
+
+/**
  * A sidebar section's title action, shown as a user shows it: VS Code's rule hides the actions until the section is hovered
  * or holds focus, so this hovers the section's header first. The pointer stays there only while this worker holds the
  * OS foreground, so a test calling this takes the `foreground` fixture.
@@ -67,10 +77,7 @@ export async function sectionAction(shell: Page, testId: string): Promise<Locato
   const section = sidebarSectionOf(shell, action);
   await section.getByTestId('sidebar-section-header').hover();
   await expect(action).toBeVisible();
-  // the reveal's short entering transform moves the action, so callers measure and click it settled; a cancelled reveal rejects
-  await section.getByTestId('sidebar-section-actions').evaluate((actions) => Promise.all(actions.getAnimations({ subtree: true })
-    .filter((animation) => animation instanceof CSSAnimation && animation.animationName === 'd-actions-in')
-    .map((animation) => animation.finished.catch(() => undefined))));
+  await settleReveal(section.getByTestId('sidebar-section-actions'));
   return action;
 }
 
@@ -84,11 +91,14 @@ export async function clickChat(shell: Page, chatId: string): Promise<void> {
   await chatRow(shell, chatId).click();
 }
 
-/** Hovers a chat row and clicks one of its row actions (rename, tag or delete). */
+/** Hovers a chat row and clicks one of its row actions (rename, tag or delete); the caller takes the `foreground` fixture. */
 export async function clickRowAction(shell: Page, chatId: string, action: 'rename' | 'tag' | 'delete'): Promise<void> {
   const row = chatRow(shell, chatId);
+  const button = row.getByTestId(`chat-action-${action}`);
   await row.hover();
-  await row.getByTestId(`chat-action-${action}`).click();
+  await expect(button).toBeVisible();
+  await settleReveal(row);
+  await button.click();
 }
 
 /** Renames a chat through the row's inline editor. */

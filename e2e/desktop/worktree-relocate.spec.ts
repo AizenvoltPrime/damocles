@@ -188,7 +188,9 @@ test('after Locate and trust, worktree chats live, shared and deleted follow the
       await expect.poll(() => fs.readFileSync(path.join(moved, 'a.ts'), 'utf8'), { timeout: 60_000 }).toBe('export const a = 2;\n');
       expect(await git(home, moved, 'status', '--porcelain')).toContain('a.ts');
       // the file lands before Apply ends: until core lets go of the worktree, the chat refuses a send
-      await expect.poll(async () => (await recordedToasts(app)).map((toast) => toast.message), { timeout: 60_000 }).toContain('Applied 1 file to the project folder.');
+      await expect.poll(async () => (await recordedToasts(app)).map((toast) => toast.message), { timeout: 60_000 }).toContain('Applied 2 files to the project folder.');
+      // the second file is the first step's untracked index.txt
+      expect(fs.readFileSync(path.join(moved, 'index.txt'), 'utf8')).toBe(String(seeded.a.index));
       await expect(tab.getByTestId('composer-worktree-finishing')).toHaveCount(0);
     });
 

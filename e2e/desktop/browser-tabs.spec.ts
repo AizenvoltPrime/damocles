@@ -78,10 +78,12 @@ test('a page the agent opens is a tab of its chat, laid over the tab\'s page are
     await app.evaluate(({ webContents }, id) => {
       webContents.getAllWebContents().find((c) => c.getURL().includes(`/panel/${id}/`))!.focus();
     }, chatId);
-    await chatInput(tab).focus();
-    await chatInput(tab).fill('open the page');
-    await chatInput(tab).press('Enter');
-    await expect(chatInput(tab)).toHaveValue('');
+    // Found by its name, since its placeholder changes while the run is busy, and the run lasts as long as Chrome takes to launch.
+    const composer = tab.getByRole('textbox', { name: 'Message Damocles' });
+    await composer.focus();
+    await composer.fill('open the page');
+    await composer.press('Enter');
+    await expect(composer).toHaveValue('');
 
     // Keystrokes go to whichever view holds keyboard focus, before, while and after the page opens and loads.
     let typed = '';
@@ -95,7 +97,7 @@ test('a page the agent opens is a tab of its chat, laid over the tab\'s page are
     await expect.poll(async () => (await browserTabs(app))[0]?.title, { timeout: PAGE_TIMEOUT }).toBe('Page agent');
     await typeIntoFocused(app, 'still here');
     typed += 'still here';
-    await expect(chatInput(tab)).toHaveValue(typed);
+    await expect(composer).toHaveValue(typed);
     expect(panelIdOf(await activeChat(app))).toBe(chatId);
 
     const page = (await activePageTab(app))!;

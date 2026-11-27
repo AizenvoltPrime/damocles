@@ -29,7 +29,7 @@ export const LAUNCH_HOLD_WAIT_MS = 5_000;
 export const DRAFT_CAPTURE_GAP_MS = 1_000;
 // How long the notice of a capture under a chat's grant shows, counted only while nothing holds it, before it closes on its own.
 export const SCREENSHOT_NOTICE_MS = 6_000;
-// Past it the window capture fails, so a capturePage that never settles holds neither the draft nor the captures behind it.
+// Past it the window capture fails, so a capture that never settles holds neither the draft nor the captures behind it.
 export const WINDOW_CAPTURE_TIMEOUT_MS = 5_000;
 
 /**

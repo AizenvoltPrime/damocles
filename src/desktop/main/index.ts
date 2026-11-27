@@ -228,7 +228,8 @@ import { announceInstalledVersion, ReleaseNotesSource } from './release-notes';
 import { appResourceUri, handleAppProtocol, registerAppScheme, THEME_RENDER_PAGE_URL, THEME_SHOT_URL_PREFIX } from './protocol';
 import { AgentThemes, type AgentThemesDeps, type ScreenshotNoticeState } from './themes/agent-themes';
 import { THEME_APPLIED_TIMEOUT_MS, ThemeAcks } from './themes/theme-acks';
-import { ThemeRenderer } from './themes/theme-renderer';
+import { pngSize, ThemeRenderer } from './themes/theme-renderer';
+import { presentedFrame } from './themes/window-capture';
 import { createThemeRenderSession, openThemeRenderPage, themeRenderHtml } from './themes/theme-render-page';
 import { ThemeCommands } from './theme-commands';
 import { keepKnownHosts } from './remote/keep-hosts';
@@ -2313,15 +2314,17 @@ class DesktopApp {
   private async captureWindowForTheme(): ReturnType<AgentThemesDeps['captureWindow']> {
     const window = this.window;
     if (!window || window.isDestroyed()) throw new Error('The window is closed');
-    const shell = await window.webContents.capturePage();
-    const scale = shell.getSize().width / Math.max(1, window.getContentBounds().width);
+    const shell = await presentedFrame(window.webContents);
+    const shellSize = pngSize(shell);
+    if (!shellSize) throw new Error('The window capture is not a PNG');
+    const scale = shellSize.width / Math.max(1, window.getContentBounds().width);
     const chat = this.views?.inSlot();
-    if (!chat || !chat.view.getVisible()) return { shell: new Uint8Array(shell.toPNG()) };
+    if (!chat || !chat.view.getVisible()) return { shell };
     const bounds = chat.view.getBounds();
-    const image = await chat.webContents.capturePage();
+    const image = await presentedFrame(chat.webContents);
     return {
-      shell: new Uint8Array(shell.toPNG()),
-      chat: { png: new Uint8Array(image.toPNG()), bounds: { x: Math.round(bounds.x * scale), y: Math.round(bounds.y * scale), width: Math.round(bounds.width * scale), height: Math.round(bounds.height * scale) } },
+      shell,
+      chat: { png: image, bounds: { x: Math.round(bounds.x * scale), y: Math.round(bounds.y * scale), width: Math.round(bounds.width * scale), height: Math.round(bounds.height * scale) } },
     };
   }
 

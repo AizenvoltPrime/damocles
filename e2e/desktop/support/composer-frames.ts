@@ -1,4 +1,4 @@
-import type { ElectronApplication, Page } from '@playwright/test';
+import { expect, type ElectronApplication, type Page } from '@playwright/test';
 
 /** One animation frame of a chat page: which of the composer's three states it rendered. */
 export interface ComposerFrame {
@@ -27,6 +27,12 @@ declare global {
  * page that loads after this call is seen before its first paint, not after Playwright found it.
  */
 export async function recordComposerFrames(app: ElectronApplication): Promise<void> {
+  // Playwright's Chromium context installs the script into each open page in turn and fails the call, leaving nothing
+  // installed, when one of them closes meanwhile; the app's theme renderer opens and closes short-lived pages at any time.
+  await expect(() => installComposerRecorder(app)).toPass({ timeout: 30_000 });
+}
+
+async function installComposerRecorder(app: ElectronApplication): Promise<void> {
   await app.context().addInitScript(() => {
     if (!location.pathname.includes('/panel/')) return;
     const recorder: Recorder = { frames: [], stop: false };

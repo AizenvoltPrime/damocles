@@ -6,7 +6,7 @@ import { createTestPki } from './support/certs';
 import { startConnectProxy } from './support/connect-proxy';
 import { activeChat, expect, test } from './support/fixtures';
 import { closeSettingsModal, openSettingsModal, settingsModal, settingsRow } from './support/settings';
-import { chatInput } from './support/ui';
+import { chatInput, settledBox } from './support/ui';
 
 // pi's xAI device flow (pi-ai dist/auth/oauth/xai.js) posts here; the test proxy routes the name to a local TLS stub.
 const XAI_AUTH = 'auth.x.ai';
@@ -93,9 +93,9 @@ test('a refused GitHub Copilot domain shows its error under the field and moves 
   const input = field.getByRole('textbox', { name: 'Enterprise domain' });
   await expect(input).toBeFocused();
 
+  // The account row's staggered entrance can still be playing here, and it moves everything inside the row.
   const boxes = async () => Promise.all([input, field.getByTestId('provider-sign-in-submit'), field.getByTestId('provider-sign-in-skip')].map(async (control) => {
-    const box = await control.boundingBox();
-    if (box === null) throw new Error('a control has no box');
+    const box = await settledBox(control);
     return { x: box.x, y: box.y };
   }));
   const before = await boxes();
