@@ -67,6 +67,16 @@ const whole = (inner: string): RegExp => new RegExp(`^\\s*${inner}\\s*$`);
 const pattern = (text: string, lang: Lang = 'en'): RegExp => whole(source(text, lang));
 const SHORT_TIME = whole('\\d\\d:\\d\\d');
 
+/**
+ * The fixed-offset zone (an app's TZ) whose local time is now 12:mm. A deadline worded "by {time}" is today's; one past
+ * midnight gains its weekday (formatResetTime), so a test asserting the first launches the app in this zone.
+ */
+function middayZone(now = Date.now()): string {
+  const east = 12 - new Date(now).getUTCHours();
+  // Etc/GMT-N is N hours east of UTC
+  return east === 0 ? 'Etc/GMT' : `Etc/GMT${east > 0 ? '-' : '+'}${Math.abs(east)}`;
+}
+
 const plural = (count: number, one: string, other: string): string => (count === 1 ? one : other);
 
 // The design's copy (shared/proto.js COPY.en and COPY.el) for host prod-1, an old server `from` and this app `to`.
@@ -990,7 +1000,7 @@ test('S1 S2 S4 S5, a required update with hours left: the warning strip, the dea
   const fixture = await sshd(HOST);
   const busy = await busyOlderServer(launcher, fixture, { version: OLD }, { agents: 1, terminal: true });
   const to = APP_VERSION;
-  const env = { ...busy.env, DAMOCLES_E2E_SERVER_REQUIREMENT: JSON.stringify({ minimumServerVersion: APP_VERSION, graceHours: 3 }) };
+  const env = { ...busy.env, TZ: middayZone(), DAMOCLES_E2E_SERVER_REQUIREMENT: JSON.stringify({ minimumServerVersion: APP_VERSION, graceHours: 3 }) };
   try {
     let deadline = 0;
     {
